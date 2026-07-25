@@ -278,11 +278,10 @@ validate_multitype_producer_artifacts() {
       .schemaVersion == 1
       and .kind == "REGION_PATH_WORKLIST"
       and (.regionId | type == "string" and length > 0)
+      and (.goalId | type == "string" and length > 0)
+      and .goalKind == "OUTPUT_RELATION_CLOSURE"
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "gaps",
-        "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
   ' "${path_closures[@]}" >/dev/null \
     || die "multitype producer path closure is incomplete or single-path"
@@ -400,11 +399,10 @@ validate_dependent_scalar_artifacts() {
       .schemaVersion == 1
       and .kind == "REGION_PATH_WORKLIST"
       and (.regionId | type == "string" and length > 0)
+      and (.goalId | type == "string" and length > 0)
+      and .goalKind == "OUTPUT_RELATION_CLOSURE"
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "gaps",
-        "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
   ' "${path_closures[@]}" >/dev/null \
     || die "dependent-scalar producer path closure is incomplete"
@@ -471,11 +469,10 @@ validate_container_producer_artifacts() {
       .schemaVersion == 1
       and .kind == "REGION_PATH_WORKLIST"
       and (.regionId | type == "string" and length > 0)
+      and (.goalId | type == "string" and length > 0)
+      and .goalKind == "OUTPUT_RELATION_CLOSURE"
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "gaps",
-        "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
   ' "${path_closures[@]}" >/dev/null \
     || die "container producer path closure is incomplete"

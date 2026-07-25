@@ -60,10 +60,10 @@ public class RuntimeRegionPlannerTest {
                             method(1, HANDLE, 1, 0, 0)),
                     Collections.emptyList(), Collections.emptyList());
             assertEquals("READY",
-                    admissionState(result.activations.get(0)));
+                    admissionState(result.regionPlans.get(0)));
             @SuppressWarnings("unchecked")
             Map<String, Object> action = ((List<Map<String, Object>>)
-                    result.activations.get(0).get("symbolize")).get(0);
+                    result.regionPlans.get(0).get("symbolize")).get(0);
             assertEquals(location, action.get("location"));
             assertEquals(Boolean.TRUE, action.get("deferredResolution"));
             assertEquals(authority,
@@ -313,7 +313,7 @@ public class RuntimeRegionPlannerTest {
                     Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
                     Arrays.asList(write, read));
 
-            assertEquals(2, result.activations.size());
+            assertEquals(2, result.regionPlans.size());
             Map<String, Object> writerEnvelope =
                     activationForRootCall(result, 11L);
             Map<String, Object> outputGoal =
@@ -386,9 +386,9 @@ public class RuntimeRegionPlannerTest {
                     .contains("guardedMutationSiteId=" + updater + "#u15"));
             assertTrue(String.valueOf(retainedSlice.get("causalEdges"))
                     .contains("invoke=<java.util.Iterator: void remove()>"));
-            assertTrue(result.activationsJsonl().contains(
+            assertTrue(result.regionPlansJsonl().contains(
                     "\"fromOutputPort\":\"REGION.W.out.0\""));
-            assertTrue(result.activationsJsonl().contains(
+            assertTrue(result.regionPlansJsonl().contains(
                     "\"toInputPort\":\"REGION.R.in.0\""));
             @SuppressWarnings("unchecked")
             Map<String, Object> edgeBinding =
@@ -397,7 +397,7 @@ public class RuntimeRegionPlannerTest {
             assertEquals(field, edgeBinding.get("toInputCell"));
             assertEquals("FIELD_ASSIGNMENT_READ_FROM_V1",
                     edgeBinding.get("evidenceKind"));
-            assertTrue(result.activationsJsonl().contains(
+            assertTrue(result.regionPlansJsonl().contains(
                     "\"writerEventSeq\":2"));
             assertEquals(1, closureGoals(writerEnvelope,
                     "OUTPUT_RELATION_CLOSURE").size());
@@ -514,7 +514,7 @@ public class RuntimeRegionPlannerTest {
         assertTrue(closureGoals(activationForRegion(result, "REGION.P"),
                 "TARGET_REACH_CLOSURE").isEmpty());
         java.util.Set<String> instances = new java.util.LinkedHashSet<>();
-        for (Map<String, Object> envelope : result.activations) {
+        for (Map<String, Object> envelope : result.regionPlans) {
             assertFalse(envelope.containsKey("activationId"));
             assertFalse(envelope.containsKey("captureGoal"));
             assertTrue(instances.add(String.valueOf(
@@ -546,7 +546,7 @@ public class RuntimeRegionPlannerTest {
                                 || "TARGET_BRANCH".equals(kind));
             }
         }
-        assertEquals(result.activations.size(), instances.size());
+        assertEquals(result.regionPlans.size(), instances.size());
     }
 
     @Test
@@ -736,7 +736,7 @@ public class RuntimeRegionPlannerTest {
                     Arrays.asList(mutation, mutationReturn, branch),
                     Arrays.asList(payloadRead, stateRead, downstreamRead));
 
-            assertEquals(2, result.activations.size());
+            assertEquals(2, result.regionPlans.size());
             @SuppressWarnings("unchecked")
             Map<String, Object> output = closureGoal(
                     activationForRootCall(result, 11L),
@@ -889,8 +889,8 @@ public class RuntimeRegionPlannerTest {
                     Collections.singletonList(branch),
                     Arrays.asList(readA, readB));
 
-            assertEquals(1, result.activations.size());
-            Map<String, Object> activation = result.activations.get(0);
+            assertEquals(1, result.regionPlans.size());
+            Map<String, Object> activation = result.regionPlans.get(0);
             Map<String, Object> targetGoal = closureGoal(
                     activation, "TARGET_REACH_CLOSURE");
             assertFalse(targetGoal.containsKey("concreteDemandSlice"));
@@ -1951,7 +1951,7 @@ public class RuntimeRegionPlannerTest {
 
     private static Map<String, Object> activationForRootCall(
             RuntimeRegionPlanner.Result result, long rootCallId) {
-        for (Map<String, Object> activation : result.activations) {
+        for (Map<String, Object> activation : result.regionPlans) {
             Object value = activation.get("rootCallId");
             if (value instanceof Number
                     && ((Number) value).longValue() == rootCallId) {
@@ -1965,7 +1965,7 @@ public class RuntimeRegionPlannerTest {
     private static Map<String, Object> activationForRegion(
             RuntimeRegionPlanner.Result result, String regionId) {
         Map<String, Object> found = null;
-        for (Map<String, Object> activation : result.activations) {
+        for (Map<String, Object> activation : result.regionPlans) {
             if (!regionId.equals(activation.get("regionId"))) {
                 continue;
             }
@@ -2036,7 +2036,7 @@ public class RuntimeRegionPlannerTest {
 
     private static Map<String, Object> requestedOutputActivation(
             RuntimeRegionPlanner.Result result) {
-        for (Map<String, Object> activation : result.activations) {
+        for (Map<String, Object> activation : result.regionPlans) {
             if (activation.containsKey("requestedOutputSlice")) {
                 return activation;
             }

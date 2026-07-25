@@ -255,7 +255,7 @@ final class RuntimeRegionPlanner {
                         "targetMethod", region.anchorMethod,
                         "closureGoals", closureGoals,
                         "_plannerBaseExecution", baseExecution);
-                result.activations.add(activation);
+                result.regionPlans.add(activation);
                 instanceIndex++;
             }
         }
@@ -1988,7 +1988,7 @@ final class RuntimeRegionPlanner {
     private static void refreshPromotedConcreteInputRows(
             List<InstanceEvidence> evidence, Result result) {
         Map<String, Map<String, Object>> activations = rowsByInstanceId(
-                result.activations);
+                result.regionPlans);
         for (InstanceEvidence instance : evidence) {
             if (!instance.concreteDemandSlice.externalInputPromoted) {
                 continue;
@@ -2101,7 +2101,7 @@ final class RuntimeRegionPlanner {
             List<UpstreamEdgeBinding> bindings,
             StaticProjectionIndex staticProjections, Result result) {
         Map<String, Map<String, Object>> baseByInstance = new LinkedHashMap<>();
-        for (Map<String, Object> activation : result.activations) {
+        for (Map<String, Object> activation : result.regionPlans) {
             baseByInstance.put(string(activation.get("regionInstanceId")),
                     activation);
         }
@@ -2394,7 +2394,7 @@ final class RuntimeRegionPlanner {
     }
 
     private static void finalizeOutputClosureArtifacts(Result result) {
-        for (Map<String, Object> activation : result.activations) {
+        for (Map<String, Object> activation : result.regionPlans) {
             for (Map<String, Object> goal : closureGoals(activation)) {
                 goal.remove("_plannerOutputMembers");
                 Object encoded = goal.remove("_plannerOutputClosure");
@@ -2405,6 +2405,8 @@ final class RuntimeRegionPlanner {
             }
             activation.remove("_plannerBaseExecution");
         }
+        result.regionPlans.removeIf(
+                plan -> closureGoals(plan).isEmpty());
     }
 
     private static final class UpstreamOutputMemberPlan {
@@ -3125,7 +3127,7 @@ final class RuntimeRegionPlanner {
 
     private static List<GoalContext> outputGoalContexts(Result result) {
         List<GoalContext> contexts = new ArrayList<>();
-        for (Map<String, Object> activation : result.activations) {
+        for (Map<String, Object> activation : result.regionPlans) {
             for (Map<String, Object> goal : closureGoals(activation)) {
                 if ("OUTPUT_RELATION_CLOSURE".equals(string(
                         goal.get("kind")))) {
@@ -4084,11 +4086,11 @@ final class RuntimeRegionPlanner {
     }
 
     static final class Result {
-        final List<Map<String, Object>> activations = new ArrayList<>();
+        final List<Map<String, Object>> regionPlans = new ArrayList<>();
         final List<Map<String, Object>> edgeValidations = new ArrayList<>();
 
-        String activationsJsonl() {
-            return jsonl(activations);
+        String regionPlansJsonl() {
+            return jsonl(regionPlans);
         }
 
         String edgeValidationsJsonl() {
