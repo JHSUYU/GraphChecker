@@ -1664,8 +1664,10 @@ fatal query、summaries 和 relationship artifact，Boolean report 通过该 tru
 
 该批手写生产 Java 为 74,753 行，相对 81,581 行冻结基线累计净减 6,828 行。
 57 项快速回归、PMD、shell 语法与真实 custom-JDK/Z3 baseline 均通过；baseline 仍为
-`SAT/REACHABLE`，所有 composition/worklist/importer gap 均为空。隔离干净 worktree 的
-13-fixture 门禁在本里程碑 commit 后执行并记录。
+`SAT/REACHABLE`，所有 composition/worklist/importer gap 均为空。对应里程碑
+`636d0f85` 的隔离干净 worktree 13-fixture 并行真实 custom-JDK/Z3 矩阵也已零失败，
+保持 6 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T134650Z.3220406`。
 
 ### 明确不能删除
 
