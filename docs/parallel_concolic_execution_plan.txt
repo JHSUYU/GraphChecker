@@ -394,7 +394,7 @@ worker 私有：
         delete successful waveDir unless debug is enabled
         wave++
 
-    run RegionSummaryMerger once
+    finalize the guarded relation in the CLOSED worklist transition
 
 必要性质：
 
@@ -402,7 +402,7 @@ worker 私有：
 2. 一次最多启动 K=min(configured jobs, pending task count) 个 worker。
 3. queryKey 必须排序后选择；不能依赖 JSONL 到达顺序或 process completion order。
 4. 所有 worker 完成后才进入 publish barrier。
-5. 只有重新规划得到 `CLOSED` 才允许 `RegionSummaryMerger`。
+5. 只有重新规划得到 `CLOSED`，Worklist 才允许生成 guarded relation。
 6. `PENDING` 或 `GAPPED` manifest 不能冒充 closure。
 
 不要使用 `wait -n` 动态补充本 wave 的新任务。wave 内一次发完 K 个任务、一次
@@ -563,7 +563,7 @@ pipeline 再启动 K 个 path workers，总 custom-JDK JVM 数会变成 P*K。
 5. summaries：按 stablePathKey/现有 merger canonical order。
 6. activation identity：继续由 queryKey 通过
    `ReplayActivationFactory` 派生。
-7. final RegionSummaryMerger：只消费 CLOSED closure。
+7. final relation：只由 CLOSED Worklist 原子生成。
 
 不能进入最终 identity 的内容：
 

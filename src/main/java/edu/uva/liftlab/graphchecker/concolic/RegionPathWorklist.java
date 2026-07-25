@@ -4,16 +4,14 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonPrimitive;
-import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
+import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -21,12 +19,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
@@ -53,61 +47,25 @@ public final class RegionPathWorklist {
     }
 
     public static Result plan(List<JsonObject> summaries,
-                              List<JsonObject> activations,
+                              List<JsonObject> executionTasks,
                               List<JsonObject> explorationRecords,
                               Bounds bounds) {
         Bounds effective = bounds == null ? Bounds.defaults() : bounds;
-        return new Planner(summaries, activations, explorationRecords,
+        return new Planner(summaries, executionTasks, explorationRecords,
                 effective).run();
     }
 
-    private static String stableFlipKey(String regionId,
-                                        String outputScopeIdentity,
-                                        String siteId,
-                                        int occurrence,
-                                        boolean desiredOutcome,
-                                        String prefixIdentity,
-                                        String dynamicBindingIdentity) {
-        StringBuilder value = new StringBuilder();
-        component(value, regionId);
-        component(value, outputScopeIdentity);
-        component(value, prefixIdentity);
-        component(value, siteId);
-        component(value, String.valueOf(occurrence));
-        component(value, String.valueOf(desiredOutcome));
-        component(value, dynamicBindingIdentity);
-        return sha256(value.toString());
-    }
-
-    /**
-     * Content identity of one canonical output-closure path, independent of
-     * activation ids.
-     */
+    /** Content identity independent of execution task ids. */
     public static String stablePathKey(JsonObject summary) {
-        return stablePathKey(summary, ExplorationScope.from(summary, null));
-    }
-
-    private static String stablePathKey(JsonObject summary,
-                                        ExplorationScope scope) {
-        AlphaNormalizer alpha = new AlphaNormalizer(summary);
-        StringBuilder value = new StringBuilder();
-        component(value, string(summary, "regionId"));
-        component(value, scope.identity);
-        component(value, alphaCanonical(summary.get("pathCondition"), alpha));
-        component(value, alphaCanonical(summary.get("outputExpressions"), alpha));
-        component(value, alphaCanonical(summary.get("heapEffects"), alpha));
-        component(value, stableRuntimeBindings(summary, alpha));
-        component(value, string(summary, "normalExit"));
-        component(value, string(summary, "exceptionType"));
-        return sha256(value.toString());
+        return PathObservation.stablePathKey(summary);
     }
 
     private static final class Planner {
         private final Bounds bounds;
-        private final Map<String, JsonObject> activations =
+        private final Map<String, JsonObject> taskById =
                 new LinkedHashMap<>();
         private final Map<String, JsonObject> records = new LinkedHashMap<>();
-        private final List<JsonObject> summaries = new ArrayList<>();
+        private final List<PathObservation> paths = new ArrayList<>();
         private final List<JsonObject> tasks = new ArrayList<>();
         private final List<JsonObject> gaps = new ArrayList<>();
         private final List<JsonObject> deferredObservations =
@@ -121,84 +79,52 @@ public final class RegionPathWorklist {
                 new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
-        private final Map<JsonObject, List<SummaryBranchMapping>>
-                branchMappings = new IdentityHashMap<>();
-        private final Map<JsonObject, String> branchMappingIssues =
-                new IdentityHashMap<>();
-
         private Planner(List<JsonObject> summaries,
-                        List<JsonObject> activations,
+                        List<JsonObject> executionTasks,
                         List<JsonObject> explorationRecords,
                         Bounds bounds) {
             this.bounds = bounds;
-            for (JsonObject activation : safe(activations)) {
-                String id = string(activation, "activationId");
-                if (!id.isEmpty()) this.activations.put(id, activation);
+            for (JsonObject task : safe(executionTasks)) {
+                String id = string(task, "taskId");
+                if (!id.isEmpty()) this.taskById.put(id, task);
             }
             for (JsonObject record : safe(explorationRecords)) {
                 String key = string(record, "queryKey");
                 if (!key.isEmpty()) this.records.put(key, record);
             }
             for (JsonObject summary : safe(summaries)) {
-                RegionCaptureGoal goal = RegionCaptureGoal.from(summary);
-                if (goal.isOutputClosure() || goal.isTargetBranch()) {
-                    this.summaries.add(summary);
-                }
+                paths.add(PathObservation.decode(summary, taskById.get(
+                        string(summary, "taskId"))));
             }
-            for (JsonObject summary : this.summaries) {
-                try {
-                    branchMappings.put(summary,
-                            SummaryBranchMapping.fromSummary(summary));
-                } catch (IllegalArgumentException malformed) {
-                    branchMappingIssues.put(summary,
-                            malformed.getMessage());
-                }
-            }
-            Collections.sort(this.summaries, Comparator.comparing(value ->
-                    string(value, "regionId") + "\n"
-                            + stablePathKey(value)));
+            Collections.sort(paths, Comparator.comparing(value ->
+                    value.regionId() + "\n" + value.pathKey()));
         }
 
         private Result run() {
-            indexWitnessedBranchPositions();
-            indexObservedFlipCoverage();
+            indexObservedCoverage();
             Set<String> seenPaths = new LinkedHashSet<>();
             Set<String> observedRegions = new TreeSet<>();
-            Map<String, ExplorationScope> observedScopes =
+            Map<String, PathObservation.Scope> observedScopes =
                     new LinkedHashMap<>();
-            for (JsonObject activation : activations.values()) {
-                RegionCaptureGoal goal = RegionCaptureGoal.from(activation);
-                if (goal.isOutputClosure() || goal.isTargetBranch()) {
-                    ExplorationScope scope = ExplorationScope.from(null,
-                            activation);
-                    observedScopes.put(scope.identity, scope);
-                }
+            for (JsonObject task : taskById.values()) {
+                PathObservation.Scope scope = PathObservation.Scope.decode(null,
+                        task);
+                observedScopes.put(scope.identity(), scope);
             }
-            for (JsonObject summary : summaries) {
-                String region = string(summary, "regionId");
+            for (PathObservation path : paths) {
+                String region = path.regionId();
                 if (region.isEmpty()) continue;
-                JsonObject activation = activations.get(string(summary,
-                        "activationId"));
-                RegionCaptureGoal goal = RegionCaptureGoal.from(
-                        activation == null ? summary : activation);
-                if (!goal.isOutputClosure() && !goal.isTargetBranch()) {
-                    continue;
-                }
-                ExplorationScope scope = ExplorationScope.from(summary,
-                        activation);
-
-                String pathKey = stablePathKey(summary, scope);
+                String pathKey = path.pathKey();
                 if (!seenPaths.add(region + "\n" + pathKey)) continue;
                 observedRegions.add(region);
-                observedScopes.put(scope.identity, scope);
+                observedScopes.put(path.scope().identity(), path.scope());
                 increment(pathCountByRegion, region);
-                String branchMappingIssue = branchMappingIssues.get(summary);
-                if (branchMappingIssue != null) {
+                if (!path.branchMappingIssue().isEmpty()) {
                     gap("INVALID_BRANCH_MAPPING_SCHEMA",
-                            branchMappingIssue, region, pathKey, "", -1);
+                            path.branchMappingIssue(), region, pathKey, "", -1);
                     continue;
                 }
-                if (!bool(summary, "relationallyComplete", false)) {
+                if (!path.relationallyComplete()) {
                     gap("INCOMPLETE_REGION_SUMMARY",
                             "RELATIONAL_INPUT_OUTPUT_SUMMARY_NOT_COMPLETE",
                             region, pathKey, "", -1);
@@ -209,8 +135,7 @@ public final class RegionPathWorklist {
                             pathKey, "", -1);
                     continue;
                 }
-                planSummary(summary, scope, pathKey,
-                        branchMappings.get(summary));
+                planSummary(path);
                 if (tasks.size() >= bounds.maxTasks) break;
             }
 
@@ -226,28 +151,111 @@ public final class RegionPathWorklist {
 
             JsonObject manifest = manifest(!seenPaths.isEmpty(),
                     observedRegions, observedScopes);
-            return new Result(tasks, manifest);
+            List<JsonObject> relations = new ArrayList<>();
+            if (State.CLOSED.name().equals(string(manifest, "state"))) {
+                relations.addAll(closedRelations(observedScopes));
+                if (!gaps.isEmpty()) {
+                    relations.clear();
+                    manifest = manifest(!seenPaths.isEmpty(),
+                            observedRegions, observedScopes);
+                }
+            }
+            return new Result(tasks, manifest, relations);
         }
 
-        private void planSummary(
-                JsonObject summary, ExplorationScope scope, String pathKey,
-                List<SummaryBranchMapping> mappings) {
-            JsonArray conditions = array(summary, "pathCondition");
+        private List<JsonObject> closedRelations(
+                Map<String, PathObservation.Scope> observedScopes) {
+            if (observedScopes.size() != 1) {
+                return Collections.emptyList();
+            }
+            PathObservation.Scope scope =
+                    observedScopes.values().iterator().next();
+            if (!scope.goalKind().capturesOutputRelation()) {
+                return Collections.emptyList();
+            }
+            if (scope.outputClosure() == null) {
+                gap("INVALID_OUTPUT_CLOSURE",
+                        "CANONICAL_OUTPUT_CLOSURE_REQUIRED",
+                        "", "", "", -1);
+                return Collections.emptyList();
+            }
+
+            String region = scope.outputClosure().producer().regionId();
+            String outputIdentity = scope.outputClosureIdentity();
+            Map<String, String> payloadByPath = new LinkedHashMap<>();
+            Map<String, PathObservation> caseByPath =
+                    new LinkedHashMap<>();
+            Map<String, JsonObject> bindingsByKey = new LinkedHashMap<>();
+            for (PathObservation path : paths) {
+                if (!path.scope().goalKind().capturesOutputRelation()) {
+                    continue;
+                }
+                OutputClosureContract contract =
+                        path.scope().outputClosure();
+                if (!outputIdentity.equals(
+                        path.scope().outputClosureIdentity())) {
+                    gap("OUTPUT_CLOSURE_SCOPE_MISMATCH",
+                            "CLOSED_PATHS_HAVE_DIFFERENT_OUTPUT_CLOSURES",
+                            path.regionId(), "", "", -1);
+                    continue;
+                }
+
+                String pathKey = path.pathKey();
+                String payload = path.stableCasePayload();
+                String previous = payloadByPath.putIfAbsent(pathKey, payload);
+                if (previous != null) {
+                    if (!previous.equals(payload)) {
+                        gap("CONFLICTING_DUPLICATE_PATH_PAYLOAD",
+                                "PATH_CERTIFICATES_DISAGREE",
+                                region, pathKey, "", -1);
+                    }
+                } else if (contract.members().size() > 1
+                        && !path.hasExactOutputSet(contract.outputPorts())) {
+                    gap("JOINT_OUTPUT_EXPRESSION_SET_MISMATCH",
+                            "OUTPUT_EXPRESSION_SET_DOES_NOT_MATCH_DEMAND",
+                            region, pathKey, "", -1);
+                } else {
+                    caseByPath.put(pathKey, path);
+                }
+                for (JsonElement element : path.edgeBindings()) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    bindingsByKey.put(CanonicalJson.render(binding),
+                            binding);
+                }
+            }
+            if (!gaps.isEmpty()) {
+                return Collections.emptyList();
+            }
+            if (caseByPath.isEmpty()) {
+                gap("NO_VALID_OUTPUT_CLOSURE_RELATIONS",
+                        "CLOSED_OUTPUT_SCOPE_HAS_NO_CASES",
+                        region, "", "", -1);
+                return Collections.emptyList();
+            }
+
+            RelationSummary merged = RelationSummary.guardedPathMerge(
+                    scope.goalId(), scope.outputClosure(),
+                    caseByPath.values(), bindingsByKey.values());
+            return Collections.singletonList(merged.toJson());
+        }
+
+        private void planSummary(PathObservation path) {
             List<SummaryBranchMapping> candidates = new ArrayList<>();
-            for (SummaryBranchMapping mapping : mappings) {
+            for (SummaryBranchMapping mapping : path.branchMappings()) {
                 String site = mapping.siteId();
-                if (!scope.branchSites.contains(site)) {
+                if (!path.scope().branchSites().contains(site)) {
                     continue;
                 }
                 if (mapping.isConcreteObservation()) {
                     if (!mapping.isExplore()
                             || coveredConcreteObservation(
-                            scope, mapping)) {
+                            path.scope(), mapping)) {
                         continue;
                     }
                     deferObservation("UNMAPPED_BRANCH",
                             "NO_NORMALIZED_CONDITION",
-                            string(summary, "regionId"), pathKey, site,
+                            path.regionId(), path.pathKey(), site,
                             mapping.occurrence());
                     continue;
                 }
@@ -268,49 +276,35 @@ public final class RegionPathWorklist {
 
             int limit = Math.min(candidates.size(), bounds.maxFlipsPerPath);
             if (candidates.size() > limit) {
-                gap("BOUND_REACHED", "MAX_FLIPS_PER_PATH", string(summary,
-                                "regionId"), pathKey, "", -1);
+                gap("BOUND_REACHED", "MAX_FLIPS_PER_PATH", path.regionId(),
+                        path.pathKey(), "", -1);
             }
             for (int index = 0; index < limit; index++) {
                 if (tasks.size() >= bounds.maxTasks) {
-                    gap("BOUND_REACHED", "MAX_TASKS", string(summary,
-                                    "regionId"), pathKey, "", -1);
+                    gap("BOUND_REACHED", "MAX_TASKS", path.regionId(),
+                            path.pathKey(), "", -1);
                     return;
                 }
-                emitTask(summary, scope, pathKey, conditions,
-                        mappings, candidates.get(index));
+                emitTask(path, candidates.get(index));
             }
         }
 
-        private void emitTask(
-                JsonObject summary, ExplorationScope scope, String pathKey,
-                JsonArray conditions, List<SummaryBranchMapping> mappings,
-                SummaryBranchMapping mapping) {
-            int conditionIndex = mapping.summaryPcIndex();
+        private void emitTask(PathObservation path,
+                              SummaryBranchMapping mapping) {
             BranchReplayContract replay;
             try {
-                replay = BranchReplayContract.fromSummary(summary, mappings,
-                        mapping);
+                replay = BranchReplayContract.fromSummary(
+                        path.replayPayload(), path.branchMappings(), mapping);
             } catch (IllegalArgumentException incompleteWitness) {
                 gap("INVALID_BRANCH_WITNESS_PREFIX",
                         "BRANCH_WITNESS_OR_NON_BRANCH_CONTEXT_DOES_NOT_"
                                 + "PARTITION_SUMMARY_PC_PREFIX",
-                        string(summary, "regionId"), pathKey,
+                        path.regionId(), path.pathKey(),
                         mapping.siteId(), mapping.occurrence());
                 return;
             }
-            JsonArray prefix = new JsonArray();
-            for (int index = 0; index < conditionIndex; index++) {
-                prefix.add(conditions.get(index).deepCopy());
-            }
             boolean desired = replay.requiredTakenOutcome();
-            String region = string(summary, "regionId");
-            String site = replay.source().siteId();
-            int occurrence = replay.source().occurrence();
-            AlphaNormalizer alpha = new AlphaNormalizer(summary);
-            String key = stableFlipKey(region, scope.identity, site,
-                    occurrence, desired, alphaCanonical(prefix, alpha),
-                    stableRuntimeBindings(summary, alpha));
+            String key = path.flipKey(mapping, desired);
 
             JsonObject previous = records.get(key);
             if (previous != null && terminal(previous)) {
@@ -334,130 +328,60 @@ public final class RegionPathWorklist {
             task.addProperty("schemaVersion", 3);
             task.addProperty("kind", "REGION_PATH_FLIP");
             task.addProperty("queryKey", key);
-            task.addProperty("regionId", region);
-            task.add("captureGoal", scope.goal.toJson());
-            task.addProperty("sourceSummaryId", string(summary, "summaryId"));
-            task.addProperty("sourcePathKey", pathKey);
-            task.addProperty("sourceActivationId", string(summary,
-                    "activationId"));
-            if (scope.contract != null) {
+            task.addProperty("regionId", path.regionId());
+            task.addProperty("goalId", path.scope().goalId());
+            path.scope().goalKind().writeToTask(task);
+            task.addProperty("sourceSummaryId", path.summaryId());
+            task.addProperty("sourcePathKey", path.pathKey());
+            task.addProperty("sourceTaskId", path.sourceTaskId());
+            if (path.scope().outputClosure() != null) {
                 task.add(OutputClosureContract.FIELD,
-                        scope.contract.toJson());
+                        path.scope().outputClosure().toJson());
             }
             replay.addTo(task);
-            task.add("dynamicFieldBindings", array(summary,
-                    "dynamicFieldBindings").deepCopy());
+            task.add("dynamicFieldBindings",
+                    path.dynamicFieldBindings());
             tasks.add(task);
         }
 
-        /**
-         * Indexes only predicates whose immutable witness is an exact member
-         * of an admitted summary path condition.  This is later used to
-         * distinguish a genuine missing symbolic frontier from a VM-attested
-         * concrete occurrence of an already modeled static branch position.
-         */
-        private void indexWitnessedBranchPositions() {
-            for (JsonObject summary : summaries) {
-                if (!bool(summary, "relationallyComplete", false)) {
+        /** Indexes exact witnessed positions and already explored frontiers. */
+        private void indexObservedCoverage() {
+            for (PathObservation path : paths) {
+                if (!path.relationallyComplete()) {
                     continue;
                 }
-                JsonObject activation = activations.get(string(summary,
-                        "activationId"));
-                RegionCaptureGoal goal = RegionCaptureGoal.from(
-                        activation == null ? summary : activation);
-                if (!goal.isOutputClosure() && !goal.isTargetBranch()) {
-                    continue;
-                }
-                ExplorationScope scope = ExplorationScope.from(summary,
-                        activation);
-                List<SummaryBranchMapping> mappings =
-                        branchMappings.get(summary);
-                if (mappings == null) continue;
-                for (SummaryBranchMapping mapping : mappings) {
+                for (SummaryBranchMapping mapping : path.branchMappings()) {
                     if (!mapping.isWitnessed() || !mapping.isExplore()) {
                         continue;
                     }
                     witnessedBranchPositions.add(branchPosition(
-                            scope, mapping));
+                            path.scope(), mapping));
+                    if (!path.regionId().isEmpty()
+                            && path.scope().branchSites().contains(
+                            mapping.siteId())) {
+                        observedFlipKeys.add(path.flipKey(mapping,
+                                mapping.sourceTakenOutcome()));
+                    }
                 }
             }
         }
 
-        /**
-         * A concrete VM branch has no solver predicate and therefore is not
-         * itself flippable.  It is safe to omit from the worklist only when
-         * the same dynamic branch position has an immutable witnessed
-         * predicate on another admitted path. A witness from another loop
-         * occurrence is not interchangeable: the data reaching the same
-         * static instruction may differ between iterations.
-         */
         private boolean coveredConcreteObservation(
-                ExplorationScope scope, SummaryBranchMapping mapping) {
-            if (!mapping.isConcreteObservation()) return false;
-            return witnessedBranchPositions.contains(branchPosition(
+                PathObservation.Scope scope, SummaryBranchMapping mapping) {
+            return mapping.isConcreteObservation()
+                    && witnessedBranchPositions.contains(branchPosition(
                     scope, mapping));
         }
 
-        private String branchPosition(ExplorationScope scope,
+        private String branchPosition(PathObservation.Scope scope,
                                       SummaryBranchMapping mapping) {
-            return scope.identity + "\n" + mapping.siteId()
+            return scope.identity() + "\n" + mapping.siteId()
                     + "\n" + mapping.occurrence();
-        }
-
-        /**
-         * Indexes exact branch frontiers already represented by complete
-         * output-closure summaries.  This avoids replaying the reverse edge
-         * after both sides of a branch have already been observed, while the
-         * full stable flip identity prevents cross-prefix or cross-object
-         * guesses.
-         */
-        private void indexObservedFlipCoverage() {
-            for (JsonObject summary : summaries) {
-                if (!bool(summary, "relationallyComplete", false)) {
-                    continue;
-                }
-                String region = string(summary, "regionId");
-                if (region.isEmpty()) continue;
-                JsonObject activation = activations.get(string(summary,
-                        "activationId"));
-                RegionCaptureGoal goal = RegionCaptureGoal.from(
-                        activation == null ? summary : activation);
-                if (!goal.isOutputClosure() && !goal.isTargetBranch()) {
-                    continue;
-                }
-                ExplorationScope scope = ExplorationScope.from(summary,
-                        activation);
-
-                JsonArray conditions = array(summary, "pathCondition");
-                List<SummaryBranchMapping> mappings =
-                        branchMappings.get(summary);
-                if (mappings == null) continue;
-                AlphaNormalizer alpha = new AlphaNormalizer(summary);
-                for (SummaryBranchMapping mapping : mappings) {
-                    if (!mapping.isWitnessed()
-                            || !mapping.isExplore()) continue;
-                    String site = mapping.siteId();
-                    if (!scope.branchSites.contains(site)) {
-                        continue;
-                    }
-                    int occurrence = mapping.occurrence();
-                    int conditionIndex = mapping.summaryPcIndex();
-                    JsonArray prefix = new JsonArray();
-                    for (int index = 0; index < conditionIndex; index++) {
-                        prefix.add(conditions.get(index).deepCopy());
-                    }
-                    observedFlipKeys.add(stableFlipKey(region,
-                            scope.identity, site, occurrence,
-                            mapping.sourceTakenOutcome(),
-                            alphaCanonical(prefix, alpha),
-                            stableRuntimeBindings(summary, alpha)));
-                }
-            }
         }
 
         private JsonObject manifest(boolean hasObservedPath,
                                     Set<String> observedRegions,
-                                    Map<String, ExplorationScope> scopes) {
+                                    Map<String, PathObservation.Scope> scopes) {
             String regionId = manifestRegionId(observedRegions);
             if (observedRegions.size() > 1) {
                 gap("MULTIPLE_REGION_SCOPE",
@@ -497,12 +421,12 @@ public final class RegionPathWorklist {
             result.addProperty("state", state.name());
             result.add("bounds", bounds.toJson());
             if (scopes.size() == 1) {
-                ExplorationScope scope = scopes.values().iterator().next();
-                if (scope.contract != null) {
+                PathObservation.Scope scope = scopes.values().iterator().next();
+                result.addProperty("goalId", scope.goalId());
+                scope.goalKind().writeToTask(result);
+                if (scope.outputClosure() != null) {
                     result.add(OutputClosureContract.FIELD,
-                            scope.contract.toJson());
-                } else {
-                    result.addProperty("captureGoal", scope.goal.kind());
+                            scope.outputClosure().toJson());
                 }
             }
             result.add("gaps", GSON.toJsonTree(gaps));
@@ -520,12 +444,11 @@ public final class RegionPathWorklist {
             if (!observedRegions.isEmpty()) return "";
 
             Set<String> inputRegions = new TreeSet<>();
-            for (JsonObject summary : summaries) {
-                String region = string(summary, "regionId");
-                if (!region.isEmpty()) inputRegions.add(region);
+            for (PathObservation path : paths) {
+                if (!path.regionId().isEmpty()) inputRegions.add(path.regionId());
             }
-            for (JsonObject activation : activations.values()) {
-                String region = string(activation, "regionId");
+            for (JsonObject task : taskById.values()) {
+                String region = string(task, "regionId");
                 if (!region.isEmpty()) inputRegions.add(region);
             }
             return inputRegions.size() == 1
@@ -591,101 +514,13 @@ public final class RegionPathWorklist {
     public static final class Result {
         public final List<JsonObject> tasks;
         public final JsonObject manifest;
+        public final List<JsonObject> relations;
 
-        private Result(List<JsonObject> tasks, JsonObject manifest) {
+        private Result(List<JsonObject> tasks, JsonObject manifest,
+                       List<JsonObject> relations) {
             this.tasks = tasks;
             this.manifest = manifest;
-        }
-    }
-
-    private static final class ExplorationScope {
-        private final RegionCaptureGoal goal;
-        private final OutputClosureContract contract;
-        private final Set<String> branchSites;
-        private final String identity;
-
-        private ExplorationScope(RegionCaptureGoal goal,
-                                 OutputClosureContract contract,
-                                 Set<String> branchSites,
-                                 String identity) {
-            this.goal = goal;
-            this.contract = contract;
-            this.branchSites = branchSites;
-            this.identity = identity;
-        }
-
-        private static ExplorationScope from(JsonObject summary,
-                                             JsonObject activation) {
-            RegionCaptureGoal summaryGoal = summary == null ? null
-                    : RegionCaptureGoal.from(summary);
-            RegionCaptureGoal activationGoal = activation == null ? null
-                    : RegionCaptureGoal.from(activation);
-            if (summaryGoal != null && activationGoal != null
-                    && !summaryGoal.kind().equals(activationGoal.kind())) {
-                throw new IllegalArgumentException(
-                        "summary and activation capture goals conflict");
-            }
-            RegionCaptureGoal goal = summaryGoal != null
-                    ? summaryGoal : activationGoal;
-            if (goal == null) {
-                throw new IllegalArgumentException(
-                        "capture goal is required");
-            }
-            if (goal.isTargetBranch()) {
-                JsonObject source = activation != null
-                        ? activation : summary;
-                Set<String> sites = new LinkedHashSet<>();
-                String targetMethod = string(source, "targetMethod");
-                for (JsonElement element : array(source, "branches")) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject branch = element.getAsJsonObject();
-                    if (!"EXPLORE".equals(string(branch, "policy"))) {
-                        continue;
-                    }
-                    String site = string(branch, "siteId");
-                    if (!site.isEmpty()
-                            && (targetMethod.isEmpty()
-                            || site.startsWith(targetMethod + "#"))) {
-                        sites.add(site);
-                    }
-                }
-                String region = firstNonBlank(string(source, "regionId"),
-                        string(summary, "regionId"));
-                String instance = firstNonBlank(string(source,
-                        "regionInstanceId"), string(summary,
-                        "regionInstanceId"));
-                return new ExplorationScope(goal, null, sites,
-                        "TARGET_BRANCH_V2\n" + region + "\n" + instance
-                                + "\n" + targetMethod);
-            }
-            OutputClosureContract summaryContract = decode(summary);
-            OutputClosureContract activationContract =
-                    decode(activation);
-            if (summaryContract != null && activationContract != null
-                    && (!summaryContract.demandKey().equals(
-                    activationContract.demandKey())
-                    || !summaryContract.closureFingerprint().equals(
-                    activationContract.closureFingerprint()))) {
-                throw new IllegalArgumentException(
-                        "summary and activation outputClosure conflict");
-            }
-            OutputClosureContract contract = summaryContract != null
-                    ? summaryContract : activationContract;
-            if (contract == null) {
-                throw new IllegalArgumentException(
-                        "canonical outputClosure is required");
-            }
-            Set<String> sites = new LinkedHashSet<>(
-                    contract.executionScope().branchSites());
-            String demand = contract.demandKey();
-            String fingerprint = contract.closureFingerprint();
-            return new ExplorationScope(goal, contract, sites,
-                    "OUTPUT_CLOSURE_V1\n" + demand + "\n" + fingerprint);
-        }
-
-        private static OutputClosureContract decode(JsonObject value) {
-            if (value == null) return null;
-            return OutputClosureCodec.decode(value);
+            this.relations = relations;
         }
     }
 
@@ -694,333 +529,6 @@ public final class RegionPathWorklist {
         return "UNSAT".equals(status)
                 || "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY".equals(status)
                 || "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY".equals(status);
-    }
-
-    private static String canonical(JsonElement value) {
-        if (value == null || value.isJsonNull()) return "null";
-        if (value.isJsonPrimitive()) {
-            JsonPrimitive primitive = value.getAsJsonPrimitive();
-            return GSON.toJson(primitive);
-        }
-        if (value.isJsonArray()) {
-            StringBuilder result = new StringBuilder("[");
-            boolean first = true;
-            for (JsonElement element : value.getAsJsonArray()) {
-                if (!first) result.append(',');
-                first = false;
-                result.append(canonical(element));
-            }
-            return result.append(']').toString();
-        }
-        JsonObject object = value.getAsJsonObject();
-        StringBuilder result = new StringBuilder("{");
-        boolean first = true;
-        for (String key : new TreeSet<>(object.keySet())) {
-            if (!first) result.append(',');
-            first = false;
-            result.append(GSON.toJson(key)).append(':')
-                    .append(canonical(object.get(key)));
-        }
-        return result.append('}').toString();
-    }
-
-    private static String stableDynamicBindings(JsonObject summary,
-                                                AlphaNormalizer alpha) {
-        List<String> bindings = new ArrayList<>();
-        for (JsonElement element : array(summary, "dynamicFieldBindings")) {
-            if (!element.isJsonObject()) {
-                bindings.add(alphaCanonical(element, alpha));
-                continue;
-            }
-            JsonObject source = element.getAsJsonObject();
-            JsonObject stable = new JsonObject();
-            stable.addProperty("kind", string(source, "kind"));
-            stable.addProperty("baseInputSymbol", string(source,
-                    "baseInputSymbol"));
-            stable.addProperty("dynamicFieldSymbol", string(source,
-                    "dynamicFieldSymbol"));
-            stable.addProperty("materializationSiteId", string(source,
-                    "materializationSiteId"));
-            stable.addProperty("materializationOccurrence", integer(source,
-                    "materializationOccurrence", -1));
-            copyStable(source, stable, "fieldSignature");
-            copyStable(source, stable, "fieldPath");
-            copyStable(source, stable, "keyExpression");
-            copyStable(source, stable, "keyExpressionAuthority");
-            copyStable(source, stable, "mapProjectionSelector");
-            copyStable(source, stable, "runtimeSymbolizationAuthority");
-            copyStable(source, stable, "projectionEvidenceAuthority");
-            copyStable(source, stable, "outputValidationMode");
-            stable.addProperty("complete", bool(source, "complete", false));
-            bindings.add(alphaCanonical(stripVolatileIdentity(stable),
-                    alpha));
-        }
-        Collections.sort(bindings);
-        return canonical(GSON.toJsonTree(bindings));
-    }
-
-    private static String stableRuntimeBindings(JsonObject summary,
-                                                AlphaNormalizer alpha) {
-        return stableDynamicBindings(summary, alpha) + "\n"
-                + stableEngineArrayBindings(summary, alpha);
-    }
-
-    /**
-     * Retains the semantic input/engine-array bijection while erasing the
-     * activation-local array id and object token allocated by one replay.
-     * The id is alpha-renamed through the same table as path-condition
-     * {@code _arr_str} values so a bridge remains joined to its exact load.
-     */
-    private static String stableEngineArrayBindings(JsonObject summary,
-                                                    AlphaNormalizer alpha) {
-        List<String> bindings = new ArrayList<>();
-        List<JsonElement> ordered = new ArrayList<>();
-        for (JsonElement element : array(summary,
-                "engineArrayInputBindings")) {
-            ordered.add(element);
-        }
-        Collections.sort(ordered, new Comparator<JsonElement>() {
-            @Override
-            public int compare(JsonElement left, JsonElement right) {
-                if (!left.isJsonObject() || !right.isJsonObject()) {
-                    return canonical(left).compareTo(canonical(right));
-                }
-                JsonObject l = left.getAsJsonObject();
-                JsonObject r = right.getAsJsonObject();
-                int port = string(l, "inputPort").compareTo(
-                        string(r, "inputPort"));
-                return port != 0 ? port : string(l, "inputCell").compareTo(
-                        string(r, "inputCell"));
-            }
-        });
-        for (JsonElement element : ordered) {
-            if (!element.isJsonObject()) {
-                bindings.add(alphaCanonical(element, alpha));
-                continue;
-            }
-            JsonObject source = element.getAsJsonObject();
-            JsonObject stable = new JsonObject();
-            stable.addProperty("schemaVersion", integer(source,
-                    "schemaVersion", -1));
-            stable.addProperty("kind", string(source, "kind"));
-            stable.addProperty("inputPort", string(source, "inputPort"));
-            stable.addProperty("inputCell", string(source, "inputCell"));
-            stable.addProperty("inputJavaTypeDescriptor", string(source,
-                    "inputJavaTypeDescriptor"));
-            stable.addProperty("engineArrayId", alpha.array(string(source,
-                    "engineArrayId")));
-            bindings.add(alphaCanonical(stable, alpha));
-        }
-        Collections.sort(bindings);
-        return canonical(GSON.toJsonTree(bindings));
-    }
-
-    private static void copyStable(JsonObject from, JsonObject to,
-                                   String field) {
-        JsonElement value = from.get(field);
-        if (value != null) to.add(field, value.deepCopy());
-    }
-
-    private static JsonElement stripVolatileIdentity(JsonElement value) {
-        if (value == null || value.isJsonNull() || value.isJsonPrimitive()) {
-            return value == null ? JsonNull.INSTANCE : value.deepCopy();
-        }
-        if (value.isJsonArray()) {
-            JsonArray result = new JsonArray();
-            for (JsonElement element : value.getAsJsonArray()) {
-                result.add(stripVolatileIdentity(element));
-            }
-            return result;
-        }
-        JsonObject result = new JsonObject();
-        for (Map.Entry<String, JsonElement> entry
-                : value.getAsJsonObject().entrySet()) {
-            String key = entry.getKey().toLowerCase();
-            if (key.contains("objecttoken")
-                    || key.endsWith("activationid")
-                    || "entryreadobservationid".equals(key)) continue;
-            result.add(entry.getKey(), stripVolatileIdentity(
-                    entry.getValue()));
-        }
-        return result;
-    }
-
-    /**
-     * Canonicalizes engine IR modulo names allocated by one JVM execution.
-     * Canonical region ports remain literal because they are the formal
-     * parameters/results that intentionally connect paths and regions.
-     */
-    private static String alphaCanonical(JsonElement value,
-                                         AlphaNormalizer alpha) {
-        if (value == null || value.isJsonNull()) return "null";
-        if (value.isJsonPrimitive()) {
-            return GSON.toJson(value.getAsJsonPrimitive());
-        }
-        if (value.isJsonArray()) {
-            StringBuilder result = new StringBuilder("[");
-            boolean first = true;
-            for (JsonElement element : value.getAsJsonArray()) {
-                if (!first) result.append(',');
-                first = false;
-                result.append(alphaCanonical(element, alpha));
-            }
-            return result.append(']').toString();
-        }
-
-        JsonObject object = value.getAsJsonObject();
-        String type = string(object, "_type");
-        StringBuilder result = new StringBuilder("{");
-        boolean first = true;
-        for (String key : new TreeSet<>(object.keySet())) {
-            if (!first) result.append(',');
-            first = false;
-            result.append(GSON.toJson(key)).append(':');
-            JsonElement field = object.get(key);
-            if ("_exp".equals(key)
-                    && ("SymbolExpression".equals(type)
-                    || "ConSymbolExp".equals(type))
-                    && field != null && field.isJsonPrimitive()) {
-                result.append(GSON.toJson(alpha.symbol(
-                        field.getAsString())));
-            } else if ("_count".equals(key)
-                    && "PlaceholderExpression".equals(type)
-                    && field != null && field.isJsonPrimitive()) {
-                result.append(GSON.toJson(alpha.placeholder(
-                        string(object, "_place_holder_func"),
-                        field.getAsString())));
-            } else if ("_arr_str".equals(key)
-                    && "_array_expr".equals(type)
-                    && field != null && field.isJsonPrimitive()) {
-                result.append(GSON.toJson(alpha.array(
-                        field.getAsString())));
-            } else {
-                result.append(alphaCanonical(field, alpha));
-            }
-        }
-        return result.append('}').toString();
-    }
-
-    private static final class AlphaNormalizer {
-        private final Set<String> canonicalPorts = new LinkedHashSet<>();
-        private final Map<String, String> symbols = new LinkedHashMap<>();
-        private final Map<String, String> placeholders = new LinkedHashMap<>();
-        private final Map<String, String> arrays = new LinkedHashMap<>();
-
-        private AlphaNormalizer(JsonObject summary) {
-            collectPortArray(summary.get("symbolicInputs"));
-            JsonElement outputs = summary.get("outputExpressions");
-            if (outputs != null && outputs.isJsonObject()) {
-                for (String port : outputs.getAsJsonObject().keySet()) {
-                    addPort(port);
-                }
-            }
-            for (JsonElement element : JsonFields.array(summary,
-                    "heapEffects")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject effect = element.getAsJsonObject();
-                addPort(string(effect, "inputPort"));
-                addPort(string(effect, "outputPort"));
-            }
-            for (JsonElement element : JsonFields.array(summary,
-                    "heapStateInitializers")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject initializer = element.getAsJsonObject();
-                addPort(string(initializer, "statePort"));
-                addPort(string(initializer, "requestedOutputPort"));
-            }
-            for (JsonElement element : JsonFields.array(summary,
-                    "engineArrayInputBindings")) {
-                if (element.isJsonObject()) {
-                    addPort(string(element.getAsJsonObject(), "inputPort"));
-                }
-            }
-            for (JsonElement element : JsonFields.array(summary,
-                    "dynamicFieldBindings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject selector = object(
-                        element.getAsJsonObject(),
-                        "mapProjectionSelector");
-                addPort(string(selector, "mapInputPort"));
-                addPort(string(selector, "outputPort"));
-            }
-        }
-
-        private void collectPortArray(JsonElement value) {
-            if (value == null || !value.isJsonArray()) return;
-            for (JsonElement element : value.getAsJsonArray()) {
-                if (element.isJsonPrimitive()) {
-                    addPort(element.getAsString());
-                } else if (element.isJsonObject()) {
-                    collectPortObject(element);
-                }
-            }
-        }
-
-        private void collectPortObject(JsonElement value) {
-            if (value == null || !value.isJsonObject()) return;
-            JsonObject object = value.getAsJsonObject();
-            addPort(string(object, "portId"));
-            addPort(string(object, "inputPort"));
-            addPort(string(object, "outputPort"));
-        }
-
-        private void addPort(String candidate) {
-            if (looksLikeCanonicalPort(candidate)) {
-                canonicalPorts.add(candidate);
-            }
-        }
-
-        private String symbol(String raw) {
-            if (containsCanonicalPort(raw)) return raw;
-            return alpha(symbols, raw, "@symbol.");
-        }
-
-        private String placeholder(String function, String count) {
-            return alpha(placeholders, firstNonBlank(function, "unknown")
-                    + "\u0000" + firstNonBlank(count, "0"),
-                    "@placeholder.");
-        }
-
-        private String array(String raw) {
-            return alpha(arrays, raw, "@array.");
-        }
-
-        private boolean containsCanonicalPort(String raw) {
-            if (looksLikeCanonicalPort(raw)) return true;
-            for (String port : canonicalPorts) {
-                int start = raw.indexOf(port);
-                while (start >= 0) {
-                    int end = start + port.length();
-                    boolean left = start == 0 || raw.charAt(start - 1) == '_';
-                    boolean right = end == raw.length()
-                            || raw.charAt(end) == '_';
-                    if (left && right) return true;
-                    start = raw.indexOf(port, start + 1);
-                }
-            }
-            return false;
-        }
-
-        private static String alpha(Map<String, String> values, String raw,
-                                    String prefix) {
-            String existing = values.get(raw);
-            if (existing != null) return existing;
-            String normalized = prefix + values.size();
-            values.put(raw, normalized);
-            return normalized;
-        }
-
-        private static boolean looksLikeCanonicalPort(String value) {
-            String candidate = firstNonBlank(value);
-            return candidate.startsWith("REGION.")
-                    && (candidate.contains(".in.")
-                    || candidate.contains(".out."));
-        }
-    }
-
-    private static void component(StringBuilder output, String value) {
-        String safe = value == null ? "" : value;
-        output.append(safe.length()).append(':').append(safe).append('|');
     }
 
     private static void increment(Map<String, Integer> values, String key) {

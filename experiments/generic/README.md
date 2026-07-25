@@ -21,10 +21,10 @@ GraphChecker checkout:
 ```
 
 Guarded relation construction belongs to the workload-specific producer
-exploration loop: it closes the path worklist and invokes
-`RegionSummaryMerger` with that exact closure manifest. The generic runner
-therefore consumes those relations at `compose` instead of exposing a second,
-detached merge path.
+exploration loop: `RegionPathWorklist` atomically emits the guarded relation
+only when the exact output closure reaches `CLOSED`. The generic runner
+therefore consumes that relation at `compose` without a second detached merge
+or validation pass.
 
 `reach` calls `BooleanReachConditionExtractor` and asks the configured Z3
 executable about every valuation of the automatically discovered Boolean root
@@ -130,7 +130,7 @@ The principal environment overrides are:
 | `workload_command` | `CAUSYNTH_WORKLOAD_COMMAND` |
 
 Artifact-specific overrides use the same names shown by `config`, including
-`CAUSYNTH_ACTIVATION_PLAN`, `CAUSYNTH_EDGE_VALIDATIONS`,
+`CAUSYNTH_REGION_PLAN`, `CAUSYNTH_EDGE_VALIDATIONS`,
 `CAUSYNTH_RAW_RESULTS`, `CAUSYNTH_COMPOSE_SUMMARIES`,
 `CAUSYNTH_COMPOSED_SMT`, and
 `CAUSYNTH_RELATIONSHIP_CANDIDATES`. The reachability output can be relocated
@@ -141,7 +141,7 @@ Use `--dry-run` or `GRAPH_CHECKER_DRY_RUN=true` to inspect constructed commands.
 For small fixtures, `--debug` (or `GRAPH_CHECKER_DEBUG=true`) prints bounded
 stage artifacts on stderr: analyze shows the static graph, symbolic regions,
 and symbolic region edges; workload shows
-`runtime_region_edge_validation.jsonl` and `concolic_activation_plan.jsonl`;
+`runtime_region_edge_validation.jsonl` and `concolic_region_plan.jsonl`;
 `debug-stage merge` projects an existing guarded relation, and compose shows
 the generated SMT. The item and byte caps are configurable through
 `GRAPH_CHECKER_DEBUG_MAX_ITEMS` and `GRAPH_CHECKER_DEBUG_MAX_BYTES`.

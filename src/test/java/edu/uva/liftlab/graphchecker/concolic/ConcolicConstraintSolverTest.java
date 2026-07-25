@@ -184,8 +184,10 @@ public class ConcolicConstraintSolverTest {
     private static JsonObject activation() {
         JsonObject activation = new JsonObject();
         JsonArray materializations = new JsonArray();
-        materializations.add(materialization("REGION.3.in.0", 0));
-        activation.add("materializations", materializations);
+        JsonObject action = materialization("REGION.3.in.0", 0);
+        action.addProperty("mode", "SYMBOLIC");
+        materializations.add(action);
+        activation.add("inputActions", materializations);
         return activation;
     }
 

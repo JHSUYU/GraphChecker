@@ -1044,8 +1044,8 @@ public final class CausynthTraceRecorder {
                 "runtime_region_summary.json").toPath());
         writeFile(new File(outputDir, "runtime_region_edge_validation.jsonl"),
                 planned.edgeValidationsJsonl());
-        writeFile(new File(outputDir, "concolic_activation_plan.jsonl"),
-                planned.activationsJsonl());
+        writeFile(new File(outputDir, "concolic_region_plan.jsonl"),
+                planned.regionPlansJsonl());
     }
 
     private static String jsonObject(Object... values) {

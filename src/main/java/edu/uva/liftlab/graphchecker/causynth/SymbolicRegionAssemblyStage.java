@@ -31,13 +31,9 @@ final class SymbolicRegionAssemblyStage {
     private SymbolicRegionAssemblyStage() {
     }
 
-    static void assemble(CausynthAnalysisResult result) {
-        SymbolicRegionPlanner.Result planned =
-                SymbolicRegionPlanner.plan(result.edges);
-        addArgumentPathFieldContracts(planned.regions);
-        result.symbolicRegions.addAll(planned.regions);
-        result.symbolicRegionEdges.addAll(planned.regionEdges);
-        result.symbolicCoverageComplete = planned.coverageComplete;
+    static void assemble(StaticProgram program) {
+        SymbolicRegionPlanner.plan(program);
+        addArgumentPathFieldContracts(program.regions);
     }
 
     /**

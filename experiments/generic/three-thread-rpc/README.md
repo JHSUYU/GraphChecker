@@ -105,9 +105,9 @@ the selected fixture and performs only these evidence-gated end-to-end stages:
    to `CAUSYNTH_CONCOLIC_JOBS` independent workers solve and naturally execute
    exact path tasks in private directories. The coordinator publishes a wave
    only after every importer/verifier succeeds. Exploration stops only when
-   the worklist manifest is closed, then `RegionSummaryMerger` builds the
-   guarded producer relation. The default worker count is `nproc`; set it to
-   `1` for serial debugging.
+   the worklist manifest is closed; that same CLOSED transition atomically
+   builds the guarded producer relation. The default worker count is `nproc`;
+   set it to `1` for serial debugging.
 5. Compose the closed producer relations with the OR of all exact target
    exception path conditions into one structurally complete candidate SMT
    model.

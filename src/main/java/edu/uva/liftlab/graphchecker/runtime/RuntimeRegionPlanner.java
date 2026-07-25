@@ -6,6 +6,9 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
@@ -14,6 +17,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -25,6 +30,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.ToLongFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -49,8 +55,6 @@ final class RuntimeRegionPlanner {
             "\\.param\\d+:([^#]+)#field:");
     private static final Pattern LOCAL_CELL = Pattern.compile(
             "^(<.+>)::([^#]+)(?:#.*)?$");
-    private static final Pattern FIELD_SIGNATURE = Pattern.compile(
-            "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
     private static final Pattern FIELD_PROJECTION = Pattern.compile(
             "#field:([^#@]+)");
     private static final Pattern GETTER_IN_GUARD = Pattern.compile(
@@ -68,8 +72,6 @@ final class RuntimeRegionPlanner {
             "EXACT_VM_INTRINSIC_PLACEHOLDER_SCHEDULER_VALIDATION_V1";
     private static final String CALL_RETURN_DEFERRED_AUTHORITY =
             "AUTHORITATIVE_SCHEDULER_DEFINITION_INDEX_REQUIRED_V1";
-    private static final String UNRESOLVED_INPUT_PROVENANCE_AUTHORITY =
-            "STATIC_EXACT_DEPENDENCY_METHOD_CONSUMER_SET_V1";
     static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
     static final String RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY =
@@ -95,12 +97,20 @@ final class RuntimeRegionPlanner {
         Result result = new Result();
         List<StaticRegion> regions = readRegions(regionFile);
         List<StaticRegionEdge> regionEdges = readRegionEdges(regionEdgeFile);
+        Map<String, List<StaticRegion>> regionsByAnchor =
+                new LinkedHashMap<>();
+        for (StaticRegion region : regions) {
+            add(regionsByAnchor, region.anchorMethod, region);
+        }
         StaticProjectionIndex staticProjections =
                 readStaticProjectionIndex(staticGraphFile);
         resolveStaticCausalEdgeReferences(regions, staticProjections);
-        List<MethodEvent> methodEvents = sortedMethods(methods);
-        List<RuntimeEvent> executions = sortedRuntime(runtimeEvents);
-        List<FieldAccessEvent> fields = sortedFields(fieldEvents);
+        List<MethodEvent> methodEvents = sorted(methods,
+                value -> value.seq);
+        List<RuntimeEvent> executions = sorted(runtimeEvents,
+                value -> value.seq);
+        List<FieldAccessEvent> fields = sorted(fieldEvents,
+                value -> value.seq);
         RootArgumentRuntimeTypeIndex rootArgumentRuntimeTypes =
                 RootArgumentRuntimeTypeIndex.build(executions);
         RuntimeTraceIndex trace = RuntimeTraceIndex.build(methodEvents,
@@ -112,7 +122,6 @@ final class RuntimeRegionPlanner {
                 RuntimeFieldAccessIndex.build(fields, calls);
 
         int instanceIndex = 0;
-        int activationIndex = 0;
         Map<String, List<InstanceEvidence>> evidenceByRegion = new LinkedHashMap<>();
         Map<String, List<InstanceEvidence>> sharedStateEvidenceByRegion =
                 new LinkedHashMap<>();
@@ -120,16 +129,16 @@ final class RuntimeRegionPlanner {
 
         outer:
         for (StaticRegion region : regions) {
-            List<RootCandidate> roots = rootCandidates(region, regions,
+            List<MethodEvent> roots = rootCandidates(region,
+                    values(regionsByAnchor.get(region.anchorMethod)),
                     methodsBySignature, calls);
             if (roots.isEmpty()) {
                 continue;
             }
-            for (RootCandidate candidate : roots) {
+            for (MethodEvent root : roots) {
                 if (instanceIndex >= MAX_INSTANCES) {
                     break outer;
                 }
-                MethodEvent root = candidate.event;
                 ContainedCallSelection callSelection =
                         trace.containedCalls(root);
                 Set<Long> containedCalls = callSelection.calls;
@@ -140,12 +149,6 @@ final class RuntimeRegionPlanner {
                     observedMethods.add(event.method);
                 }
 
-                int ordinal = trace.invocationOrdinal(root);
-                int ordinalWithinContext =
-                        trace.invocationOrdinalWithinContext(root);
-                Map<String, Object> rootArgumentSelector =
-                        runtimeRootArgumentSelector(root, methodEvents,
-                                rootArgumentRuntimeTypes);
                 String instanceId = region.regionId + "@" + safeToken(root.test)
                         + "#call" + root.callId;
 
@@ -157,54 +160,16 @@ final class RuntimeRegionPlanner {
                         containedRuntime);
                 boolean runtimePathEvidenceComplete = !callSelection.truncated
                         && !pathSignatureTruncated;
-                List<String> runtimeGaps = new ArrayList<>();
-                if (callSelection.truncated) {
-                    runtimeGaps.add("CONTAINED_CALL_TREE_LIMIT_EXCEEDED");
-                }
-                if (pathSignatureTruncated) {
-                    runtimeGaps.add("PATH_SIGNATURE_LIMIT_EXCEEDED");
-                }
                 ConcreteDemandSlice demandSlice = staticProjections.reslice(
                         region, runtimePathEvidenceComplete,
                         observedMethods, root.method, root, containedCalls,
                         runtimeFieldAccesses);
-                List<StaticPort> concreteInputs = demandSlice.inputs(region);
-                List<Map<String, Object>> inputObjects = inputObservations(
-                        concreteInputs, root, containedRuntime,
-                        containedFields, containedMethodEvents);
-                List<Map<String, Object>> symbolize = symbolizeActions(
-                        region, concreteInputs, root, inputObjects,
-                        containedRuntime, containedFields);
-                List<Map<String, Object>> branchPlan = branchActions(
-                        region, containedRuntime);
-                boolean anchorObserved = observedMethods.contains(region.anchorMethod)
-                        || invokedAnchor(containedRuntime, region.anchorMethod);
-                int observedInputCount = countObserved(inputObjects);
-                int deferredInputCount = countDeferred(inputObjects);
-                int observedBranchCount = countObservedBranches(branchPlan);
-                boolean inputsResolved = observedInputCount + deferredInputCount
-                        == inputObjects.size();
-                boolean branchesResolved = observedBranchCount == branchPlan.size();
-                boolean symbolizeActionsReady = symbolizeActionsReady(
-                        symbolize);
-                boolean demandHasSymbolicPotential = !concreteInputs.isEmpty()
-                        || region.inputs.isEmpty() || region.branches.isEmpty();
-                boolean boundaryReady = inputsResolved && branchesResolved
-                        && region.inputSelectionComplete
-                        && runtimePathEvidenceComplete
-                        && symbolizeActionsReady;
-                boolean replayable = anchorObserved
-                        && runtimePathEvidenceComplete;
-                boolean symbolicReady = replayable && boundaryReady;
-                if (!demandHasSymbolicPotential) {
-                    symbolicReady = false;
-                }
 
                 InstanceEvidence instanceEvidence = new InstanceEvidence(
                         instanceId, region, root, containedCalls,
                         containedMethodEvents, containedRuntime,
                         containedFields, observedMethods,
-                        portIds(concreteInputs), demandSlice,
+                        portIds(demandSlice.inputs(region)), demandSlice,
                         runtimePathEvidenceComplete,
                         !callSelection.truncated);
                 allInstanceEvidence.add(instanceEvidence);
@@ -222,59 +187,40 @@ final class RuntimeRegionPlanner {
                     add(evidenceByRegion, region.regionId,
                             instanceEvidence);
                 }
-
-                Map<String, Object> activation = object(
-                        "activationId", "ACT." + activationIndex++,
-                        "regionInstanceId", instanceId,
-                        "regionId", region.regionId,
-                        "test", root.test,
-                        "rootSelector", rootSelector(root, ordinal,
-                                ordinalWithinContext,
-                                rootArgumentSelector),
-                        "rootCallId", root.callId,
-                        "runtimeDefinitionMethods",
-                        demandSlice.definitionMethods(observedMethods),
-                        "targetMethod", region.anchorMethod,
-                        "captureGoal", object(
-                                "kind", "TARGET_BRANCH",
-                                "scope", "ONE_DIRECTED_BRANCH"),
-                        "admission", admission(replayable, symbolicReady,
-                                replayable
-                                        ? "RUNTIME_SELECTED_ROOT_REPLAY"
-                                        : "NO_VALIDATED_RUNTIME_PATH",
-                                runtimeGaps),
-                        "symbolize", symbolize,
-                        "branches", branchPlan);
-                result.activations.add(activation);
                 instanceIndex++;
             }
         }
 
         RuntimeRelationEvidenceCache relationEvidence =
-                new RuntimeRelationEvidenceCache();
+                new RuntimeRelationEvidenceCache(trace);
         collectConfirmedExternalInputPromotions(regionEdges,
                 evidenceByRegion, sharedStateEvidenceByRegion,
                 staticProjections, relationEvidence);
-        refreshPromotedConcreteInputRows(allInstanceEvidence, result);
+        Map<String, RegionPlanDraft> planDrafts = buildRegionPlans(
+                allInstanceEvidence, trace, rootArgumentRuntimeTypes);
 
         List<UpstreamEdgeBinding> edgeBindings = new ArrayList<>();
         validateRegionEdges(regionEdges, evidenceByRegion,
                 sharedStateEvidenceByRegion, staticProjections, result,
                 edgeBindings, relationEvidence);
-        deriveUpstreamActivations(edgeBindings, staticProjections, result);
-        refineMapValueElementProjectionActivations(result);
-        finalizeOutputClosureArtifacts(result);
+        List<OutputGoalDraft> outputGoals = attachOutputRelationGoals(
+                edgeBindings, staticProjections, planDrafts);
+        refineMapValueElementProjectionGoals(outputGoals);
+        for (RegionPlanDraft plan : planDrafts.values()) {
+            if (!plan.goals.isEmpty()) {
+                result.regionPlans.add(plan.toMap());
+            }
+        }
         return result;
     }
 
-    private static List<RootCandidate> rootCandidates(
+    private static List<MethodEvent> rootCandidates(
             StaticRegion region,
-            List<StaticRegion> regions,
+            List<StaticRegion> anchorPeers,
             Map<String, List<MethodEvent>> methodsBySignature,
             Map<Long, MethodEvent> calls) {
-        List<RootCandidate> roots = new ArrayList<>();
+        List<MethodEvent> roots = new ArrayList<>();
         Set<Long> selectedCalls = new LinkedHashSet<>();
-        List<StaticRegion> anchorPeers = regionsSharingAnchor(region, regions);
         List<MethodEvent> anchors = values(
                 methodsBySignature.get(region.anchorMethod));
 
@@ -308,7 +254,7 @@ final class RuntimeRegionPlanner {
                 }
             }
             if (selectedCalls.add(selected.callId)) {
-                roots.add(new RootCandidate(selected));
+                roots.add(selected);
             }
         }
 
@@ -329,21 +275,10 @@ final class RuntimeRegionPlanner {
         // evidence for diagnostics, without claiming a validated path.
         for (MethodEvent event : values(methodsBySignature.get(region.rootMethod))) {
             if (selectedCalls.add(event.callId)) {
-                roots.add(new RootCandidate(event));
+                roots.add(event);
             }
         }
         return roots;
-    }
-
-    private static List<StaticRegion> regionsSharingAnchor(
-            StaticRegion region, List<StaticRegion> regions) {
-        List<StaticRegion> result = new ArrayList<>();
-        for (StaticRegion candidate : values(regions)) {
-            if (safe(region.anchorMethod).equals(safe(candidate.anchorMethod))) {
-                result.add(candidate);
-            }
-        }
-        return result;
     }
 
     private static List<MethodEvent> concreteLineage(
@@ -588,6 +523,28 @@ final class RuntimeRegionPlanner {
                     "sourceKind", port.sourceKind,
                     "projection", port.projection,
                     "observed", false);
+            if ("HEAP_PRESTATE".equals(port.sourceKind)) {
+                FramePrestatePath frame = framePrestatePath(
+                        root, port.cell, fields);
+                if (frame.complete()) {
+                    observation.put("observed", true);
+                    observation.put("location", "RECEIVER_FIELD");
+                    observation.put("field", frame.field.signature());
+                    observation.put("fieldPath",
+                            new ArrayList<>(frame.path));
+                    observation.put("leafFieldSignature",
+                            frame.field.signature());
+                    observation.put("frameConditionAuthority",
+                            "RUNTIME_UNIQUE_ROOT_TO_OUTPUT_OWNER_FIELD_PATH");
+                    observation.put("receiverObjectId", root.objectId);
+                } else {
+                    observation.put("location", "REGION_LIVE_IN");
+                    observation.put("fieldBindingGap",
+                            "MISSING_UNIQUE_FRAME_PRESTATE_FIELD_PATH");
+                }
+                result.add(observation);
+                continue;
+            }
             int parameter = parameterIndex(port.cell);
             String staticInputMethod = methodInCell(port.cell);
             boolean rootArgument = parameter >= 0
@@ -641,8 +598,6 @@ final class RuntimeRegionPlanner {
                             observation.put("accessSiteId", field.siteId);
                             observation.put("accessSiteAuthority",
                                     RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY);
-                            observation.put("observationAuthority",
-                                    RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY);
                         }
                     } else {
                         // A concrete value was observed, but selecting an
@@ -659,11 +614,6 @@ final class RuntimeRegionPlanner {
                     && parameter >= 0 && !rootArgument) {
                 observation.put("location", "REGION_LIVE_IN");
                 observation.put("deferredResolution", true);
-                observation.put("crossMethodArgument", true);
-                observation.put("staticInputMethod", staticInputMethod);
-                observation.put("runtimeInputMethod", root.method);
-                observation.put("rebaseRejectedAuthority",
-                        "STATIC_INPUT_METHOD_DIFFERS_FROM_RUNTIME_ROOT");
             }
             if (!Boolean.TRUE.equals(observation.get("observed"))
                     && "PROTOCOL_INPUT".equals(port.sourceKind)) {
@@ -718,6 +668,90 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
+    /**
+     * Resolves the requested field's concrete owner back to the selected
+     * region receiver.  Discovery already records reference-valued getfield
+     * edges and the exact putfield receiver; one unique bounded path is
+     * sufficient to materialize the entry value before any region code runs.
+     */
+    private static FramePrestatePath framePrestatePath(
+            MethodEvent root, String outputCell,
+            List<FieldAccessEvent> fields) {
+        FieldCell requested = fieldCell(outputCell);
+        if (root == null || root.objectId == 0
+                || !requested.declaredSignature
+                || isArrayJavaType(requested.type)) {
+            return FramePrestatePath.incomplete();
+        }
+
+        Set<Integer> owners = new LinkedHashSet<>();
+        long firstWrite = Long.MAX_VALUE;
+        for (FieldAccessEvent event : values(fields)) {
+            if ("FIELD_WRITE".equals(event.kind)
+                    && event.receiverObjectId != 0
+                    && sameField(requested, fieldCell(event.field))) {
+                owners.add(event.receiverObjectId);
+                firstWrite = Math.min(firstWrite, event.seq);
+            }
+        }
+        if (owners.size() != 1) {
+            return FramePrestatePath.incomplete();
+        }
+        int targetOwner = owners.iterator().next();
+        List<String> ownerPath = targetOwner == root.objectId
+                ? Collections.<String>emptyList()
+                : uniqueObjectFieldPath(root.objectId, targetOwner,
+                firstWrite, fields);
+        if (ownerPath == null) {
+            return FramePrestatePath.incomplete();
+        }
+        List<String> path = new ArrayList<>(ownerPath);
+        path.add(requested.name);
+        return new FramePrestatePath(requested, path);
+    }
+
+    private static List<String> uniqueObjectFieldPath(
+            int rootObjectId, int targetObjectId, long beforeSeq,
+            List<FieldAccessEvent> fields) {
+        List<ObjectPathState> queue = new ArrayList<>();
+        queue.add(new ObjectPathState(rootObjectId,
+                Collections.<String>emptyList(),
+                Collections.singleton(rootObjectId)));
+        Set<String> matches = new LinkedHashSet<>();
+        List<String> selected = null;
+        for (int cursor = 0; cursor < queue.size(); cursor++) {
+            ObjectPathState state = queue.get(cursor);
+            if (state.path.size() >= 4) {
+                continue;
+            }
+            for (FieldAccessEvent event : values(fields)) {
+                FieldCell field = fieldCell(event.field);
+                if (!"FIELD_READ".equals(event.kind)
+                        || event.seq >= beforeSeq
+                        || event.receiverObjectId != state.objectId
+                        || event.valueObjectId == 0
+                        || !field.declaredSignature
+                        || state.visited.contains(event.valueObjectId)) {
+                    continue;
+                }
+                List<String> path = new ArrayList<>(state.path);
+                path.add(field.name);
+                Set<Integer> visited = new LinkedHashSet<>(state.visited);
+                visited.add(event.valueObjectId);
+                if (event.valueObjectId == targetObjectId) {
+                    String key = joinPath(path);
+                    if (matches.add(key)) {
+                        selected = path;
+                    }
+                } else {
+                    queue.add(new ObjectPathState(event.valueObjectId,
+                            path, visited));
+                }
+            }
+        }
+        return matches.size() == 1 ? selected : null;
+    }
+
     private static String materializableFieldLocation(StaticPort port) {
         if ("RECEIVER_FIELD".equals(port.sourceKind)) {
             return "RECEIVER_FIELD";
@@ -735,17 +769,11 @@ final class RuntimeRegionPlanner {
         }
         FieldCell expected = fieldCell(port.cell);
         FieldCell actual = fieldCell(field.field);
-        String method = string(port.materializationMetadata.get(
-                "accessMethod"));
-        String site = string(port.materializationMetadata.get(
-                "accessSiteId"));
-        String authority = string(port.materializationMetadata.get(
-                "accessSiteAuthority"));
-        int unit = port.materializationMetadata.get("accessUnitIndex")
-                instanceof Number ? ((Number) port.materializationMetadata.get(
-                "accessUnitIndex")).intValue() : -1;
-        return "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1".equals(
-                authority)
+        String method = port.materialization.method();
+        String site = port.materialization.siteId();
+        int unit = port.materialization.unitIndex();
+        return port.materialization.kind()
+                == MaterializationSpec.Kind.FIELD_READ
                 && expected.declaredSignature
                 && actual.declaredSignature
                 && expected.signature().equals(actual.signature())
@@ -833,75 +861,41 @@ final class RuntimeRegionPlanner {
             if (!sameField(expected, fieldCell(field.field))) {
                 continue;
             }
-            String accessMethod = string(port.materializationMetadata.get(
-                    "accessMethod"));
-            String accessSiteId = string(port.materializationMetadata.get(
-                    "accessSiteId"));
-            String accessAuthority = string(port.materializationMetadata.get(
-                    "accessSiteAuthority"));
-            int accessUnitIndex = port.materializationMetadata.get(
-                    "accessUnitIndex") instanceof Number
-                    ? ((Number) port.materializationMetadata.get(
-                    "accessUnitIndex")).intValue() : -1;
-            boolean directSiteConstrained = !accessMethod.isEmpty()
-                    || !accessSiteId.isEmpty() || accessUnitIndex >= 0
-                    || !accessAuthority.isEmpty();
+            String accessMethod = port.materialization.method();
+            String accessSiteId = port.materialization.siteId();
+            int accessUnitIndex = port.materialization.unitIndex();
+            boolean directSiteConstrained = port.materialization.kind()
+                    == MaterializationSpec.Kind.FIELD_READ;
             if (directSiteConstrained
-                    && (!("STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1"
-                    .equals(accessAuthority))
-                    || !accessMethod.equals(field.method)
+                    && (!accessMethod.equals(field.method)
                     || accessUnitIndex != field.unitIndex
                     || !accessSiteId.equals(field.siteId)
                     || !accessSiteId.equals(field.method + "#u"
                     + field.unitIndex))) {
                 continue;
             }
-            String accessorCallerMethod = string(
-                    port.materializationMetadata.get(
-                            "accessorCallerMethod"));
-            String accessorCallSiteId = string(
-                    port.materializationMetadata.get(
-                            "accessorCallSiteId"));
-            String accessorDeclaredCallee = string(
-                    port.materializationMetadata.get(
-                            "accessorDeclaredCallee"));
-            String accessorAuthority = string(
-                    port.materializationMetadata.get(
-                            "accessorCallSiteAuthority"));
-            String accessorImplementationMethod = string(
-                    port.materializationMetadata.get(
-                            "accessorImplementationMethod"));
-            String accessorImplementationAuthority = string(
-                    port.materializationMetadata.get(
-                            "accessorImplementationAuthority"));
-            int accessorCallUnitIndex = port.materializationMetadata.get(
-                    "accessorCallUnitIndex") instanceof Number
-                    ? ((Number) port.materializationMetadata.get(
-                    "accessorCallUnitIndex")).intValue() : -1;
-            boolean accessorConstrained = !accessorCallerMethod.isEmpty()
-                    || !accessorCallSiteId.isEmpty()
-                    || !accessorDeclaredCallee.isEmpty()
-                    || !accessorAuthority.isEmpty()
-                    || !accessorImplementationMethod.isEmpty()
-                    || !accessorImplementationAuthority.isEmpty()
-                    || accessorCallUnitIndex >= 0;
+            String accessorCallerMethod = port.materialization.method();
+            String accessorCallSiteId = port.materialization.siteId();
+            String accessorDeclaredCallee =
+                    port.materialization.declaredCallee();
+            String accessorImplementationMethod =
+                    port.materialization.implementationMethod();
+            int accessorCallUnitIndex =
+                    port.materialization.unitIndex();
+            boolean accessorConstrained = port.materialization.kind()
+                    == MaterializationSpec.Kind.ACCESSOR_RETURN;
             if (accessorConstrained) {
                 MethodEvent fieldMethod = methodsByCall.get(field.callId);
                 RuntimeEvent parentSite = fieldMethod == null ? null
                         : callSitesByInvocation.get(
                         fieldMethod.parentSiteId);
-                if (!("STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                        .concat("ACCESSOR_CALLSITE_V1").equals(
-                                accessorAuthority))
-                        || parentSite == null
+                if (parentSite == null
                         || !accessorCallerMethod.equals(parentSite.method)
                         || !accessorCallSiteId.equals(parentSite.siteId)
                         || !accessorCallSiteId.equals(accessorCallerMethod
                         + "#u" + accessorCallUnitIndex)
                         || !accessorDeclaredCallee.equals(
                         parentSite.declaredCallee)
-                        || !"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY"
-                        .equals(accessorImplementationAuthority)
                         || !accessorImplementationMethod.equals(
                         field.method)) {
                     continue;
@@ -977,28 +971,28 @@ final class RuntimeRegionPlanner {
                     "location", location.isEmpty()
                             ? locationFor(port) : location,
                     "observed", Boolean.TRUE.equals(observation.get("observed")));
-            String declaredJavaType = declaredJavaType(port.cell);
+            String declaredJavaType = firstNonBlank(port.javaType,
+                    declaredJavaType(port.cell));
             if (!declaredJavaType.isEmpty()) {
                 action.put("javaType", declaredJavaType);
             }
             // Preserve exact leaf/path declarations carried by the static
             // port.  They are required for local/call-return array leaves,
             // whose root definition is resolved only by the scheduler.
-            action.putAll(port.materializationMetadata);
+            action.putAll(port.materialization.actionFields());
             copy(observation, action, "index", "field", "objectId",
                     "fieldReceiverObjectId", "valueObjectId", "runtimeType",
-                    "primitiveValue", "deferredResolution", "runtimeRebased",
+                    "primitiveValue", "deferredResolution",
                     "valueFingerprint", "valueFingerprintComplete",
                     "deferredResolutionAuthority",
-                    "staticInputMethod", "runtimeInputMethod",
-                    "rebaseAuthority", "crossMethodArgument",
-                    "rebaseRejectedAuthority", "fieldBindingGap",
-                    "accessKind", "observationAuthority", "bindingMode",
+                    "fieldBindingGap", "accessKind", "bindingMode",
                     "fieldEventSeq", "fieldCallId",
                     "fieldEventIdentityAuthority",
                     "accessMethod", "accessUnitIndex", "accessSiteId",
                     "accessSiteAuthority",
-                    "accessorInvocationId", "accessorRuntimeType");
+                    "accessorInvocationId", "accessorRuntimeType",
+                    "fieldPath", "leafFieldSignature",
+                    "frameConditionAuthority", "receiverObjectId");
             if ("HEAP_OBJECT_FIELD".equals(action.get("location"))) {
                 FieldCell observedField = fieldCell(
                         string(observation.get("field")));
@@ -1054,15 +1048,13 @@ final class RuntimeRegionPlanner {
     private static void restoreExactDirectFieldPathLeafMetadata(
             StaticPort port, Map<String, Object> action,
             FieldCell observedRoot) {
-        Map<String, Object> metadata = port.materializationMetadata;
-        if (!"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1".equals(
-                string(metadata.get("fieldPathAuthority")))) {
+        MaterializationSpec spec = port.materialization;
+        if (!spec.directFieldPath()) {
             return;
         }
-        List<String> path = stringList(metadata.get("fieldPath"));
+        List<String> path = spec.path();
         FieldCell staticRoot = fieldCell(port.cell);
-        FieldCell leaf = fieldCell(string(metadata.get(
-                "leafFieldSignature")));
+        FieldCell leaf = fieldCell(spec.leafField());
         if (path.size() < 2 || path.size() > 4
                 || !path.equals(dependencyFieldPath(port.cell))
                 || !staticRoot.declaredSignature
@@ -1071,12 +1063,7 @@ final class RuntimeRegionPlanner {
                 || !leaf.declaredSignature
                 || !leaf.name.equals(path.get(path.size() - 1))
                 || !primitiveType(leaf.type)
-                || !staticRoot.signature().equals(string(metadata.get(
-                "accessFieldSignature")))
-                || !staticRoot.owner.equals(string(metadata.get(
-                "accessOwnerClass")))
-                || !staticRoot.name.equals(string(metadata.get(
-                "accessField")))) {
+                || !staticRoot.signature().equals(spec.rootField())) {
             return;
         }
         action.put("bindingMode", "FIELD_ACCESS");
@@ -1227,11 +1214,6 @@ final class RuntimeRegionPlanner {
                     "RUNTIME_UNIQUE_STATIC_LEAF_GETFIELD_SITE_AND_OWNER_"
                             + "WITHIN_REGION_INSTANCE_V1");
             action.put("consumedFieldRootAuthority", rootAuthority);
-            action.put("consumedFieldRuntimeEventSeq", consumed.seq);
-            action.put("consumedFieldReceiverObjectId",
-                    consumed.receiverObjectId);
-            action.put("consumedFieldValueObjectId",
-                    consumed.valueObjectId);
             action.put("consumedFieldOccurrence", 1);
             action.put("consumedFieldOccurrenceAuthority",
                     "UNIQUE_CONTAINED_RUNTIME_FIELD_READ_V1");
@@ -1252,9 +1234,7 @@ final class RuntimeRegionPlanner {
                 "consumedFieldMethod", "consumedFieldUnitIndex",
                 "consumedFieldSiteId", "consumedFieldSiteAuthority",
                 "consumedFieldRootAuthority",
-                "consumedFieldRuntimeEventSeq",
-                "consumedFieldReceiverObjectId",
-                "consumedFieldValueObjectId", "consumedFieldOccurrence",
+                "consumedFieldOccurrence",
                 "consumedFieldOccurrenceAuthority",
                 "consumedFieldSiteBindingComplete",
                 "consumedFieldPendingRootKind",
@@ -1533,6 +1513,9 @@ final class RuntimeRegionPlanner {
         if ("RECEIVER_FIELD".equals(port.sourceKind)) {
             return "RECEIVER_FIELD";
         }
+        if ("HEAP_PRESTATE".equals(port.sourceKind)) {
+            return "RECEIVER_FIELD";
+        }
         if ("SHARED_HEAP".equals(port.sourceKind)) {
             return "HEAP_OBJECT_FIELD";
         }
@@ -1637,37 +1620,6 @@ final class RuntimeRegionPlanner {
         return selected;
     }
 
-    private static int countObserved(List<Map<String, Object>> observations) {
-        int count = 0;
-        for (Map<String, Object> observation : observations) {
-            if (Boolean.TRUE.equals(observation.get("observed"))) {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    private static int countDeferred(List<Map<String, Object>> observations) {
-        int count = 0;
-        for (Map<String, Object> observation : observations) {
-            if (!Boolean.TRUE.equals(observation.get("observed"))
-                    && Boolean.TRUE.equals(observation.get("deferredResolution"))) {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    private static int countObservedBranches(List<Map<String, Object>> branches) {
-        int count = 0;
-        for (Map<String, Object> branch : branches) {
-            if (Boolean.TRUE.equals(branch.get("observed"))) {
-                count++;
-            }
-        }
-        return count;
-    }
-
     private static void validateRegionEdges(
             List<StaticRegionEdge> staticEdges,
             Map<String, List<InstanceEvidence>> evidenceByRegion,
@@ -1690,7 +1642,7 @@ final class RuntimeRegionPlanner {
             int demandPrunedPairCount = 0;
             List<Map<String, Object>> validatedBindings = new ArrayList<>();
             String endpointCorrelationAuthority =
-                    endpointCorrelationAuthority();
+                    "NEAREST_PRECEDING_MATCHING_SOURCE_ENDPOINT";
             Map<String, List<FingerprintMatch>> selectedValueMatches =
                     nearestEndpointFingerprintMatches(edge,
                             upstreamInstances, downstreamInstances);
@@ -1739,8 +1691,8 @@ final class RuntimeRegionPlanner {
                     // after the consumer read, so comparing region lastSeq()
                     // values must not override the concrete writeSeq <=
                     // readSeq witness established by sharedReadFrom().
-                    boolean ordered = !edge.requiresOrder || siteObserved
-                            || valueMatch != null || readFrom != null
+                    boolean ordered = siteObserved || valueMatch != null
+                            || readFrom != null
                             || (sameProcess && upstream.lastSeq()
                             <= downstream.lastSeq());
                     if (ordered) {
@@ -1816,9 +1768,6 @@ final class RuntimeRegionPlanner {
                     "toPort", edge.toPort,
                     "state", state,
                     "bindings", validatedBindings);
-            if (!edge.mappingKind.isEmpty()) {
-                validationRow.put("mappingKind", edge.mappingKind);
-            }
             if (edge.usesCanonicalOutput()) {
                 validationRow.put("fromOutputPort", edge.fromOutputPort);
                 validationRow.put("fromOutputCell", edge.fromOutputCell);
@@ -1974,15 +1923,12 @@ final class RuntimeRegionPlanner {
         return values == null || values.isEmpty() ? null : values.get(0);
     }
 
-    /** Rebuilds activation execution inputs from the promoted demand set. */
-    private static void refreshPromotedConcreteInputRows(
-            List<InstanceEvidence> evidence, Result result) {
-        Map<String, Map<String, Object>> activations = rowsByInstanceId(
-                result.activations);
+    /** Builds each region-instance plan once, after all demand promotion. */
+    private static Map<String, RegionPlanDraft> buildRegionPlans(
+            List<InstanceEvidence> evidence, RuntimeTraceIndex trace,
+            RootArgumentRuntimeTypeIndex rootArgumentRuntimeTypes) {
+        Map<String, RegionPlanDraft> drafts = new LinkedHashMap<>();
         for (InstanceEvidence instance : evidence) {
-            if (!instance.concreteDemandSlice.externalInputPromoted) {
-                continue;
-            }
             List<StaticPort> concreteInputs =
                     instance.concreteDemandSlice.inputs(instance.region);
             List<Map<String, Object>> inputObjects = inputObservations(
@@ -1995,50 +1941,50 @@ final class RuntimeRegionPlanner {
                     instance.fieldEvents);
             List<Map<String, Object>> branches = branchActions(
                     instance.region, instance.runtimeEvents);
-            int observedInputCount = countObserved(inputObjects);
-            int deferredInputCount = countDeferred(inputObjects);
-            boolean inputsResolved = observedInputCount + deferredInputCount
-                    == inputObjects.size();
-            boolean branchesResolved = countObservedBranches(branches)
-                    == branches.size();
+            boolean branchesResolved = branchActionsReady(branches);
             boolean symbolizeReady = symbolizeActionsReady(symbolize);
             boolean symbolicPotential = !concreteInputs.isEmpty()
                     || instance.region.inputs.isEmpty()
                     || instance.region.branches.isEmpty();
-            boolean boundaryReady = inputsResolved && branchesResolved
+            boolean boundaryReady = branchesResolved
                     && instance.region.inputSelectionComplete
                     && instance.runtimePathEvidenceComplete
                     && symbolizeReady;
-
-            Map<String, Object> activation = activations.get(
-                    instance.instanceId);
-            boolean replayable = admissionReplayable(activation);
+            boolean replayable = instance.anchorObserved
+                    && instance.runtimePathEvidenceComplete;
             boolean symbolicReady = replayable && boundaryReady
                     && symbolicPotential;
-
-            if (activation != null) {
-                activation.put("symbolize", symbolize);
-                activation.put("branches", branches);
-                activation.put("runtimeDefinitionMethods",
-                        instance.concreteDemandSlice.definitionMethods(
-                                instance.observedMethods));
-                activation.put("admission", admission(replayable,
-                        symbolicReady, admissionMode(activation),
-                        Collections.emptyList()));
+            List<String> runtimeGaps = new ArrayList<>();
+            if (!instance.containedCallTreeComplete) {
+                runtimeGaps.add("CONTAINED_CALL_TREE_LIMIT_EXCEEDED");
+            } else if (!instance.runtimePathEvidenceComplete) {
+                runtimeGaps.add("PATH_SIGNATURE_LIMIT_EXCEEDED");
             }
-        }
-    }
-
-    private static Map<String, Map<String, Object>> rowsByInstanceId(
-            List<Map<String, Object>> rows) {
-        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
-        for (Map<String, Object> row : rows) {
-            String id = string(row.get("regionInstanceId"));
-            if (!id.isEmpty()) {
-                result.put(id, row);
+            RegionPlanDraft plan = new RegionPlanDraft(instance,
+                    rootSelector(instance.root,
+                            trace.invocationOrdinal(instance.root),
+                            trace.invocationOrdinalWithinContext(instance.root),
+                            runtimeRootArgumentSelector(instance.root,
+                                    values(trace.methodsBySignature.get(
+                                            instance.root.method)),
+                                    rootArgumentRuntimeTypes)),
+                    instance.concreteDemandSlice.definitionMethods(
+                            instance.observedMethods),
+                    admission(replayable, symbolicReady,
+                            replayable
+                                    ? "RUNTIME_SELECTED_ROOT_REPLAY"
+                                    : "NO_VALIDATED_RUNTIME_PATH",
+                            runtimeGaps),
+                    symbolize, branches);
+            if (instance.region.isTargetClosure()) {
+                plan.goals.add(plan.baseGoal(targetReachGoalId(
+                                instance.instanceId,
+                                instance.region.anchorMethod),
+                        "TARGET_REACH_CLOSURE"));
             }
+            drafts.put(instance.instanceId, plan);
         }
-        return result;
+        return drafts;
     }
 
     private static Map<String, Object> admission(
@@ -2056,37 +2002,25 @@ final class RuntimeRegionPlanner {
                 "blockers", blockers);
     }
 
-    private static boolean admissionReplayable(
-            Map<String, Object> activation) {
-        Map<String, Object> admission = activation == null ? null
-                : mapValue(activation.get("admission"));
-        String state = admission == null ? ""
-                : string(admission.get("state"));
-        return "READY".equals(state) || "DISCOVERED".equals(state)
-                || "EXECUTABLE".equals(state);
-    }
-
-    private static String admissionMode(Map<String, Object> activation) {
-        Map<String, Object> admission = activation == null ? null
-                : mapValue(activation.get("admission"));
+    private static String admissionMode(Map<String, Object> goal) {
+        Map<String, Object> admission = goal == null ? null
+                : mapValue(goal.get("admission"));
         return admission == null ? "" : string(admission.get("mode"));
     }
 
     /**
-     * Derives a separate upstream-output activation from confirmed runtime
-     * read-from evidence.  The original path activation is preserved because a
-     * region may simultaneously contain the target and provide an output for
-     * another region query.
+     * Attaches bounded output-relation goals to the one activation envelope
+     * that represents the concrete upstream region invocation.
+     *
+     * <p>A read-from demand is not a new invocation. Keeping it as a goal
+     * preserves goal-local input, branch, admission, and output-closure
+     * scope without copying the region instance plan.</p>
      */
-    private static void deriveUpstreamActivations(
+    private static List<OutputGoalDraft> attachOutputRelationGoals(
             List<UpstreamEdgeBinding> bindings,
-            StaticProjectionIndex staticProjections, Result result) {
-        Map<String, Map<String, Object>> baseByInstance = new LinkedHashMap<>();
-        for (Map<String, Object> activation : result.activations) {
-            baseByInstance.put(string(activation.get("regionInstanceId")),
-                    activation);
-        }
-
+            StaticProjectionIndex staticProjections,
+            Map<String, RegionPlanDraft> plansByInstance) {
+        List<OutputGoalDraft> outputGoals = new ArrayList<>();
         Map<String, List<UpstreamEdgeBinding>> grouped = new LinkedHashMap<>();
         Set<String> seen = new LinkedHashSet<>();
         for (UpstreamEdgeBinding binding : bindings) {
@@ -2123,24 +2057,19 @@ final class RuntimeRegionPlanner {
                     + binding.downstream.instanceId, binding);
         }
 
-        int activationIndex = 0;
         for (List<UpstreamEdgeBinding> demand : grouped.values()) {
             UpstreamEdgeBinding first = demand.get(0);
-            Map<String, Object> base = baseByInstance.get(
+            RegionPlanDraft base = plansByInstance.get(
                     first.upstream.instanceId);
             if (base == null) {
                 continue;
             }
 
-            Map<String, Object> activation = new LinkedHashMap<>(base);
-            String derivedId = "ACT.UPSTREAM." + activationIndex++;
+            Map<String, Object> outputGoal = base.baseGoal(
+                    outputRelationGoalId(demand),
+                    "OUTPUT_RELATION_CLOSURE");
             boolean writerPathReplayable =
                     first.upstream.runtimePathEvidenceComplete;
-            activation.put("activationId", derivedId);
-            activation.remove("summaryMode");
-            activation.put("captureGoal", object(
-                    "kind", "OUTPUT_CLOSURE",
-                    "scope", "BOUNDED_OUTPUT_RELEVANT_PATHS"));
 
             Map<String, List<UpstreamEdgeBinding>> byOutput =
                     new LinkedHashMap<>();
@@ -2174,21 +2103,23 @@ final class RuntimeRegionPlanner {
             }
 
             if (issues.isEmpty()
-                    && !mergeUpstreamMemberExecution(activation, members,
+                    && !mergeOutputGoalExecution(outputGoal, members,
                     issues)) {
                 outputClosure = null;
             }
             if (issues.isEmpty()) {
-                activation.put("_plannerOutputClosure", outputClosure);
-                activation.put("_plannerOutputMembers", members);
+                outputGoal.put(OutputClosureContract.FIELD,
+                        outputClosure.toJson());
+                outputGoals.add(new OutputGoalDraft(
+                        base, outputGoal, members));
             } else {
-                activation.put("symbolize", Collections.emptyList());
-                activation.put("branches", Collections.emptyList());
-                activation.remove("containerElementFieldBindings");
-                activation.remove("heapStateBindings");
+                outputGoal.put("symbolize", Collections.emptyList());
+                outputGoal.put("branches", Collections.emptyList());
+                outputGoal.remove("containerElementFieldBindings");
+                outputGoal.remove("heapStateBindings");
             }
 
-            activation.put("admission", admission(writerPathReplayable,
+            outputGoal.put("admission", admission(writerPathReplayable,
                     writerPathReplayable && issues.isEmpty(),
                     writerPathReplayable
                             ? "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
@@ -2199,13 +2130,14 @@ final class RuntimeRegionPlanner {
             for (UpstreamEdgeBinding binding : demand) {
                 bindingRows.add(binding.toMap());
             }
-            activation.put("edgeBindings", bindingRows);
-            result.activations.add(activation);
+            outputGoal.put("edgeBindings", bindingRows);
+            base.goals.add(outputGoal);
         }
+        return outputGoals;
     }
 
     private static UpstreamOutputMemberPlan upstreamOutputMemberPlan(
-            Map<String, Object> base, List<UpstreamEdgeBinding> bindings) {
+            RegionPlanDraft base, List<UpstreamEdgeBinding> bindings) {
         UpstreamEdgeBinding first = bindings.get(0);
         StaticOutputSlice declared = first.upstream.region.outputSliceFor(
                 first.output.portId);
@@ -2218,7 +2150,7 @@ final class RuntimeRegionPlanner {
         }
 
         List<Map<String, Object>> selectedInputs = selectActivationRows(
-                base.get("symbolize"), outputSlice.inputPorts, "symbol");
+                base.symbolize, outputSlice.inputPorts, "symbol");
         Set<String> selectedInputPorts = new LinkedHashSet<>();
         for (Map<String, Object> selectedInput : selectedInputs) {
             addNonBlank(selectedInputPorts,
@@ -2241,15 +2173,6 @@ final class RuntimeRegionPlanner {
             applyExactConsumedArrayFieldEvidence(selectedInputs,
                     first.upstream.root, first.upstream.fieldEvents);
         }
-        List<Map<String, Object>> selectedBranches = selectActivationRows(
-                base.get("branches"), outputSlice.sites, "siteId");
-        boolean sliceReady = outputSlice.complete
-                && outputSlice.captureBindingsComplete
-                && inputSelectionComplete
-                && containerBindingsReady
-                && inputAliasesReady
-                && symbolizeActionsReady(selectedInputs)
-                && branchActionsReady(selectedBranches);
         List<Map<String, Object>> heapBindings = new ArrayList<>();
         StaticPort input = first.upstream.region.exactInputFor(
                 first.output.cell);
@@ -2261,13 +2184,25 @@ final class RuntimeRegionPlanner {
                     "bindingAuthority",
                     "STATIC_CELL_IDENTITY_PLUS_RUNTIME_READ_FROM"));
         }
+        outputSlice.validateNormalExitFieldCapture(input, selectedInputs);
+        List<Map<String, Object>> selectedBranches = selectActivationRows(
+                base.branches, outputSlice.sites, "siteId");
+        boolean sliceReady = outputSlice.complete
+                && outputSlice.captureBindingsComplete
+                && inputSelectionComplete
+                && containerBindingsReady
+                && inputAliasesReady
+                && symbolizeActionsReady(selectedInputs)
+                && branchActionsReady(selectedBranches);
         if (!sliceReady) {
             List<String> causes = new ArrayList<>();
             if (!outputSlice.complete) {
                 causes.add("STATIC_SLICE_INCOMPLETE");
             }
             if (!outputSlice.captureBindingsComplete) {
-                causes.add("CAPTURE_BINDINGS_INCOMPLETE");
+                causes.add("CAPTURE_BINDINGS_INCOMPLETE"
+                        + (outputSlice.captureBindingIssues.isEmpty()
+                        ? "" : "=" + outputSlice.captureBindingIssues));
             }
             if (!inputSelectionComplete) {
                 Set<String> missing = new LinkedHashSet<>(
@@ -2325,8 +2260,8 @@ final class RuntimeRegionPlanner {
                 heapBindings, contract, "");
     }
 
-    private static boolean mergeUpstreamMemberExecution(
-            Map<String, Object> activation,
+    private static boolean mergeOutputGoalExecution(
+            Map<String, Object> goal,
             List<UpstreamOutputMemberPlan> members, List<String> issues) {
         Map<String, Map<String, Object>> inputs = new LinkedHashMap<>();
         Map<String, Map<String, Object>> branches = new LinkedHashMap<>();
@@ -2343,18 +2278,18 @@ final class RuntimeRegionPlanner {
                     "HEAP_STATE_BINDING", issues);
         }
         if (!issues.isEmpty()) return false;
-        activation.put("symbolize", new ArrayList<>(inputs.values()));
-        activation.put("branches", new ArrayList<>(branches.values()));
+        goal.put("symbolize", new ArrayList<>(inputs.values()));
+        goal.put("branches", new ArrayList<>(branches.values()));
         if (containers.isEmpty()) {
-            activation.remove("containerElementFieldBindings");
+            goal.remove("containerElementFieldBindings");
         } else {
-            activation.put("containerElementFieldBindings",
+            goal.put("containerElementFieldBindings",
                     new ArrayList<>(containers.values()));
         }
         if (heaps.isEmpty()) {
-            activation.remove("heapStateBindings");
+            goal.remove("heapStateBindings");
         } else {
-            activation.put("heapStateBindings",
+            goal.put("heapStateBindings",
                     new ArrayList<>(heaps.values()));
         }
         return true;
@@ -2370,17 +2305,6 @@ final class RuntimeRegionPlanner {
             Map<String, Object> previous = target.putIfAbsent(key, row);
             if (previous != null && !json(previous).equals(json(row))) {
                 issues.add("CONFLICTING_" + label + ":" + key);
-            }
-        }
-    }
-
-    private static void finalizeOutputClosureArtifacts(Result result) {
-        for (Map<String, Object> activation : result.activations) {
-            activation.remove("_plannerOutputMembers");
-            Object encoded = activation.remove("_plannerOutputClosure");
-            if (encoded instanceof OutputClosureContract) {
-                activation.put(OutputClosureContract.FIELD,
-                        ((OutputClosureContract) encoded).toJson());
             }
         }
     }
@@ -2911,30 +2835,29 @@ final class RuntimeRegionPlanner {
      * object identity.  Import remains independently fail-closed until those
      * same-execution observations are complete.</p>
      */
-    private static void refineMapValueElementProjectionActivations(
-            Result result) {
-        Map<String, List<Map<String, Object>>> selectedByInstance =
+    private static void refineMapValueElementProjectionGoals(
+            List<OutputGoalDraft> outputGoals) {
+        Map<String, List<OutputGoalDraft>> selectedByInstance =
                 new LinkedHashMap<>();
-        for (Map<String, Object> activation : result.activations) {
-            UpstreamOutputMemberPlan member =
-                    singletonPlannerOutputMember(activation);
-            if (!"OUTPUT_CLOSURE".equals(captureGoalKind(activation))
-                    || member == null || !member.outputSlice.complete) {
+        for (OutputGoalDraft context : outputGoals) {
+            UpstreamOutputMemberPlan member = context.singleMember();
+            if (member == null || !member.outputSlice.complete) {
                 continue;
             }
-            String instance = string(activation.get("regionInstanceId"));
+            String instance = context.plan.instance.instanceId;
             if (!instance.isEmpty()) {
-                add(selectedByInstance, instance, activation);
+                add(selectedByInstance, instance, context);
             }
         }
 
-        for (Map<String, Object> activation : result.activations) {
+        for (OutputGoalDraft context : outputGoals) {
+            Map<String, Object> goal = context.goal;
             UpstreamOutputMemberPlan producerMember =
-                    singletonPlannerOutputMember(activation);
-            Map<String, Object> producerSlice = producerMember == null
-                    ? null : producerMember.outputSlice.toMap();
+                    context.singleMember();
+            StaticOutputSlice producerSlice = producerMember == null
+                    ? null : producerMember.outputSlice;
             List<Map<String, Object>> edgeBindings = mapRows(
-                    activation.get("edgeBindings"));
+                    goal.get("edgeBindings"));
             if (producerSlice == null || edgeBindings.isEmpty()) {
                 continue;
             }
@@ -2946,24 +2869,24 @@ final class RuntimeRegionPlanner {
                 String downstreamInstance = string(edge.get(
                         "toRegionInstance"));
                 String downstreamInput = string(edge.get("toInputPort"));
-                List<Map<String, Object>> selected = values(
+                List<OutputGoalDraft> selected = values(
                         selectedByInstance.get(downstreamInstance));
-                for (Map<String, Object> downstream : selected) {
+                for (OutputGoalDraft downstream : selected) {
                     UpstreamOutputMemberPlan downstreamMember =
-                            singletonPlannerOutputMember(downstream);
+                            downstream.singleMember();
                     if (downstreamMember == null) {
                         continue;
                     }
-                    for (Map<String, Object> declaration : mapRows(
-                            downstreamMember.outputSlice.toMap().get(
-                                    "containerElementFieldBindings"))) {
+                    for (Map<String, Object> declaration
+                            : downstreamMember.outputSlice
+                            .containerElementFieldBindings) {
                         if (!downstreamInput.equals(string(declaration.get(
                                 "containerInputPort")))) {
                             continue;
                         }
                         DownstreamContainerDemand demand =
                                 DownstreamContainerDemand.from(edge,
-                                        downstream, declaration);
+                                        downstream.plan.toMap(), declaration);
                         if (!demand.complete()) {
                             issues.add("INCOMPLETE_DOWNSTREAM_CONTAINER_DEMAND:"
                                     + firstNonBlank(demand.bindingId,
@@ -3002,7 +2925,8 @@ final class RuntimeRegionPlanner {
                             "outputCell", producerMember.output.cell,
                             "outputFieldPath", proof.outputFieldPath,
                             "outputValidationMode",
-                            producerMember.outputSlice.captureBindingsRequired
+                            !producerMember.outputSlice.captureBindings
+                                    .isEmpty()
                                     ? "EXACT_REQUESTED_OUTPUT_CAPTURE"
                                     : "ROOT_RETURN_PROJECTED_FIELD",
                             "mapProjectionOperation", proof.operation,
@@ -3040,38 +2964,125 @@ final class RuntimeRegionPlanner {
                 }
             }
 
-            activation.put("mapValueElementFieldProjections",
+            goal.put("mapValueElementFieldProjections",
                     declarations);
             boolean composable = issues.isEmpty()
                     && !declarations.isEmpty();
-            activation.remove("recursiveElementProjectionCompositionGap");
             // Preserve all pre-existing readiness decisions when the static
             // declaration is complete. Runtime identity evidence is checked
             // later by the importer. A static proof/declaration failure still
-            // closes this activation before scheduling.
+            // closes this goal before scheduling.
             if (!composable) {
-                activation.put("admission", admission(false, false,
-                        admissionMode(activation), issues));
+                goal.put("admission", admission(false, false,
+                        admissionMode(goal), issues));
             }
         }
     }
 
-    private static String captureGoalKind(Map<String, Object> activation) {
-        Map<String, Object> goal = mapValue(activation.get("captureGoal"));
-        return goal == null ? "" : string(goal.get("kind"));
+    private static String targetReachGoalId(
+            String regionInstanceId, String targetMethod) {
+        return "GOAL.TARGET_REACH." + stableId(regionInstanceId + "\n"
+                + safe(targetMethod));
     }
 
-    private static UpstreamOutputMemberPlan singletonPlannerOutputMember(
-            Map<String, Object> activation) {
-        Object encoded = activation == null ? null
-                : activation.get("_plannerOutputMembers");
-        if (!(encoded instanceof List<?>)
-                || ((List<?>) encoded).size() != 1
-                || !(((List<?>) encoded).get(0)
-                instanceof UpstreamOutputMemberPlan)) {
-            return null;
+    private static String outputRelationGoalId(
+            List<UpstreamEdgeBinding> demand) {
+        if (demand == null || demand.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "output relation goal requires one demand binding");
         }
-        return (UpstreamOutputMemberPlan) ((List<?>) encoded).get(0);
+        UpstreamEdgeBinding first = demand.get(0);
+        List<String> members = new ArrayList<>();
+        for (UpstreamEdgeBinding binding : demand) {
+            members.add(string(binding.edge.edgeId) + "\t"
+                    + (binding.output == null ? ""
+                    : binding.output.portId) + "\t"
+                    + (binding.downstreamInput == null ? ""
+                    : binding.downstreamInput.portId));
+        }
+        Collections.sort(members);
+        return "GOAL.OUTPUT_RELATION." + stableId(
+                first.upstream.instanceId + "\n"
+                        + first.downstream.instanceId + "\n"
+                        + String.join("\n", members));
+    }
+
+    private static String stableId(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(safe(value).getBytes(
+                    StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder();
+            for (byte item : bytes) {
+                result.append(String.format("%02x", item & 0xff));
+            }
+            return result.substring(0, 20);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable",
+                    impossible);
+        }
+    }
+
+    private static final class RegionPlanDraft {
+        private final InstanceEvidence instance;
+        private final Map<String, Object> rootSelector;
+        private final List<String> runtimeDefinitionMethods;
+        private final Map<String, Object> admission;
+        private final List<Map<String, Object>> symbolize;
+        private final List<Map<String, Object>> branches;
+        private final List<Map<String, Object>> goals = new ArrayList<>();
+
+        private RegionPlanDraft(
+                InstanceEvidence instance, Map<String, Object> rootSelector,
+                List<String> runtimeDefinitionMethods,
+                Map<String, Object> admission,
+                List<Map<String, Object>> symbolize,
+                List<Map<String, Object>> branches) {
+            this.instance = instance;
+            this.rootSelector = rootSelector;
+            this.runtimeDefinitionMethods = runtimeDefinitionMethods;
+            this.admission = admission;
+            this.symbolize = symbolize;
+            this.branches = branches;
+        }
+
+        private Map<String, Object> baseGoal(String goalId, String kind) {
+            return object(
+                    "goalId", goalId,
+                    "kind", kind,
+                    "runtimeDefinitionMethods", runtimeDefinitionMethods,
+                    "admission", admission,
+                    "symbolize", symbolize,
+                    "branches", branches);
+        }
+
+        private Map<String, Object> toMap() {
+            return object(
+                    "regionInstanceId", instance.instanceId,
+                    "regionId", instance.region.regionId,
+                    "test", instance.root.test,
+                    "rootSelector", rootSelector,
+                    "targetMethod", instance.region.anchorMethod,
+                    "closureGoals", goals);
+        }
+    }
+
+    private static final class OutputGoalDraft {
+        private final RegionPlanDraft plan;
+        private final Map<String, Object> goal;
+        private final List<UpstreamOutputMemberPlan> members;
+
+        private OutputGoalDraft(RegionPlanDraft plan,
+                                Map<String, Object> goal,
+                                List<UpstreamOutputMemberPlan> members) {
+            this.plan = plan;
+            this.goal = goal;
+            this.members = members;
+        }
+
+        private UpstreamOutputMemberPlan singleMember() {
+            return members.size() == 1 ? members.get(0) : null;
+        }
     }
 
     private static List<Map<String, Object>> selectActivationRows(
@@ -3302,7 +3313,6 @@ final class RuntimeRegionPlanner {
             action.put("location", "ARGUMENT_FIELD_PATH");
             action.remove("fields");
             action.put("fieldPaths", paths);
-            action.put("fieldPathSelectionComplete", !paths.isEmpty());
             action.put("materializationMode", "SELECTIVE_FIELD_PATHS");
             Map<String, String> declared = leafDeclarationsByPort.get(symbol);
             if (paths.size() == 1 && declared != null) {
@@ -3323,21 +3333,7 @@ final class RuntimeRegionPlanner {
     }
 
     private static List<String> dependencyFieldPath(String cell) {
-        List<String> result = new ArrayList<>();
-        Matcher signature = FIELD_SIGNATURE.matcher(safe(cell));
-        if (!signature.find()) {
-            return result;
-        }
-        result.add(signature.group(3).trim());
-        Matcher projection = FIELD_PROJECTION.matcher(
-                safe(cell).substring(signature.end()));
-        while (projection.find()) {
-            String field = projection.group(1).trim();
-            if (!field.isEmpty()) {
-                result.add(field);
-            }
-        }
-        return result;
+        return FieldPathSpec.path(cell);
     }
 
     private static List<List<String>> deepestFieldPaths(
@@ -3404,8 +3400,9 @@ final class RuntimeRegionPlanner {
                 return false;
             }
             if ("ARGUMENT_FIELD_PATH".equals(action.get("location"))
-                    && !Boolean.TRUE.equals(
-                    action.get("fieldPathSelectionComplete"))) {
+                    && (!(action.get("fieldPaths")
+                    instanceof Collection<?>)
+                    || ((Collection<?>) action.get("fieldPaths")).isEmpty())) {
                 return false;
             }
             ArrayFieldLeaf leaf = ArrayFieldLeaf.from(action);
@@ -3486,8 +3483,8 @@ final class RuntimeRegionPlanner {
                         continue;
                     }
                     FingerprintMatch candidate =
-                            nearestMatchingSourceEndpoint(edge,
-                                    values(sourceFingerprints.get(
+                            nearestMatchingSourceEndpoint(values(
+                                    sourceFingerprints.get(
                                             sourceInstance.instanceId)),
                                     target);
                     if (candidate == null) {
@@ -3526,17 +3523,13 @@ final class RuntimeRegionPlanner {
                 currentInstance.instanceId) < 0;
     }
 
-    private static String endpointCorrelationAuthority() {
-        return "NEAREST_PRECEDING_MATCHING_SOURCE_ENDPOINT";
-    }
-
     private static FingerprintMatch nearestMatchingSourceEndpoint(
-            StaticRegionEdge edge, List<EndpointFingerprint> sources,
+            List<EndpointFingerprint> sources,
             EndpointFingerprint target) {
         FingerprintMatch best = null;
         for (EndpointFingerprint source : sources) {
             if (!source.digest.equals(target.digest)
-                    || (edge.requiresOrder && source.seq > target.seq)) {
+                    || source.seq > target.seq) {
                 continue;
             }
             FingerprintMatch candidate = new FingerprintMatch(source, target);
@@ -3708,7 +3701,8 @@ final class RuntimeRegionPlanner {
 
     private static SharedReadFrom sharedReadFrom(StaticRegionEdge edge,
                                                  InstanceEvidence upstream,
-                                                 InstanceEvidence downstream) {
+                                                 InstanceEvidence downstream,
+                                                 RuntimeTraceIndex trace) {
         if (!upstream.root.process.equals(downstream.root.process)) {
             return null;
         }
@@ -3722,72 +3716,22 @@ final class RuntimeRegionPlanner {
                 || !sameField(fromField, toField)) {
             return null;
         }
+        WriteCandidateIndex writes = WriteCandidateIndex.build(
+                fromField, upstream, trace);
         SharedReadFrom selected = null;
-        for (FieldAccessEvent write : upstream.fieldEvents) {
-            if (!sameField(fromField, write.parsedField)
-                    || write.receiverObjectId == 0) {
+        for (FieldAccessEvent read : trace.fieldEvents(
+                toField, downstream.calls)) {
+            if (!"FIELD_READ".equals(read.kind)
+                    || !sameField(toField, read.parsedField)
+                    || read.receiverObjectId == 0) {
                 continue;
             }
-            for (FieldAccessEvent read : downstream.fieldEvents) {
-                if (!"FIELD_READ".equals(read.kind)
-                        || !sameField(toField, read.parsedField)
-                        || read.receiverObjectId == 0
-                        || write.receiverObjectId != read.receiverObjectId) {
-                    continue;
-                }
-                WriteEvidence writeEvidence = writeEvidence(write, upstream,
-                        read.seq);
-                if (writeEvidence == null) {
-                    continue;
-                }
-                if (writeEvidence.mutation != null
-                        && (write.valueObjectId == 0
-                        || read.valueObjectId == 0
-                        || write.valueObjectId != read.valueObjectId)) {
-                    continue;
-                }
-                SharedReadFrom candidate = new SharedReadFrom(write, read,
-                        writeEvidence);
-                if (selected == null
-                        || candidate.writerEventSeq()
-                        > selected.writerEventSeq()) {
-                    selected = candidate;
-                }
-            }
-        }
-        return selected;
-    }
-
-    private static WriteEvidence writeEvidence(FieldAccessEvent field,
-                                               InstanceEvidence instance,
-                                               long readSeq) {
-        if ("FIELD_WRITE".equals(field.kind)) {
-            if (field.seq > readSeq) {
-                return null;
-            }
-            return new WriteEvidence(null, null);
-        }
-        if (!"FIELD_READ".equals(field.kind) || field.valueObjectId == 0) {
-            return null;
-        }
-        WriteEvidence selected = null;
-        for (RuntimeEvent event : instance.runtimeEvents) {
-            if (event.seq <= field.seq
-                    || !"CALL_SITE_ENTER".equals(event.kind)
-                    || event.objectId != field.valueObjectId
-                    || !isContainerMutator(event.declaredCallee)) {
+            WriteCandidate write = writes.latestFor(read);
+            if (write == null) {
                 continue;
             }
-            RuntimeEvent completion = completedCall(event,
-                    instance.runtimeEvents);
-            if (completion == null || completion.seq > readSeq) {
-                continue;
-            }
-            if (event.callId != field.callId
-                    && !instance.calls.contains(event.callId)) {
-                continue;
-            }
-            WriteEvidence candidate = new WriteEvidence(event, completion);
+            SharedReadFrom candidate = new SharedReadFrom(
+                    write.field, read, write.evidence);
             if (selected == null
                     || candidate.writerEventSeq()
                     > selected.writerEventSeq()) {
@@ -3795,23 +3739,6 @@ final class RuntimeRegionPlanner {
             }
         }
         return selected;
-    }
-
-    private static RuntimeEvent completedCall(RuntimeEvent enter,
-                                              List<RuntimeEvent> events) {
-        if (enter == null || enter.invocationId <= 0L) {
-            return null;
-        }
-        for (RuntimeEvent event : events) {
-            if (event.seq > enter.seq
-                    && "CALL_SITE_RETURN".equals(event.kind)
-                    && event.invocationId == enter.invocationId
-                    && event.callId == enter.callId
-                    && event.siteId.equals(enter.siteId)) {
-                return event;
-            }
-        }
-        return null;
     }
 
     private static boolean isContainerMutator(String signature) {
@@ -3839,11 +3766,7 @@ final class RuntimeRegionPlanner {
 
     private static StaticProjectionIndex readStaticProjectionIndex(File file) {
         StaticProjectionIndex result = new StaticProjectionIndex();
-        if (!file.isFile()) {
-            result.catalogReadComplete = false;
-            result.catalogFailure = "FROZEN_STATIC_GRAPH_NOT_FOUND";
-            return result;
-        }
+        int rows = 0;
         try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
                 StandardCharsets.UTF_8)) {
             String line;
@@ -3851,32 +3774,24 @@ final class RuntimeRegionPlanner {
                 if (line.trim().isEmpty()) {
                     continue;
                 }
-                result.catalogRowCount++;
-                try {
-                    JsonObject row = parseJsonObject(line);
-                    StaticDataflowProjectionEdge edge =
-                            StaticDataflowProjectionEdge.fromJson(row);
-                    if (edge == null || edge.edgeId.isEmpty()
-                            || result.byId.containsKey(edge.edgeId)) {
-                        result.catalogInvalidRowCount++;
-                        continue;
-                    }
-                    result.add(edge,
-                            StaticOutputSlice.causalEdgeReference(row));
-                } catch (RuntimeException invalidRow) {
-                    result.catalogInvalidRowCount++;
+                rows++;
+                JsonObject row = parseJsonObject(line);
+                StaticDataflowProjectionEdge edge =
+                        StaticDataflowProjectionEdge.fromJson(row);
+                if (edge == null || edge.edgeId.isEmpty()
+                        || result.byId.containsKey(edge.edgeId)) {
+                    throw new IllegalArgumentException(
+                            "malformed or duplicate frozen static graph edge");
                 }
+                result.add(edge, StaticOutputSlice.causalEdgeReference(row));
             }
         } catch (IOException exception) {
-            result.catalogReadComplete = false;
-            result.catalogFailure = "FROZEN_STATIC_GRAPH_READ_FAILED";
+            throw new IllegalStateException(
+                    "failed to read frozen static graph: " + file, exception);
         }
-        if (result.catalogReadComplete && result.catalogRowCount == 0) {
-            result.catalogFailure = "FROZEN_STATIC_GRAPH_EMPTY";
-        } else if (result.catalogReadComplete
-                && result.catalogInvalidRowCount > 0) {
-            result.catalogFailure = "FROZEN_STATIC_GRAPH_INVALID_ROWS:"
-                    + result.catalogInvalidRowCount;
+        if (rows == 0) {
+            throw new IllegalArgumentException(
+                    "frozen static graph must not be empty");
         }
         return result;
     }
@@ -3889,8 +3804,6 @@ final class RuntimeRegionPlanner {
                 if (failure.isEmpty()) {
                     continue;
                 }
-                slice.structuralComplete = false;
-                slice.complete = false;
                 if (!slice.structuralIssues.contains(failure)) {
                     slice.structuralIssues.add(failure);
                 }
@@ -3967,11 +3880,11 @@ final class RuntimeRegionPlanner {
     }
 
     static final class Result {
-        final List<Map<String, Object>> activations = new ArrayList<>();
+        final List<Map<String, Object>> regionPlans = new ArrayList<>();
         final List<Map<String, Object>> edgeValidations = new ArrayList<>();
 
-        String activationsJsonl() {
-            return jsonl(activations);
+        String regionPlansJsonl() {
+            return jsonl(regionPlans);
         }
 
         String edgeValidationsJsonl() {
@@ -4251,6 +4164,18 @@ final class RuntimeRegionPlanner {
                 new LinkedHashMap<>();
         private final Map<Long, List<FieldAccessEvent>> fieldsByCall =
                 new LinkedHashMap<>();
+        private final Map<String, List<MethodEvent>> invocationsByTestMethod =
+                new LinkedHashMap<>();
+        private final Map<String, List<FieldAccessEvent>>
+                fieldEventsByReceiver = new LinkedHashMap<>();
+        private final Map<String, List<FieldAccessEvent>> fieldReadsByField =
+                new LinkedHashMap<>();
+        private final Map<Integer, List<RuntimeEvent>> mutatorsByObject =
+                new LinkedHashMap<>();
+        private final Map<Long, RuntimeEvent> completionsByInvocation =
+                new LinkedHashMap<>();
+        private final Map<String, List<TraceEndpoint>> endpointsByDigest =
+                new LinkedHashMap<>();
         private final Map<Long, Integer> globalOrdinals =
                 new LinkedHashMap<>();
         private final Map<Long, Integer> contextOrdinals =
@@ -4265,6 +4190,8 @@ final class RuntimeRegionPlanner {
             for (MethodEvent event : values(methods)) {
                 result.methodsByCall.put(event.callId, event);
                 add(result.methodsBySignature, event.method, event);
+                add(result.invocationsByTestMethod,
+                        testMethodKey(event.test, event.method), event);
                 result.childrenByParent.computeIfAbsent(event.parentCallId,
                         ignored -> new ArrayList<>()).add(event);
 
@@ -4283,12 +4210,47 @@ final class RuntimeRegionPlanner {
             for (RuntimeEvent event : values(runtime)) {
                 result.runtimeByCall.computeIfAbsent(event.callId,
                         ignored -> new ArrayList<>()).add(event);
+                if ("CALL_SITE_ENTER".equals(event.kind)
+                        && event.objectId != 0
+                        && isContainerMutator(event.declaredCallee)) {
+                    result.mutatorsByObject.computeIfAbsent(
+                            event.objectId,
+                            ignored -> new ArrayList<>()).add(event);
+                } else if ("CALL_SITE_RETURN".equals(event.kind)
+                        && event.invocationId > 0L) {
+                    result.completionsByInvocation.putIfAbsent(
+                            event.invocationId, event);
+                }
+                if (event.valueFingerprintComplete
+                        && !event.valueFingerprint.isEmpty()) {
+                    add(result.endpointsByDigest, event.valueFingerprint,
+                            new TraceEndpoint(event.seq, event.callId));
+                }
             }
             for (FieldAccessEvent event : values(fields)) {
                 result.fieldsByCall.computeIfAbsent(event.callId,
                         ignored -> new ArrayList<>()).add(event);
+                String field = RuntimeFieldAccessIndex.exactFieldKey(
+                        event.field);
+                if (!field.isEmpty() && event.receiverObjectId != 0) {
+                    add(result.fieldEventsByReceiver,
+                            RuntimeFieldAccessIndex.receiverFieldKey(
+                                    event.receiverObjectId, field), event);
+                    if ("FIELD_READ".equals(event.kind)) {
+                        add(result.fieldReadsByField, field, event);
+                    }
+                }
+                if (event.valueFingerprintComplete
+                        && !event.valueFingerprint.isEmpty()) {
+                    add(result.endpointsByDigest, event.valueFingerprint,
+                            new TraceEndpoint(event.seq, event.callId));
+                }
             }
             return result;
+        }
+
+        private static String testMethodKey(String test, String method) {
+            return safe(test) + '\n' + safe(method);
         }
 
         private int invocationOrdinal(MethodEvent method) {
@@ -4349,6 +4311,53 @@ final class RuntimeRegionPlanner {
             }
             result.sort(Comparator.comparingLong(value -> value.seq));
             return result;
+        }
+
+        private List<FieldAccessEvent> fieldEvents(
+                FieldCell field, Set<Long> calls) {
+            String key = RuntimeFieldAccessIndex.exactFieldKey(
+                    field.signature());
+            if (key.isEmpty()) {
+                return Collections.emptyList();
+            }
+            List<FieldAccessEvent> result = new ArrayList<>();
+            for (FieldAccessEvent event : values(fieldReadsByField.get(key))) {
+                if (calls.contains(event.callId)) {
+                    result.add(event);
+                }
+            }
+            return result;
+        }
+
+        private List<RuntimeEvent> mutators(int objectId) {
+            return values(mutatorsByObject.get(objectId));
+        }
+
+        private RuntimeEvent completion(RuntimeEvent enter) {
+            if (enter == null || enter.invocationId <= 0L) {
+                return null;
+            }
+            RuntimeEvent completion = completionsByInvocation.get(
+                    enter.invocationId);
+            return completion != null
+                    && completion.seq > enter.seq
+                    && completion.callId == enter.callId
+                    && completion.siteId.equals(enter.siteId)
+                    ? completion : null;
+        }
+
+        private List<TraceEndpoint> endpoints(String digest) {
+            return values(endpointsByDigest.get(safe(digest)));
+        }
+    }
+
+    private static final class TraceEndpoint {
+        private final long seq;
+        private final long callId;
+
+        private TraceEndpoint(long seq, long callId) {
+            this.seq = seq;
+            this.callId = callId;
         }
     }
 
@@ -4535,6 +4544,7 @@ final class RuntimeRegionPlanner {
         private String regionId = "";
         private String rootMethod = "";
         private String anchorMethod = "";
+        private String selection = "";
         private final Set<String> methods = new LinkedHashSet<>();
         private final List<StaticPort> inputs = new ArrayList<>();
         private final List<StaticPort> outputs = new ArrayList<>();
@@ -4610,11 +4620,29 @@ final class RuntimeRegionPlanner {
             return portFor(inputs, endpoint, false);
         }
 
+        private StaticPort frameInputFor(String outputCell) {
+            StaticPort selected = null;
+            for (StaticPort input : inputs) {
+                if (!"HEAP_PRESTATE".equals(input.sourceKind)
+                        || !outputCell.equals(input.cell)) {
+                    continue;
+                }
+                if (selected != null) {
+                    return null;
+                }
+                selected = input;
+            }
+            return selected;
+        }
+
         private StaticPort uniqueDemandFrontierPort(
                 String cell, Set<String> observedMethods,
                 String runtimeRootMethod) {
             StaticPort selected = null;
             for (StaticPort input : inputs) {
+                if ("HEAP_PRESTATE".equals(input.sourceKind)) {
+                    continue;
+                }
                 if (!cell.equals(input.cell)) {
                     continue;
                 }
@@ -4666,6 +4694,10 @@ final class RuntimeRegionPlanner {
             return outputSlices.get(safe(outputPort));
         }
 
+        private boolean isTargetClosure() {
+            return "EXCEPTION_BACKWARD_CAUSAL_CLOSURE".equals(selection);
+        }
+
         private StaticPort portFor(List<StaticPort> ports, String endpoint,
                                    boolean allowUniqueFieldFallback) {
             String value = safe(endpoint);
@@ -4700,6 +4732,7 @@ final class RuntimeRegionPlanner {
             region.rootMethod = jsonString(json, "rootMethod");
             region.anchorMethod = firstNonBlank(jsonString(json, "anchorMethod"),
                     region.rootMethod);
+            region.selection = jsonString(json, "selection");
             region.methods.addAll(jsonStringArray(json, "methods"));
             region.methods.add(region.rootMethod);
             for (JsonObject object : jsonObjectArray(json,
@@ -4709,13 +4742,16 @@ final class RuntimeRegionPlanner {
                         jsonString(object, "cell"),
                         jsonString(object, "sourceKind"),
                         jsonString(object, "projection"), "",
-                        StaticPort.materializationMetadata(object)));
+                        jsonString(object, "javaType"),
+                        MaterializationSpec.decode(object)));
             }
             for (JsonObject object : jsonObjectArray(json, "outputs")) {
                 region.outputs.add(new StaticPort(
                         jsonString(object, "portId"),
                         jsonString(object, "cell"), "", "",
-                        jsonString(object, "kind")));
+                        jsonString(object, "kind"),
+                        jsonString(object, "javaType"),
+                        MaterializationSpec.none()));
             }
             for (JsonObject object : jsonObjectArray(json,
                     "outputSlices")) {
@@ -4826,10 +4862,6 @@ final class RuntimeRegionPlanner {
     }
 
     private static final class StaticProjectionIndex {
-        private boolean catalogReadComplete = true;
-        private int catalogRowCount;
-        private int catalogInvalidRowCount;
-        private String catalogFailure = "";
         private final Map<String, StaticDataflowProjectionEdge> byId =
                 new LinkedHashMap<>();
         private final Map<String, Map<String, Object>> causalReferencesById =
@@ -4880,11 +4912,6 @@ final class RuntimeRegionPlanner {
             slice.causalEdges.clear();
             if (slice.causalEdgeIds.isEmpty()) {
                 return "";
-            }
-            if (!catalogReadComplete || catalogRowCount == 0
-                    || catalogInvalidRowCount > 0) {
-                return firstNonBlank(catalogFailure,
-                        "STATIC_DATAFLOW_CATALOG_NOT_AUTHORITATIVE");
             }
             Set<String> seen = new LinkedHashSet<>();
             for (String id : slice.causalEdgeIds) {
@@ -5013,10 +5040,6 @@ final class RuntimeRegionPlanner {
                 MethodEvent runtimeRoot, Set<Long> containedCalls,
                 RuntimeFieldAccessIndex runtimeFieldAccesses) {
             ConcreteDemandSlice result = new ConcreteDemandSlice();
-            if (!catalogReadComplete || catalogRowCount == 0
-                    || catalogInvalidRowCount > 0 || byId.isEmpty()) {
-                return result;
-            }
             if (region.outputs.isEmpty() && region.branches.isEmpty()) {
                 for (StaticPort input : region.inputs) {
                     result.inputPortIds.add(input.portId);
@@ -5035,6 +5058,12 @@ final class RuntimeRegionPlanner {
                     failureDirected = true;
                 } else if (!output.cell.isEmpty()) {
                     seeds.add(output.cell);
+                    StaticPort frameInput = region.outputSlices.containsKey(
+                            output.portId) ? region.frameInputFor(
+                            output.cell) : null;
+                    if (frameInput != null) {
+                        result.inputPortIds.add(frameInput.portId);
+                    }
                 }
             }
             for (BranchPolicy branch : region.branches) {
@@ -5182,7 +5211,6 @@ final class RuntimeRegionPlanner {
 
     /** Result of the post-runtime demand slice over the frozen static graph. */
     private static final class ConcreteDemandSlice {
-        private boolean externalInputPromoted;
         private final Set<String> inputPortIds = new LinkedHashSet<>();
         private final Set<String> methods = new LinkedHashSet<>();
         private final Set<String> edgeIds = new LinkedHashSet<>();
@@ -5211,7 +5239,6 @@ final class RuntimeRegionPlanner {
                 return;
             }
             inputPortIds.add(port.portId);
-            externalInputPromoted = true;
         }
     }
 
@@ -5479,9 +5506,6 @@ final class RuntimeRegionPlanner {
         private String toPort = "";
         private String kind = "";
         private String siteId = "";
-        private boolean requiresOrder;
-        private boolean requiresObjectIdentity;
-        private String mappingKind = "";
         private boolean mappingOnly;
         private FieldCell fromField = FieldCell.unresolved();
         private FieldCell toField = FieldCell.unresolved();
@@ -5505,10 +5529,6 @@ final class RuntimeRegionPlanner {
             edge.toField = fieldCell(edge.toPort);
             edge.kind = jsonString(json, "kind");
             edge.siteId = jsonString(json, "siteId");
-            edge.requiresOrder = jsonBoolean(json, "requiresOrder", false);
-            edge.requiresObjectIdentity = jsonBoolean(json,
-                    "requiresObjectIdentity", false);
-            edge.mappingKind = jsonString(json, "mappingKind");
             edge.mappingOnly = "MAPPING_ONLY".equals(
                     jsonString(json, "semanticMode"));
             return edge;
@@ -5691,68 +5711,13 @@ final class RuntimeRegionPlanner {
                         || !caller.equals(event.method)
                         || !site.equals(event.siteId)
                         || argument != event.argumentIndex
-                        || !callee.isEmpty()
-                        && !callee.equals(event.declaredCallee)
-                        || unit >= 0 && !site.endsWith("#u" + unit)) {
+                        || !callee.equals(event.declaredCallee)
+                        || !site.endsWith("#u" + unit)) {
                     continue;
                 }
                 result.add(event);
             }
             return result;
-        }
-
-        private int callArgumentOccurrence(Map<String, Object> binding,
-                                           RuntimeEvent target) {
-            int occurrence = 0;
-            for (RuntimeEvent event : matchingCallArguments(binding)) {
-                occurrence++;
-                if (event == target || event.seq == target.seq) {
-                    return occurrence;
-                }
-            }
-            return 0;
-        }
-
-        /**
-         * Returns native-run writes that can witness a FIELD_ASSIGNMENT_RHS
-         * request.  FieldAccessEvent intentionally carries no inferred site;
-         * the caller may use these rows only after proving that the static
-         * method/field pair has one exact assignment site.
-         */
-        private List<FieldAccessEvent> matchingFieldAssignments(
-                Map<String, Object> binding) {
-            List<FieldAccessEvent> result = new ArrayList<>();
-            String method = string(binding.get("method"));
-            FieldCell expected = fieldCell(string(binding.get(
-                    "fieldSignature")));
-            if (method.isEmpty() || !expected.declaredSignature) {
-                return result;
-            }
-            for (FieldAccessEvent event : fieldEvents) {
-                if ("FIELD_WRITE".equals(event.kind)
-                        && method.equals(event.method)
-                        && sameField(expected, fieldCell(event.field))) {
-                    result.add(event);
-                }
-            }
-            result.sort(Comparator.comparingLong(value -> value.seq));
-            return result;
-        }
-
-        private boolean oneFieldOwner(
-                List<FieldAccessEvent> assignments) {
-            int receiver = 0;
-            for (FieldAccessEvent event : assignments) {
-                if (event.receiverObjectId == 0) {
-                    return false;
-                }
-                if (receiver == 0) {
-                    receiver = event.receiverObjectId;
-                } else if (receiver != event.receiverObjectId) {
-                    return false;
-                }
-            }
-            return receiver != 0;
         }
 
         private long lastSeq() {
@@ -5769,9 +5734,14 @@ final class RuntimeRegionPlanner {
 
     /** Reuses exact shared-state correlation across promotion and rendering. */
     private static final class RuntimeRelationEvidenceCache {
+        private final RuntimeTraceIndex trace;
         private final Map<String, SharedReadFrom> confirmedReadFrom =
                 new LinkedHashMap<>();
         private final Set<String> absentReadFrom = new LinkedHashSet<>();
+
+        private RuntimeRelationEvidenceCache(RuntimeTraceIndex trace) {
+            this.trace = trace;
+        }
 
         private SharedReadFrom sharedReadFrom(StaticRegionEdge edge,
                 InstanceEvidence upstream, InstanceEvidence downstream) {
@@ -5784,7 +5754,7 @@ final class RuntimeRegionPlanner {
                 return null;
             }
             SharedReadFrom result = RuntimeRegionPlanner.sharedReadFrom(edge,
-                    upstream, downstream);
+                    upstream, downstream, trace);
             if (result == null) {
                 absentReadFrom.add(key);
             } else {
@@ -5856,6 +5826,114 @@ final class RuntimeRegionPlanner {
         }
     }
 
+    /**
+     * Writer candidates for one upstream instance, grouped by exact receiver.
+     * Construction is linear in that instance's field events plus the
+     * mutators of the referenced container objects. Reads use one upper-bound
+     * search instead of a write-by-read Cartesian scan.
+     */
+    private static final class WriteCandidateIndex {
+        private final Map<Integer, List<WriteCandidate>> byReceiver =
+                new LinkedHashMap<>();
+
+        private static WriteCandidateIndex build(
+                FieldCell field, InstanceEvidence instance,
+                RuntimeTraceIndex trace) {
+            WriteCandidateIndex result = new WriteCandidateIndex();
+            Set<String> seen = new LinkedHashSet<>();
+            for (FieldAccessEvent event : instance.fieldEvents) {
+                if (!sameField(field, event.parsedField)
+                        || event.receiverObjectId == 0) {
+                    continue;
+                }
+                if ("FIELD_WRITE".equals(event.kind)) {
+                    result.add(event, new WriteEvidence(null, null), seen);
+                    continue;
+                }
+                if (!"FIELD_READ".equals(event.kind)
+                        || event.valueObjectId == 0) {
+                    continue;
+                }
+                for (RuntimeEvent mutation
+                        : trace.mutators(event.valueObjectId)) {
+                    if (mutation.seq <= event.seq
+                            || !instance.calls.contains(mutation.callId)) {
+                        continue;
+                    }
+                    RuntimeEvent completion = trace.completion(mutation);
+                    if (completion == null
+                            || !instance.calls.contains(completion.callId)) {
+                        continue;
+                    }
+                    result.add(event, new WriteEvidence(
+                            mutation, completion), seen);
+                }
+            }
+            for (List<WriteCandidate> candidates
+                    : result.byReceiver.values()) {
+                candidates.sort(Comparator.comparingLong(
+                        WriteCandidate::writerEventSeq));
+            }
+            return result;
+        }
+
+        private void add(FieldAccessEvent field, WriteEvidence evidence,
+                         Set<String> seen) {
+            long writerSeq = evidence.mutation == null
+                    ? field.seq : evidence.writerEventSeq();
+            String identity = field.receiverObjectId + "\n" + field.seq
+                    + "\n" + writerSeq;
+            if (!seen.add(identity)) {
+                return;
+            }
+            byReceiver.computeIfAbsent(field.receiverObjectId,
+                    ignored -> new ArrayList<>()).add(
+                    new WriteCandidate(field, evidence));
+        }
+
+        private WriteCandidate latestFor(FieldAccessEvent read) {
+            List<WriteCandidate> candidates = values(
+                    byReceiver.get(read.receiverObjectId));
+            int low = 0;
+            int high = candidates.size();
+            while (low < high) {
+                int middle = (low + high) >>> 1;
+                if (candidates.get(middle).writerEventSeq() <= read.seq) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            for (int index = low - 1; index >= 0; index--) {
+                WriteCandidate candidate = candidates.get(index);
+                if (candidate.evidence.mutation == null
+                        || candidate.field.valueObjectId != 0
+                        && read.valueObjectId != 0
+                        && candidate.field.valueObjectId
+                        == read.valueObjectId) {
+                    return candidate;
+                }
+            }
+            return null;
+        }
+    }
+
+    private static final class WriteCandidate {
+        private final FieldAccessEvent field;
+        private final WriteEvidence evidence;
+
+        private WriteCandidate(FieldAccessEvent field,
+                               WriteEvidence evidence) {
+            this.field = field;
+            this.evidence = evidence;
+        }
+
+        private long writerEventSeq() {
+            return evidence.mutation == null
+                    ? field.seq : evidence.writerEventSeq();
+        }
+    }
+
     private static final class UpstreamEdgeBinding {
         private final StaticRegionEdge edge;
         private final InstanceEvidence upstream;
@@ -5889,8 +5967,6 @@ final class RuntimeRegionPlanner {
                     "toRegion", edge.toRegion,
                     "fromRegionInstance", upstream.instanceId,
                     "toRegionInstance", downstream.instanceId,
-                    "fromRootCallId", upstream.root.callId,
-                    "toRootCallId", downstream.root.callId,
                     "fromOutputPort", output.portId,
                     "fromOutputCell", output.cell,
                     "toInputPort", downstreamInput.portId,
@@ -6023,9 +6099,8 @@ final class RuntimeRegionPlanner {
         }
 
         private static MapValueProjectionProof from(
-                Map<String, Object> slice) {
-            List<Map<String, Object>> edges = mapRows(slice.get(
-                    "causalEdges"));
+                StaticOutputSlice slice) {
+            List<Map<String, Object>> edges = slice.causalEdges;
             List<Map<String, Object>> views = new ArrayList<>();
             List<Map<String, Object>> snapshots = new ArrayList<>();
             for (Map<String, Object> edge : edges) {
@@ -6078,7 +6153,7 @@ final class RuntimeRegionPlanner {
                         + "ASSOCIATION_PROOF");
             }
 
-            String outputCell = string(slice.get("outputCell"));
+            String outputCell = slice.outputCell;
             String arrayCell = string(snapshot.get("toCell"));
             List<String> outputPath = exactValuePath(arrayCell, outputCell,
                     edges);
@@ -6091,8 +6166,7 @@ final class RuntimeRegionPlanner {
             List<Map<String, Object>> matchingInputs = new ArrayList<>();
             Map<Map<String, Object>, List<String>> inputPaths =
                     new LinkedHashMap<>();
-            for (Map<String, Object> input : mapRows(slice.get(
-                    "inputBindings"))) {
+            for (Map<String, Object> input : slice.inputBindings) {
                 List<String> path = exactValuePath(string(input.get(
                         "dependencyCell")), mapCell, edges);
                 if (path != null) {
@@ -6223,13 +6297,8 @@ final class RuntimeRegionPlanner {
     private static final class StaticOutputSlice {
         private String outputPort = "";
         private String outputCell = "";
-        private String selection = "";
         private boolean complete;
         private boolean structuralComplete;
-        private boolean regionTruncated;
-        private boolean sliceTruncated;
-        private boolean methodBudgetTruncated;
-        private boolean causalCellBudgetTruncated;
         private final List<String> structuralIssues = new ArrayList<>();
         private final Set<String> inputPorts = new LinkedHashSet<>();
         private final Set<String> methods = new LinkedHashSet<>();
@@ -6255,16 +6324,13 @@ final class RuntimeRegionPlanner {
                 new ArrayList<>();
         private final List<Map<String, Object>>
                 containerElementFieldBindings = new ArrayList<>();
-        private boolean captureBindingsRequired;
         private boolean captureBindingsComplete = true;
         private final List<String> captureBindingIssues = new ArrayList<>();
         private boolean captureDischargedByHeapEffectTransformer;
         private String captureDischargeInputPort = "";
         private String captureDischargeAuthority = "";
-        private final List<String> unresolvedInputs = new ArrayList<>();
-        private final List<Map<String, Object>> unresolvedInputDetails =
+        private final List<Map<String, Object>> inputGaps =
                 new ArrayList<>();
-        private boolean unresolvedInputProvenanceComplete;
         private boolean runtimeRefinementComplete = true;
         private final Set<String> staticSites = new LinkedHashSet<>();
 
@@ -6293,8 +6359,6 @@ final class RuntimeRegionPlanner {
             StaticOutputSlice slice = new StaticOutputSlice();
             slice.outputPort = jsonString(json, "outputPort");
             slice.outputCell = jsonString(json, "outputCell");
-            slice.selection = jsonString(json, "selection");
-            slice.complete = jsonBoolean(json, "complete", false);
             slice.inputPorts.addAll(jsonStringArray(json, "inputPorts"));
             slice.methods.addAll(jsonStringArray(json, "methods"));
             slice.sites.addAll(jsonStringArray(json, "sites"));
@@ -6302,79 +6366,20 @@ final class RuntimeRegionPlanner {
                     "causalEdgeIds"));
             for (JsonObject binding : jsonObjectArray(json,
                     "inputBindings")) {
-                Map<String, Object> parsed = object(
-                        "dependencyCell", jsonString(binding,
-                        "dependencyCell"),
-                        "inputPort", jsonString(binding, "inputPort"),
-                        "bindingAuthority", jsonString(binding,
-                        "bindingAuthority"),
-                        "dependencyMethods", jsonStringArray(binding,
-                        "dependencyMethods"));
-                // Preserve the exact projected-leaf declaration emitted by
-                // the static slice.  Dropping these fields used to collapse a
-                // nested array carrier back to its root argument type, which
-                // made an exact consumed-getfield join impossible downstream.
-                List<String> fieldPath = jsonStringArray(binding,
-                        "fieldPath");
-                if (!fieldPath.isEmpty()) {
-                    parsed.put("fieldPath", fieldPath);
-                }
-                String leafSignature = firstNonBlank(jsonString(binding,
-                        "leafFieldSignature"), jsonString(binding,
-                        "declaredFieldSignature"));
-                if (!leafSignature.isEmpty()) {
-                    parsed.put("leafFieldSignature", leafSignature);
-                }
-                String declaredSignature = jsonString(binding,
-                        "declaredFieldSignature");
-                if (!declaredSignature.isEmpty()) {
-                    parsed.put("declaredFieldSignature",
-                            declaredSignature);
-                }
-                if (jsonHasField(binding,
-                        "requestedStateTransformerSinkSites")) {
-                    parsed.put("requestedStateTransformerSinkSites",
-                            jsonStringArray(binding,
-                                    "requestedStateTransformerSinkSites"));
-                    parsed.put("requestedStateTransformerGuardSites",
-                            jsonStringArray(binding,
-                                    "requestedStateTransformerGuardSites"));
-                    parsed.put(
-                            "requestedStateTransformerSinkClosureComplete",
-                            jsonBoolean(binding,
-                                    "requestedStateTransformerSinkClosureComplete",
-                                    false));
-                    parsed.put("requestedStateTransformerSinkExclusive",
-                            jsonBoolean(binding,
-                                    "requestedStateTransformerSinkExclusive",
-                                    false));
-                    parsed.put(
-                            "requestedStateTransformerUnclassifiedEdgeIds",
-                            jsonStringArray(binding,
-                                    "requestedStateTransformerUnclassifiedEdgeIds"));
-                    parsed.put("requestedStateTransformerSinkAuthority",
-                            jsonString(binding,
-                                    "requestedStateTransformerSinkAuthority"));
+                Map<String, Object> parsed = jsonMap(binding);
+                if (!parsed.containsKey("leafFieldSignature")
+                        && parsed.containsKey("declaredFieldSignature")) {
+                    parsed.put("leafFieldSignature",
+                            parsed.get("declaredFieldSignature"));
                 }
                 slice.inputBindings.add(parsed);
-            }
-            for (JsonObject edge : jsonObjectArray(json, "causalEdges")) {
-                slice.causalEdges.add(causalEdgeReference(edge));
             }
             slice.requestedStateTransformerContractPresent = jsonHasField(
                     json, "requestedStateTransformerContractComplete");
             for (JsonObject obligation : jsonObjectArray(json,
                     "requestedStateTransformerObligations")) {
-                slice.requestedStateTransformerObligations.add(object(
-                        "siteId", jsonString(obligation, "siteId"),
-                        "method", jsonString(obligation, "method"),
-                        "targetCell", jsonString(obligation, "targetCell"),
-                        "transferKind", jsonString(obligation,
-                        "transferKind"),
-                        "kind", jsonString(obligation, "kind"),
-                        "causalEdgeIds", jsonStringArray(obligation,
-                        "causalEdgeIds"),
-                        "authority", jsonString(obligation, "authority")));
+                slice.requestedStateTransformerObligations.add(
+                        jsonMap(obligation));
             }
             slice.requestedStateTransformerContractIssues.addAll(
                     jsonStringArray(json,
@@ -6384,180 +6389,27 @@ final class RuntimeRegionPlanner {
                     false);
             for (JsonObject initializer : jsonObjectArray(json,
                     "heapInitializers")) {
-                slice.heapInitializers.add(object(
-                        "initializerId", jsonString(initializer,
-                        "initializerId"),
-                        "kind", jsonString(initializer, "kind"),
-                        "allocatedType", jsonString(initializer,
-                        "allocatedType"),
-                        "allocationCell", jsonString(initializer,
-                        "allocationCell"),
-                        "allocationValueCell", jsonString(initializer,
-                        "allocationValueCell"),
-                        "allocationEdgeId", jsonString(initializer,
-                        "allocationEdgeId"),
-                        "allocationMethod", jsonString(initializer,
-                        "allocationMethod"),
-                        "allocationSiteId", jsonString(initializer,
-                        "allocationSiteId"),
-                        "allocationUnitIndex", jsonInt(initializer,
-                        "allocationUnitIndex", -1),
-                        "constructor", jsonString(initializer,
-                        "constructor"),
-                        "constructorSiteId", jsonString(initializer,
-                        "constructorSiteId"),
-                        "constructorUnitIndex", jsonInt(initializer,
-                        "constructorUnitIndex", -1),
-                        "outputPort", jsonString(initializer,
-                        "outputPort"),
-                        "outputCell", jsonString(initializer,
-                        "outputCell"),
-                        "proofEdgeIds", jsonStringArray(initializer,
-                        "proofEdgeIds"),
-                        "proofComplete", jsonBoolean(initializer,
-                        "proofComplete", false),
-                        "selectionAuthority", jsonString(initializer,
-                        "selectionAuthority"),
-                        "captureBoundaryRequirement", jsonString(initializer,
-                        "captureBoundaryRequirement")));
+                slice.heapInitializers.add(jsonMap(initializer));
             }
-            slice.captureBindingsRequired = jsonBoolean(json,
-                    "captureBindingsRequired", false);
-            slice.captureBindingsComplete = jsonBoolean(json,
-                    "captureBindingsComplete",
-                    !slice.captureBindingsRequired);
             for (JsonObject binding : jsonObjectArray(json,
                     "captureBindings")) {
-                slice.captureBindings.add(outputCaptureBinding(binding));
+                slice.captureBindings.add(jsonMap(binding));
             }
+            slice.captureBindingsComplete = jsonBoolean(json,
+                    "captureBindingsComplete",
+                    slice.captureBindings.isEmpty());
             for (JsonObject binding : jsonObjectArray(json,
                     "containerElementFieldBindings")) {
-                slice.containerElementFieldBindings.add(
-                        containerElementFieldBinding(binding));
+                slice.containerElementFieldBindings.add(jsonMap(binding));
             }
             slice.captureBindingIssues.addAll(jsonStringArray(json,
                     "captureBindingIssues"));
-            slice.unresolvedInputs.addAll(jsonStringArray(json,
-                    "unresolvedInputs"));
-            for (JsonObject detail : jsonObjectArray(json,
-                    "unresolvedInputDetails")) {
-                slice.unresolvedInputDetails.add(object(
-                        "dependencyCell", jsonString(detail,
-                        "dependencyCell"),
-                        "dependencyMethods", jsonStringArray(detail,
-                        "dependencyMethods"),
-                        "reason", jsonString(detail, "reason"),
-                        "diagnostic", jsonString(detail, "diagnostic"),
-                        "provenanceAuthority", jsonString(detail,
-                        "provenanceAuthority")));
+            for (JsonObject detail : jsonObjectArray(json, "inputGaps")) {
+                slice.inputGaps.add(jsonMap(detail));
             }
-            slice.regionTruncated = jsonBoolean(json,
-                    "regionTruncated", false);
-            slice.sliceTruncated = jsonBoolean(json, "truncated", false);
-            slice.methodBudgetTruncated = jsonBoolean(json,
-                    "methodBudgetTruncated", false);
-            slice.causalCellBudgetTruncated = jsonBoolean(json,
-                    "causalCellBudgetTruncated", false);
             slice.structuralIssues.addAll(jsonStringArray(json,
                     "truncationReasons"));
-            slice.structuralComplete = jsonBoolean(json,
-                    "structuralComplete", false);
-            slice.unresolvedInputProvenanceComplete =
-                    slice.validateUnresolvedInputProvenance();
             return slice;
-        }
-
-        private static Map<String, Object> outputCaptureBinding(
-                JsonObject json) {
-            return object(
-                    "captureKind", firstNonBlank(jsonString(json,
-                    "captureKind"), "CALL_ARGUMENT"),
-                    "captureBindingId", jsonString(json,
-                    "captureBindingId"),
-                    "outputPort", jsonString(json, "outputPort"),
-                    "outputCell", jsonString(json, "outputCell"),
-                    "method", jsonString(json, "method"),
-                    "callerMethod", jsonString(json, "callerMethod"),
-                    "siteId", jsonString(json, "siteId"),
-                    "unitIndex", jsonInt(json, "unitIndex", -1),
-                    "unit", jsonString(json, "unit"),
-                    "fieldSignature", jsonString(json,
-                    "fieldSignature"),
-                    "fieldOwnerExpression", jsonString(json,
-                    "fieldOwnerExpression"),
-                    "fieldOwnerCell", jsonString(json,
-                    "fieldOwnerCell"),
-                    "fieldOwnerDeclaredType", jsonString(json,
-                    "fieldOwnerDeclaredType"),
-                    "fieldOwnerBindingKind", jsonString(json,
-                    "fieldOwnerBindingKind"),
-                    "fieldOwnerBindingAuthority", jsonString(json,
-                    "fieldOwnerBindingAuthority"),
-                    "rhsExpression", jsonString(json, "rhsExpression"),
-                    "rhsCell", jsonString(json, "rhsCell"),
-                    "rhsCausalEdgeId", jsonString(json,
-                    "rhsCausalEdgeId"),
-                    "rhsRelation", jsonString(json, "rhsRelation"),
-                    "rhsRelationComplete", jsonBoolean(json,
-                    "rhsRelationComplete", false),
-                    "rhsRelationAuthority", jsonString(json,
-                    "rhsRelationAuthority"),
-                    "returnExpression", jsonString(json,
-                    "returnExpression"),
-                    "returnCell", jsonString(json, "returnCell"),
-                    "calleeMethod", jsonString(json, "calleeMethod"),
-                    "argumentIndex", jsonInt(json, "argumentIndex", -1),
-                    "argumentCell", jsonString(json, "argumentCell"),
-                    "causalEdgeId", jsonString(json, "causalEdgeId"),
-                    "transferKind", jsonString(json, "transferKind"),
-                    "bindingKind", jsonString(json, "bindingKind"),
-                    "bindingAuthority", jsonString(json,
-                    "bindingAuthority"),
-                    "occurrence", jsonInt(json, "occurrence", 0),
-                    "occurrenceAuthority", jsonString(json,
-                    "occurrenceAuthority"),
-                    "runtimeFieldOwnerObjectId", jsonInt(json,
-                    "runtimeFieldOwnerObjectId", 0),
-                    "runtimeFieldOwnerBindingAuthority", jsonString(json,
-                    "runtimeFieldOwnerBindingAuthority"),
-                    "runtimeEventSeq", jsonInt(json,
-                    "runtimeEventSeq", -1));
-        }
-
-        private static Map<String, Object> containerElementFieldBinding(
-                JsonObject json) {
-            return object(
-                    "schemaVersion", jsonInt(json, "schemaVersion", -1),
-                    "kind", jsonString(json, "kind"),
-                    "bindingId", jsonString(json, "bindingId"),
-                    "baseInputSymbol", jsonString(json,
-                    "baseInputSymbol"),
-                    "containerInputPort", jsonString(json,
-                    "containerInputPort"),
-                    "containerInputCell", jsonString(json,
-                    "containerInputCell"),
-                    "selectorAuthority", jsonString(json,
-                    "selectorAuthority"),
-                    "elementIndex", jsonInt(json, "elementIndex", -2),
-                    "elementOccurrence", jsonInt(json,
-                    "elementOccurrence", -2),
-                    "fieldPath", jsonStringArray(json, "fieldPath"),
-                    "declaredFieldSignature", jsonString(json,
-                    "declaredFieldSignature"),
-                    "materializationMode", jsonString(json,
-                    "materializationMode"),
-                    "method", jsonString(json, "method"),
-                    "fieldMaterializationSiteId", jsonString(json,
-                    "fieldMaterializationSiteId"),
-                    "arrayLoadSiteId", jsonString(json,
-                    "arrayLoadSiteId"),
-                    "requestedStateTransformerSiteId", jsonString(json,
-                    "requestedStateTransformerSiteId"),
-                    "proofCausalEdgeIds", jsonStringArray(json,
-                    "proofCausalEdgeIds"),
-                    "proofAuthority", jsonString(json,
-                    "proofAuthority"),
-                    "complete", jsonBoolean(json, "complete", false));
         }
 
         private Map<String, Object> copyContainerElementFieldBinding(
@@ -6714,78 +6566,29 @@ final class RuntimeRegionPlanner {
 
         private static Map<String, Object> causalEdgeReference(
                 JsonObject json) {
-            Map<String, Object> result = object(
-                    "edgeId", firstNonBlank(jsonString(json, "edgeId"),
-                            jsonString(json, "id")),
-                    "method", jsonString(json, "method"),
-                    "siteId", jsonString(json, "siteId"),
-                    "fromCell", jsonString(json, "fromCell"),
-                    "toCell", jsonString(json, "toCell"),
-                    "transferKind", jsonString(json, "transferKind"),
-                    "kind", jsonString(json, "kind"),
-                    "invoke", jsonString(json, "invoke"));
-            int projectionVersion = jsonInt(json,
-                    "containerProjectionContractVersion", -1);
-            if (projectionVersion >= 0) {
-                result.put("containerProjectionContractVersion",
-                        projectionVersion);
-                copyString(json, result, "containerProjectionOperation");
-                copyString(json, result, "containerProjectionAuthority");
-                copyString(json, result, "elementRelation");
-                copyString(json, result, "iterationOrderAuthority");
-                for (String field : new String[]{
-                        "receiverValueDependencyComplete",
-                        "elementIdentityPreserving",
-                        "mappingAssociationPreserving", "backedView",
-                        "snapshot", "containerEqualityAsserted"}) {
-                    Boolean value = jsonOptionalBoolean(json, field);
-                    if (value != null) result.put(field, value);
-                }
-            }
-            copyString(json, result, "guardSiteId");
-            copyString(json, result, "guardedMutationSiteId");
-            Boolean required = jsonOptionalBoolean(json,
-                    "requiredOutcome");
-            if (required != null) result.put("requiredOutcome", required);
-            List<Map<String, Object>> mutations = new ArrayList<>();
-            for (JsonObject mutation : jsonObjectArray(json,
-                    "guardedMutations")) {
-                Map<String, Object> row = object(
-                        "guardSiteId", jsonString(mutation, "guardSiteId"),
-                        "guardedMutationSiteId", jsonString(mutation,
-                        "guardedMutationSiteId"),
-                        "method", jsonString(mutation, "method"),
-                        "unitIndex", jsonInt(mutation, "unitIndex", -1));
-                Boolean mutationRequired = jsonOptionalBoolean(mutation,
-                        "requiredOutcome");
-                if (mutationRequired != null) {
-                    row.put("requiredOutcome", mutationRequired);
-                }
-                mutations.add(row);
-            }
-            if (!mutations.isEmpty()) result.put("guardedMutations",
-                    mutations);
+            Map<String, Object> result = jsonMap(json);
+            result.put("edgeId", firstNonBlank(string(result.remove("edgeId")),
+                    string(result.remove("id"))));
+            result.keySet().retainAll(new LinkedHashSet<>(
+                    java.util.Arrays.asList(
+                            "edgeId", "method", "siteId", "fromCell", "toCell",
+                            "transferKind", "kind", "invoke",
+                            "containerProjectionContractVersion",
+                            "containerProjectionOperation",
+                            "containerProjectionAuthority", "elementRelation",
+                            "iterationOrderAuthority",
+                            "receiverValueDependencyComplete",
+                            "elementIdentityPreserving",
+                            "mappingAssociationPreserving", "backedView",
+                            "snapshot", "containerEqualityAsserted",
+                            "guardSiteId", "guardedMutationSiteId",
+                            "requiredOutcome", "guardedMutations")));
             return result;
         }
 
-        private static void copyString(JsonObject json,
-                                       Map<String, Object> result,
-                                       String field) {
-            String value = jsonString(json, field);
-            if (!value.isEmpty()) result.put(field, value);
-        }
-
-        private boolean validateUnresolvedInputProvenance() {
-            if (unresolvedInputs.isEmpty()) {
-                return unresolvedInputDetails.isEmpty();
-            }
-            if (unresolvedInputDetails.size() != unresolvedInputs.size()
-                    || new LinkedHashSet<>(unresolvedInputs).size()
-                    != unresolvedInputs.size()) {
-                return false;
-            }
+        private boolean validInputGaps() {
             Set<String> diagnostics = new LinkedHashSet<>();
-            for (Map<String, Object> detail : unresolvedInputDetails) {
+            for (Map<String, Object> detail : inputGaps) {
                 String diagnostic = string(detail.get("diagnostic"));
                 String cell = string(detail.get("dependencyCell"));
                 String reason = string(detail.get("reason"));
@@ -6799,13 +6602,11 @@ final class RuntimeRegionPlanner {
                         != ((Collection<?>) rawMethods).size()
                         || !diagnostic.startsWith(cell + " [")
                         || !supportedUnresolvedInputReason(reason)
-                        || !UNRESOLVED_INPUT_PROVENANCE_AUTHORITY.equals(
-                        string(detail.get("provenanceAuthority")))
                         || !diagnostics.add(diagnostic)) {
                     return false;
                 }
             }
-            return diagnostics.equals(new LinkedHashSet<>(unresolvedInputs));
+            return true;
         }
 
         private static boolean supportedUnresolvedInputReason(
@@ -6819,22 +6620,14 @@ final class RuntimeRegionPlanner {
                     || "OUTPUT_SLICE_INPUT_HAS_NO_REGION_PORT".equals(reason);
         }
 
-        private void refineUnresolvedInputs(Set<String> observed,
-                                            StaticOutputSlice refined) {
-            boolean provenanceComplete =
-                    validateUnresolvedInputProvenance();
-            refined.unresolvedInputProvenanceComplete = provenanceComplete;
-            if (!provenanceComplete) {
-                refined.unresolvedInputs.addAll(unresolvedInputs);
-                refined.unresolvedInputDetails.addAll(
-                        copyRows(unresolvedInputDetails));
-                if (!unresolvedInputs.isEmpty()
-                        || !unresolvedInputDetails.isEmpty()) {
-                    refined.runtimeRefinementComplete = false;
-                }
+        private void refineInputGaps(Set<String> observed,
+                                     StaticOutputSlice refined) {
+            if (!validInputGaps()) {
+                refined.inputGaps.addAll(copyRows(inputGaps));
+                refined.runtimeRefinementComplete = false;
                 return;
             }
-            for (Map<String, Object> detail : unresolvedInputDetails) {
+            for (Map<String, Object> detail : inputGaps) {
                 Set<String> dependencyMethods = stringSet(
                         detail.get("dependencyMethods"));
                 boolean exactStaticMethods = !dependencyMethods.isEmpty()
@@ -6844,15 +6637,11 @@ final class RuntimeRegionPlanner {
                 if (exactStaticMethods && !observedDependency) {
                     continue;
                 }
-                String diagnostic = string(detail.get("diagnostic"));
-                refined.unresolvedInputs.add(diagnostic);
-                refined.unresolvedInputDetails.add(
-                        new LinkedHashMap<>(detail));
+                refined.inputGaps.add(new LinkedHashMap<>(detail));
                 if (!exactStaticMethods) {
                     // A missing, ambiguous, or out-of-slice method set must
                     // never be interpreted as proof of an unobserved path.
                     refined.runtimeRefinementComplete = false;
-                    refined.unresolvedInputProvenanceComplete = false;
                 }
             }
         }
@@ -6861,15 +6650,8 @@ final class RuntimeRegionPlanner {
             StaticOutputSlice refined = new StaticOutputSlice();
             refined.outputPort = outputPort;
             refined.outputCell = outputCell;
-            refined.selection = selection;
-            refined.structuralComplete = structuralComplete;
-            refined.regionTruncated = regionTruncated;
-            refined.sliceTruncated = sliceTruncated;
-            refined.methodBudgetTruncated = methodBudgetTruncated;
-            refined.causalCellBudgetTruncated = causalCellBudgetTruncated;
             refined.structuralIssues.addAll(structuralIssues);
             refined.staticSites.addAll(sites);
-            refined.captureBindingsRequired = captureBindingsRequired;
             refined.captureBindingsComplete = captureBindingsComplete;
             refined.captureBindingIssues.addAll(captureBindingIssues);
             refined.requestedStateTransformerContractPresent =
@@ -6886,7 +6668,7 @@ final class RuntimeRegionPlanner {
             Set<String> observed = new LinkedHashSet<>(
                     evidence.observedMethods);
             observed.retainAll(methods);
-            refineUnresolvedInputs(observed, refined);
+            refineInputGaps(observed, refined);
             refined.methods.addAll(sorted(observed));
             boolean filtersAlternatives = observed.size() != methods.size();
 
@@ -7136,10 +6918,8 @@ final class RuntimeRegionPlanner {
             if (!causalMetadataComplete && !causalEdgeIds.isEmpty()) {
                 refined.runtimeRefinementComplete = false;
             }
-            refined.structuralComplete = structuralComplete
-                    && !sliceTruncated
-                    && !methodBudgetTruncated
-                    && !causalCellBudgetTruncated
+            refined.structuralComplete = structuralIssues.isEmpty()
+                    && !causalEdgeIds.isEmpty()
                     && !refined.causalEdgeIds.isEmpty();
             boolean staticTransformerContractLedgerComplete =
                     requestedStateTransformerContractComplete
@@ -7160,8 +6940,7 @@ final class RuntimeRegionPlanner {
                             || refined.requestedStateTransformerContractComplete;
             refined.complete = refined.structuralComplete
                     && refined.runtimeRefinementComplete
-                    && refined.unresolvedInputs.isEmpty()
-                    && refined.unresolvedInputProvenanceComplete
+                    && refined.inputGaps.isEmpty()
                     && transformerContractReady
                     && refined.captureBindingsComplete;
             return refined;
@@ -7246,17 +7025,12 @@ final class RuntimeRegionPlanner {
 
         private FieldPathRuntimeCandidate runtimeFieldPathCandidate(
                 InstanceEvidence evidence, StaticPort port) {
-            if (port == null || !"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1"
-                    .equals(string(port.materializationMetadata.get(
-                            "fieldPathAuthority")))) {
+            if (port == null || !port.materialization.directFieldPath()) {
                 return null;
             }
-            List<String> path = stringList(port.materializationMetadata.get(
-                    "fieldPath"));
-            String leaf = string(port.materializationMetadata.get(
-                    "leafFieldSignature"));
-            String method = string(port.materializationMetadata.get(
-                    "accessMethod"));
+            List<String> path = port.materialization.path();
+            String leaf = port.materialization.leafField();
+            String method = port.materialization.method();
             if (path.size() < 2 || leaf.isEmpty() || method.isEmpty()) {
                 return null;
             }
@@ -7353,13 +7127,10 @@ final class RuntimeRegionPlanner {
                     mutationCaptureDischargeReady(refined, evidence,
                             observed, heapEffectCaptureInput);
             if (heapEffectCaptureDischarged) {
-                // An in-place container mutation has no assignment RHS to
-                // capture.  The exact same-cell pre-state port plus the
-                // importer-validated, path-ordered heap effects is the
-                // relational output.  Do not manufacture a second Map
-                // reference expression or treat put/remove as putfield.
+                // In-place containers use the exact same-cell pre-state plus
+                // importer-validated, path-ordered heap effects. They do not
+                // need a separate scalar output capture.
                 refined.captureBindings.clear();
-                refined.captureBindingsRequired = false;
                 refined.captureBindingsComplete = true;
                 refined.captureBindingIssues.clear();
                 refined.captureDischargedByHeapEffectTransformer = true;
@@ -7369,71 +7140,24 @@ final class RuntimeRegionPlanner {
                 return;
             }
 
-            if (captureBindingsRequired) {
+            if (!captureBindings.isEmpty()) {
                 refined.captureBindings.clear();
                 int matchedCaptureCount = 0;
-                boolean fieldAssignmentRequested = false;
+                boolean exitFieldRequested = false;
                 for (Map<String, Object> binding : captureBindings) {
-                    String captureKind = firstNonBlank(string(binding.get(
-                            "captureKind")), "CALL_ARGUMENT");
-                    if ("FIELD_ASSIGNMENT_RHS".equals(captureKind)) {
-                        fieldAssignmentRequested = true;
-                        String method = string(binding.get("method"));
-                        String fieldSignature = string(binding.get(
-                                "fieldSignature"));
-                        if (!observed.contains(method)) {
-                            continue;
-                        }
-                        Set<String> staticSites = new LinkedHashSet<>();
-                        for (Map<String, Object> candidate
-                                : captureBindings) {
-                            if ("FIELD_ASSIGNMENT_RHS".equals(
-                                    firstNonBlank(string(candidate.get(
-                                            "captureKind")),
-                                            "CALL_ARGUMENT"))
-                                    && method.equals(string(candidate.get(
-                                    "method")))
-                                    && fieldSignature.equals(string(
-                                    candidate.get("fieldSignature")))) {
-                                staticSites.add(string(candidate.get(
-                                        "siteId")));
-                            }
-                        }
-                        if (staticSites.size() != 1) {
-                            refined.captureBindingIssues.add(
-                                    "RUNTIME_FIELD_WRITE_SITE_NOT_UNIQUE:"
-                                            + method + ":"
-                                            + fieldSignature);
-                            continue;
-                        }
-                        List<FieldAccessEvent> assignments = evidence
-                                .matchingFieldAssignments(binding);
-                        if (assignments.isEmpty()) {
-                            continue;
-                        }
-                        if (!evidence.oneFieldOwner(assignments)) {
-                            refined.captureBindingIssues.add(
-                                    "RUNTIME_FIELD_ASSIGNMENT_OWNER_"
-                                            + "AMBIGUOUS:"
-                                            + string(binding.get("siteId")));
-                            continue;
-                        }
-                        FieldAccessEvent match = assignments.get(
-                                assignments.size() - 1);
-                        Map<String, Object> exact =
-                                new LinkedHashMap<>(binding);
-                        exact.put("occurrence", assignments.size());
-                        exact.put("occurrenceAuthority",
-                                "RUNTIME_UNIQUE_STATIC_FIELD_ASSIGNMENT_"
-                                        + "SITE_LAST_WRITE_OCCURRENCE");
-                        exact.put("runtimeFieldOwnerObjectId",
-                                match.receiverObjectId);
-                        exact.put("runtimeFieldOwnerBindingAuthority",
-                                "RUNTIME_EXACT_FIELD_WRITE_RECEIVER_IDENTITY");
-                        exact.put("runtimeCallId", match.callId);
-                        exact.put("runtimeEventSeq", match.seq);
-                        refined.captureBindings.add(exact);
-                        matchedCaptureCount++;
+                    String captureKind = string(binding.get("captureKind"));
+                    if ("REGION_EXIT_FIELD".equals(captureKind)) {
+                        exitFieldRequested = true;
+                        refined.captureBindings.add(
+                                new LinkedHashMap<>(binding));
+                        continue;
+                    }
+                    if (!"CALL_ARGUMENT".equals(captureKind)) {
+                        refined.captureBindingsComplete = false;
+                        refined.runtimeRefinementComplete = false;
+                        refined.captureBindingIssues.add(
+                                "UNSUPPORTED_OUTPUT_CAPTURE_KIND:"
+                                        + captureKind);
                         continue;
                     }
 
@@ -7443,51 +7167,121 @@ final class RuntimeRegionPlanner {
                     }
                     List<RuntimeEvent> matches = evidence
                             .matchingCallArguments(binding);
-                    for (RuntimeEvent match : matches) {
+                    for (int index = 0; index < matches.size(); index++) {
                         Map<String, Object> exact =
                                 new LinkedHashMap<>(binding);
-                        exact.put("occurrence", evidence
-                                .callArgumentOccurrence(binding, match));
-                        exact.put("occurrenceAuthority",
-                                "RUNTIME_EXACT_CALL_ARGUMENT_OCCURRENCE");
-                        exact.put("runtimeInvocationId",
-                                match.invocationId);
-                        exact.put("runtimeEventSeq", match.seq);
+                        exact.put("occurrence", index + 1);
                         refined.captureBindings.add(exact);
                         matchedCaptureCount++;
                     }
                 }
-                if (matchedCaptureCount != 1) {
+                if (!exitFieldRequested && matchedCaptureCount != 1) {
                     refined.captureBindingsComplete = false;
                     refined.runtimeRefinementComplete = false;
                     String failure;
                     if (matchedCaptureCount == 0) {
-                        failure = fieldAssignmentRequested
-                                ? "NO_RUNTIME_EXACT_FIELD_ASSIGNMENT_MATCH"
-                                : "NO_RUNTIME_EXACT_CALL_ARGUMENT_MATCH";
+                        failure = "NO_RUNTIME_EXACT_CALL_ARGUMENT_MATCH";
                     } else {
-                        failure = (fieldAssignmentRequested
-                                ? "AMBIGUOUS_RUNTIME_FIELD_ASSIGNMENT_MATCH:"
-                                : "AMBIGUOUS_RUNTIME_CALL_ARGUMENT_MATCH:")
+                        failure = "AMBIGUOUS_RUNTIME_CALL_ARGUMENT_MATCH:"
                                 + matchedCaptureCount;
                     }
                     refined.captureBindingIssues.add(failure);
                 }
-            } else {
-                refined.captureBindings.addAll(copyRows(captureBindings));
             }
+        }
+
+        /**
+         * A scalar/reference field output is read once from its exact
+         * receiver path at normal region exit. This directly observes the
+         * final symbolic heap state, so assignment sites and seed-path write
+         * occurrences are not capture identities.
+         */
+        private void validateNormalExitFieldCapture(
+                StaticPort input, List<Map<String, Object>> actions) {
+            if (captureBindings.isEmpty()) {
+                return;
+            }
+            for (Map<String, Object> capture : captureBindings) {
+                if (!"REGION_EXIT_FIELD".equals(
+                        string(capture.get("captureKind")))) {
+                    return;
+                }
+            }
+            FieldCell field = fieldCell(outputCell);
+            Map<String, Object> action = captureDischargeAction(actions,
+                    input == null ? "" : input.portId);
+            Map<String, Object> request = captureBindings.size() == 1
+                    ? captureBindings.get(0) : null;
+            List<String> exactPath = action == null
+                    ? Collections.<String>emptyList()
+                    : stringList(action.get("fieldPath"));
+            List<String> declaredPath = request == null
+                    ? Collections.<String>emptyList()
+                    : stringList(request.get("fieldPath"));
+            boolean supported = field.declaredSignature
+                    && !isArrayJavaType(field.type)
+                    && !supportedMapStateCell(outputCell)
+                    && input != null
+                    && action != null && request != null
+                    && input.portId.equals(string(request.get(
+                    "accessRootInputPort")))
+                    && outputCell.equals(string(request.get(
+                    "fieldSignature")))
+                    && field.type.equals(string(request.get("javaType")))
+                    && field.type.replace('/', '.').equals(
+                    string(action.get("javaType")).replace('/', '.'))
+                    && !declaredPath.isEmpty() && !exactPath.isEmpty()
+                    && declaredPath.get(declaredPath.size() - 1).equals(
+                    exactPath.get(exactPath.size() - 1));
+            if (!supported || !captureBindingsComplete
+                    || !captureBindingIssues.isEmpty()
+                    || requestedStateTransformerContractPresent
+                    && !requestedStateTransformerContractComplete) {
+                captureBindingsComplete = false;
+                runtimeRefinementComplete = false;
+                captureBindingIssues.add(
+                        "NORMAL_EXIT_FIELD_PATH_CAPTURE_NOT_PROVEN");
+                return;
+            }
+            request.put("fieldPath", new ArrayList<>(exactPath));
+            captureBindingIssues.clear();
+        }
+
+        private Map<String, Object> captureDischargeAction(
+                List<Map<String, Object>> actions, String inputPort) {
+            Map<String, Object> match = null;
+            for (Map<String, Object> action : actions) {
+                if (!inputPort.equals(string(action.get("symbol")))
+                        || !outputCell.equals(string(action.get("cell")))
+                        || !"HEAP_PRESTATE".equals(string(action.get(
+                        "sourceKind")))
+                        || !"RECEIVER_FIELD".equals(string(action.get(
+                        "location")))
+                        || !"RUNTIME_UNIQUE_ROOT_TO_OUTPUT_OWNER_FIELD_PATH"
+                        .equals(string(action.get(
+                                "frameConditionAuthority")))
+                        || !outputCell.equals(string(action.get(
+                                "leafFieldSignature")))
+                        || stringList(action.get("fieldPath")).isEmpty()) {
+                    continue;
+                }
+                if (match != null) {
+                    return null;
+                }
+                match = action;
+            }
+            return match;
         }
 
         private boolean mutationCaptureDischargeReady(
                 StaticOutputSlice refined, InstanceEvidence evidence,
                 Set<String> observed, String heapEffectCaptureInput) {
-            if (!captureBindingsRequired || captureBindingsComplete
+            if (captureBindingsComplete
                     || heapEffectCaptureInput.isEmpty()
                     || !evidence.runtimePathEvidenceComplete
                     || !refined.structuralComplete
                     || !refined.runtimeRefinementComplete
-                    || !refined.unresolvedInputs.isEmpty()
-                    || !refined.unresolvedInputProvenanceComplete
+                    || !refined.inputGaps.isEmpty()
                     || !refined.requestedStateTransformerContractComplete) {
                 return false;
             }
@@ -7497,8 +7291,7 @@ final class RuntimeRegionPlanner {
             // to methods excluded as static alternatives are irrelevant to
             // this concrete runtime path.
             for (Map<String, Object> binding : captureBindings) {
-                String method = firstNonBlank(string(binding.get("method")),
-                        string(binding.get("callerMethod")));
+                String method = string(binding.get("callerMethod"));
                 if (method.isEmpty() || observed.contains(method)) {
                     return false;
                 }
@@ -7526,7 +7319,7 @@ final class RuntimeRegionPlanner {
             }
 
             String prefix =
-                    "REQUESTED_TRANSFORMER_HAS_NO_EXACT_FIELD_ASSIGNMENT_RHS:";
+                    "REQUESTED_TRANSFORMER_HAS_NO_FINAL_STATE_CAPTURE:";
             Set<String> retainedIssueSites = new LinkedHashSet<>();
             for (String issue : captureBindingIssues) {
                 if (!issue.startsWith(prefix)) {
@@ -7628,9 +7421,7 @@ final class RuntimeRegionPlanner {
                     "causalEdges", causalEdges,
                     "heapInitializers", heapInitializers,
                     "captureBindings", captureBindings,
-                    "captureBindingsRequired", captureBindingsRequired,
                     "captureBindingsComplete", captureBindingsComplete,
-                    "captureBindingIssues", captureBindingIssues,
                     "captureDischargedByHeapEffectTransformer",
                     captureDischargedByHeapEffectTransformer,
                     "captureDischargeInputPort",
@@ -7639,11 +7430,9 @@ final class RuntimeRegionPlanner {
                     captureDischargeAuthority,
                     "containerElementFieldBindings",
                     containerElementFieldBindings,
-                    "unresolvedInputs", unresolvedInputs,
-                    "unresolvedInputDetails", unresolvedInputDetails,
+                    "inputGaps", inputGaps,
                     "truncationReasons", structuralIssues,
-                    "complete", complete,
-                    "selection", selection);
+                    "complete", complete);
             if (requestedStateTransformerContractPresent) {
                 result.put("requestedStateTransformerObligations",
                         requestedStateTransformerObligations);
@@ -7663,119 +7452,52 @@ final class RuntimeRegionPlanner {
         private final String sourceKind;
         private final String projection;
         private final String kind;
-        private final Map<String, Object> materializationMetadata;
+        private final String javaType;
+        private final MaterializationSpec materialization;
 
         private StaticPort(String portId, String cell, String sourceKind,
-                           String projection, String kind) {
-            this(portId, cell, sourceKind, projection, kind,
-                    Collections.<String, Object>emptyMap());
-        }
-
-        private StaticPort(String portId, String cell, String sourceKind,
-                           String projection, String kind,
-                           Map<String, Object> materializationMetadata) {
+                           String projection, String kind, String javaType,
+                           MaterializationSpec materialization) {
             this.portId = safe(portId);
             this.cell = safe(cell);
             this.sourceKind = safe(sourceKind);
             this.projection = safe(projection);
             this.kind = safe(kind);
-            this.materializationMetadata = new LinkedHashMap<>(
-                    materializationMetadata == null
-                            ? Collections.<String, Object>emptyMap()
-                            : materializationMetadata);
+            this.javaType = safe(javaType);
+            this.materialization = materialization == null
+                    ? MaterializationSpec.none() : materialization;
+        }
+    }
+
+    private static final class FramePrestatePath {
+        private final FieldCell field;
+        private final List<String> path;
+
+        private FramePrestatePath(FieldCell field, List<String> path) {
+            this.field = field;
+            this.path = new ArrayList<>(path);
         }
 
-        private static Map<String, Object> materializationMetadata(
-                JsonObject json) {
-            Map<String, Object> result = new LinkedHashMap<>();
-            for (String field : new String[]{"javaType", "inputJavaType",
-                    "field", "leafFieldSignature", "accessFieldSignature",
-                    "bindingMode", "method", "local", "accessMethod",
-                    "accessSiteId",
-                    "accessorCallerMethod", "accessorCallSiteId",
-                    "accessorDeclaredCallee",
-                    "accessorImplementationMethod"}) {
-                String value = jsonString(json, field);
-                if (!value.isEmpty()) result.put(field, value);
-            }
-            int accessUnitIndex = jsonInt(json, "accessUnitIndex", -1);
-            if (accessUnitIndex >= 0) {
-                result.put("accessUnitIndex", accessUnitIndex);
-            }
-            int accessorCallUnitIndex = jsonInt(json,
-                    "accessorCallUnitIndex", -1);
-            if (accessorCallUnitIndex >= 0) {
-                result.put("accessorCallUnitIndex",
-                        accessorCallUnitIndex);
-            }
-            List<String> path = jsonStringArray(json, "fieldPath");
-            if (!path.isEmpty()) result.put("fieldPath", path);
-            FieldCell access = fieldCell(jsonString(json,
-                    "accessFieldSignature"));
-            if (access.declaredSignature) {
-                result.put("accessOwnerClass", access.owner);
-                result.put("accessFieldType", access.type);
-                result.put("accessField", access.name);
-            }
-            FieldCell leaf = fieldCell(jsonString(json,
-                    "leafFieldSignature"));
-            if (leaf.declaredSignature) {
-                result.put("leafOwnerClass", leaf.owner);
-                result.put("leafField", leaf.name);
-            }
-            String accessMethod = string(result.get("accessMethod"));
-            String accessSite = string(result.get("accessSiteId"));
-            if (access.declaredSignature && accessUnitIndex >= 0
-                    && accessSite.equals(accessMethod + "#u"
-                    + accessUnitIndex)) {
-                result.put("accessSiteAuthority",
-                        "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
-            }
-            String accessorCaller = string(result.get(
-                    "accessorCallerMethod"));
-            String accessorSite = string(result.get(
-                    "accessorCallSiteId"));
-            String implementation = string(result.get(
-                    "accessorImplementationMethod"));
-            if (access.declaredSignature && accessorCallUnitIndex >= 0
-                    && !implementation.isEmpty()
-                    && accessorSite.equals(accessorCaller + "#u"
-                    + accessorCallUnitIndex)) {
-                result.put("accessorCallSiteAuthority",
-                        "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                                + "ACCESSOR_CALLSITE_V1");
-                result.put("accessorImplementationAuthority",
-                        "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY");
-            }
-            if (access.declaredSignature && leaf.declaredSignature
-                    && path.size() > 1 && path.size() <= 4
-                    && !jsonStringArray(json,
-                    "fieldPathProofCausalEdgeIds").isEmpty()) {
-                result.put("fieldPathAuthority",
-                        "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
-            }
-            List<Map<String, Object>> declarations = new ArrayList<>();
-            for (JsonObject declaration : jsonObjectArray(json,
-                    "fieldPathLeafDeclarations")) {
-                String signature = jsonString(declaration,
-                        "fieldSignature");
-                List<String> declarationPath = jsonStringArray(
-                        declaration, "fieldPath");
-                if (!signature.isEmpty() && !declarationPath.isEmpty()) {
-                    FieldCell field = fieldCell(signature);
-                    declarations.add(object(
-                            "fieldPath", declarationPath,
-                            "fieldSignature", signature,
-                            "declaredFieldOwnerClass", field.owner,
-                            "declaredFieldType", field.type,
-                            "complete", jsonBoolean(declaration,
-                            "complete", true)));
-                }
-            }
-            if (!declarations.isEmpty()) {
-                result.put("fieldPathLeafDeclarations", declarations);
-            }
-            return result;
+        private static FramePrestatePath incomplete() {
+            return new FramePrestatePath(FieldCell.unresolved(),
+                    Collections.<String>emptyList());
+        }
+
+        private boolean complete() {
+            return field.declaredSignature && !path.isEmpty();
+        }
+    }
+
+    private static final class ObjectPathState {
+        private final int objectId;
+        private final List<String> path;
+        private final Set<Integer> visited;
+
+        private ObjectPathState(int objectId, List<String> path,
+                                Set<Integer> visited) {
+            this.objectId = objectId;
+            this.path = new ArrayList<>(path);
+            this.visited = new LinkedHashSet<>(visited);
         }
     }
 
@@ -7843,14 +7565,6 @@ final class RuntimeRegionPlanner {
         }
     }
 
-    private static final class RootCandidate {
-        private final MethodEvent event;
-
-        private RootCandidate(MethodEvent event) {
-            this.event = event;
-        }
-    }
-
     private static int parameterIndex(String cell) {
         Matcher matcher = PARAMETER.matcher(safe(cell));
         return matcher.find() ? parseInt(matcher.group(1), -1) : -1;
@@ -7867,10 +7581,10 @@ final class RuntimeRegionPlanner {
 
     private static FieldCell fieldCell(String value) {
         String cell = safe(value);
-        Matcher declared = FIELD_SIGNATURE.matcher(cell);
-        if (declared.find()) {
-            return new FieldCell(declared.group(1), declared.group(2),
-                    declared.group(3), true);
+        DeclaredField declared = FieldPathSpec.declaredField(cell);
+        if (declared != null) {
+            return new FieldCell(declared.owner(), declared.type(),
+                    declared.name(), true);
         }
 
         Matcher projection = FIELD_PROJECTION.matcher(cell);
@@ -7905,7 +7619,8 @@ final class RuntimeRegionPlanner {
     /** True only for a canonical declared field cell, not a carrier with a
      * trailing {@code #field:...} projection. */
     private static boolean exactDeclaredFieldCell(String value) {
-        return FIELD_SIGNATURE.matcher(safe(value)).matches();
+        DeclaredField field = FieldPathSpec.declaredField(value);
+        return field != null && field.signature().equals(safe(value));
     }
 
     private static String methodReturnType(String signature) {
@@ -7949,30 +7664,13 @@ final class RuntimeRegionPlanner {
                 ? objectIdentity.group(1) + "@*" : value;
     }
 
-    private static List<MethodEvent> sortedMethods(List<MethodEvent> values) {
-        List<MethodEvent> result = new ArrayList<>();
+    private static <T> List<T> sorted(List<T> values,
+                                      ToLongFunction<T> sequence) {
+        List<T> result = new ArrayList<>();
         if (values != null) {
             result.addAll(values);
         }
-        result.sort(Comparator.comparingLong(value -> value.seq));
-        return result;
-    }
-
-    private static List<RuntimeEvent> sortedRuntime(List<RuntimeEvent> values) {
-        List<RuntimeEvent> result = new ArrayList<>();
-        if (values != null) {
-            result.addAll(values);
-        }
-        result.sort(Comparator.comparingLong(value -> value.seq));
-        return result;
-    }
-
-    private static List<FieldAccessEvent> sortedFields(List<FieldAccessEvent> values) {
-        List<FieldAccessEvent> result = new ArrayList<>();
-        if (values != null) {
-            result.addAll(values);
-        }
-        result.sort(Comparator.comparingLong(value -> value.seq));
+        result.sort(Comparator.comparingLong(sequence));
         return result;
     }
 
@@ -8061,15 +7759,6 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
-    private static void copy(Map<String, Object> from, Map<String, Object> to,
-                             String... keys) {
-        for (String key : keys) {
-            if (from.containsKey(key)) {
-                to.put(key, from.get(key));
-            }
-        }
-    }
-
     private static String safeToken(String value) {
         return UNSAFE_TOKEN_CHARACTERS.matcher(safe(value)).replaceAll("_");
     }
@@ -8107,6 +7796,45 @@ final class RuntimeRegionPlanner {
             result.put(String.valueOf(values[index]), values[index + 1]);
         }
         return result;
+    }
+
+    private static void copy(Map<String, Object> from, Map<String, Object> to,
+                             String... keys) {
+        for (String key : keys) {
+            if (from.containsKey(key)) to.put(key, from.get(key));
+        }
+    }
+
+    private static Map<String, Object> jsonMap(JsonObject source) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<String, JsonElement> entry : source.entrySet()) {
+            result.put(entry.getKey(), jsonValue(entry.getValue()));
+        }
+        return result;
+    }
+
+    private static Object jsonValue(JsonElement value) {
+        if (value == null || value.isJsonNull()) return null;
+        if (value.isJsonObject()) return jsonMap(value.getAsJsonObject());
+        if (value.isJsonArray()) {
+            List<Object> result = new ArrayList<>();
+            for (JsonElement element : value.getAsJsonArray()) {
+                result.add(jsonValue(element));
+            }
+            return result;
+        }
+        if (value.getAsJsonPrimitive().isBoolean()) {
+            return value.getAsBoolean();
+        }
+        if (value.getAsJsonPrimitive().isString()) {
+            return value.getAsString();
+        }
+        String number = value.getAsString();
+        try {
+            return Long.valueOf(number);
+        } catch (NumberFormatException notIntegral) {
+            return new java.math.BigDecimal(number);
+        }
     }
 
     private static String jsonl(List<Map<String, Object>> rows) {

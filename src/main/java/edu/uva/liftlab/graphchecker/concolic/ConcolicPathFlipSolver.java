@@ -15,8 +15,8 @@ import java.util.Map;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
- * Solves exactly one canonical path-flip task and emits its singleton replay
- * activation. Each invocation is intentionally process-local so independent
+ * Solves exactly one canonical path-flip query and emits its replay task.
+ * Each invocation is intentionally process-local so independent
  * tasks can be run by separate workers.
  */
 public final class ConcolicPathFlipSolver {
@@ -40,12 +40,13 @@ public final class ConcolicPathFlipSolver {
     static Result solve(Arguments arguments) throws Exception {
         JsonObject task = exactTask(ArtifactIO.readJsonl(arguments.worklist),
                 arguments.queryKey);
-        Map<String, JsonObject> activations = ArtifactIO.uniqueIndex(
-                ArtifactIO.readJsonl(arguments.activations), "activationId");
-        String sourceId = string(task, "sourceActivationId");
-        JsonObject source = activations.get(sourceId);
+        Map<String, JsonObject> executionTasks = ArtifactIO.uniqueIndex(
+                ArtifactIO.readJsonl(arguments.executionTasks), "taskId");
+        String sourceId = string(task, "sourceTaskId");
+        JsonObject source = executionTasks.get(sourceId);
         if (source == null) {
-            throw new IOException("Source activation not found: " + sourceId);
+            throw new IOException("Source execution task not found: "
+                    + sourceId);
         }
 
         ConcolicConstraintSolver.Result solved =
@@ -53,7 +54,7 @@ public final class ConcolicPathFlipSolver {
                         arguments.solverTimeoutMillis);
         JsonObject replay = "SAT_MODEL_READY".equals(string(solved.record,
                 "status"))
-                ? ReplayActivationFactory.create(task, source,
+                ? PathReplayTaskFactory.create(task, source,
                 solved.modelAssignments) : null;
         return new Result(task, solved, replay);
     }
@@ -64,14 +65,14 @@ public final class ConcolicPathFlipSolver {
                 PRETTY.toJson(result.solve.record) + System.lineSeparator());
         ArtifactIO.replace(directory.resolve("path_flip_query.smt2"),
                 result.solve.smtLib);
-        List<JsonObject> replayRows = result.replayActivation == null
+        List<JsonObject> replayRows = result.replayTask == null
                 ? Collections.<JsonObject>emptyList()
-                : Collections.singletonList(result.replayActivation);
-        ArtifactIO.replaceJsonl(directory.resolve("activation_plan.jsonl"),
+                : Collections.singletonList(result.replayTask);
+        ArtifactIO.replaceJsonl(directory.resolve("execution_task_plan.jsonl"),
                 replayRows);
-        JsonObject validation = result.replayActivation == null
+        JsonObject validation = result.replayTask == null
                 ? unavailableValidation(result.solve.record)
-                : ReplayActivationFactory.validationPlan(result.task,
+                : PathReplayTaskFactory.validationPlan(result.task,
                 result.solve.modelAssignments);
         ArtifactIO.replace(directory.resolve("replay_validation_plan.json"),
                 PRETTY.toJson(validation) + System.lineSeparator());
@@ -103,17 +104,17 @@ public final class ConcolicPathFlipSolver {
 
     static final class Arguments {
         private final Path worklist;
-        private final Path activations;
+        private final Path executionTasks;
         private final String queryKey;
         private final Path outputDirectory;
         private final Path z3;
         private final long solverTimeoutMillis;
 
-        private Arguments(Path worklist, Path activations, String queryKey,
+        private Arguments(Path worklist, Path executionTasks, String queryKey,
                           Path outputDirectory, Path z3,
                           long solverTimeoutMillis) {
             this.worklist = worklist;
-            this.activations = activations;
+            this.executionTasks = executionTasks;
             this.queryKey = queryKey;
             this.outputDirectory = outputDirectory;
             this.z3 = z3;
@@ -136,7 +137,7 @@ public final class ConcolicPathFlipSolver {
                         "--query-key must be lowercase SHA-256");
             }
             return new Arguments(required(values, "worklist"),
-                    required(values, "activations"), queryKey,
+                    required(values, "task-plan"), queryKey,
                     required(values, "output-dir"),
                     Paths.get(firstNonBlank(values.get("z3"), "z3")),
                     longValue(values, "solver-timeout-ms", 20_000L));
@@ -167,15 +168,15 @@ public final class ConcolicPathFlipSolver {
     static final class Result {
         final JsonObject task;
         final ConcolicConstraintSolver.Result solve;
-        final JsonObject replayActivation;
+        final JsonObject replayTask;
 
         private Result(JsonObject task,
                        ConcolicConstraintSolver.Result solve,
-                       JsonObject replayActivation) {
+                       JsonObject replayTask) {
             this.task = task.deepCopy();
             this.solve = solve;
-            this.replayActivation = replayActivation == null
-                    ? null : replayActivation.deepCopy();
+            this.replayTask = replayTask == null
+                    ? null : replayTask.deepCopy();
         }
     }
 

@@ -14,13 +14,10 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -31,7 +28,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
@@ -79,7 +75,7 @@ public final class BooleanReachConditionExtractor {
 
     static JsonObject extract(String composedSmt, JsonObject manifest,
                               List<JsonObject> regions,
-                              JsonObject relationships, Solver solver,
+                              JsonObject relationships, Z3Solver solver,
                               int maxInputs, int maxValuations)
             throws IOException, InterruptedException {
         JsonObject report = new JsonObject();
@@ -120,7 +116,7 @@ public final class BooleanReachConditionExtractor {
                 composedSmt);
         String domainBase = appendBooleanDomain(base,
                 discovery.booleanDomainInputs);
-        List<Valuation> valuations = new ArrayList<>();
+        List<boolean[]> satisfyingValuations = new ArrayList<>();
         JsonArray valuationRows = new JsonArray();
         int satisfying = 0;
         int solverErrors = 0;
@@ -128,14 +124,15 @@ public final class BooleanReachConditionExtractor {
         for (int ordinal = 0; ordinal < count; ordinal++) {
             boolean[] values = valuation(ordinal, inputs.size());
             String query = valuationQuery(domainBase, inputs, values);
-            SolverResult result = solver.check(query);
-            Valuation valuation = new Valuation(values, result.status);
-            valuations.add(valuation);
-            JsonObject row = valuation.toJson(inputs);
-            if ("sat".equals(result.status)) {
+            ConcolicConstraintSolver.SolverOutput result =
+                    solver.check(query);
+            String status = result.status();
+            JsonObject row = valuationRow(inputs, values, status);
+            if ("sat".equals(status)) {
                 satisfying++;
-            } else if (!"unsat".equals(result.status)) {
-                row.addProperty("solverOutput", result.output);
+                satisfyingValuations.add(values.clone());
+            } else if (!"unsat".equals(status)) {
+                row.addProperty("solverOutput", result.diagnostic());
                 solverErrors++;
             }
             valuationRows.add(row);
@@ -151,7 +148,8 @@ public final class BooleanReachConditionExtractor {
                 ? "UNKNOWN" : satisfying > 0
                 ? "REACHABLE" : "UNREACHABLE";
         JsonObject reachCondition = new JsonObject();
-        reachCondition.addProperty("formula", dnf(inputs, valuations));
+        reachCondition.addProperty("formula", dnf(inputs,
+                satisfyingValuations, count));
         reachCondition.addProperty("reachability", reachability);
         report.add("reachCondition", reachCondition);
         JsonArray resultGaps = new JsonArray();
@@ -327,56 +325,27 @@ public final class BooleanReachConditionExtractor {
         return report;
     }
 
-    interface Solver {
-        SolverResult check(String smt) throws IOException,
-                InterruptedException;
-    }
-
-    static final class SolverResult {
-        final String status;
-        final String output;
-
-        SolverResult(String status, String output) {
-            this.status = firstNonBlank(status, "unknown");
-            this.output = firstNonBlank(output);
-        }
-    }
-
-    static final class Z3Solver implements Solver {
+    static final class Z3Solver {
         private final Path executable;
         private final long timeoutMillis;
         private final JsonObject artifact;
 
-        Z3Solver(String executable, long timeoutMillis)
-                throws IOException, InterruptedException {
+        Z3Solver(String executable, long timeoutMillis) throws IOException {
             this.timeoutMillis = Math.max(1L, timeoutMillis);
             this.executable = resolveExecutable(firstNonBlank(executable,
                     "z3"));
             this.artifact = ArtifactIO.artifact(this.executable);
-            this.artifact.addProperty("version", validateVersion(
-                    this.executable, this.timeoutMillis));
         }
 
         JsonObject artifact() {
             return artifact.deepCopy();
         }
 
-        @Override
-        public SolverResult check(String smt) throws IOException,
+        ConcolicConstraintSolver.SolverOutput check(String smt)
+                throws IOException,
                 InterruptedException {
-            Process process = new ProcessBuilder(executable.toString(),
-                    "-in", "-smt2").redirectErrorStream(true).start();
-            try (OutputStream input = process.getOutputStream()) {
-                input.write(smt.getBytes(StandardCharsets.UTF_8));
-            }
-            if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) {
-                process.destroyForcibly();
-                process.waitFor();
-                return new SolverResult("timeout", "solver timeout");
-            }
-            String output = readAll(process.getInputStream());
-            return new SolverResult(process.exitValue() == 0
-                    ? solverStatus(output) : "error", output);
+            return ConcolicConstraintSolver.run(executable, smt,
+                    timeoutMillis);
         }
 
         private static Path resolveExecutable(String requested)
@@ -412,43 +381,6 @@ public final class BooleanReachConditionExtractor {
             return resolved;
         }
 
-        private static String validateVersion(Path executable,
-                                              long timeoutMillis)
-                throws IOException, InterruptedException {
-            Process process = new ProcessBuilder(executable.toString(),
-                    "-version").redirectErrorStream(true).start();
-            if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) {
-                process.destroyForcibly();
-                process.waitFor();
-                throw new IOException("Z3 -version timed out");
-            }
-            String output = readAll(process.getInputStream()).trim();
-            if (process.exitValue() != 0 || !output.contains("Z3")) {
-                throw new IOException("Invalid Z3 executable identity: "
-                        + output);
-            }
-            return output;
-        }
-
-        private static String readAll(InputStream input) throws IOException {
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            byte[] buffer = new byte[4096];
-            int count;
-            while ((count = input.read(buffer)) >= 0) {
-                output.write(buffer, 0, count);
-            }
-            return new String(output.toByteArray(),
-                    StandardCharsets.UTF_8);
-        }
-    }
-
-    static String solverStatus(String output) {
-        String normalized = firstNonBlank(output);
-        int newline = normalized.indexOf('\n');
-        String value = (newline < 0
-                ? normalized : normalized.substring(0, newline)).trim();
-        return "sat".equals(value) || "unsat".equals(value)
-                || "unknown".equals(value) ? value : "unknown";
     }
 
     private static final class Discovery {
@@ -493,7 +425,6 @@ public final class BooleanReachConditionExtractor {
             result.addProperty("regionId", port.regionId);
             result.addProperty("cell", port.cell);
             result.addProperty("javaTypeDescriptor", port.descriptor);
-            result.addProperty("solverTerm", solverTerm);
             if (!nullnessSolverTerm.isEmpty()) {
                 result.addProperty("nullnessSolverTerm",
                         nullnessSolverTerm);
@@ -544,44 +475,34 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    private static final class Valuation {
-        private final boolean[] values;
-        private final String status;
-
-        private Valuation(boolean[] values, String status) {
-            this.values = values.clone();
-            this.status = firstNonBlank(status, "unknown");
+    private static JsonObject valuationRow(List<RootInput> inputs,
+                                           boolean[] values, String status) {
+        JsonObject result = new JsonObject();
+        JsonArray assignments = new JsonArray();
+        for (int index = 0; index < inputs.size(); index++) {
+            JsonObject assignment = new JsonObject();
+            assignment.addProperty("portId", inputs.get(index).port.id);
+            assignment.addProperty("value", values[index]);
+            assignments.add(assignment);
         }
-
-        private JsonObject toJson(List<RootInput> inputs) {
-            JsonObject result = new JsonObject();
-            JsonArray assignments = new JsonArray();
-            for (int index = 0; index < inputs.size(); index++) {
-                JsonObject assignment = new JsonObject();
-                assignment.addProperty("portId", inputs.get(index).port.id);
-                assignment.addProperty("value", values[index]);
-                assignments.add(assignment);
-            }
-            result.add("assignments", assignments);
-            result.addProperty("status", status);
-            return result;
-        }
+        result.add("assignments", assignments);
+        result.addProperty("status", status);
+        return result;
     }
 
     private static String dnf(List<RootInput> inputs,
-                              List<Valuation> valuations) {
+                              List<boolean[]> satisfying, int valuationCount) {
         List<String> terms = new ArrayList<>();
-        for (Valuation valuation : valuations) {
-            if (!"sat".equals(valuation.status)) continue;
+        for (boolean[] valuation : satisfying) {
             List<String> literals = new ArrayList<>();
             for (int index = 0; index < inputs.size(); index++) {
                 literals.add(inputs.get(index).literal(
-                        valuation.values[index]));
+                        valuation[index]));
             }
             terms.add(join("and", literals, "true"));
         }
         if (terms.isEmpty()) return "false";
-        return terms.size() == valuations.size()
+        return terms.size() == valuationCount
                 ? "true" : join("or", terms, "false");
     }
 
@@ -610,7 +531,7 @@ public final class BooleanReachConditionExtractor {
                     if (!id.isEmpty()) {
                         result.inputs.put(id, new PortInfo(id, regionId,
                                 string(row, "cell"),
-                                string(row, "javaType")));
+                                MaterializationSpec.logicalJavaType(row)));
                     }
                 }
                 for (JsonElement element : array(region, "outputs")) {
@@ -765,21 +686,13 @@ public final class BooleanReachConditionExtractor {
     }
 
     private static long positiveLong(String value, long fallback) {
-        try {
-            return Math.max(1L, Long.parseLong(firstNonBlank(value,
-                    String.valueOf(fallback))));
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
+        return value == null ? fallback
+                : Math.max(1L, Long.parseLong(value));
     }
 
     private static int positiveInt(String value, int fallback) {
-        try {
-            return Math.max(1, Integer.parseInt(firstNonBlank(value,
-                    String.valueOf(fallback))));
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
+        return value == null ? fallback
+                : Math.max(1, Integer.parseInt(value));
     }
 
 }

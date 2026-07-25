@@ -40,10 +40,10 @@ for file in \
   tool/fake.jar tool/env.jar tool/pom.xml target.yaml bin/z3 bin/java \
   artifacts/symbolic_regions.jsonl artifacts/static_dataflow_edges.jsonl \
   artifacts/symbolic_region_edges.jsonl \
-  artifacts/runtime/concolic_activation_plan.jsonl \
+  artifacts/runtime/concolic_region_plan.jsonl \
   artifacts/runtime/runtime_region_edge_validation.jsonl \
   artifacts/schedule/concolic_region_results.jsonl \
-  artifacts/schedule/scheduled_activation_plan.jsonl \
+  artifacts/schedule/execution_task_plan.jsonl \
   artifacts/schedule/concolic_region_summaries.jsonl \
   artifacts/schedule/merged_region_summaries.jsonl \
   artifacts/schedule/branch_queries.jsonl \
@@ -69,13 +69,13 @@ printf '%s\n' \
   '{"schemaVersion":2,"kind":"RUNTIME_REGION_EDGE_EVIDENCE","edgeId":"REGION_EDGE.0","fromRegion":"REGION.1","toRegion":"REGION.0","transportKind":"RPC_RETURN","fromPort":"out.0","toPort":"in.0","requiresOrder":true,"requiresObjectIdentity":false,"state":"UNOBSERVED","bindings":[]}' \
   > "${fixture_root}/artifacts/runtime/runtime_region_edge_validation.jsonl"
 printf '%s\n' \
-  '{"activationId":"ACT.0","regionInstanceId":"REGION_INSTANCE.0","regionId":"REGION.0","rootMethod":"m","observedMethods":["m"],"symbolicReady":true,"replayable":true}' \
-  > "${fixture_root}/artifacts/runtime/concolic_activation_plan.jsonl"
+  '{"regionInstanceId":"REGION_INSTANCE.0","regionId":"REGION.0","rootSelector":{"kind":"GLOBAL_INVOCATION","method":"m","ordinal":1},"closureGoals":[]}' \
+  > "${fixture_root}/artifacts/runtime/concolic_region_plan.jsonl"
 printf '%s\n' \
   '{"regionId":"REGION.0","relationallyComplete":true,"outputClosure":{"schemaVersion":1,"kind":"OUTPUT_CLOSURE_CONTRACT","producer":{"regionId":"REGION.0","regionInstanceId":"REGION_INSTANCE.0","rootCallId":1},"members":[{"output":{"portId":"out.0","cell":"out-cell","kind":"RETURN","javaTypeDescriptor":"I","selectionAuthority":"TEST_FIXTURE"},"slice":{"inputPorts":[],"sites":[],"staticSites":[],"methods":["m"],"causalEdgeIds":[],"captureBindingsRequired":false,"captureBindingsComplete":true,"captureBindings":[]}}]},"regionRelation":{"kind":"GUARDED_PATH_MERGE","cases":[{"caseId":"CASE.0","guard":{"kind":"PATH_CONDITION","conditions":[{"op":"="}]},"outputExpressions":{"out.0":{"exp":"x"}},"heapEffects":[],"normalExit":true}]}}' \
   > "${fixture_root}/artifacts/schedule/merged_region_summaries.jsonl"
 printf '%s\n' \
-  '{"schemaVersion":1,"kind":"COMPOSED_SMT_MANIFEST","complete":true,"fatalRegion":"REGION.0","fatalConditionCount":1}' \
+  '{"schemaVersion":2,"kind":"CONCOLIC_COMPOSED_SMT","state":"CANDIDATE_READY","trustState":"CANDIDATE_ONLY","fatalRegion":"REGION.0","fatalSite":"m#u0","gaps":[],"includedSummaries":[],"resolvedEdgeBindings":[],"caseProjectionCatalog":[],"composedSmtArtifact":{"path":"artifacts/schedule/composed_fatal.smt2","sha256":"test"}}' \
   > "${fixture_root}/artifacts/schedule/composed_smt_manifest.json"
 printf '%s\n' '(set-logic ALL)' '(assert true)' '(check-sat)' \
   > "${fixture_root}/artifacts/schedule/composed_fatal.smt2"
@@ -101,7 +101,7 @@ printf '%s\n' \
   'workload_work_dir=@repo/module' \
   'workload_command=echo workflow' \
   'trace_test=workflow-shell-test' \
-  'runtime_activation_plan=artifacts/runtime/concolic_activation_plan.jsonl' \
+  'runtime_region_plan=artifacts/runtime/concolic_region_plan.jsonl' \
   'runtime_edge_validations=artifacts/runtime/runtime_region_edge_validation.jsonl' \
   'schedule_output_dir=artifacts/schedule' \
   'reach_report=artifacts/reports/reach-condition.json' \
@@ -176,20 +176,24 @@ assert_not_contains "${debug_text}" 'z-static'
 assert_contains "$(<"${debug_stdout}")" 'workflow'
 debug_text=$(<"${debug_stderr}")
 assert_contains "${debug_text}" 'artifact=runtime_region_edge_validation'
-assert_contains "${debug_text}" 'artifact=concolic_activation_plan'
+assert_contains "${debug_text}" 'artifact=concolic_region_instance_plan'
 assert_contains "${debug_text}" 'total=1 shown=1 truncated=false'
+assert_contains "${debug_text}" '"regionInstanceId":"REGION_INSTANCE.0"'
+assert_contains "${debug_text}" '"goalCount":0'
 assert_not_contains "${debug_text}" 'status=invalid-json'
 
 "${runner}" --config "${config}" debug-stage merge \
   >"${debug_stdout}" 2>"${debug_stderr}"
 assert_contains "$(<"${debug_stderr}")" 'artifact=guarded_merge'
 assert_contains "$(<"${debug_stderr}")" 'GUARDED_PATH_MERGE'
+assert_contains "$(<"${debug_stderr}")" '"relationallyComplete":true'
 
 "${runner}" --config "${config}" --debug compose \
   >"${debug_stdout}" 2>"${debug_stderr}"
 debug_text=$(<"${debug_stderr}")
 assert_contains "${debug_text}" 'artifact=composition_manifest'
 assert_contains "${debug_text}" 'artifact=candidate_smt'
+assert_contains "${debug_text}" '"state":"CANDIDATE_READY"'
 assert_contains "${debug_text}" '(check-sat)'
 
 schedule=$("${runner}" --config "${config}" --dry-run schedule)

@@ -54,7 +54,6 @@ import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Fact;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.FieldWrite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.InstanceFieldAccess;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.MethodCallsite;
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.RpcTarget;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.actualInvokeArgs;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.fieldOwner;
 
@@ -98,8 +97,10 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     private final Map<String, List<Fact>> factsByMethod = new LinkedHashMap<>();
     private final Map<String, List<Fact>> callersByCallee = new LinkedHashMap<>();
-    private final Map<String, List<RpcTarget>> rpcTargetsBySource = new LinkedHashMap<>();
-    private final Map<String, List<RpcTarget>> rpcSourcesByTarget = new LinkedHashMap<>();
+    private final Map<String, List<String>> rpcTargetsBySource =
+            new LinkedHashMap<>();
+    private final Map<String, List<String>> rpcSourcesByTarget =
+            new LinkedHashMap<>();
     private final Map<String, List<FieldWrite>> fieldWritersByField =
             new LinkedHashMap<>();
     private final Map<String, List<ConstructorCallsite>> constructorCallersByCallee =
@@ -120,9 +121,7 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, Map<String, Object>> emittedEdgeRows =
             new LinkedHashMap<>();
     private final Set<String> emittedRpcMappings = new LinkedHashSet<>();
-    private final Set<String> expandedFieldWriterFields = new LinkedHashSet<>();
-    private final Set<String> expandedConstructorCallees = new LinkedHashSet<>();
-    private final Set<String> expandedMethodCallerKeys = new LinkedHashSet<>();
+    private final Set<String> expandedDemands = new LinkedHashSet<>();
     private int discoveredExceptionSeedCount;
     private final Map<String, Boolean> receiverProjectionWriteSummary =
             new LinkedHashMap<>();
@@ -215,8 +214,7 @@ final class SeedBackwardStaticAnalyzer {
                             protocolClass.getName())) {
                         continue;
                     }
-                    addRpcMapping(protocolMethod, concreteMethod,
-                            "protocol_implementation");
+                    addRpcMapping(protocolMethod, concreteMethod);
                 }
             }
         }
@@ -232,18 +230,17 @@ final class SeedBackwardStaticAnalyzer {
                 || name.endsWith("PB"));
     }
 
-    private void addRpcMapping(SootMethod source, SootMethod targetMethod,
-                               String kind) {
-        RpcTarget target = new RpcTarget(source.getSignature(),
-                targetMethod.getSignature(), kind);
-        String key = target.sourceSignature + "\n" + target.targetSignature;
+    private void addRpcMapping(SootMethod source, SootMethod targetMethod) {
+        String sourceSignature = source.getSignature();
+        String targetSignature = targetMethod.getSignature();
+        String key = sourceSignature + "\n" + targetSignature;
         if (!emittedRpcMappings.add(key)) {
             return;
         }
-        rpcTargetsBySource.computeIfAbsent(target.sourceSignature,
-                ignored -> new ArrayList<>()).add(target);
-        rpcSourcesByTarget.computeIfAbsent(target.targetSignature,
-                ignored -> new ArrayList<>()).add(target);
+        rpcTargetsBySource.computeIfAbsent(sourceSignature,
+                ignored -> new ArrayList<>()).add(targetSignature);
+        rpcSourcesByTarget.computeIfAbsent(targetSignature,
+                ignored -> new ArrayList<>()).add(sourceSignature);
     }
 
     private boolean classImplementsOrExtends(SootClass candidate, String targetClassName) {
@@ -274,8 +271,8 @@ final class SeedBackwardStaticAnalyzer {
         return false;
     }
 
-    CausynthAnalysisResult analyze() throws IOException {
-        CausynthAnalysisResult result = new CausynthAnalysisResult();
+    StaticProgram analyze() throws IOException {
+        StaticProgram result = new StaticProgram();
         result.targetResolved.put("schemaVersion", 2);
         result.targetResolved.put("kind", "TARGET_ATTESTATION");
         result.targetResolved.put("targetId",
@@ -614,10 +611,8 @@ final class SeedBackwardStaticAnalyzer {
                 Fact guard = factsByUnit.get(candidate.unit);
                 if (guard != null) {
                     Boolean requiredOutcome = null;
-                    String condition = candidate.unitText;
                     if (candidate.unit instanceof IfStmt) {
                         IfStmt ifStmt = (IfStmt) candidate.unit;
-                        condition = ifStmt.getCondition().toString();
                         boolean takenReaches = canReachWithoutRevisiting(
                                 graph, ifStmt.getTarget(), targetFact.unit,
                                 candidate.unit);
@@ -630,8 +625,8 @@ final class SeedBackwardStaticAnalyzer {
                             requiredOutcome = takenReaches;
                         }
                     }
-                    guards.add(new ExceptionGuard(guard, condition,
-                            requiredOutcome, reachingIndices,
+                    guards.add(new ExceptionGuard(guard, requiredOutcome,
+                            reachingIndices,
                             branchShape));
                 }
             }
@@ -1164,7 +1159,7 @@ final class SeedBackwardStaticAnalyzer {
         }
         buildGlobalStaticIndex();
         for (String field : fields) {
-            if (!expandedFieldWriterFields.add(field)) {
+            if (!expandOnce("FIELD_WRITERS", field)) {
                 continue;
             }
             List<FieldWrite> writers = fieldWritersByField.get(field);
@@ -1239,8 +1234,8 @@ final class SeedBackwardStaticAnalyzer {
             }
         }
         for (ConstructorParam param : params) {
-            String expansionKey = param.constructor + "#" + param.index;
-            if (!expandedConstructorCallees.add(expansionKey)) {
+            if (!expandOnce("CONSTRUCTOR_PARAM", param.constructor,
+                    param.index)) {
                 continue;
             }
             List<ConstructorCallsite> callsites = constructorCallersByCallee
@@ -1323,9 +1318,8 @@ final class SeedBackwardStaticAnalyzer {
             }
             Set<String> callerRelevant = relevant(callsite.method);
             for (int index : relevantParams) {
-                String expansionKey = method + "#param" + index + "@" + callsite.method
-                        + "#" + callsite.fact.unitIndex;
-                if (!expandedMethodCallerKeys.add(expansionKey)
+                if (!expandOnce("METHOD_CALLER_PARAM", method, index,
+                        callsite.method, callsite.fact.unitIndex)
                         || index >= callsite.actuals.size()) {
                     continue;
                 }
@@ -1351,7 +1345,8 @@ final class SeedBackwardStaticAnalyzer {
                 expandMethodReceiverFields(method, thisNode,
                         thisProjectionSuffixes, callsite);
             }
-            if (returnRelevant) {
+            if (returnRelevant && expandOnce("METHOD_CALLER_RETURN", method,
+                    callsite.method, callsite.fact.unitIndex)) {
                 expandCallerReturn("method_caller_return",
                         returnNode, callsite.defs, callsite.method,
                         callsite.fact, callerRelevant,
@@ -1439,6 +1434,11 @@ final class SeedBackwardStaticAnalyzer {
                     continue;
                 }
                 for (String effectField : effectFields) {
+                    if (!expandOnce("RECEIVER_EFFECT_GUARD", calleeMethod,
+                            callsite.method, callsite.fact.unitIndex,
+                            guard.fact.unitIndex, guardNode, effectField)) {
+                        continue;
+                    }
                     changed |= addReceiverFieldEffectPathGuardEdge(
                             guardNode, effectField, calleeMethod,
                             callsite, guard);
@@ -2938,31 +2938,31 @@ final class SeedBackwardStaticAnalyzer {
     private boolean processRpcInvoke(String callerMethod, Fact fact, MethodSig callee,
                                      List<String> defs, List<String> actuals,
                                      Set<String> callerRelevant) {
-        List<RpcTarget> targets = resolveRpcTargets(callee);
+        List<String> targets = resolveRpcTargets(callee);
         if (targets.isEmpty()) {
             return false;
         }
         boolean changed = false;
         int count = 0;
-        for (RpcTarget target : targets) {
-            if (target.targetSignature.equals(callee.raw)) {
+        for (String target : targets) {
+            if (target.equals(callee.raw)) {
                 continue;
             }
             if (count++ >= MAX_RPC_TARGETS_PER_CALL) {
                 break;
             }
-            SootMethod targetMethod = methodsBySignature.get(target.targetSignature);
+            SootMethod targetMethod = methodsBySignature.get(target);
             if (targetMethod == null) {
                 continue;
             }
             if (selectedMethods.size() < maxMethods) {
                 loadMethod(targetMethod);
             }
-            MethodSig targetSig = parseMethodSig(target.targetSignature);
+            MethodSig targetSig = parseMethodSig(target);
             if (targetSig == null) {
                 continue;
             }
-            Set<String> targetRelevant = relevant(target.targetSignature);
+            Set<String> targetRelevant = relevant(target);
             int paramCount = Math.min(actuals.size(), targetSig.params.size());
             for (int i = 0; i < paramCount; i++) {
                 String actual = actuals.get(i);
@@ -2986,12 +2986,12 @@ final class SeedBackwardStaticAnalyzer {
                     }
                     if (actualHit) {
                         changed |= targetRelevant.add(formal);
-                        changed |= selectedMethods.add(target.targetSignature);
+                        changed |= selectedMethods.add(target);
                     }
                 }
             }
             for (String def : defs) {
-                String returnNode = target.targetSignature + ".return";
+                String returnNode = target + ".return";
                 boolean defExactHit = callerRelevant.contains(def);
                 boolean defProjectionHit = containsProjection(callerRelevant, def);
                 boolean defHit = defExactHit || defProjectionHit;
@@ -3002,7 +3002,7 @@ final class SeedBackwardStaticAnalyzer {
                     }
                 if (defExactHit || defProjectionHit) {
                     changed |= targetRelevant.add(returnNode);
-                    changed |= selectedMethods.add(target.targetSignature);
+                    changed |= selectedMethods.add(target);
                 }
                 }
             }
@@ -3010,8 +3010,8 @@ final class SeedBackwardStaticAnalyzer {
         return changed;
     }
 
-    private List<RpcTarget> resolveRpcTargets(MethodSig callee) {
-        List<RpcTarget> targets = rpcTargetsBySource.get(callee.raw);
+    private List<String> resolveRpcTargets(MethodSig callee) {
+        List<String> targets = rpcTargetsBySource.get(callee.raw);
         return targets == null ? Collections.emptyList() : targets;
     }
 
@@ -3269,6 +3269,10 @@ final class SeedBackwardStaticAnalyzer {
                         && !containsProjection(calleeRelevant, formal)) {
                     continue;
                 }
+                if (!expandOnce("LOADED_CALLER_PARAM", calleeMethod, i,
+                        caller.method, caller.unitIndex)) {
+                    continue;
+                }
                 String actual = actuals.get(i);
                 if (ignoreNode(actual)) {
                     continue;
@@ -3278,7 +3282,8 @@ final class SeedBackwardStaticAnalyzer {
                 callerRelevant.add(actual);
                 selectedMethods.add(caller.method);
             }
-            if (returnRelevant) {
+            if (returnRelevant && expandOnce("LOADED_CALLER_RETURN",
+                    calleeMethod, caller.method, caller.unitIndex)) {
                 List<String> defs = canonicalList(caller.method, caller.defs);
                 expandCallerReturn("caller_return", returnNode,
                         defs, caller.method, caller, callerRelevant,
@@ -3288,7 +3293,7 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void expandRpcCallers(String targetMethod) {
-        List<RpcTarget> sources = rpcSourcesByTarget.get(targetMethod);
+        List<String> sources = rpcSourcesByTarget.get(targetMethod);
         if (sources == null || sources.isEmpty()) {
             return;
         }
@@ -3301,9 +3306,9 @@ final class SeedBackwardStaticAnalyzer {
         boolean returnRelevant = targetRelevant.contains(returnNode)
                 || containsProjection(targetRelevant, returnNode);
         buildGlobalStaticIndex();
-        for (RpcTarget source : sources) {
+        for (String source : sources) {
             List<MethodCallsite> callsites = methodCallersByCallee
-                    .get(source.sourceSignature);
+                    .get(source);
             if (callsites == null) {
                 continue;
             }
@@ -3324,6 +3329,11 @@ final class SeedBackwardStaticAnalyzer {
                             && !containsProjection(targetRelevant, formal)) {
                         continue;
                     }
+                    if (!expandOnce("RPC_CALLER_PARAM", targetMethod,
+                            source, i, callsite.method,
+                            callsite.fact.unitIndex)) {
+                        continue;
+                    }
                     String actual = actuals.get(i);
                     if (ignoreNode(actual)) {
                         continue;
@@ -3334,7 +3344,9 @@ final class SeedBackwardStaticAnalyzer {
                     callerRelevant.add(actual);
                     selectedMethods.add(callsite.method);
                 }
-                if (returnRelevant) {
+                if (returnRelevant && expandOnce("RPC_CALLER_RETURN",
+                        targetMethod, source, callsite.method,
+                        callsite.fact.unitIndex)) {
                     expandCallerReturn("rpc_caller_return",
                             returnNode, callsite.defs, callsite.method,
                             callsite.fact, callerRelevant,
@@ -3405,6 +3417,11 @@ final class SeedBackwardStaticAnalyzer {
                             && !containsProjection(targetRelevant, formal)) {
                         continue;
                     }
+                    if (!expandOnce("DISPATCH_CALLER_PARAM", targetMethod,
+                            sourceMethod, i, callsite.method,
+                            callsite.fact.unitIndex)) {
+                        continue;
+                    }
                     String actual = actuals.get(i);
                     if (ignoreNode(actual)) {
                         continue;
@@ -3415,7 +3432,9 @@ final class SeedBackwardStaticAnalyzer {
                     callerRelevant.add(actual);
                     selectedMethods.add(callsite.method);
                 }
-                if (returnRelevant) {
+                if (returnRelevant && expandOnce("DISPATCH_CALLER_RETURN",
+                        targetMethod, sourceMethod, callsite.method,
+                        callsite.fact.unitIndex)) {
                     expandCallerReturn("dispatch_caller_return",
                             returnNode, callsite.defs, callsite.method,
                             callsite.fact, callerRelevant,
@@ -3460,7 +3479,9 @@ final class SeedBackwardStaticAnalyzer {
             return false;
         }
         boolean changed = false;
-        if (relevant(targetMethod).contains(targetThis)) {
+        if (relevant(targetMethod).contains(targetThis)
+                && expandOnce("DISPATCH_CALLER_RECEIVER", targetMethod,
+                callsite.method, callsite.fact.unitIndex)) {
             if (addEdge("dispatch_caller_receiver", callsite.receiver,
                     targetThis, callsite.method, callsite.fact,
                     "interface/virtual receiver aliases concrete this")) {
@@ -3471,6 +3492,10 @@ final class SeedBackwardStaticAnalyzer {
         }
         for (String suffix : suffixes) {
             if (!isAllowedFieldPathSuffix(suffix)) {
+                continue;
+            }
+            if (!expandOnce("DISPATCH_CALLER_RECEIVER_FIELD", targetMethod,
+                    callsite.method, callsite.fact.unitIndex, suffix)) {
                 continue;
             }
             String callerProjection = callsite.receiver + suffix;
@@ -3581,6 +3606,14 @@ final class SeedBackwardStaticAnalyzer {
 
     private Set<String> relevant(String method) {
         return relevantByMethod.computeIfAbsent(method, DirtyRelevantSet::new);
+    }
+
+    private boolean expandOnce(String kind, Object... identity) {
+        StringBuilder key = new StringBuilder(kind);
+        for (Object value : identity) {
+            key.append('\n').append(String.valueOf(value));
+        }
+        return expandedDemands.add(key.toString());
     }
 
     private void markDirty(String method) {
@@ -3823,7 +3856,9 @@ final class SeedBackwardStaticAnalyzer {
             return false;
         }
         boolean changed = false;
-        if (relevant(calleeMethod).contains(calleeThis)) {
+        if (relevant(calleeMethod).contains(calleeThis)
+                && expandOnce("METHOD_CALLER_RECEIVER", calleeMethod,
+                callsite.method, callsite.fact.unitIndex)) {
             if (addEdge("method_receiver", callsite.receiver, calleeThis,
                     callsite.method, callsite.fact,
                     "instance method receiver flows to callee this")) {
@@ -3833,6 +3868,10 @@ final class SeedBackwardStaticAnalyzer {
             changed |= selectedMethods.add(callsite.method);
         }
         for (String suffix : suffixes) {
+            if (!expandOnce("METHOD_CALLER_RECEIVER_FIELD", calleeMethod,
+                    callsite.method, callsite.fact.unitIndex, suffix)) {
+                continue;
+            }
             String callerProjection = callsite.receiver + suffix;
             String calleeProjection = calleeThis + suffix;
             if (addEdge("method_receiver_field", callerProjection, calleeProjection,
@@ -3853,7 +3892,9 @@ final class SeedBackwardStaticAnalyzer {
             return false;
         }
         boolean changed = false;
-        if (relevant(constructor).contains(constructorThis)) {
+        if (relevant(constructor).contains(constructorThis)
+                && expandOnce("CONSTRUCTOR_CALLER_RECEIVER", constructor,
+                callsite.method, callsite.fact.unitIndex)) {
             if (addEdge("constructor_receiver", callsite.receiver, constructorThis,
                     callsite.method, callsite.fact,
                     "constructor receiver aliases constructor this")) {
@@ -3863,6 +3904,10 @@ final class SeedBackwardStaticAnalyzer {
             changed |= selectedMethods.add(callsite.method);
         }
         for (String suffix : suffixes) {
+            if (!expandOnce("CONSTRUCTOR_CALLER_RECEIVER_FIELD", constructor,
+                    callsite.method, callsite.fact.unitIndex, suffix)) {
+                continue;
+            }
             String constructorProjection = constructorThis + suffix;
             String callerProjection = callsite.receiver + suffix;
             if (addEdge("constructor_receiver_field", constructorProjection,
@@ -4345,9 +4390,6 @@ final class SeedBackwardStaticAnalyzer {
                     .equals(semanticMode);
             boolean assertable = StaticDataflowEdgeSchema.ASSERTABLE
                     .equals(semanticMode);
-            String mappingAuthority = mappingOnly
-                    ? StaticDataflowEdgeSchema.mappingAuthority(
-                    projectionBaseEdge) : "";
             String edgeTransferKind = StaticDataflowEdgeSchema.transferKind(
                     kind,
                     fact == null ? "" : fact.unitText,
@@ -4374,9 +4416,6 @@ final class SeedBackwardStaticAnalyzer {
                     "siteId", stableSiteId(method,
                             fact == null ? -1 : fact.unitIndex, kind),
                     "evidence", evidence);
-            if (mappingOnly && !mappingAuthority.isEmpty()) {
-                edge.put("mappingAuthority", mappingAuthority);
-            }
             if (hasProjectionBase) {
                 edge.put("projectionBaseEdgeId", stringValue(
                         projectionBaseEdge.get("id")));
@@ -4431,7 +4470,7 @@ final class SeedBackwardStaticAnalyzer {
             indexProjectableEdge(edge);
             changed = true;
         }
-        if (deriveProjectedEdges && edge != null) {
+        if (deriveProjectedEdges && changed) {
             changed |= addProjectedEdgesForObjectFlow(kind, fromText, toText,
                     method, fact, edge);
         }

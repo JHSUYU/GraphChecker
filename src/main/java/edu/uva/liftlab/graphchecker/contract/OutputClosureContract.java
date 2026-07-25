@@ -112,7 +112,7 @@ public final class OutputClosureContract {
                             .getAsJsonObject(),
                     "captureKind");
             if (!"CALL_ARGUMENT".equals(kind)
-                    && !"FIELD_ASSIGNMENT_RHS".equals(kind)) {
+                    && !"REGION_EXIT_FIELD".equals(kind)) {
                 return false;
             }
         }
@@ -217,7 +217,7 @@ public final class OutputClosureContract {
         }
 
         public boolean captureRequired() {
-            return slice.get("captureBindingsRequired").getAsBoolean();
+            return captureBindings().size() > 0;
         }
 
         public boolean captureComplete() {

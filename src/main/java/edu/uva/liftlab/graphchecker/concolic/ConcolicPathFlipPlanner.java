@@ -46,22 +46,23 @@ public final class ConcolicPathFlipPlanner {
 
     static RegionPathWorklist.Result plan(Arguments arguments)
             throws IOException {
-        List<JsonObject> allActivations = ArtifactIO.readJsonl(
-                arguments.activations);
+        List<JsonObject> allExecutionTasks = ArtifactIO.readJsonl(
+                arguments.executionTasks);
         List<JsonObject> allSummaries = ArtifactIO.readJsonl(
                 arguments.summaries);
         List<JsonObject> records = arguments.records == null
                 ? Collections.<JsonObject>emptyList()
                 : ArtifactIO.readJsonl(arguments.records);
 
-        List<JsonObject> activations = filterActivations(allActivations,
-                arguments.regionId);
-        Map<String, JsonObject> activationById = ArtifactIO.uniqueIndex(
-                activations, "activationId");
+        List<JsonObject> executionTasks = filterExecutionTasks(
+                allExecutionTasks,
+                arguments.regionId, arguments.goalId);
+        Map<String, JsonObject> taskById = ArtifactIO.uniqueIndex(
+                executionTasks, "taskId");
         List<JsonObject> summaries = filterSummaries(allSummaries,
-                activationById, arguments.regionId);
+                taskById, arguments.regionId, arguments.goalId);
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                summaries, activations, records, arguments.pathBounds);
+                summaries, executionTasks, records, arguments.pathBounds);
         Collections.sort(result.tasks, Comparator.comparing(
                 task -> string(task, "queryKey")));
         return result;
@@ -71,35 +72,39 @@ public final class ConcolicPathFlipPlanner {
             throws IOException {
         ArtifactIO.replaceJsonl(directory.resolve(
                 "region_path_worklist.jsonl"), result.tasks);
+        ArtifactIO.replaceJsonl(directory.resolve(
+                "merged_region_summaries.jsonl"), result.relations);
         ArtifactIO.replace(directory.resolve("region_path_manifest.json"),
                 PRETTY.toJson(result.manifest) + System.lineSeparator());
     }
 
-    private static List<JsonObject> filterActivations(
-            List<JsonObject> source, String regionId) {
+    private static List<JsonObject> filterExecutionTasks(
+            List<JsonObject> source, String regionId, String goalId) {
         List<JsonObject> result = new ArrayList<>();
-        for (JsonObject activation : source) {
+        for (JsonObject task : source) {
             if (!regionId.isEmpty()
-                    && !regionId.equals(string(activation, "regionId"))) {
+                    && !regionId.equals(string(task, "regionId"))) {
                 continue;
             }
-            result.add(activation.deepCopy());
+            if (!goalId.equals(string(task, "goalId"))) continue;
+            result.add(task.deepCopy());
         }
         return result;
     }
 
     private static List<JsonObject> filterSummaries(
-            List<JsonObject> source, Map<String, JsonObject> activations,
-            String regionId) {
+            List<JsonObject> source, Map<String, JsonObject> executionTasks,
+            String regionId, String goalId) {
         List<JsonObject> result = new ArrayList<>();
         for (JsonObject summary : source) {
-            if (!activations.containsKey(string(summary, "activationId"))) {
+            if (!executionTasks.containsKey(string(summary, "taskId"))) {
                 continue;
             }
             if (!regionId.isEmpty()
                     && !regionId.equals(string(summary, "regionId"))) {
                 continue;
             }
+            if (!goalId.equals(string(summary, "goalId"))) continue;
             result.add(summary.deepCopy());
         }
         return result;
@@ -107,22 +112,24 @@ public final class ConcolicPathFlipPlanner {
 
     static final class Arguments {
         private final Path summaries;
-        private final Path activations;
+        private final Path executionTasks;
         private final Path records;
         private final Path outputDirectory;
         private final RegionPathWorklist.Bounds pathBounds;
         private final String regionId;
+        private final String goalId;
 
-        private Arguments(Path summaries, Path activations, Path records,
+        private Arguments(Path summaries, Path executionTasks, Path records,
                           Path outputDirectory,
                           RegionPathWorklist.Bounds pathBounds,
-                          String regionId) {
+                          String regionId, String goalId) {
             this.summaries = summaries;
-            this.activations = activations;
+            this.executionTasks = executionTasks;
             this.records = records;
             this.outputDirectory = outputDirectory;
             this.pathBounds = pathBounds;
             this.regionId = regionId;
+            this.goalId = goalId;
         }
 
         static Arguments parse(String[] argv) {
@@ -136,7 +143,7 @@ public final class ConcolicPathFlipPlanner {
                 values.put(option.substring(2), argv[++index]);
             }
             Path summaries = required(values, "summaries");
-            Path activations = required(values, "activations");
+            Path executionTasks = required(values, "task-plan");
             Path output = required(values, "output-dir");
             Path records = optionalPath(values.get("records"));
             RegionPathWorklist.Bounds defaults =
@@ -149,8 +156,9 @@ public final class ConcolicPathFlipPlanner {
                                     defaults.maxFlipsPerPath),
                             intValue(values, "max-tasks",
                                     defaults.maxTasks));
-            return new Arguments(summaries, activations, records, output,
-                    bounds, value(values, "region-id"));
+            return new Arguments(summaries, executionTasks, records, output,
+                    bounds, value(values, "region-id"),
+                    requiredValue(values, "goal-id"));
         }
 
         private static Path required(Map<String, String> values,
@@ -171,6 +179,15 @@ public final class ConcolicPathFlipPlanner {
                                     String name) {
             String result = values.get(name);
             return result == null ? "" : result;
+        }
+
+        private static String requiredValue(Map<String, String> values,
+                                            String name) {
+            String result = value(values, name);
+            if (result.trim().isEmpty()) {
+                throw new IllegalArgumentException("Missing --" + name);
+            }
+            return result;
         }
 
         private static int intValue(Map<String, String> values, String name,
