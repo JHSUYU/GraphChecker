@@ -1686,8 +1686,11 @@ field path、selector、causal edge、capture 与所有 admission blocker 均保
 该批手写生产 Java 为 73,822 行，相对 81,581 行冻结基线累计净减 7,759 行；本批净删
 931 行生产代码。57 项快速回归、PMD、shell 语法与真实 custom-JDK/Z3 baseline 均通过；
 baseline producer worklist 正常闭合，Composer/Importer 无 gap，Z3 仍报告
-`SAT/REACHABLE`。完整 13-fixture 矩阵只在里程碑 commit 的隔离干净 worktree 上记录，
-不得用主 worktree 的用户 fixture 修改冒充 release gate。
+`SAT/REACHABLE`。对应里程碑 `e96b618d` 的隔离干净 worktree 13-fixture 并行真实
+custom-JDK/Z3 矩阵也已零失败，保持 6 `SAT/REACHABLE`、7
+`UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T141052Z.3416779`。矩阵只读取里程碑 commit，
+没有读取或覆盖主 worktree 中的用户 fixture 修改。
 
 ### 明确不能删除
 
