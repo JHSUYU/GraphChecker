@@ -97,16 +97,8 @@ public final class ConcolicRegionRuntime {
             "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1";
     private static final String REFERENCE_NULLNESS_ENCODING_AUTHORITY =
             "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1";
-    private static final String ROOT_ARGUMENT_SELECTOR_SCHEMA_V2 =
-            "EXACT_RUNTIME_ROOT_ARGUMENT_TYPES_AND_RECEIVER_V2";
-    private static final String ROOT_ARGUMENT_SELECTOR_AUTHORITY_V2 =
-            "RUNTIME_METHOD_ARGUMENT_EXACT_TYPES_DISTINCT_RECEIVER_"
-                    + "AND_WITHIN_RECEIVER_ORDINAL_V2";
     private static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
-    private static final String ROOT_CONTEXT_SELECTION_AUTHORITY =
-            "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_THREAD_NAME_"
-                    + "CONTEXT_ORDINAL_V1";
     private static final String RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY =
             "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1";
     private static final String VALUE_REF_WITNESS_AUTHORITY =
@@ -10679,50 +10671,27 @@ public final class ConcolicRegionRuntime {
                     invocationOrdinalWithinContext;
         }
 
-        private static RootContextSelector from(JsonObject activation) {
-            boolean present = activation.has("receiverRuntimeClass")
-                    || activation.has("invocationOrdinalWithinContext")
-                    || activation.has("rootContextSelectionAuthority")
-                    || activation.has("threadIdSelectionUsed");
-            if (!present) {
+        private static RootContextSelector from(JsonObject selector) {
+            String kind = strictString(selector, "kind");
+            if ("GLOBAL_INVOCATION".equals(kind)) {
                 return new RootContextSelector(false, true, "", "", "",
                         -1);
             }
-            String receiverClass = strictString(activation,
-                    "receiverRuntimeClass");
-            String thread = activation.has("threadName")
-                    ? strictString(activation, "threadName") : "";
-            Integer ordinal = strictInteger(activation,
-                    "invocationOrdinalWithinContext", 1);
-            String authority = strictString(activation,
-                    "rootContextSelectionAuthority");
-            JsonElement rawThreadIdUsed = activation.get(
-                    "threadIdSelectionUsed");
-            boolean explicitNoThreadId = rawThreadIdUsed != null
-                    && rawThreadIdUsed.isJsonPrimitive()
-                    && rawThreadIdUsed.getAsJsonPrimitive().isBoolean()
-                    && !rawThreadIdUsed.getAsBoolean();
+            String receiverClass = strictString(selector, "receiverClass");
+            String thread = selector.has("thread")
+                    ? strictString(selector, "thread") : "";
+            Integer ordinal = strictInteger(selector, "ordinal", 1);
             if (receiverClass.isEmpty()
                     || !receiverClass.equals(receiverClass.trim())
-                    || activation.has("threadName") && (thread.isEmpty()
+                    || !"RECEIVER_CONTEXT".equals(kind)
+                    || selector.has("thread") && (thread.isEmpty()
                     || !thread.equals(thread.trim()))
-                    || ordinal == null
-                    || !ROOT_CONTEXT_SELECTION_AUTHORITY.equals(authority)
-                    || !explicitNoThreadId || activation.has("threadId")) {
+                    || ordinal == null) {
                 return new RootContextSelector(true, false,
-                        "stable root context requires an exact receiver "
-                                + "runtime class, optional non-blank thread "
-                                + "name, positive context ordinal, canonical "
-                                + "authority, and no thread id",
+                        "rootSelector requires GLOBAL_INVOCATION or an exact "
+                                + "RECEIVER_CONTEXT",
                         receiverClass, thread,
                         ordinal == null ? -1 : ordinal);
-            }
-            String legacyReceiver = string(activation, "receiverType");
-            if (!legacyReceiver.isEmpty()
-                    && !receiverClass.equals(legacyReceiver)) {
-                return new RootContextSelector(true, false,
-                        "receiverRuntimeClass disagrees with receiverType",
-                        receiverClass, thread, ordinal);
             }
             return new RootContextSelector(true, true, "", receiverClass,
                     thread, ordinal);
@@ -10752,8 +10721,8 @@ public final class ConcolicRegionRuntime {
         }
 
         private String identity() {
-            if (!present) return "LEGACY_NO_STABLE_ROOT_CONTEXT";
-            return ROOT_CONTEXT_SELECTION_AUTHORITY + '|'
+            if (!present) return "GLOBAL_INVOCATION";
+            return "RECEIVER_CONTEXT|"
                     + receiverRuntimeClass.length() + ':'
                     + receiverRuntimeClass + '|'
                     + threadName.length() + ':' + threadName;
@@ -10766,7 +10735,7 @@ public final class ConcolicRegionRuntime {
 
         private String selectionIdentity() {
             return present ? "contextOrdinal="
-                    + invocationOrdinalWithinContext : "legacyContext";
+                    + invocationOrdinalWithinContext : "globalInvocation";
         }
     }
 
@@ -10790,23 +10759,16 @@ public final class ConcolicRegionRuntime {
             this.predicates = predicates;
         }
 
-        private static RootArgumentSelector from(JsonObject activation) {
-            if (!activation.has("runtimeRootArgumentSelector")) {
+        private static RootArgumentSelector from(JsonObject rootSelector) {
+            if (!rootSelector.has("arguments")) {
                 return new RootArgumentSelector(false, true, "",
                         -1, -1, Collections.emptyList());
             }
-            JsonElement raw = activation.get("runtimeRootArgumentSelector");
+            JsonElement raw = rootSelector.get("arguments");
             if (raw == null || !raw.isJsonObject()) {
-                return invalid("runtimeRootArgumentSelector must be an object");
+                return invalid("rootSelector.arguments must be an object");
             }
             JsonObject json = raw.getAsJsonObject();
-            String schema = strictString(json, "schema");
-            String authority = strictString(json, "authority");
-            boolean supported = ROOT_ARGUMENT_SELECTOR_SCHEMA_V2.equals(schema)
-                    && ROOT_ARGUMENT_SELECTOR_AUTHORITY_V2.equals(authority);
-            if (!supported) {
-                return invalid("unsupported selector schema/authority pair");
-            }
             JsonElement rawPredicates = json.get("predicates");
             if (rawPredicates == null || !rawPredicates.isJsonArray()
                     || rawPredicates.getAsJsonArray().size() == 0) {
@@ -10840,9 +10802,8 @@ public final class ConcolicRegionRuntime {
                     "receiverOrdinal", 1);
             Integer withinReceiver = strictInteger(json,
                     "matchOrdinalWithinReceiver", 1);
-            if (receiverOrdinal == null || withinReceiver == null
-                    || json.has("matchOrdinal")) {
-                return invalid("V2 selector requires positive receiverOrdinal "
+            if (receiverOrdinal == null || withinReceiver == null) {
+                return invalid("argument selector requires receiverOrdinal "
                         + "and matchOrdinalWithinReceiver");
             }
             return new RootArgumentSelector(true, true, "",
@@ -10871,10 +10832,8 @@ public final class ConcolicRegionRuntime {
         }
 
         private String identity() {
-            if (!present) return "LEGACY_GLOBAL_INVOCATION_ORDINAL";
-            StringBuilder result = new StringBuilder(
-                    ROOT_ARGUMENT_SELECTOR_SCHEMA_V2).append('|')
-                    .append(ROOT_ARGUMENT_SELECTOR_AUTHORITY_V2);
+            if (!present) return "NO_ARGUMENT_SELECTOR";
+            StringBuilder result = new StringBuilder("ROOT_ARGUMENTS");
             for (RootArgumentTypePredicate predicate : predicates) {
                 result.append('|').append(predicate.argumentIndex)
                         .append('=').append(predicate.runtimeType.length())
@@ -10977,14 +10936,16 @@ public final class ConcolicRegionRuntime {
         private boolean modelAssignmentKeysUnique = true;
 
         private Activation(JsonObject json) {
+            JsonObject rootSelector = jsonObject(json, "rootSelector");
             this.activationId = string(json, "activationId");
             this.regionId = string(json, "regionId");
             this.test = string(json, "test");
-            this.rootMethod = string(json, "rootMethod");
+            this.rootMethod = string(rootSelector, "method");
             this.pathQueryKey = string(json, "pathQueryKey");
-            this.invocationOrdinal = integer(json, "invocationOrdinal", 1);
-            this.rootContextSelector = RootContextSelector.from(json);
-            this.rootArgumentSelector = RootArgumentSelector.from(json);
+            this.invocationOrdinal = integer(rootSelector, "ordinal", 1);
+            this.rootContextSelector = RootContextSelector.from(rootSelector);
+            this.rootArgumentSelector = RootArgumentSelector.from(
+                    rootSelector);
             this.replayable = admissionExecutable(json);
             this.requiresAllSelection = "ALL".equals(string(
                     jsonObject(json, "bundle"), "selection"));

@@ -1297,8 +1297,11 @@ public class ConcolicRegionRuntimeTest {
         activation.addProperty("regionId", "REGION.TEST");
         activation.addProperty("test", id.startsWith("ACT.MODEL")
                 ? "concrete-model-test" : "concrete-overlap-test");
-        activation.addProperty("rootMethod", root);
-        activation.addProperty("invocationOrdinal", ordinal);
+        JsonObject rootSelector = new JsonObject();
+        rootSelector.addProperty("kind", "GLOBAL_INVOCATION");
+        rootSelector.addProperty("method", root);
+        rootSelector.addProperty("ordinal", ordinal);
+        activation.add("rootSelector", rootSelector);
         JsonObject admission = new JsonObject();
         admission.addProperty("state", "EXECUTABLE");
         admission.addProperty("mode", "TEST_CONCRETE_REPLAY");
@@ -1328,10 +1331,6 @@ public class ConcolicRegionRuntimeTest {
             JsonObject activation, int receiverOrdinal,
             int matchOrdinalWithinReceiver, String... runtimeTypes) {
         JsonObject selector = new JsonObject();
-        selector.addProperty("schema",
-                RuntimeRegionPlanner.ROOT_ARGUMENT_SELECTOR_SCHEMA);
-        selector.addProperty("authority",
-                RuntimeRegionPlanner.ROOT_ARGUMENT_SELECTOR_AUTHORITY);
         selector.addProperty("receiverOrdinal", receiverOrdinal);
         selector.addProperty("matchOrdinalWithinReceiver",
                 matchOrdinalWithinReceiver);
@@ -1345,20 +1344,18 @@ public class ConcolicRegionRuntimeTest {
             predicates.add(predicate);
         }
         selector.add("predicates", predicates);
-        activation.add("runtimeRootArgumentSelector", selector);
+        activation.getAsJsonObject("rootSelector").add(
+                "arguments", selector);
     }
 
     private static void addStableRootContext(
             JsonObject activation, String receiverRuntimeClass,
             String threadName, int ordinalWithinContext) {
-        activation.addProperty("receiverRuntimeClass",
-                receiverRuntimeClass);
-        activation.addProperty("threadName", threadName);
-        activation.addProperty("threadIdSelectionUsed", false);
-        activation.addProperty("invocationOrdinalWithinContext",
-                ordinalWithinContext);
-        activation.addProperty("rootContextSelectionAuthority",
-                RuntimeRegionPlanner.ROOT_CONTEXT_SELECTION_AUTHORITY);
+        JsonObject selector = activation.getAsJsonObject("rootSelector");
+        selector.addProperty("kind", "RECEIVER_CONTEXT");
+        selector.addProperty("receiverClass", receiverRuntimeClass);
+        selector.addProperty("thread", threadName);
+        selector.addProperty("ordinal", ordinalWithinContext);
     }
 
     private static final class KeyUpdateCommand {

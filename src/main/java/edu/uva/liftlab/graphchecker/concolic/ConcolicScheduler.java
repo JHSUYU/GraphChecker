@@ -57,9 +57,6 @@ public final class ConcolicScheduler {
             "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
     private static final Pattern FIELD_PROJECTION = Pattern.compile(
             "#field:([^#]+)");
-    private static final Pattern DEFAULT_OBJECT_IDENTITY_THREAD_NAME =
-            Pattern.compile("^([A-Za-z_$][A-Za-z0-9_$.]*?)@"
-                    + "[0-9a-fA-F]+$");
     private static final String CONSUMED_FIELD_SITE_AUTHORITY =
             "RUNTIME_UNIQUE_STATIC_LEAF_GETFIELD_SITE_AND_"
                     + "OWNER_WITHIN_REGION_INSTANCE_V1";
@@ -570,21 +567,7 @@ public final class ConcolicScheduler {
 
     /** Canonicalizes unstable default object identity in thread names. */
     private static JsonObject operationalActivation(JsonObject discovered) {
-        JsonObject configured = discovered;
-        Matcher identityThread = DEFAULT_OBJECT_IDENTITY_THREAD_NAME.matcher(
-                string(discovered, "threadName"));
-        if (identityThread.matches()) {
-            configured = discovered.deepCopy();
-            int globalOrdinal = integer(configured, "invocationOrdinal", 1);
-            configured.addProperty("stableThreadName",
-                    identityThread.group(1) + "@*");
-            configured.addProperty("invocationOrdinalWithinContext",
-                    globalOrdinal);
-            configured.addProperty("stableContextOrdinalRebased", true);
-            configured.addProperty("stableContextOrdinalRebaseAuthority",
-                    "FROZEN_DEFAULT_OBJECT_THREAD_NAME_CANONICALIZATION_V1");
-        }
-        return configured;
+        return discovered;
     }
 
     /** Compiles the contract union needed by execution, without mirrors. */
@@ -2615,8 +2598,9 @@ public final class ConcolicScheduler {
                 Comparator.comparing((Candidate value) -> !value.directed)
                         .thenComparing(value -> !value.materialization.ready)
                         .thenComparingInt(value -> value.target.branchIndex)
-                        .thenComparingInt(value -> integer(value.activation,
-                                "invocationOrdinal", Integer.MAX_VALUE))
+                        .thenComparingInt(value -> integer(object(
+                                value.activation, "rootSelector"),
+                                "ordinal", Integer.MAX_VALUE))
                         .thenComparing(value -> value.activationId);
 
         private final JsonObject activation;

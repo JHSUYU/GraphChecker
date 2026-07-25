@@ -120,7 +120,7 @@ final class ConcolicInstrumentationSelections {
                 if (!admissionExecutable(row)) {
                     continue;
                 }
-                String root = jsonString(row, "rootMethod");
+                String root = jsonString(rootSelector(row), "method");
                 if (!root.isEmpty()) {
                     roots.add(root);
                 }
@@ -1435,6 +1435,12 @@ final class ConcolicInstrumentationSelections {
 
     private static JsonObject bundle(JsonObject row) {
         JsonElement value = row == null ? null : row.get("bundle");
+        return value != null && value.isJsonObject()
+                ? value.getAsJsonObject() : null;
+    }
+
+    private static JsonObject rootSelector(JsonObject row) {
+        JsonElement value = row == null ? null : row.get("rootSelector");
         return value != null && value.isJsonObject()
                 ? value.getAsJsonObject() : null;
     }

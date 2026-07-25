@@ -422,7 +422,7 @@ public class CausynthPipelineTest {
 
             JsonObject activation = new JsonObject();
             activation.addProperty("activationId", "ACT.JOINT.CAPTURE");
-            activation.addProperty("rootMethod", caller);
+            addGlobalRootSelector(activation, caller);
             admitExecutable(activation,
                     "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
             JsonArray captures = new JsonArray();
@@ -581,7 +581,7 @@ public class CausynthPipelineTest {
             Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
             JsonObject activation = new JsonObject();
             activation.addProperty("activationId", "ACT.CAPTURE");
-            activation.addProperty("rootMethod", root.getSignature());
+            addGlobalRootSelector(activation, root.getSignature());
             admitExecutable(activation,
                     "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
             JsonObject capture = new JsonObject();
@@ -693,7 +693,7 @@ public class CausynthPipelineTest {
                     "field-activation.jsonl");
             JsonObject activation = new JsonObject();
             activation.addProperty("activationId", "ACT.FIELD.CAPTURE");
-            activation.addProperty("rootMethod", root.getSignature());
+            addGlobalRootSelector(activation, root.getSignature());
             admitExecutable(activation,
                     "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
             JsonObject capture = new JsonObject();
@@ -2123,5 +2123,14 @@ public class CausynthPipelineTest {
         } else {
             System.setProperty(name, value);
         }
+    }
+
+    private static void addGlobalRootSelector(JsonObject activation,
+                                              String method) {
+        JsonObject selector = new JsonObject();
+        selector.addProperty("kind", "GLOBAL_INVOCATION");
+        selector.addProperty("method", method);
+        selector.addProperty("ordinal", 1);
+        activation.add("rootSelector", selector);
     }
 }

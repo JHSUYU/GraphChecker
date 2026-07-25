@@ -1332,7 +1332,12 @@ path campaign、summary merge、SMT composition 和 Z3 端到端结果仍为 `sa
 producer activation 阻塞。第二个原子切换将七个顶层 activation bundle 镜像压缩为唯一
 `bundle {rootActivationId,scheduleId,role,index,size,selection}`，同步切换 Java 与 shell
 reader，无双写；57 项快速回归与 baseline 端到端 Z3 仍通过。PR 3 剩余的
-`rootSelector` 与 edge evidence 收敛继续作为后续原子切换完成。
+root selection 也已一次性收敛成 tagged
+`rootSelector {kind,method,receiverClass?,thread?,ordinal,arguments?}`：删除顶层
+`rootMethod/receiverType/invocationOrdinal`、context authority/boolean 镜像和 argument
+selector schema/authority 镜像，不保留 legacy/global fallback。迁移回归发现并修正了
+worklist identity 的旧顶层 root 读点；57 项快速回归和 baseline 全流程仍通过。PR 3
+剩余的 edge evidence 收敛继续作为后续原子切换完成。
 
 ### PR 4：压缩 trace、Importer 和 replay admission
 

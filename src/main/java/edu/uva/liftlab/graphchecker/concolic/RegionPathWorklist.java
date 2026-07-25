@@ -653,8 +653,9 @@ public final class RegionPathWorklist {
                 String instance = firstNonBlank(string(source,
                         "regionInstanceId"), string(summary,
                         "regionInstanceId"));
-                String rootMethod = firstNonBlank(string(source,
-                        "rootMethod"), string(summary, "rootMethod"));
+                String rootMethod = firstNonBlank(string(object(source,
+                                "rootSelector"), "method"),
+                        string(summary, "rootMethod"));
                 return new ExplorationScope(goal, null, sites,
                         "TARGET_BRANCH_V1\n" + region + "\n" + instance
                                 + "\n" + targetMethod + "\n" + rootMethod,

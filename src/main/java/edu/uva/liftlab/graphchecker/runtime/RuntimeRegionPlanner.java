@@ -69,16 +69,8 @@ final class RuntimeRegionPlanner {
             "AUTHORITATIVE_SCHEDULER_DEFINITION_INDEX_REQUIRED_V1";
     private static final String UNRESOLVED_INPUT_PROVENANCE_AUTHORITY =
             "STATIC_EXACT_DEPENDENCY_METHOD_CONSUMER_SET_V1";
-    static final String ROOT_ARGUMENT_SELECTOR_SCHEMA =
-            "EXACT_RUNTIME_ROOT_ARGUMENT_TYPES_AND_RECEIVER_V2";
-    static final String ROOT_ARGUMENT_SELECTOR_AUTHORITY =
-            "RUNTIME_METHOD_ARGUMENT_EXACT_TYPES_DISTINCT_RECEIVER_"
-                    + "AND_WITHIN_RECEIVER_ORDINAL_V2";
     static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
-    static final String ROOT_CONTEXT_SELECTION_AUTHORITY =
-            "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_THREAD_NAME_"
-                    + "CONTEXT_ORDINAL_V1";
     static final String CONTAINER_MUTATION_READ_FROM_AUTHORITY =
             "RUNTIME_EXACT_FIELD_OWNER_AND_CONTAINER_RECEIVER_IDENTITY_"
                     + "COMPLETED_MUTATION_BEFORE_READ_V1";
@@ -279,9 +271,9 @@ final class RuntimeRegionPlanner {
                         "regionInstanceId", instanceId,
                         "regionId", region.regionId,
                         "test", root.test,
-                        "rootMethod", root.method,
-                        "receiverType", root.receiverType,
-                        "invocationOrdinal", ordinal,
+                        "rootSelector", rootSelector(root, ordinal,
+                                ordinalWithinContext,
+                                rootArgumentSelector),
                         "rootCallId", root.callId,
                         "runtimeDefinitionMethods",
                         demandSlice.definitionMethods(observedMethods),
@@ -297,12 +289,6 @@ final class RuntimeRegionPlanner {
                                 callSelection.truncated),
                         "symbolize", symbolize,
                         "branches", branchPlan);
-                addRootContextSelector(activation, root,
-                        ordinalWithinContext);
-                if (!rootArgumentSelector.isEmpty()) {
-                    activation.put("runtimeRootArgumentSelector",
-                            rootArgumentSelector);
-                }
                 result.activations.add(activation);
                 instanceIndex++;
             }
@@ -498,22 +484,29 @@ final class RuntimeRegionPlanner {
         return 1;
     }
 
-    private static void addRootContextSelector(Map<String, Object> target,
-                                               MethodEvent root,
-                                               int ordinalWithinContext) {
-        if (target == null || root == null || root.receiverType.isEmpty()) {
-            return;
+    private static Map<String, Object> rootSelector(
+            MethodEvent root, int globalOrdinal, int contextOrdinal,
+            Map<String, Object> arguments) {
+        Map<String, Object> result = object("method", root.method);
+        if (root.receiverType.isEmpty()) {
+            result.put("kind", "GLOBAL_INVOCATION");
+            result.put("ordinal", Math.max(1, globalOrdinal));
+            if (arguments != null && !arguments.isEmpty()) {
+                result.put("arguments", arguments);
+            }
+            return result;
         }
+        result.put("kind", "RECEIVER_CONTEXT");
+        result.put("receiverClass", root.receiverType);
         String stableThreadContext = stableRootThreadContext(root.threadName);
-        target.put("receiverRuntimeClass", root.receiverType);
         if (!stableThreadContext.isEmpty()) {
-            target.put("threadName", stableThreadContext);
+            result.put("thread", stableThreadContext);
         }
-        target.put("threadIdSelectionUsed", false);
-        target.put("invocationOrdinalWithinContext",
-                Math.max(1, ordinalWithinContext));
-        target.put("rootContextSelectionAuthority",
-                ROOT_CONTEXT_SELECTION_AUTHORITY);
+        result.put("ordinal", Math.max(1, contextOrdinal));
+        if (arguments != null && !arguments.isEmpty()) {
+            result.put("arguments", arguments);
+        }
+        return result;
     }
 
     /**
@@ -588,8 +581,6 @@ final class RuntimeRegionPlanner {
             return Collections.emptyMap();
         }
         return object(
-                "schema", ROOT_ARGUMENT_SELECTOR_SCHEMA,
-                "authority", ROOT_ARGUMENT_SELECTOR_AUTHORITY,
                 "predicates", predicates,
                 "receiverOrdinal", receiverOrdinal,
                 "matchOrdinalWithinReceiver", matchOrdinalWithinReceiver);
