@@ -651,6 +651,7 @@ public final class RegionPathWorklist {
                 JsonObject source = activation != null
                         ? activation : summary;
                 Set<String> sites = new LinkedHashSet<>();
+                String targetMethod = string(source, "targetMethod");
                 for (JsonElement element : array(source, "branches")) {
                     if (!element.isJsonObject()) continue;
                     JsonObject branch = element.getAsJsonObject();
@@ -658,7 +659,11 @@ public final class RegionPathWorklist {
                         continue;
                     }
                     String site = string(branch, "siteId");
-                    if (!site.isEmpty()) sites.add(site);
+                    if (!site.isEmpty()
+                            && (targetMethod.isEmpty()
+                            || site.startsWith(targetMethod + "#"))) {
+                        sites.add(site);
+                    }
                 }
                 String region = firstNonBlank(string(source, "regionId"),
                         string(summary, "regionId"));
@@ -669,7 +674,7 @@ public final class RegionPathWorklist {
                         "rootMethod"), string(summary, "rootMethod"));
                 return new ExplorationScope(goal, null, sites,
                         "TARGET_BRANCH_V1\n" + region + "\n" + instance
-                                + "\n" + rootMethod,
+                                + "\n" + targetMethod + "\n" + rootMethod,
                         "", "", instance,
                         longValue(source, "rootCallId",
                                 longValue(summary, "rootCallId", 0L)));

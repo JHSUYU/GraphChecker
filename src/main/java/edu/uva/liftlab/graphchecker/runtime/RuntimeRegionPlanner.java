@@ -286,6 +286,7 @@ final class RuntimeRegionPlanner {
                         "rootCallId", root.callId,
                         "runtimeDefinitionMethods",
                         demandSlice.definitionMethods(observedMethods),
+                        "targetMethod", region.anchorMethod,
                         "captureGoal", object(
                                 "kind", "TARGET_BRANCH",
                                 "scope", "ONE_DIRECTED_BRANCH"),

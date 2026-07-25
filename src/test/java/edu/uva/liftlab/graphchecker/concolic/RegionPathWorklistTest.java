@@ -27,6 +27,14 @@ public class RegionPathWorklistTest {
                 RegionCaptureGoal.targetBranch());
         targetSummary.remove("outputClosure");
         targetActivation.remove("outputClosure");
+        int targetIndex = 0;
+        for (com.google.gson.JsonElement element
+                : targetSummary.getAsJsonArray("branchMappings")) {
+            JsonObject site = element.getAsJsonObject()
+                    .getAsJsonObject("witness").getAsJsonObject("site");
+            site.addProperty("siteId", "SITE#u" + targetIndex++);
+            site.addProperty("method", "SITE");
+        }
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
@@ -49,12 +57,17 @@ public class RegionPathWorklistTest {
                 result.manifest.get("state").getAsString());
 
         JsonArray targetBranches = new JsonArray();
-        for (String site : Arrays.asList("SITE.0", "SITE.1")) {
+        for (String site : Arrays.asList("SITE#u0", "SITE#u1")) {
             JsonObject branch = new JsonObject();
             branch.addProperty("siteId", site);
             branch.addProperty("policy", "EXPLORE");
             targetBranches.add(branch);
         }
+        JsonObject helperBranch = new JsonObject();
+        helperBranch.addProperty("siteId", "HELPER#u0");
+        helperBranch.addProperty("policy", "EXPLORE");
+        targetBranches.add(helperBranch);
+        targetActivation.addProperty("targetMethod", "SITE");
         targetActivation.add("branches", targetBranches);
         RegionPathWorklist.Result targetResult = RegionPathWorklist.plan(
                 Collections.singletonList(targetSummary),
