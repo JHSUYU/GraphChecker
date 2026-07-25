@@ -1485,6 +1485,12 @@ PR 0–6 完成后继续按 field ledger 做原子切换，不恢复历史 artif
 - dynamic container field binding 的 selector 只存在于 canonical
   `containerSelector`。Runtime 不再同时写九个 flat mirror，Solver、Runtime、
   Importer、Composer 和 robustness shell 已一次性切换到 nested selector；
+- dynamic container field binding 已一次性升到 V3。删除
+  `actualHookSiteId/actualHookOccurrence`、`effectiveMaterializationSiteId/
+  effectiveMaterializationOccurrence` 和四个 `materializationSiteBridge*` 镜像；
+  static declaration、canonical selector、field path、activation-local object identity
+  与 field observation join 仍提供实际证明。Runtime、path solver、replay validator、
+  Importer、Composer 和 robustness shell 只接受 V3，V2 不提供 fallback；
 - field observation 只记录 observation 自身的 path、owner/value identity、expression
   和唯一 `dynamicBindingId`。完整 binding、container selector、bridge、key 与 capture
   metadata 只存在于 `dynamicFieldBindings`；Importer 通过唯一 ID 做 join，不再逐字段
@@ -1497,10 +1503,14 @@ PR 0–6 完成后继续按 field ledger 做原子切换，不恢复历史 artif
 
 这些删除不是弱化证明：canonical binding、object token/scope、field path、read-from、
 transformer obligation、branch contract 和所有 Importer/Composer gap gate 均保留。
-截至 `2be9e02e`，手写生产 Java 为 78,273 行，相对 81,581 行冻结基线累计净减
-3,308 行。57 项快速回归和干净 worktree 的 13-fixture 并行真实 Z3 矩阵再次通过，
-保持 6 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`、零 failure。61k–69k 仍是后续
-净删除目标，不把尚未实现的行数写成完成结果。
+截至 `2b051a69`，手写生产 Java 为 78,115 行，相对 81,581 行冻结基线累计净减
+3,466 行。57 项快速回归和干净 worktree 的 13-fixture 并行真实 Z3 矩阵再次通过，
+保持 6 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`、零 failure；本轮日志目录为
+`target/robustness-matrix-logs/20260725T070326Z.1081674`。矩阵曾准确暴露 path
+solver 遗留的 V2 reader，修复后 `containers` 与 `unreachable-parity` 的多轮 campaign
+分别恢复为 `sat` 与 `unsat`，说明 schema cutover 覆盖了 seed、worklist、solver、
+replay、merge 和 compose 全链路。61k–69k 仍是后续净删除目标，不把尚未实现的行数
+写成完成结果。
 
 ### 明确不能删除
 
