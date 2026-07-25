@@ -684,7 +684,8 @@ public final class ConcolicReplayValidator {
             long elementToken = longInteger(selector,
                     "elementObjectToken", 0L);
             String scope = string(selector, "objectTokenScope");
-            if (!"DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
+            if (integer(binding, "schemaVersion", -1) != 3
+                    || !"DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
                     string(binding, "kind"))
                     || !"ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_"
                     .concat("IDENTITY_AND_STABLE_FIELD_SITE_OCCURRENCE")
@@ -705,17 +706,7 @@ public final class ConcolicReplayValidator {
                     || !scope.equals(string(binding, "objectTokenScope"))
                     || !"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN"
                     .equals(string(binding, "objectTokenAuthority"))
-                    || !"STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_"
-                    .concat("EXACT_ELEMENT_IDENTITY_TO_DECLARED_FIELD_"
-                            + "HOOK_V1").equals(string(binding,
-                    "materializationSiteBridgeAuthority"))
-                    || !string(selector, "bindingId").equals(string(
-                    binding, "materializationSiteBridgeBindingId"))
-                    || elementToken <= 0L
-                    || elementToken != longInteger(binding,
-                    "materializationSiteBridgeElementObjectToken", 0L)
-                    || !scope.equals(string(binding,
-                    "materializationSiteBridgeObjectTokenScope"))) {
+                    || elementToken <= 0L) {
                 continue;
             }
             result.add(binding);

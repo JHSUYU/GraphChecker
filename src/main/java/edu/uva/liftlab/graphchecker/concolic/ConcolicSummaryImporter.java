@@ -65,9 +65,6 @@ public final class ConcolicSummaryImporter {
             "CAUSYNTH_REF_WITNESS_V1_A";
     private static final String VALUE_REF_WITNESS_CERTIFICATION_AUTHORITY =
             "IMPORTER_EXACT_ACTIVATION_TOKEN_AND_DYNAMIC_FIELD_OWNER_JOIN_V1";
-    private static final String CONTAINER_SITE_BRIDGE_AUTHORITY =
-            "STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_EXACT_ELEMENT_"
-                    + "IDENTITY_TO_DECLARED_FIELD_HOOK_V1";
     private static final String CONTAINER_PUT_CONSUMER_AUTHORITY =
             "RAW_SEMANTIC_REQUESTED_OUTPUT_MAP_PUT_KEY_EXACT_DYNAMIC_"
                     + "SYMBOL_V1";
@@ -4850,7 +4847,6 @@ public final class ConcolicSummaryImporter {
         Set<String> entryBasePairs = new LinkedHashSet<>();
         Set<String> containerSelectorTuples = new LinkedHashSet<>();
         Set<String> containerIdentityTuples = new LinkedHashSet<>();
-        Set<String> containerBridgeTuples = new LinkedHashSet<>();
         Set<String> memberContainerBindingIds = new LinkedHashSet<>();
         for (JsonElement element : array(analysis.slice(),
                 "containerElementFieldBindings")) {
@@ -4974,9 +4970,7 @@ public final class ConcolicSummaryImporter {
                         || !containerSelectorTuples.add(
                         validated.selectorTuple)
                         || !containerIdentityTuples.add(
-                        validated.identityTuple)
-                        || !containerBridgeTuples.add(
-                        validated.bridgeTuple);
+                        validated.identityTuple);
                 if (duplicate) {
                     issues.add(new HeapEffectIssue(
                             "DUPLICATE_DYNAMIC_FIELD_BINDING", -1,
@@ -5823,21 +5817,6 @@ public final class ConcolicSummaryImporter {
                 "containerObjectToken", 0L);
         long elementToken = longInteger(selector,
                 "elementObjectToken", 0L);
-        String actualHookSite = string(record, "actualHookSiteId");
-        int actualHookOccurrence = integer(record,
-                "actualHookOccurrence", -1);
-        String effectiveSite = string(record,
-                "effectiveMaterializationSiteId");
-        int effectiveOccurrence = integer(record,
-                "effectiveMaterializationOccurrence", -1);
-        String bridgeAuthority = string(record,
-                "materializationSiteBridgeAuthority");
-        String bridgeBindingId = string(record,
-                "materializationSiteBridgeBindingId");
-        long bridgeElementToken = longInteger(record,
-                "materializationSiteBridgeElementObjectToken", 0L);
-        String bridgeTokenScope = string(record,
-                "materializationSiteBridgeObjectTokenScope");
 
         List<JsonObject> declarations = new ArrayList<>();
         for (JsonElement element : array(activation,
@@ -5860,7 +5839,7 @@ public final class ConcolicSummaryImporter {
                 || occurrence < 1 ? ""
                 : base + ".field." + sha256(site).substring(0, 12)
                 + ".occ." + occurrence;
-        boolean complete = integer(record, "schemaVersion", -1) == 2
+        boolean complete = integer(record, "schemaVersion", -1) == 3
                 && "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
                 string(record, "kind"))
                 && !activationId.isEmpty()
@@ -5880,22 +5859,6 @@ public final class ConcolicSummaryImporter {
                 && !record.has("entryReadObservationId")
                 && !record.has("keyExpression")
                 && !record.has("keyExpressionAuthority");
-
-        boolean exactMaterializationOrigin = snapshotDeclaration
-                ? ("CONTAINER_SNAPSHOT:" + selectorBindingId).equals(
-                actualHookSite)
-                : MATERIALIZATION_HOOK_SITE.matcher(actualHookSite)
-                .matches();
-        complete &= exactMaterializationOrigin
-                && actualHookOccurrence > 0
-                && site.equals(effectiveSite)
-                && occurrence == effectiveOccurrence
-                && CONTAINER_SITE_BRIDGE_AUTHORITY.equals(bridgeAuthority)
-                && selectorBindingId.equals(bridgeBindingId)
-                && (snapshotDeclaration
-                ? bridgeElementToken == elementToken
-                : leafToken == bridgeElementToken)
-                && activationId.equals(bridgeTokenScope);
 
         complete &= "ARRAY_INDEX".equals(string(selector, "kind"))
                 && !selectorBindingId.isEmpty()
@@ -6081,14 +6044,9 @@ public final class ConcolicSummaryImporter {
         String identityTuple = activationId + "\u0000" + containerToken
                 + "\u0000" + elementToken + "\u0000" + fieldSignature
                 + "\u0000" + GSON.toJson(fieldPath);
-        String bridgeTuple = activationId + "\u0000" + bridgeBindingId
-                + "\u0000" + bridgeElementToken + "\u0000"
-                + actualHookSite + "\u0000" + actualHookOccurrence
-                + "\u0000" + effectiveSite + "\u0000"
-                + effectiveOccurrence;
         return new ContainerDynamicFieldValidation(normalized,
                 base + "\u0000" + site + "\u0000" + occurrence,
-                selectorTuple, identityTuple, bridgeTuple);
+                selectorTuple, identityTuple);
     }
 
     private static boolean exactSchema2ContainerSnapshotDeclaration(
@@ -10219,17 +10177,14 @@ public final class ConcolicSummaryImporter {
         private final String siteOccurrence;
         private final String selectorTuple;
         private final String identityTuple;
-        private final String bridgeTuple;
 
         private ContainerDynamicFieldValidation(
                 JsonObject normalized, String siteOccurrence,
-                String selectorTuple, String identityTuple,
-                String bridgeTuple) {
+                String selectorTuple, String identityTuple) {
             this.normalized = normalized;
             this.siteOccurrence = siteOccurrence;
             this.selectorTuple = selectorTuple;
             this.identityTuple = identityTuple;
-            this.bridgeTuple = bridgeTuple;
         }
     }
 

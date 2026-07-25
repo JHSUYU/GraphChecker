@@ -546,7 +546,7 @@ validate_container_producer_artifacts() {
       and all(.regionRelation.cases[];
         (.dynamicFieldBindings | length) == 1
         and .dynamicFieldBindings[0] as $dynamic
-        | ($dynamic.schemaVersion == 2
+        | ($dynamic.schemaVersion == 3
           and $dynamic.kind
             == "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING"
           and $dynamic.complete == true

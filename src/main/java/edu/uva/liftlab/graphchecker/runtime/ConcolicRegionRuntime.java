@@ -11,7 +11,6 @@ import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayObservationValidator;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
-import edu.uva.liftlab.graphchecker.concolic.ConcolicCodePosition;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
@@ -1036,7 +1035,7 @@ public final class ConcolicRegionRuntime {
                 continue;
             }
             // Container identity is an input binding, so observe it before
-            // either dynamic dispatch or the legacy one-static-symbol gate.
+            // either dynamic dispatch or the one-static-symbol gate.
             // A second concrete container for the same port must be detected
             // as ambiguity rather than hidden by materialized.add(symbol).
             Object exactFieldValue = readField(leafOwner,
@@ -1052,8 +1051,7 @@ public final class ConcolicRegionRuntime {
             }
             ContainerFieldResolution containerResolution =
                     active.dynamicContainerFieldBinding(action, owner,
-                            leafOwner, leafFieldSignature,
-                            siteId(method, unitIndex));
+                            leafOwner, leafFieldSignature);
             if (containerResolution.declared) {
                 if (containerResolution.ignored) {
                     // FIELD_ACCESS hooks are owner-wide.  A read of the same
@@ -6909,8 +6907,6 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashMap<>();
         private final Map<String, Integer> fieldMaterializationOccurrences =
                 new LinkedHashMap<>();
-        private final Map<String, Integer> actualFieldHookOccurrences =
-                new LinkedHashMap<>();
         private final Map<String, Integer> outputCaptureOccurrences =
                 new LinkedHashMap<>();
         private final IdentityHashMap<Object, MapViewBinding> mapViews =
@@ -7088,15 +7084,6 @@ public final class ConcolicRegionRuntime {
             Integer previous = fieldMaterializationOccurrences.get(key);
             int occurrence = previous == null ? 1 : previous + 1;
             fieldMaterializationOccurrences.put(key, occurrence);
-            return occurrence;
-        }
-
-        private int nextActualFieldHookOccurrence(String baseSymbol,
-                                                  String siteId) {
-            String key = safe(baseSymbol) + "\n" + safe(siteId);
-            Integer previous = actualFieldHookOccurrences.get(key);
-            int occurrence = previous == null ? 1 : previous + 1;
-            actualFieldHookOccurrences.put(key, occurrence);
             return occurrence;
         }
 
@@ -7664,9 +7651,7 @@ public final class ConcolicRegionRuntime {
                             this, fieldAction, element, leafOwner,
                             spec.declaredFieldSignature,
                             spec.fieldMaterializationSiteId, occurrence,
-                            spec, container, index,
-                            "CONTAINER_SNAPSHOT:" + spec.bindingId,
-                            occurrence);
+                            spec, container, index);
                     byField.put(fieldKey, binding);
                     dynamicFieldBindings.put(binding.dynamicBindingId,
                             binding);
@@ -7714,7 +7699,7 @@ public final class ConcolicRegionRuntime {
 
         private ContainerFieldResolution dynamicContainerFieldBinding(
                 SymbolizeAction action, Object accessOwner, Object leafOwner,
-                String fieldSignature, String materializationSite) {
+                String fieldSignature) {
             List<ContainerElementFieldBindingSpec> declared = activation
                     .containerBindingsForBase(action.symbol);
             if (declared.isEmpty()) {
@@ -7733,9 +7718,6 @@ public final class ConcolicRegionRuntime {
                 }
             }
 
-            String actualHookSite = safe(materializationSite);
-            int actualHookOccurrence = nextActualFieldHookOccurrence(
-                    action.symbol, actualHookSite);
             List<ContainerElementMatch> matches =
                     new ArrayList<>();
             List<String> fatalProblems = new ArrayList<>();
@@ -7815,8 +7797,7 @@ public final class ConcolicRegionRuntime {
             DynamicFieldBinding binding = new DynamicFieldBinding(this,
                     action, accessOwner, leafOwner, fieldSignature,
                     effectiveSite, effectiveOccurrence, spec, container,
-                    match.resolvedElementIndex, actualHookSite,
-                    actualHookOccurrence);
+                    match.resolvedElementIndex);
             byField.put(fieldKey, binding);
             dynamicFieldBindings.put(binding.dynamicBindingId, binding);
             return ContainerFieldResolution.resolved(
@@ -8188,9 +8169,6 @@ public final class ConcolicRegionRuntime {
         private static final String CONTAINER_AUTHORITY =
                 "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_IDENTITY_AND_"
                         + "STABLE_FIELD_SITE_OCCURRENCE";
-        private static final String CONTAINER_SITE_BRIDGE_AUTHORITY =
-                "STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_EXACT_"
-                        + "ELEMENT_IDENTITY_TO_DECLARED_FIELD_HOOK_V1";
 
         private final int schemaVersion;
         private final String kind;
@@ -8200,12 +8178,6 @@ public final class ConcolicRegionRuntime {
         private final String dynamicFieldSymbol;
         private final String materializationSiteId;
         private final int materializationOccurrence;
-        private final String actualHookSiteId;
-        private final int actualHookOccurrence;
-        private final String materializationSiteBridgeAuthority;
-        private final String materializationSiteBridgeBindingId;
-        private final long materializationSiteBridgeElementObjectToken;
-        private final String materializationSiteBridgeObjectTokenScope;
         private final String fieldSignature;
         private final List<String> fieldPath;
         /** Root object returned by the current Map.Entry#getValue(). */
@@ -8231,12 +8203,6 @@ public final class ConcolicRegionRuntime {
             this.baseInputSymbol = action.symbol;
             this.materializationSiteId = safe(siteId);
             this.materializationOccurrence = occurrence;
-            this.actualHookSiteId = safe(siteId);
-            this.actualHookOccurrence = occurrence;
-            this.materializationSiteBridgeAuthority = "";
-            this.materializationSiteBridgeBindingId = "";
-            this.materializationSiteBridgeElementObjectToken = 0L;
-            this.materializationSiteBridgeObjectTokenScope = "";
             this.dynamicFieldSymbol = dynamicFieldSymbolForTests(
                     action.symbol, siteId, occurrence);
             this.dynamicBindingId = "DYNAMIC_FIELD:"
@@ -8262,20 +8228,13 @@ public final class ConcolicRegionRuntime {
                                     int occurrence,
                                     ContainerElementFieldBindingSpec spec,
                                     ContainerInputObservation container,
-                                    int resolvedElementIndex,
-                                    String actualHookSiteId,
-                                    int actualHookOccurrence) {
-            this.schemaVersion = 2;
+                                    int resolvedElementIndex) {
+            this.schemaVersion = 3;
             this.kind = "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING";
             this.authority = CONTAINER_AUTHORITY;
             this.baseInputSymbol = action.symbol;
             this.materializationSiteId = safe(siteId);
             this.materializationOccurrence = occurrence;
-            this.actualHookSiteId = safe(actualHookSiteId);
-            this.actualHookOccurrence = actualHookOccurrence;
-            this.materializationSiteBridgeAuthority =
-                    CONTAINER_SITE_BRIDGE_AUTHORITY;
-            this.materializationSiteBridgeBindingId = spec.bindingId;
             this.dynamicFieldSymbol = dynamicFieldSymbolForTests(
                     action.symbol, siteId, occurrence);
             this.dynamicBindingId = "DYNAMIC_FIELD:" + dynamicFieldSymbol;
@@ -8285,10 +8244,6 @@ public final class ConcolicRegionRuntime {
             this.entryValueOwnerObjectToken = 0L;
             this.leafOwnerObjectToken = active.objectToken(leafOwner);
             this.objectTokenScope = active.activation.activationId;
-            this.materializationSiteBridgeElementObjectToken =
-                    active.objectToken(accessOwner);
-            this.materializationSiteBridgeObjectTokenScope =
-                    this.objectTokenScope;
             this.entryReadObservationId = "";
             this.containerSelector = new ContainerElementSelector(active,
                     spec, container, accessOwner, resolvedElementIndex,
@@ -8302,13 +8257,6 @@ public final class ConcolicRegionRuntime {
                     && !this.fieldSignature.isEmpty()
                     && !this.fieldPath.isEmpty()
                     && leafOwnerObjectToken > 0L
-                    && !this.actualHookSiteId.isEmpty()
-                    && this.actualHookOccurrence > 0
-                    && !this.materializationSiteBridgeBindingId.isEmpty()
-                    && this.materializationSiteBridgeElementObjectToken
-                    == this.containerSelector.elementObjectToken
-                    && this.materializationSiteBridgeObjectTokenScope.equals(
-                    objectTokenScope)
                     && containerSelector.complete;
         }
 
@@ -8367,25 +8315,6 @@ public final class ConcolicRegionRuntime {
                     materializationSiteId);
             result.addProperty("materializationOccurrence",
                     materializationOccurrence);
-            if (containerSelector != null) {
-                result.addProperty("actualHookSiteId", actualHookSiteId);
-                result.addProperty("actualHookOccurrence",
-                        actualHookOccurrence);
-                result.addProperty("effectiveMaterializationSiteId",
-                        materializationSiteId);
-                result.addProperty("effectiveMaterializationOccurrence",
-                        materializationOccurrence);
-                result.addProperty("materializationSiteBridgeAuthority",
-                        materializationSiteBridgeAuthority);
-                result.addProperty("materializationSiteBridgeBindingId",
-                        materializationSiteBridgeBindingId);
-                result.addProperty(
-                        "materializationSiteBridgeElementObjectToken",
-                        materializationSiteBridgeElementObjectToken);
-                result.addProperty(
-                        "materializationSiteBridgeObjectTokenScope",
-                        materializationSiteBridgeObjectTokenScope);
-            }
             result.addProperty("fieldSignature", fieldSignature);
             result.add("fieldPath", GSON.toJsonTree(fieldPath));
             result.addProperty("leafOwnerObjectToken",

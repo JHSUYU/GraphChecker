@@ -3979,7 +3979,7 @@ public final class ConcolicSmtComposer {
                         .concat("FIELD_SITE_OCCURRENCE").equals(string(
                                 binding, "authority"))
                         || container
-                        && integer(binding, "schemaVersion", -1) == 2
+                        && integer(binding, "schemaVersion", -1) == 3
                         && completeContainerSelector(binding)
                         && "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_"
                         .concat("IDENTITY_AND_STABLE_FIELD_SITE_OCCURRENCE")
@@ -4200,13 +4200,6 @@ public final class ConcolicSmtComposer {
                     "objectTokenAuthority", "objectTokenScope",
                     "entryReadObservationId", "keyExpression",
                     "keyExpressionAuthority", "containerSelector",
-                    "actualHookSiteId", "actualHookOccurrence",
-                    "effectiveMaterializationSiteId",
-                    "effectiveMaterializationOccurrence",
-                    "materializationSiteBridgeAuthority",
-                    "materializationSiteBridgeBindingId",
-                    "materializationSiteBridgeElementObjectToken",
-                    "materializationSiteBridgeObjectTokenScope",
                     "mapProjectionSelector", "entrySnapshotElementCount",
                     "outputElementCount",
                     "entrySnapshotElementObjectTokens",
@@ -4236,31 +4229,6 @@ public final class ConcolicSmtComposer {
             String scope = string(binding, "objectTokenScope");
             String resolvedFrom = string(selector,
                     "resolvedFromSelectorAuthority");
-            String selectorBindingId = string(selector, "bindingId");
-            int occurrence = integer(binding,
-                    "materializationOccurrence", -1);
-            boolean directLeafOwner = array(binding, "fieldPath").size() == 1
-                    && leafOwner == elementObject;
-            boolean bridgedDeepLeafOwner = array(binding,
-                    "fieldPath").size() > 1
-                    && ("CONTAINER_SNAPSHOT:" + selectorBindingId).equals(
-                    string(binding, "actualHookSiteId"))
-                    && occurrence == integer(binding,
-                    "actualHookOccurrence", -2)
-                    && string(binding, "materializationSiteId").equals(
-                    string(binding, "effectiveMaterializationSiteId"))
-                    && occurrence == integer(binding,
-                    "effectiveMaterializationOccurrence", -2)
-                    && "STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_"
-                    .concat("EXACT_ELEMENT_IDENTITY_TO_DECLARED_FIELD_HOOK_V1")
-                    .equals(string(binding,
-                            "materializationSiteBridgeAuthority"))
-                    && selectorBindingId.equals(string(binding,
-                    "materializationSiteBridgeBindingId"))
-                    && elementObject == longInteger(binding,
-                    "materializationSiteBridgeElementObjectToken", 0L)
-                    && scope.equals(string(binding,
-                    "materializationSiteBridgeObjectTokenScope"));
             return "ARRAY_INDEX".equals(string(selector, "kind"))
                     && bool(selector, "complete", false)
                     && !string(selector, "bindingId").isEmpty()
@@ -4279,7 +4247,7 @@ public final class ConcolicSmtComposer {
                     && !string(selector, "declaredFieldType").isEmpty()
                     && leafOwner > 0L && containerObject > 0L
                     && elementObject > 0L
-                    && (directLeafOwner || bridgedDeepLeafOwner)
+                    && array(binding, "fieldPath").size() > 0
                     && !scope.isEmpty()
                     && scope.equals(string(selector, "objectTokenScope"))
                     && "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN"
@@ -6447,7 +6415,7 @@ public final class ConcolicSmtComposer {
             String activationId = firstNonBlank(string(summary,
                     "activationId"), string(summary,
                     "sourceActivationId"));
-            if (integer(runtime, "schemaVersion", -1) != 2
+            if (integer(runtime, "schemaVersion", -1) != 3
                     || !bool(runtime, "complete", false)
                     || !completeContainerSelector(runtime)
                     || activationId.isEmpty()

@@ -368,6 +368,8 @@ public class ConcolicSummaryImporterTest {
                             "DUPLICATE_LOAD", true},
                     {"wrong-site", 1, new int[]{0}, "SITE", false},
                     {"wrong-value", 1, new int[]{0}, "VALUE", false},
+                    {"old-binding-schema", 1, new int[]{0},
+                            "OLD_BINDING_SCHEMA", false},
                     {"snapshot-value", 1, new int[]{0},
                             "SNAPSHOT_VALUE", false},
                     {"mixed-residual", 1, new int[]{0},
@@ -1109,7 +1111,7 @@ public class ConcolicSummaryImporterTest {
         selector.addProperty("complete", true);
 
         JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 2);
+        binding.addProperty("schemaVersion", 3);
         binding.addProperty("kind",
                 "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
         binding.addProperty("dynamicBindingId",
@@ -1118,8 +1120,6 @@ public class ConcolicSummaryImporterTest {
         binding.addProperty("dynamicFieldSymbol", dynamic);
         binding.addProperty("materializationSiteId", site);
         binding.addProperty("materializationOccurrence", occurrence);
-        addContainerSiteBridge(binding, site, occurrence,
-                "CONTAINER.FIELD.0", 202L);
         binding.addProperty("fieldSignature", field);
         binding.add("fieldPath",
                 JsonParser.parseString("[\"expiry\"]"));
@@ -1128,7 +1128,6 @@ public class ConcolicSummaryImporterTest {
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         binding.addProperty("objectTokenScope", "ACT.P");
         binding.add("containerSelector", selector.deepCopy());
-        addContainerSelectorFlatFields(binding, selector);
         binding.addProperty("authority",
                 "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_IDENTITY_"
                         + "AND_STABLE_FIELD_SITE_OCCURRENCE");
@@ -1152,16 +1151,12 @@ public class ConcolicSummaryImporterTest {
         observation.addProperty("dynamicFieldSymbol", dynamic);
         observation.addProperty("materializationSiteId", site);
         observation.addProperty("materializationOccurrence", occurrence);
-        addContainerSiteBridge(observation, site, occurrence,
-                "CONTAINER.FIELD.0", 202L);
-        observation.addProperty("dynamicFieldBindingSchemaVersion", 2);
         observation.addProperty("dynamicFieldBindingKind",
                 "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
         observation.addProperty("fieldSignature", field);
         observation.add("fieldPath",
                 JsonParser.parseString("[\"expiry\"]"));
         observation.add("containerSelector", selector.deepCopy());
-        addContainerSelectorFlatFields(observation, selector);
         observation.addProperty("dynamicFieldBindingAuthority",
                 "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_IDENTITY_"
                         + "AND_STABLE_FIELD_SITE_OCCURRENCE");
@@ -1201,11 +1196,6 @@ public class ConcolicSummaryImporterTest {
             observations = new JsonArray();
         } else if ("MISSING_MAP_PUT_CONSUMER".equals(mutation)) {
             semanticPath = new JsonArray();
-        } else if ("WRONG_BRIDGE_AUTHORITY".equals(mutation)) {
-            binding.addProperty("materializationSiteBridgeAuthority",
-                    "UNTRUSTED_BRIDGE");
-        } else if ("WRONG_ACTUAL_HOOK_SITE".equals(mutation)) {
-            binding.addProperty("actualHookSiteId", "not-a-hook-site");
         } else if ("AMBIGUOUS_MAP_PUT_CONSUMER".equals(mutation)) {
             semanticPath.add(methodExpression("java/util/HashMap put", 20,
                     mapInputExpression(), consumerKey.deepCopy(),
@@ -1216,49 +1206,6 @@ public class ConcolicSummaryImporterTest {
                 new JsonArray(), new JsonArray(), new JsonArray(), null,
                 actions, mappings, observations, bindings, null,
                 new JsonArray(), declarations);
-    }
-
-    private static void addContainerSiteBridge(
-            JsonObject target, String effectiveSite,
-            int effectiveOccurrence, String bindingId,
-            long elementObjectToken) {
-        target.addProperty("actualHookSiteId", effectiveSite);
-        target.addProperty("actualHookOccurrence", effectiveOccurrence);
-        target.addProperty("effectiveMaterializationSiteId",
-                effectiveSite);
-        target.addProperty("effectiveMaterializationOccurrence",
-                effectiveOccurrence);
-        target.addProperty("materializationSiteBridgeAuthority",
-                "STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_EXACT_"
-                        + "ELEMENT_IDENTITY_TO_DECLARED_FIELD_HOOK_V1");
-        target.addProperty("materializationSiteBridgeBindingId", bindingId);
-        target.addProperty(
-                "materializationSiteBridgeElementObjectToken",
-                elementObjectToken);
-        target.addProperty("materializationSiteBridgeObjectTokenScope",
-                "ACT.P");
-    }
-
-    private static void addContainerSelectorFlatFields(
-            JsonObject target, JsonObject selector) {
-        target.addProperty("containerBindingId",
-                selector.get("bindingId").getAsString());
-        target.addProperty("containerInputPort",
-                selector.get("containerInputPort").getAsString());
-        target.addProperty("containerInputCell",
-                selector.get("containerInputCell").getAsString());
-        target.addProperty("selectorAuthority",
-                selector.get("selectorAuthority").getAsString());
-        target.addProperty("resolvedFromSelectorAuthority",
-                selector.get("resolvedFromSelectorAuthority").getAsString());
-        target.addProperty("elementIndex",
-                selector.get("elementIndex").getAsInt());
-        target.addProperty("elementOccurrence",
-                selector.get("elementOccurrence").getAsInt());
-        target.addProperty("declaredFieldOwnerClass",
-                selector.get("declaredFieldOwnerClass").getAsString());
-        target.addProperty("declaredFieldType",
-                selector.get("declaredFieldType").getAsString());
     }
 
     private static JsonObject inputAction(String symbol, String cell) {
@@ -2310,7 +2257,8 @@ public class ConcolicSummaryImporterTest {
             selector.addProperty("complete", true);
 
             JsonObject binding = new JsonObject();
-            binding.addProperty("schemaVersion", 2);
+            binding.addProperty("schemaVersion",
+                    "OLD_BINDING_SCHEMA".equals(mutation) ? 2 : 3);
             binding.addProperty("kind",
                     "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
             binding.addProperty("dynamicBindingId",
@@ -2327,12 +2275,6 @@ public class ConcolicSummaryImporterTest {
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             binding.addProperty("objectTokenScope", "ACT.P");
             binding.add("containerSelector", selector.deepCopy());
-            addContainerSelectorFlatFields(binding, selector);
-            addContainerSiteBridge(binding, fieldSite, 1, bindingId,
-                    601L + ordinal);
-            binding.addProperty("actualHookSiteId",
-                    "<example.Value: long getId()>#u1");
-            binding.addProperty("actualHookOccurrence", ordinal + 1);
             binding.addProperty("authority",
                     "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_IDENTITY_"
                             + "AND_STABLE_FIELD_SITE_OCCURRENCE");
@@ -2357,19 +2299,12 @@ public class ConcolicSummaryImporterTest {
             observation.addProperty("dynamicFieldSymbol", dynamic);
             observation.addProperty("materializationSiteId", fieldSite);
             observation.addProperty("materializationOccurrence", 1);
-            addContainerSiteBridge(observation, fieldSite, 1, bindingId,
-                    601L + ordinal);
-            observation.addProperty("actualHookSiteId",
-                    "<example.Value: long getId()>#u1");
-            observation.addProperty("actualHookOccurrence", ordinal + 1);
-            observation.addProperty("dynamicFieldBindingSchemaVersion", 2);
             observation.addProperty("dynamicFieldBindingKind",
                     "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
             observation.addProperty("fieldSignature", field);
             observation.add("fieldPath",
                     JsonParser.parseString("[\"id\"]"));
             observation.add("containerSelector", selector.deepCopy());
-            addContainerSelectorFlatFields(observation, selector);
             observation.addProperty("dynamicFieldBindingAuthority",
                     "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_IDENTITY_"
                             + "AND_STABLE_FIELD_SITE_OCCURRENCE");

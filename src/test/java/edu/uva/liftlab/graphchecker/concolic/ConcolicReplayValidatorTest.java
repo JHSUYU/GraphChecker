@@ -425,7 +425,7 @@ public class ConcolicReplayValidatorTest {
 
     private static JsonObject rawContainerBinding(JsonObject applied) {
         JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 2);
+        binding.addProperty("schemaVersion", 3);
         binding.addProperty("kind",
                 "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
         binding.addProperty("authority",
@@ -444,15 +444,6 @@ public class ConcolicReplayValidatorTest {
         binding.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         binding.addProperty("objectTokenScope",
-                selector.get("objectTokenScope").getAsString());
-        binding.addProperty("materializationSiteBridgeAuthority",
-                "STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_EXACT_"
-                        + "ELEMENT_IDENTITY_TO_DECLARED_FIELD_HOOK_V1");
-        binding.addProperty("materializationSiteBridgeBindingId",
-                selector.get("bindingId").getAsString());
-        binding.addProperty("materializationSiteBridgeElementObjectToken",
-                selector.get("elementObjectToken").getAsLong());
-        binding.addProperty("materializationSiteBridgeObjectTokenScope",
                 selector.get("objectTokenScope").getAsString());
         binding.addProperty("complete", true);
         return binding;

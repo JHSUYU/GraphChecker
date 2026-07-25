@@ -1511,7 +1511,7 @@ public class ConcolicSmtComposerTest {
         String bindingId = "BIND_ARRAY_" + index;
         String method = "<example.Store: void update(example.Keys)>";
         JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", 2);
+        result.addProperty("schemaVersion", 3);
         result.addProperty("kind",
                 "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
         result.addProperty("dynamicBindingId", "DYNAMIC_FIELD:" + dynamic);

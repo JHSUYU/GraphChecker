@@ -423,7 +423,7 @@ public class ConcolicConstraintSolverTest {
         String dynamic = base + ".field." + sha256(site).substring(0, 12)
                 + ".occ." + occurrence;
         JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 2);
+        binding.addProperty("schemaVersion", 3);
         binding.addProperty("kind",
                 "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
         binding.addProperty("authority",
