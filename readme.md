@@ -1591,8 +1591,10 @@ output closure 仍通过 canonical issue/gap fail closed。
 `allModelAssignmentsApplied`，而对应 container 候选本身已为 `SAT/REACHABLE` 且无
 gap。这是一次性 schema 切换遗漏的旧 shell reader，不是 path exploration 漂移；脚本
 已改为检查 canonical `modelAssignmentsApplied` 唯一 key/value 集合。当前手写生产
-Java 为 76,091 行，相对冻结基线累计净减 5,490 行；57 项快速回归通过，完整矩阵结果
-在该批里程碑提交后的隔离验证中记录。
+Java 为 76,091 行，相对冻结基线累计净减 5,490 行；57 项快速回归通过。对应里程碑
+`247c5b1c` 的隔离干净 worktree 13-fixture 并行真实 custom-JDK/Z3 矩阵也已零失败，
+保持 6 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T090733Z.2280847`。
 
 ### 明确不能删除
 
