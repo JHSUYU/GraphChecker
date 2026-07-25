@@ -1629,7 +1629,10 @@ Concolic 插桩此前会为 root、materialization、capture 和 bounded-closure
 row 在这个 artifact boundary 一致拒绝。输出 closure、capture binding、heap discharge、
 executable admission 与 bundle `ALL` 语义保持不变。手写生产 Java 当前为 75,417 行，
 相对 81,581 行冻结基线累计净减 6,164 行；57 项快速回归、PMD 和真实
-custom-JDK/Z3 baseline 均已通过。
+custom-JDK/Z3 baseline 均已通过。对应里程碑 `8be93716` 的隔离干净 worktree
+13-fixture 并行真实 custom-JDK/Z3 矩阵也已零失败，保持 6
+`SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T131337Z.2802421`。
 
 ### 明确不能删除
 
