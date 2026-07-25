@@ -38,35 +38,21 @@ final class ConcolicInstrumentationSelections {
     private ConcolicInstrumentationSelections() {
     }
 
-    static ConcolicMaterializationSelection
-    materializationSelectionFromEnvironment() {
+    static InstrumentationPlan instrumentationPlanFromEnvironment() {
         String planValue = activationPlanValue();
-        if (planValue.isEmpty()) {
-            return new ConcolicMaterializationSelection();
+        String selected = selectedActivationValue();
+        if (planValue.isEmpty() || selected.isEmpty()) {
+            throw new IllegalStateException(
+                    "Concolic instrumentation requires an activation plan "
+                            + "and selected activation id");
         }
+        Path plan = Paths.get(planValue).toAbsolutePath().normalize();
         try {
-            return ConcolicMaterializationSelection.from(
-                    Paths.get(planValue), selectedActivationValue());
+            return InstrumentationPlan.from(plan, selected);
         } catch (IOException exception) {
             throw new IllegalStateException(
-                    "Could not load concolic materializations from "
-                            + planValue, exception);
-        }
-    }
-
-    static ConcolicOutputCaptureSelection
-    outputCaptureSelectionFromEnvironment() {
-        String planValue = activationPlanValue();
-        if (planValue.isEmpty()) {
-            return new ConcolicOutputCaptureSelection();
-        }
-        try {
-            return ConcolicOutputCaptureSelection.from(
-                    Paths.get(planValue), selectedActivationValue());
-        } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Could not load concolic output captures from "
-                            + planValue, exception);
+                    "Could not load concolic instrumentation plan from "
+                            + plan, exception);
         }
     }
 
@@ -82,50 +68,6 @@ final class ConcolicInstrumentationSelections {
                 System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
     }
 
-    static Set<String> readRuntimeSelectedRoots(Path activationPlan,
-                                                String selectedActivation)
-            throws IOException {
-        if (activationPlan == null || !Files.isRegularFile(activationPlan)) {
-            throw new IOException("Activation plan not found: " + activationPlan);
-        }
-        String selected = stringValue(firstNonBlank(selectedActivation));
-        Set<String> roots = new LinkedHashSet<>();
-        try (BufferedReader reader = Files.newBufferedReader(activationPlan,
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) {
-                    continue;
-                }
-                JsonElement parsed = JsonParser.parseString(line);
-                if (!parsed.isJsonObject()) {
-                    continue;
-                }
-                JsonObject row = parsed.getAsJsonObject();
-                String activationId = jsonString(row, "activationId");
-                JsonObject bundle = bundle(row);
-                if (!selected.isEmpty()
-                        && "ALL".equals(jsonString(bundle, "selection"))
-                        && selected.equals(activationId)) {
-                    throw new IOException("Activation " + selected
-                            + " belongs to a reachability bundle that "
-                            + "requires ALL plan rows");
-                }
-                if (!selected.isEmpty() && !selected.equals(activationId)) {
-                    continue;
-                }
-                if (!admissionExecutable(row)) {
-                    continue;
-                }
-                String root = jsonString(rootSelector(row), "method");
-                if (!root.isEmpty()) {
-                    roots.add(root);
-                }
-            }
-        }
-        return roots;
-    }
-
     /**
      * Returns whether one exact scheduler-selected activation carries all of
      * the evidence needed to analyze only its bounded requested-output
@@ -135,44 +77,112 @@ final class ConcolicInstrumentationSelections {
     static boolean selectedBoundedOutputClosureCoverageReady(
             Path activationPlan, String selectedActivation)
             throws IOException {
-        if (activationPlan == null || !Files.isRegularFile(activationPlan)) {
-            return false;
-        }
-        String selected = stringValue(firstNonBlank(selectedActivation));
-        if (selected.isEmpty()) {
-            return false;
+        return InstrumentationPlan.from(activationPlan,
+                selectedActivation).boundedOutputClosureCoverageReady();
+    }
+
+    /**
+     * One immutable view of the scheduler-selected activation rows. The
+     * instrumentation pipeline builds this once and derives every selection
+     * from it instead of reparsing the JSONL for each hook family.
+     */
+    static final class InstrumentationPlan {
+        private final Path path;
+        private final String selectedActivation;
+        private final List<JsonObject> rows;
+
+        private InstrumentationPlan(Path path, String selectedActivation,
+                                    List<JsonObject> rows) {
+            this.path = path;
+            this.selectedActivation = selectedActivation;
+            this.rows = Collections.unmodifiableList(rows);
         }
 
-        JsonObject selectedRow = null;
-        int selectedRowCount = 0;
-        try (BufferedReader reader = Files.newBufferedReader(activationPlan,
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) {
-                    continue;
-                }
-                JsonElement parsed;
-                try {
-                    parsed = JsonParser.parseString(line);
-                } catch (RuntimeException malformed) {
-                    return false;
-                }
-                if (!parsed.isJsonObject()) {
-                    return false;
-                }
-                JsonObject row = parsed.getAsJsonObject();
-                if (!selected.equals(jsonString(row, "activationId"))) {
-                    continue;
-                }
-                selectedRowCount++;
-                selectedRow = row;
+        static InstrumentationPlan from(Path activationPlan,
+                                        String selectedActivation)
+                throws IOException {
+            if (activationPlan == null
+                    || !Files.isRegularFile(activationPlan)) {
+                throw new IOException("Activation plan not found: "
+                        + activationPlan);
             }
+            Path normalized = activationPlan.toAbsolutePath().normalize();
+            String selected = stringValue(firstNonBlank(selectedActivation));
+            List<JsonObject> rows = new ArrayList<>();
+            try (BufferedReader reader = Files.newBufferedReader(normalized,
+                    StandardCharsets.UTF_8)) {
+                String line;
+                int lineNumber = 0;
+                while ((line = reader.readLine()) != null) {
+                    lineNumber++;
+                    if (line.trim().isEmpty()) {
+                        continue;
+                    }
+                    final JsonElement parsed;
+                    try {
+                        parsed = JsonParser.parseString(line);
+                    } catch (RuntimeException malformed) {
+                        throw new IOException("Malformed activation plan row "
+                                + lineNumber + " in " + normalized, malformed);
+                    }
+                    if (!parsed.isJsonObject()) {
+                        throw new IOException("Activation plan row "
+                                + lineNumber + " is not a JSON object in "
+                                + normalized);
+                    }
+                    JsonObject row = parsed.getAsJsonObject();
+                    String activationId = jsonString(row, "activationId");
+                    if (!selected.isEmpty()
+                            && !selected.equals(activationId)) {
+                        continue;
+                    }
+                    if (!selected.isEmpty()
+                            && "ALL".equals(jsonString(bundle(row),
+                            "selection"))) {
+                        throw new IOException("Activation " + selected
+                                + " belongs to a reachability bundle that "
+                                + "requires ALL plan rows");
+                    }
+                    rows.add(row);
+                }
+            }
+            return new InstrumentationPlan(normalized, selected, rows);
         }
-        if (selectedRowCount != 1 || selectedRow == null) {
-            return false;
+
+        Path path() {
+            return path;
         }
-        return boundedOutputClosureRowReady(selectedRow, selected);
+
+        Set<String> roots() {
+            Set<String> roots = new LinkedHashSet<>();
+            for (JsonObject row : rows) {
+                if (!admissionExecutable(row)) {
+                    continue;
+                }
+                String root = jsonString(rootSelector(row), "method");
+                if (!root.isEmpty()) {
+                    roots.add(root);
+                }
+            }
+            return roots;
+        }
+
+        ConcolicMaterializationSelection materializations()
+                throws IOException {
+            return ConcolicMaterializationSelection.fromRows(rows);
+        }
+
+        ConcolicOutputCaptureSelection outputCaptures()
+                throws IOException {
+            return ConcolicOutputCaptureSelection.fromRows(rows);
+        }
+
+        boolean boundedOutputClosureCoverageReady() {
+            return !selectedActivation.isEmpty()
+                    && rows.size() == 1
+                    && boundedOutputClosureRowReady(rows.get(0),
+                    selectedActivation);
+        }
     }
 
     private static boolean boundedOutputClosureRowReady(JsonObject row,
@@ -402,50 +412,34 @@ final class ConcolicInstrumentationSelections {
         static ConcolicMaterializationSelection from(
                 Path activationPlan, String selectedActivation)
                 throws IOException {
-            if (activationPlan == null || !Files.isRegularFile(activationPlan)) {
-                throw new IOException("Activation plan not found: "
-                        + activationPlan);
-            }
+            return fromRows(InstrumentationPlan.from(activationPlan,
+                    selectedActivation).rows);
+        }
+
+        private static ConcolicMaterializationSelection fromRows(
+                List<JsonObject> rows) throws IOException {
             ConcolicMaterializationSelection result =
                     new ConcolicMaterializationSelection();
-            String selected = stringValue(firstNonBlank(selectedActivation));
-            try (BufferedReader reader = Files.newBufferedReader(activationPlan,
-                    StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.trim().isEmpty()) {
-                        continue;
-                    }
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) {
-                        continue;
-                    }
-                    JsonObject row = parsed.getAsJsonObject();
-                    if (!selected.isEmpty()
-                            && !selected.equals(jsonString(row,
-                            "activationId"))) {
-                        continue;
-                    }
-                    if (!admissionExecutable(row)) {
-                        continue;
-                    }
-                    String activationId = jsonString(row, "activationId");
-                    JsonElement actions = row.get("materializations");
-                    if (actions == null || !actions.isJsonArray()) {
+            for (JsonObject row : rows) {
+                if (!admissionExecutable(row)) {
+                    continue;
+                }
+                String activationId = jsonString(row, "activationId");
+                JsonElement actions = row.get("materializations");
+                if (actions == null || !actions.isJsonArray()) {
+                    throw new IOException("Replayable activation "
+                            + activationId + " requires materializations "
+                            + "to be a JSON array");
+                }
+                int actionIndex = 0;
+                for (JsonElement element : actions.getAsJsonArray()) {
+                    if (!element.isJsonObject()) {
                         throw new IOException("Replayable activation "
-                                + activationId + " requires materializations "
-                                + "to be a JSON array");
+                                + activationId + " materializations["
+                                + actionIndex + "] must be a JSON object");
                     }
-                    int actionIndex = 0;
-                    for (JsonElement element : actions.getAsJsonArray()) {
-                        if (!element.isJsonObject()) {
-                            throw new IOException("Replayable activation "
-                                    + activationId + " materializations["
-                                    + actionIndex + "] must be a JSON object");
-                        }
-                        result.add(element.getAsJsonObject());
-                        actionIndex++;
-                    }
+                    result.add(element.getAsJsonObject());
+                    actionIndex++;
                 }
             }
             if (!result.unsupported.isEmpty()) {
@@ -969,64 +963,54 @@ final class ConcolicInstrumentationSelections {
         static ConcolicOutputCaptureSelection from(
                 Path activationPlan, String selectedActivation)
                 throws IOException {
-            if (activationPlan == null || !Files.isRegularFile(
-                    activationPlan)) {
-                throw new IOException("Activation plan not found: "
-                        + activationPlan);
-            }
+            return fromRows(InstrumentationPlan.from(activationPlan,
+                    selectedActivation).rows);
+        }
+
+        private static ConcolicOutputCaptureSelection fromRows(
+                List<JsonObject> rows) throws IOException {
             ConcolicOutputCaptureSelection result =
                     new ConcolicOutputCaptureSelection();
-            String selected = stringValue(firstNonBlank(selectedActivation));
-            try (BufferedReader reader = Files.newBufferedReader(
-                    activationPlan, StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.trim().isEmpty()) continue;
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) continue;
-                    JsonObject row = parsed.getAsJsonObject();
-                    if (!selected.isEmpty() && !selected.equals(jsonString(
-                            row, "activationId"))) continue;
-                    if (!admissionExecutable(row)) continue;
-                    if (!row.has(OutputClosureContract.FIELD)) {
-                        continue;
+            for (JsonObject row : rows) {
+                if (!admissionExecutable(row)
+                        || !row.has(OutputClosureContract.FIELD)) {
+                    continue;
+                }
+                final OutputClosureContract closure;
+                try {
+                    closure = OutputClosureCodec.decode(row);
+                } catch (RuntimeException malformed) {
+                    throw new IOException("Malformed output closure for "
+                            + "activation " + jsonString(row,
+                            "activationId"), malformed);
+                }
+                for (JsonElement element
+                        : OutputClosureCodec.captures(closure)) {
+                    if (!element.isJsonObject()) {
+                        throw new IOException("Malformed output capture "
+                                + "for activation " + jsonString(row,
+                                "activationId"));
                     }
-                    final OutputClosureContract closure;
-                    try {
-                        closure = OutputClosureCodec.decode(row);
-                    } catch (RuntimeException malformed) {
-                        throw new IOException("Malformed output closure for "
-                                + "activation " + jsonString(row,
-                                "activationId"), malformed);
+                    OutputCaptureTarget target = new OutputCaptureTarget(
+                            element.getAsJsonObject());
+                    if (!target.valid()) {
+                        throw new IOException("Invalid output capture "
+                                + target.captureBindingId
+                                + " for activation " + jsonString(row,
+                                "activationId"));
                     }
-                    for (JsonElement element
-                            : OutputClosureCodec.captures(closure)) {
-                        if (!element.isJsonObject()) {
-                            throw new IOException("Malformed output capture "
-                                    + "for activation " + jsonString(row,
-                                    "activationId"));
-                        }
-                        OutputCaptureTarget target = new OutputCaptureTarget(
-                                element.getAsJsonObject());
-                        if (!target.valid()) {
-                            throw new IOException("Invalid output capture "
-                                    + target.captureBindingId
-                                    + " for activation " + jsonString(row,
-                                    "activationId"));
-                        }
-                        String identity = target.identity();
-                        String previousIdentity =
-                                result.identitiesByBindingId.putIfAbsent(
-                                        target.captureBindingId, identity);
-                        if (previousIdentity != null
-                                && !previousIdentity.equals(identity)) {
-                            throw new IOException("Conflicting output capture "
-                                    + target.captureBindingId
-                                    + " for activation " + jsonString(row,
-                                    "activationId"));
-                        }
-                        result.targetsByIdentity.putIfAbsent(identity, target);
+                    String identity = target.identity();
+                    String previousIdentity =
+                            result.identitiesByBindingId.putIfAbsent(
+                                    target.captureBindingId, identity);
+                    if (previousIdentity != null
+                            && !previousIdentity.equals(identity)) {
+                        throw new IOException("Conflicting output capture "
+                                + target.captureBindingId
+                                + " for activation " + jsonString(row,
+                                "activationId"));
                     }
+                    result.targetsByIdentity.putIfAbsent(identity, target);
                 }
             }
             return result;

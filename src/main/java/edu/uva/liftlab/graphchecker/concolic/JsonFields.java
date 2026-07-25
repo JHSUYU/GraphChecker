@@ -72,4 +72,48 @@ final class JsonFields {
         }
         return "";
     }
+
+    static JsonObject requiredObject(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        if (value == null || !value.isJsonObject()) {
+            throw new IllegalArgumentException(field + " must be an object");
+        }
+        return value.getAsJsonObject();
+    }
+
+    static String primitiveString(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        return value != null && value.isJsonPrimitive()
+                ? value.getAsString() : "";
+    }
+
+    static int primitiveInteger(JsonObject object, String field,
+                                int fallback) {
+        JsonElement value = object == null ? null : object.get(field);
+        try {
+            return value == null || !value.isJsonPrimitive()
+                    ? fallback : value.getAsInt();
+        } catch (RuntimeException malformed) {
+            return fallback;
+        }
+    }
+
+    static String textString(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isString()
+                ? value.getAsString() : "";
+    }
+
+    static int exactInteger(JsonObject object, String field, int fallback) {
+        JsonElement value = object == null ? null : object.get(field);
+        try {
+            return value == null || !value.isJsonPrimitive()
+                    || !value.getAsJsonPrimitive().isNumber()
+                    ? fallback : new java.math.BigDecimal(
+                    value.getAsString()).intValueExact();
+        } catch (RuntimeException malformed) {
+            return fallback;
+        }
+    }
 }

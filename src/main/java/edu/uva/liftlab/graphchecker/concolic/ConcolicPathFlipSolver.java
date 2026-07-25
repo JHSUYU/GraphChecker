@@ -20,8 +20,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * tasks can be run by separate workers.
  */
 public final class ConcolicPathFlipSolver {
-    private static final Gson JSON = new GsonBuilder()
-            .disableHtmlEscaping().create();
     private static final Gson PRETTY = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
 
@@ -40,10 +38,10 @@ public final class ConcolicPathFlipSolver {
     }
 
     static Result solve(Arguments arguments) throws Exception {
-        JsonObject task = exactTask(readJsonl(arguments.worklist),
+        JsonObject task = exactTask(ArtifactIO.readJsonl(arguments.worklist),
                 arguments.queryKey);
-        Map<String, JsonObject> activations = uniqueIndex(
-                readJsonl(arguments.activations), "activationId");
+        Map<String, JsonObject> activations = ArtifactIO.uniqueIndex(
+                ArtifactIO.readJsonl(arguments.activations), "activationId");
         String sourceId = string(task, "sourceActivationId");
         JsonObject source = activations.get(sourceId);
         if (source == null) {
@@ -69,7 +67,8 @@ public final class ConcolicPathFlipSolver {
         List<JsonObject> replayRows = result.replayActivation == null
                 ? Collections.<JsonObject>emptyList()
                 : Collections.singletonList(result.replayActivation);
-        writeJsonl(directory.resolve("activation_plan.jsonl"), replayRows);
+        ArtifactIO.replaceJsonl(directory.resolve("activation_plan.jsonl"),
+                replayRows);
         JsonObject validation = result.replayActivation == null
                 ? unavailableValidation(result.solve.record)
                 : ReplayActivationFactory.validationPlan(result.task,
@@ -100,35 +99,6 @@ public final class ConcolicPathFlipSolver {
                     + queryKey + ", found " + count);
         }
         return selected.deepCopy();
-    }
-
-    private static Map<String, JsonObject> uniqueIndex(
-            List<JsonObject> rows, String field) throws IOException {
-        Map<String, JsonObject> result = new LinkedHashMap<>();
-        for (JsonObject row : rows) {
-            String key = string(row, field);
-            if (key.isEmpty()) continue;
-            JsonObject previous = result.put(key, row);
-            if (previous != null && !previous.equals(row)) {
-                throw new IOException("Conflicting duplicate " + field
-                        + ": " + key);
-            }
-        }
-        return result;
-    }
-
-    private static List<JsonObject> readJsonl(Path path) throws IOException {
-        return ArtifactIO.readJsonl(path, "Malformed JSONL %1$s:%2$d",
-                "Non-object JSONL row %1$s:%2$d");
-    }
-
-    private static void writeJsonl(Path path, List<JsonObject> rows)
-            throws IOException {
-        StringBuilder content = new StringBuilder();
-        for (JsonObject row : rows) {
-            content.append(JSON.toJson(row)).append(System.lineSeparator());
-        }
-        ArtifactIO.replace(path, content.toString());
     }
 
     static final class Arguments {

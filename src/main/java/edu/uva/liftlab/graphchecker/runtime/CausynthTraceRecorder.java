@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.causynth.CausynthJson;
+
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
 import java.io.File;
@@ -1144,58 +1146,7 @@ public final class CausynthTraceRecorder {
     }
 
     private static String jsonObject(Object... values) {
-        StringBuilder builder = new StringBuilder();
-        builder.append('{');
-        for (int i = 0; i + 1 < values.length; i += 2) {
-            Object value = values[i + 1];
-            if (value == null) {
-                continue;
-            }
-            if (builder.length() > 1) {
-                builder.append(',');
-            }
-            builder.append(quote(String.valueOf(values[i]))).append(':');
-            if (value instanceof Number || value instanceof Boolean) {
-                builder.append(String.valueOf(value));
-            } else {
-                builder.append(quote(String.valueOf(value)));
-            }
-        }
-        builder.append('}');
-        return builder.toString();
-    }
-
-    private static String quote(String value) {
-        StringBuilder builder = new StringBuilder();
-        builder.append('"');
-        for (int i = 0; i < value.length(); i++) {
-            char ch = value.charAt(i);
-            switch (ch) {
-                case '"':
-                    builder.append("\\\"");
-                    break;
-                case '\\':
-                    builder.append("\\\\");
-                    break;
-                case '\n':
-                    builder.append("\\n");
-                    break;
-                case '\r':
-                    builder.append("\\r");
-                    break;
-                case '\t':
-                    builder.append("\\t");
-                    break;
-                default:
-                    if (ch < 0x20) {
-                        builder.append(String.format("\\u%04x", (int) ch));
-                    } else {
-                        builder.append(ch);
-                    }
-            }
-        }
-        builder.append('"');
-        return builder.toString();
+        return CausynthJson.objectWithoutNulls(values);
     }
 
     private static String unescape(String value) {

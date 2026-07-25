@@ -10,6 +10,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveString;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
+
 /** Immutable natural replay request derived from one source branch witness. */
 public final class BranchReplayContract {
     public static final int SCHEMA_VERSION = 1;
@@ -59,9 +63,9 @@ public final class BranchReplayContract {
     }
 
     public static BranchReplayContract fromJson(JsonObject json) {
-        if (integer(json, "schemaVersion", -1) != SCHEMA_VERSION
-                || !KIND.equals(string(json, "kind"))
-                || !DROP_SOURCE_SUFFIX.equals(string(json,
+        if (primitiveInteger(json, "schemaVersion", -1) != SCHEMA_VERSION
+                || !KIND.equals(primitiveString(json, "kind"))
+                || !DROP_SOURCE_SUFFIX.equals(primitiveString(json,
                 "suffixPolicy"))) {
             throw new IllegalArgumentException(
                     "unsupported binary branch replay contract schema");
@@ -79,7 +83,7 @@ public final class BranchReplayContract {
             }
             prefix.add(BranchWitness.fromJson(element.getAsJsonObject()));
         }
-        BranchWitness source = BranchWitness.fromJson(object(json,
+        BranchWitness source = BranchWitness.fromJson(requiredObject(json,
                 "source"));
         return flip(prefix, source);
     }
@@ -146,28 +150,4 @@ public final class BranchReplayContract {
         return witness.siteId() + "\u0000" + witness.occurrence();
     }
 
-    private static JsonObject object(JsonObject parent, String name) {
-        JsonElement value = parent == null ? null : parent.get(name);
-        if (value == null || !value.isJsonObject()) {
-            throw new IllegalArgumentException(name + " must be an object");
-        }
-        return value.getAsJsonObject();
-    }
-
-    private static int integer(JsonObject object, String name,
-                               int fallback) {
-        JsonElement value = object == null ? null : object.get(name);
-        try {
-            return value == null || !value.isJsonPrimitive()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException malformed) {
-            return fallback;
-        }
-    }
-
-    private static String string(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value == null || !value.isJsonPrimitive()
-                ? "" : value.getAsString();
-    }
 }

@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.A
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicBranchSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicOutputCaptureSelection;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.OutputCaptureTarget;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import org.slf4j.Logger;
@@ -53,8 +54,6 @@ import soot.jimple.SwitchStmt;
 import soot.tagkit.Tag;
 
 import java.io.IOException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -67,8 +66,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
-import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.readRuntimeSelectedRoots;
 
 /**
  * Annotation-directed static backward data-flow analysis.
@@ -107,7 +104,7 @@ public final class CausynthPipeline {
         InstrumentationResult instrumentation =
                 instrumentConcolicRegions(result);
         boolean boundedOutputClosureCoverageReady =
-                selectedBoundedOutputClosureCoverageReady(instrumentation);
+                instrumentation.boundedOutputClosureCoverageReady();
         if (!concolicInstrumentationEnabled()) {
             new CausynthArtifactWriter(target.outputDir, result).writeAll();
         }
@@ -226,14 +223,24 @@ public final class CausynthPipeline {
         ConcolicRegionRefs refs = ConcolicRegionRefs.create();
         ConcolicBranchSelection branchSelection =
                 ConcolicBranchSelection.from(result.symbolicRegions);
-        ConcolicMaterializationSelection materializationSelection =
-                ConcolicInstrumentationSelections
-                        .materializationSelectionFromEnvironment();
-        ConcolicOutputCaptureSelection outputCaptureSelection =
-                ConcolicInstrumentationSelections
-                        .outputCaptureSelectionFromEnvironment();
-        ConcolicRootSelection rootSelection = concolicRootSelection();
-        Set<String> roots = rootSelection.roots;
+        InstrumentationPlan plan = ConcolicInstrumentationSelections
+                .instrumentationPlanFromEnvironment();
+        final ConcolicMaterializationSelection materializationSelection;
+        final ConcolicOutputCaptureSelection outputCaptureSelection;
+        try {
+            materializationSelection = plan.materializations();
+            outputCaptureSelection = plan.outputCaptures();
+        } catch (IOException malformedPlan) {
+            throw new IllegalStateException(
+                    "Could not decode concolic instrumentation plan "
+                            + plan.path(), malformedPlan);
+        }
+        Set<String> roots = plan.roots();
+        if (roots.isEmpty()) {
+            throw new IllegalStateException(
+                    "Activation plan contains no replayable runtime-selected "
+                            + "roots: " + plan.path());
+        }
         Set<String> backedViewMethods = concolicBackedViewMethods(result);
         backedViewMethods.addAll(roots);
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
@@ -409,76 +416,9 @@ public final class CausynthPipeline {
         instrumentConcolicBranches(branchSelection, refs);
         LOG.info("Instrumented {} symbolic-region roots for concolic replay ({} skipped)",
                 instrumented, skipped);
-        return new InstrumentationResult(true, rootSelection.plan,
-                roots.size(), instrumented, skipped);
-    }
-
-    private ConcolicRootSelection concolicRootSelection() {
-        String planValue = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
-        String selected = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
-        if (planValue.isEmpty() || selected.isEmpty()) {
-            throw new IllegalStateException(
-                    "Concolic instrumentation requires an activation plan "
-                            + "and selected activation id");
-        }
-        Path plan = Paths.get(planValue).toAbsolutePath().normalize();
-        try {
-            Set<String> runtimeRoots = readRuntimeSelectedRoots(plan, selected);
-            if (runtimeRoots.isEmpty()) {
-                throw new IllegalStateException(
-                        "Activation plan contains no replayable runtime-selected roots: "
-                                + plan);
-            }
-            return new ConcolicRootSelection(plan, runtimeRoots);
-        } catch (IOException | RuntimeException exception) {
-            throw new IllegalStateException(
-                    "Could not load runtime-selected concolic roots from "
-                            + plan, exception);
-        }
-    }
-
-    private boolean selectedBoundedOutputClosureCoverageReady(
-            InstrumentationResult instrumentation) {
-        if (!instrumentation.enabled) {
-            return false;
-        }
-        String planValue = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
-        String selected = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
-        if (planValue.isEmpty() || selected.isEmpty()) {
-            return false;
-        }
-        try {
-            if (!ConcolicInstrumentationSelections
-                    .selectedBoundedOutputClosureCoverageReady(
-                    Paths.get(planValue), selected)) {
-                return false;
-            }
-        } catch (IOException | RuntimeException unreadablePlan) {
-            LOG.warn("Bounded output-closure coverage authority rejected "
-                    + "activation plan {}", planValue, unreadablePlan);
-            return false;
-        }
-
-        boolean samePlan;
-        try {
-            samePlan = Paths.get(planValue).toAbsolutePath().normalize().equals(
-                    instrumentation.plan);
-        } catch (RuntimeException invalidPath) {
-            samePlan = false;
-        }
-        return samePlan
-                && instrumentation.rootCount == 1
-                && instrumentation.instrumentedCount
-                == instrumentation.rootCount
-                && instrumentation.skippedCount == 0;
+        return new InstrumentationResult(true,
+                plan.boundedOutputClosureCoverageReady(), roots.size(),
+                instrumented, skipped);
     }
 
     /**
@@ -2575,35 +2515,33 @@ public final class CausynthPipeline {
                 .matcher(value).find();
     }
 
-    private static final class ConcolicRootSelection {
-        private final Path plan;
-        private final Set<String> roots;
-
-        private ConcolicRootSelection(Path plan, Set<String> roots) {
-            this.plan = plan;
-            this.roots = roots;
-        }
-    }
-
     private static final class InstrumentationResult {
         private final boolean enabled;
-        private final Path plan;
+        private final boolean selectedClosureReady;
         private final int rootCount;
         private final int instrumentedCount;
         private final int skippedCount;
 
-        private InstrumentationResult(boolean enabled, Path plan,
+        private InstrumentationResult(boolean enabled,
+                                      boolean selectedClosureReady,
                                       int rootCount, int instrumentedCount,
                                       int skippedCount) {
             this.enabled = enabled;
-            this.plan = plan;
+            this.selectedClosureReady = selectedClosureReady;
             this.rootCount = rootCount;
             this.instrumentedCount = instrumentedCount;
             this.skippedCount = skippedCount;
         }
 
+        private boolean boundedOutputClosureCoverageReady() {
+            return enabled && selectedClosureReady
+                    && rootCount == 1
+                    && instrumentedCount == rootCount
+                    && skippedCount == 0;
+        }
+
         private static InstrumentationResult disabled() {
-            return new InstrumentationResult(false, null, 0, 0, 0);
+            return new InstrumentationResult(false, false, 0, 0, 0);
         }
     }
 

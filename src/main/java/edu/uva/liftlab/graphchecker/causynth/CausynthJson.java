@@ -4,11 +4,11 @@ import java.util.Collection;
 import java.util.Map;
 
 /** Deterministic JSON serialization used by Causynth static artifacts. */
-final class CausynthJson {
+public final class CausynthJson {
     private CausynthJson() {
     }
 
-    static String write(Object value) {
+    public static String write(Object value) {
         if (value == null) {
             return "null";
         }
@@ -49,6 +49,18 @@ final class CausynthJson {
             return builder.toString();
         }
         return quote(String.valueOf(value));
+    }
+
+    public static String objectWithoutNulls(Object... fields) {
+        StringBuilder result = new StringBuilder("{");
+        for (int index = 0; fields != null
+                && index + 1 < fields.length; index += 2) {
+            if (fields[index + 1] == null) continue;
+            if (result.length() > 1) result.append(',');
+            result.append(quote(String.valueOf(fields[index]))).append(':')
+                    .append(write(fields[index + 1]));
+        }
+        return result.append('}').toString();
     }
 
     private static String quote(String value) {

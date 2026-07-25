@@ -401,15 +401,7 @@ public final class RegionSummaryMerger {
 
     private static void writeJsonl(Path path, List<JsonObject> rows)
             throws IOException {
-        Path parent = path.toAbsolutePath().getParent();
-        if (parent != null) Files.createDirectories(parent);
-        StringBuilder value = new StringBuilder();
-        for (JsonObject row : rows) value.append(GSON.toJson(row))
-                .append(System.lineSeparator());
-        Files.write(path, value.toString().getBytes(StandardCharsets.UTF_8),
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE);
+        ArtifactIO.replaceJsonl(path, rows);
     }
 
     private static List<JsonObject> safe(List<JsonObject> values) {

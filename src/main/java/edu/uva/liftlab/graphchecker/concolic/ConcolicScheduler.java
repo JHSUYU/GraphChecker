@@ -11,11 +11,9 @@ import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -1982,27 +1980,7 @@ public final class ConcolicScheduler {
 
     private static void writeJsonl(Path path, List<JsonObject> rows)
             throws IOException {
-        StringBuilder builder = new StringBuilder();
-        for (JsonObject row : rows) {
-            builder.append(JSONL_GSON.toJson(row)).append('\n');
-        }
-        writeAtomic(path, builder.toString());
-    }
-
-    private static void writeAtomic(Path path, String value) throws IOException {
-        Path parent = path.toAbsolutePath().getParent();
-        if (parent != null) {
-            Files.createDirectories(parent);
-        }
-        Path temporary = Files.createTempFile(parent, path.getFileName().toString(),
-                ".tmp");
-        Files.write(temporary, value.getBytes(StandardCharsets.UTF_8));
-        try {
-            Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING);
-        } catch (IOException ignored) {
-            Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
-        }
+        ArtifactIO.replaceJsonl(path, rows);
     }
 
     private static void requireFile(Path path, String label) throws IOException {

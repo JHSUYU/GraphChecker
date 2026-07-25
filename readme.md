@@ -1615,6 +1615,22 @@ solver path context 和 required successor evidence 不变。十个零调用 hel
 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
 `target/robustness-matrix-logs/20260725T124250Z.2537011`。
 
+下一批继续删除阶段私有的重复基础设施，而没有增加新的 schema 层。五个 JSONL
+原子替换 writer 和两个 unique-ID index builder 现在分别由 `ArtifactIO.replaceJsonl`
+与 `ArtifactIO.uniqueIndex` 唯一实现；Importer 的最后一组 forgiving field accessor、
+四个 branch value 类型中的 primitive decoder、OutputClosure 的 Java descriptor
+validator，以及 runtime trace 的 JSON string/object serializer 也分别复用
+`JsonFields`、`JavaPrimitiveSmtSemantics` 和 `CausynthJson`。这些是现有 canonical
+语义的唯一实现，不是 wrapper 搬家；原局部实现已删除。
+
+Concolic 插桩此前会为 root、materialization、capture 和 bounded-closure readiness
+分别扫描同一 activation JSONL。现在每次 Soot instrumentation 只构造一次不可变
+`InstrumentationPlan`，四类 selection 从同一组选中 row 派生；malformed/non-object
+row 在这个 artifact boundary 一致拒绝。输出 closure、capture binding、heap discharge、
+executable admission 与 bundle `ALL` 语义保持不变。手写生产 Java 当前为 75,417 行，
+相对 81,581 行冻结基线累计净减 6,164 行；57 项快速回归、PMD 和真实
+custom-JDK/Z3 baseline 均已通过。
+
 ### 明确不能删除
 
 必须保留：

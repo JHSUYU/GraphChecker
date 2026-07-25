@@ -24,8 +24,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * immutable frontier feed many independent worker processes.
  */
 public final class ConcolicPathFlipPlanner {
-    private static final Gson JSON = new GsonBuilder()
-            .disableHtmlEscaping().create();
     private static final Gson PRETTY = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
 
@@ -48,16 +46,18 @@ public final class ConcolicPathFlipPlanner {
 
     static RegionPathWorklist.Result plan(Arguments arguments)
             throws IOException {
-        List<JsonObject> allActivations = readJsonl(arguments.activations);
-        List<JsonObject> allSummaries = readJsonl(arguments.summaries);
+        List<JsonObject> allActivations = ArtifactIO.readJsonl(
+                arguments.activations);
+        List<JsonObject> allSummaries = ArtifactIO.readJsonl(
+                arguments.summaries);
         List<JsonObject> records = arguments.records == null
                 ? Collections.<JsonObject>emptyList()
-                : readJsonl(arguments.records);
+                : ArtifactIO.readJsonl(arguments.records);
 
         List<JsonObject> activations = filterActivations(allActivations,
                 arguments.regionId);
-        Map<String, JsonObject> activationById = uniqueIndex(activations,
-                "activationId");
+        Map<String, JsonObject> activationById = ArtifactIO.uniqueIndex(
+                activations, "activationId");
         List<JsonObject> summaries = filterSummaries(allSummaries,
                 activationById, arguments.regionId);
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
@@ -69,8 +69,8 @@ public final class ConcolicPathFlipPlanner {
 
     static void writeOutputs(Path directory, RegionPathWorklist.Result result)
             throws IOException {
-        writeJsonl(directory.resolve("region_path_worklist.jsonl"),
-                result.tasks);
+        ArtifactIO.replaceJsonl(directory.resolve(
+                "region_path_worklist.jsonl"), result.tasks);
         ArtifactIO.replace(directory.resolve("region_path_manifest.json"),
                 PRETTY.toJson(result.manifest) + System.lineSeparator());
     }
@@ -103,35 +103,6 @@ public final class ConcolicPathFlipPlanner {
             result.add(summary.deepCopy());
         }
         return result;
-    }
-
-    private static Map<String, JsonObject> uniqueIndex(
-            List<JsonObject> rows, String field) throws IOException {
-        Map<String, JsonObject> result = new LinkedHashMap<>();
-        for (JsonObject row : rows) {
-            String key = string(row, field);
-            if (key.isEmpty()) continue;
-            JsonObject previous = result.put(key, row);
-            if (previous != null && !previous.equals(row)) {
-                throw new IOException("Conflicting duplicate " + field
-                        + ": " + key);
-            }
-        }
-        return result;
-    }
-
-    private static List<JsonObject> readJsonl(Path path) throws IOException {
-        return ArtifactIO.readJsonl(path, "Malformed JSONL %1$s:%2$d",
-                "Non-object JSONL row %1$s:%2$d");
-    }
-
-    private static void writeJsonl(Path path, List<JsonObject> rows)
-            throws IOException {
-        StringBuilder content = new StringBuilder();
-        for (JsonObject row : rows) {
-            content.append(JSON.toJson(row)).append(System.lineSeparator());
-        }
-        ArtifactIO.replace(path, content.toString());
     }
 
     static final class Arguments {

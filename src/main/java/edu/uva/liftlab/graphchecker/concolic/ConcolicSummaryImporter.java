@@ -15,11 +15,9 @@ import com.google.gson.JsonObject;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -32,6 +30,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Validates raw VM region results and normalizes them into composable
@@ -9226,28 +9231,7 @@ public final class ConcolicSummaryImporter {
 
     private static void writeJsonlAtomic(Path target, List<JsonObject> rows)
             throws IOException {
-        StringBuilder builder = new StringBuilder();
-        for (JsonObject row : rows) {
-            builder.append(GSON.toJson(row)).append(System.lineSeparator());
-        }
-        writeAtomic(target, builder.toString().getBytes(StandardCharsets.UTF_8));
-    }
-
-    private static void writeAtomic(Path target, byte[] contents) throws IOException {
-        Path absolute = target.toAbsolutePath();
-        Path parent = absolute.getParent();
-        if (parent != null) {
-            Files.createDirectories(parent);
-        }
-        Path temporary = Files.createTempFile(parent, absolute.getFileName().toString(),
-                ".tmp");
-        Files.write(temporary, contents);
-        try {
-            Files.move(temporary, absolute, StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException ignored) {
-            Files.move(temporary, absolute, StandardCopyOption.REPLACE_EXISTING);
-        }
+        ArtifactIO.replaceJsonl(target, rows);
     }
 
     private static Map<String, JsonObject> index(List<JsonObject> rows,
@@ -9351,25 +9335,8 @@ public final class ConcolicSummaryImporter {
         return ArtifactIO.readJsonl(path);
     }
 
-    private static JsonObject object(JsonObject parent, String field) {
-        JsonElement value = parent == null ? null : parent.get(field);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
     private static String activationRootMethod(JsonObject activation) {
         return string(object(activation, "rootSelector"), "method");
-    }
-
-    private static JsonArray array(JsonObject parent, String field) {
-        JsonElement value = parent == null ? null : parent.get(field);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
-    }
-
-    private static String string(JsonObject parent, String field) {
-        JsonElement value = parent == null ? null : parent.get(field);
-        return value == null || value.isJsonNull() ? "" : value.getAsString();
     }
 
     private static String strictString(JsonObject parent, String field) {
@@ -9416,41 +9383,9 @@ public final class ConcolicSummaryImporter {
         }
     }
 
-    private static boolean bool(JsonObject parent, String field,
-                                boolean fallback) {
-        JsonElement value = parent == null ? null : parent.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
     private static boolean nestedOutputSliceContractComplete(
             JsonObject slice) {
         return Boolean.TRUE.equals(strictBoolean(slice, "complete"));
-    }
-
-    private static int integer(JsonObject parent, String field, int fallback) {
-        JsonElement value = parent == null ? null : parent.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject parent, String field,
-                                    long fallback) {
-        JsonElement value = parent == null ? null : parent.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
     }
 
     private static JsonElement copy(JsonElement value, JsonElement fallback) {
@@ -9487,17 +9422,6 @@ public final class ConcolicSummaryImporter {
     private static Path sibling(Path path, String name) {
         Path parent = path.toAbsolutePath().getParent();
         return (parent == null ? Paths.get(".") : parent).resolve(name);
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.trim().isEmpty()) {
-                    return value.trim();
-                }
-            }
-        }
-        return "";
     }
 
     public static final class ImportResult {

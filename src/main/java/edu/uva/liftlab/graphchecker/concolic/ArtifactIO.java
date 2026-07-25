@@ -15,8 +15,10 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Schema-free file operations shared by concolic command boundaries.
@@ -103,6 +105,33 @@ final class ArtifactIO {
         } finally {
             Files.deleteIfExists(temporary);
         }
+    }
+
+    static void replaceJsonl(Path path, Iterable<JsonObject> rows)
+            throws IOException {
+        StringBuilder content = new StringBuilder();
+        if (rows != null) {
+            for (JsonObject row : rows) {
+                content.append(row).append('\n');
+            }
+        }
+        replace(path, content.toString());
+    }
+
+    static Map<String, JsonObject> uniqueIndex(
+            Iterable<JsonObject> rows, String field) throws IOException {
+        Map<String, JsonObject> result = new LinkedHashMap<>();
+        if (rows == null) return result;
+        for (JsonObject row : rows) {
+            String key = JsonFields.string(row, field);
+            if (key.isEmpty()) continue;
+            JsonObject previous = result.put(key, row);
+            if (previous != null && !previous.equals(row)) {
+                throw new IOException("Conflicting duplicate " + field
+                        + ": " + key);
+            }
+        }
+        return result;
     }
 
     static String sha256(Path path) throws IOException {
