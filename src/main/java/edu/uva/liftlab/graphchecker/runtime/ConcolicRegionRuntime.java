@@ -10985,7 +10985,7 @@ public final class ConcolicRegionRuntime {
             this.invocationOrdinal = integer(json, "invocationOrdinal", 1);
             this.rootContextSelector = RootContextSelector.from(json);
             this.rootArgumentSelector = RootArgumentSelector.from(json);
-            this.replayable = bool(json, "replayable", true);
+            this.replayable = admissionExecutable(json);
             this.requiresAllSelection = "ALL".equals(string(json,
                     "activationSelectionRequired"));
             this.concreteReplayOnly = bool(json, "concreteReplayOnly", false);
@@ -11628,6 +11628,14 @@ public final class ConcolicRegionRuntime {
                 return null;
             }
         }
+    }
+
+    private static boolean admissionExecutable(JsonObject activation) {
+        JsonElement value = activation == null ? null
+                : activation.get("admission");
+        return value != null && value.isJsonObject()
+                && "EXECUTABLE".equals(string(value.getAsJsonObject(),
+                "state"));
     }
 
     private static String string(JsonObject object, String field) {

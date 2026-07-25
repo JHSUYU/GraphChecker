@@ -4447,30 +4447,18 @@ final class SeedBackwardStaticAnalyzer {
         if (edge == null) {
             String edgeId = "DF." + edgeCounter++;
             boolean hasProjectionBase = projectionBaseEdge != null;
-            // A projected row is a derived view of its base edge.  Its
-            // rendered kind must never manufacture stronger semantic
-            // authority than that base. Require an explicit false/true tuple
-            // on the base so incomplete rows fail closed.
-            boolean baseMappingOnly = hasProjectionBase
-                    && StaticDataflowEdgeSchema.mappingOnly(
-                    projectionBaseEdge);
-            boolean mappingOnly = baseMappingOnly;
-            boolean baseSemanticAssertionsAllowed = !hasProjectionBase
-                    || StaticDataflowEdgeSchema.semanticAssertionsAllowed(
-                    projectionBaseEdge);
-            boolean baseAutomaticDerivationAllowed = !hasProjectionBase
-                    || StaticDataflowEdgeSchema
-                    .eligibleForAutomaticDerivation(projectionBaseEdge);
-            boolean baseAutomaticSmtAllowed = !hasProjectionBase
-                    || StaticDataflowEdgeSchema.eligibleForAutomaticSmt(
-                    projectionBaseEdge);
-            boolean semanticAssertionsAllowed = !mappingOnly
-                    && baseSemanticAssertionsAllowed;
-            boolean eligibleForAutomaticDerivation =
-                    semanticAssertionsAllowed
-                            && baseAutomaticDerivationAllowed;
-            boolean eligibleForAutomaticSmt = semanticAssertionsAllowed
-                    && baseAutomaticSmtAllowed;
+            String semanticMode = hasProjectionBase
+                    ? StaticDataflowEdgeSchema.semanticMode(
+                    projectionBaseEdge)
+                    : StaticDataflowEdgeSchema.ASSERTABLE;
+            if (semanticMode.isEmpty()) {
+                semanticMode = StaticDataflowEdgeSchema
+                        .RUNTIME_VALIDATION_REQUIRED;
+            }
+            boolean mappingOnly = StaticDataflowEdgeSchema.MAPPING_ONLY
+                    .equals(semanticMode);
+            boolean assertable = StaticDataflowEdgeSchema.ASSERTABLE
+                    .equals(semanticMode);
             String mappingAuthority = mappingOnly
                     ? StaticDataflowEdgeSchema.mappingAuthority(
                     projectionBaseEdge) : "";
@@ -4479,10 +4467,10 @@ final class SeedBackwardStaticAnalyzer {
                     fact == null ? "" : fact.unitText,
                     fact == null ? null : fact.invoke,
                     fromText, toText);
-            boolean exactDirectCopy = !mappingOnly
+            boolean exactDirectCopy = assertable
                     && exactLocalDirectCopy(kind, fromText, toText,
                     method, fact, edgeTransferKind);
-            boolean projectedDirectCopy = !mappingOnly
+            boolean projectedDirectCopy = assertable
                     && exactProjectedDirectCopy(kind, fromText, toText,
                     projectionBaseEdge, edgeTransferKind);
             String relation = exactDirectCopy || projectedDirectCopy
@@ -4492,6 +4480,7 @@ final class SeedBackwardStaticAnalyzer {
                     "id", edgeId,
                     "kind", kind,
                     "transferKind", edgeTransferKind,
+                    "semanticMode", semanticMode,
                     "relation", mappingOnly ? "" : relation,
                     "fromCell", fromText,
                     "toCell", toText,
@@ -4499,20 +4488,8 @@ final class SeedBackwardStaticAnalyzer {
                     "siteId", stableSiteId(method,
                             fact == null ? -1 : fact.unitIndex, kind),
                     "evidence", evidence);
-            if (mappingOnly) {
-                edge.put("mappingOnly", true);
-                if (!mappingAuthority.isEmpty()) {
-                    edge.put("mappingAuthority", mappingAuthority);
-                }
-            }
-            if (!semanticAssertionsAllowed) {
-                edge.put("semanticAssertionsAllowed", false);
-            }
-            if (!eligibleForAutomaticDerivation) {
-                edge.put("eligibleForAutomaticDerivation", false);
-            }
-            if (!eligibleForAutomaticSmt) {
-                edge.put("eligibleForAutomaticSmt", false);
+            if (mappingOnly && !mappingAuthority.isEmpty()) {
+                edge.put("mappingAuthority", mappingAuthority);
             }
             if (hasProjectionBase) {
                 edge.put("projectionBaseEdgeId", stringValue(

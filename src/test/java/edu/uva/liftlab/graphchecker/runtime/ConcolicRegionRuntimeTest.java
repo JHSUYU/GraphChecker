@@ -1299,7 +1299,11 @@ public class ConcolicRegionRuntimeTest {
                 ? "concrete-model-test" : "concrete-overlap-test");
         activation.addProperty("rootMethod", root);
         activation.addProperty("invocationOrdinal", ordinal);
-        activation.addProperty("replayable", true);
+        JsonObject admission = new JsonObject();
+        admission.addProperty("state", "EXECUTABLE");
+        admission.addProperty("mode", "TEST_CONCRETE_REPLAY");
+        admission.add("blockers", new JsonArray());
+        activation.add("admission", admission);
         activation.addProperty("concreteReplayOnly", true);
         activation.add("symbolize", new JsonArray());
         activation.add("materializations", new JsonArray());

@@ -213,9 +213,7 @@ runtime_channel_rows() {
       else $terminalRegions[0] end) as $terminalRegion
     | $activations[] as $activation
     | select($activation.captureGoal.kind == "OUTPUT_CLOSURE")
-    | select(
-        $activation.replayable == true
-        and $activation.symbolicReady == true)
+    | select($activation.admission.state == "READY")
     | ($activation | output_demand_key) as $outputDemandKey
     | ($activation | output_closure_fingerprint)
         as $outputClosureFingerprint
@@ -437,7 +435,8 @@ target_binding() {
     select(.regionId == $region
         and .regionInstanceId == $instance
         and .captureGoal.kind == "TARGET_BRANCH"
-        and .replayable == true)
+        and (.admission.state == "READY"
+          or .admission.state == "DISCOVERED"))
     | .activationId
   ' "${activation_plan}")
   [[ ${#target_activations[@]} -eq 1 ]] || die \

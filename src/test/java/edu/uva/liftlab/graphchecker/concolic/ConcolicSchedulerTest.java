@@ -112,9 +112,8 @@ public class ConcolicSchedulerTest {
                             StandardCharsets.UTF_8));
             ConcolicScheduler.Result blocked =
                     ConcolicScheduler.schedule(arguments);
-            assertFalse(blocked.scheduledActivations.get(0)
-                    .get("schedulerReady")
-                    .getAsBoolean());
+            assertEquals("BLOCKED", admissionState(
+                    blocked.scheduledActivations.get(0)));
 
             incompleteSlice.remove(OutputClosureContract.FIELD);
             Files.write(fixture.activations,
@@ -123,8 +122,8 @@ public class ConcolicSchedulerTest {
             ConcolicScheduler.Result missingNestedSlice =
                     ConcolicScheduler.schedule(arguments);
             assertEquals(0, missingNestedSlice.scheduledPrimaryCount);
-            assertFalse(blocked.scheduledActivations.get(0)
-                    .get("schedulerReady").getAsBoolean());
+            assertEquals("BLOCKED", admissionState(
+                    blocked.scheduledActivations.get(0)));
 
             JsonObject deferred = activation.deepCopy();
             JsonObject environment = new JsonObject();
@@ -143,9 +142,8 @@ public class ConcolicSchedulerTest {
                     (deferred + "\n").getBytes(StandardCharsets.UTF_8));
             ConcolicScheduler.Result deferredClosure =
                     ConcolicScheduler.schedule(arguments);
-            assertTrue(deferredClosure.scheduledActivations.get(0)
-                    .get("schedulerReady")
-                    .getAsBoolean());
+            assertEquals("EXECUTABLE", admissionState(
+                    deferredClosure.scheduledActivations.get(0)));
             assertEquals(1, deferredClosure.scheduledActivations.get(0)
                     .getAsJsonArray("concreteFallbacks").size());
         } finally {
@@ -175,7 +173,7 @@ public class ConcolicSchedulerTest {
         JsonObject prepared = ConcolicScheduler.prepareOutputCapture(
                 activation, Collections.<JsonObject>emptyList());
 
-        assertTrue(prepared.get("schedulerReady").getAsBoolean());
+        assertEquals("EXECUTABLE", admissionState(prepared));
         assertTrue(prepared.get("outputCaptureReady").getAsBoolean());
         assertTrue(prepared.has(OutputClosureContract.FIELD));
         assertFalse(prepared.has("requestedOutput"));
@@ -209,7 +207,7 @@ public class ConcolicSchedulerTest {
         JsonObject prepared = ConcolicScheduler.prepareOutputCapture(
                 activation, Collections.<JsonObject>emptyList());
 
-        assertTrue(prepared.get("schedulerReady").getAsBoolean());
+        assertEquals("EXECUTABLE", admissionState(prepared));
         assertEquals(0, prepared.getAsJsonArray("symbolize").size());
         assertEquals(0, prepared.getAsJsonArray("branches").size());
         assertEquals(0, prepared.getAsJsonArray("materializations").size());
@@ -226,7 +224,7 @@ public class ConcolicSchedulerTest {
                 activation, Collections.<JsonObject>emptyList());
 
         assertFalse(prepared.get("outputCaptureReady").getAsBoolean());
-        assertFalse(prepared.get("schedulerReady").getAsBoolean());
+        assertEquals("BLOCKED", admissionState(prepared));
         assertEquals(2, prepared.getAsJsonObject(
                 OutputClosureContract.FIELD).getAsJsonArray("members")
                 .size());
@@ -294,7 +292,8 @@ public class ConcolicSchedulerTest {
         activation.addProperty("test", "jointOutput");
         activation.addProperty("rootMethod",
                 "<example.Producer: void produce(int,int)>");
-        activation.addProperty("replayable", true);
+        addAdmission(activation, "READY",
+                "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
         activation.add("runtimeDefinitionMethods", new JsonArray());
         RegionCaptureGoal.outputClosure().writeTo(activation);
         JsonArray symbolize = new JsonArray();
@@ -375,8 +374,8 @@ public class ConcolicSchedulerTest {
         activation.add("runtimeDefinitionMethods", strings(
                 "<example.Updater: void run()>"));
         activation.addProperty("invocationOrdinal", 1);
-        activation.addProperty("replayable", true);
-        activation.addProperty("symbolicReady", true);
+        addAdmission(activation, "READY",
+                "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
         RegionCaptureGoal.outputClosure().writeTo(activation);
         activation.add("edgeBindings", new JsonArray());
         activation.add("symbolize", new JsonArray());
@@ -421,10 +420,24 @@ public class ConcolicSchedulerTest {
         return branch;
     }
 
+    private static void addAdmission(JsonObject activation, String state,
+                                     String mode) {
+        JsonObject admission = new JsonObject();
+        admission.addProperty("state", state);
+        admission.addProperty("mode", mode);
+        admission.add("blockers", new JsonArray());
+        activation.add("admission", admission);
+    }
+
+    private static String admissionState(JsonObject activation) {
+        return activation.getAsJsonObject("admission")
+                .get("state").getAsString();
+    }
+
     private static Fixture fixture(Path root)
             throws Exception {
         Fixture result = new Fixture(root);
-        String regions = "{\"schemaVersion\":1,"
+        String regions = "{\"schemaVersion\":2,"
                 + "\"regionId\":\"REGION.0\",\"rootMethod\":\""
                 + ROOT + "\",\"symbolicInputs\":["
                 + "{\"portId\":\"REGION.0.in.0\",\"cell\":\""
@@ -433,12 +446,12 @@ public class ConcolicSchedulerTest {
                 + ALL_KEYS + "\"},"
                 + "{\"portId\":\"REGION.0.in.2\",\"cell\":\""
                 + CURRENT_KEY_ID + "\"}],\"outputs\":[]}\n"
-                + "{\"schemaVersion\":1,"
+                + "{\"schemaVersion\":2,"
                 + "\"regionId\":\"REGION.1\",\"rootMethod\":"
                 + "\"<example.Client: void send()>\",\"symbolicInputs\":[],"
                 + "\"outputs\":[{\"portId\":\"REGION.1.out.0\","
                 + "\"cell\":\"client.userName\"}]}\n"
-                + "{\"schemaVersion\":1,"
+                + "{\"schemaVersion\":2,"
                 + "\"regionId\":\"REGION.11\",\"rootMethod\":"
                 + "\"<example.Updater: void run()>\",\"symbolicInputs\":[],"
                 + "\"outputs\":[{\"portId\":\"REGION.11.out.0\","
@@ -461,10 +474,14 @@ public class ConcolicSchedulerTest {
                 + "\"rootContextSelectionAuthority\":"
                 + "\"TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
                 + "THREAD_NAME_CONTEXT_ORDINAL_V1\","
-                + "\"invocationOrdinal\":1,\"replayable\":true,"
+                + "\"invocationOrdinal\":1,\"admission\":{"
+                + "\"state\":\"DISCOVERED\","
+                + "\"mode\":\"RUNTIME_SELECTED_ROOT_REPLAY\","
+                + "\"blockers\":[{\"kind\":"
+                + "\"SYMBOLIC_BOUNDARY_NOT_READY\"}]},"
                 + "\"captureGoal\":{\"kind\":\"TARGET_BRANCH\","
                 + "\"scope\":\"ONE_DIRECTED_BRANCH\"},"
-                + "\"symbolicReady\":false,\"symbolize\":["
+                + "\"symbolize\":["
                 + "{\"symbol\":\"REGION.0.in.0\",\"cell\":\""
                 + USERNAME + "\",\"location\":\"REGION_LIVE_IN\"},"
                 + "{\"symbol\":\"REGION.0.in.1\",\"cell\":\""
@@ -527,13 +544,15 @@ public class ConcolicSchedulerTest {
                 + "\"orderConfirmed\":true}]}\n";
         Files.write(result.edges, edges.getBytes(StandardCharsets.UTF_8));
 
-        String staticGraph = "{\"schemaVersion\":1,"
+        String staticGraph = "{\"schemaVersion\":2,"
+                + "\"semanticMode\":\"ASSERTABLE\","
                 + "\"id\":\"DF.DEF\",\"toCell\":\""
                 + USERNAME + "\",\"method\":\"" + CALLBACK
                 + "\",\"unitIndex\":36,\"unit\":\"$r4 = "
                 + "virtualinvoke r12.<javax.security.auth.callback.NameCallback: "
                 + "java.lang.String getDefaultName()>()\"}\n"
-                + "{\"schemaVersion\":1,"
+                + "{\"schemaVersion\":2,"
+                + "\"semanticMode\":\"ASSERTABLE\","
                 + "\"id\":\"DF.MAP\",\"kind\":\"map_lookup_state\","
                 + "\"method\":\""
                 + "<example.Manager: byte[] lookup(int)>\","

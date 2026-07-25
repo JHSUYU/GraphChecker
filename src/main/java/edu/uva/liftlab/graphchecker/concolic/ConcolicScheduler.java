@@ -165,8 +165,6 @@ public final class ConcolicScheduler {
             scheduledActivation.remove("summaryMode");
             scheduledActivation.addProperty("scheduleId", scheduleId);
             scheduledActivation.addProperty("executionPhase", executionPhase);
-            scheduledActivation.addProperty("schedulerReady",
-                    materialization.ready);
             scheduledActivation.add("materializations",
                     materialization.actions.deepCopy());
             scheduledActivation.add("concreteFallbacks",
@@ -175,7 +173,8 @@ public final class ConcolicScheduler {
                 OutputClosureCodec.writeTo(scheduledActivation,
                         candidate.outputContract);
             }
-            compactScheduledActivation(scheduledActivation);
+            compactScheduledActivation(scheduledActivation,
+                    materialization.ready);
 
             if (candidate.outputClosure) {
                 upstreamCaptureJobCount++;
@@ -298,7 +297,7 @@ public final class ConcolicScheduler {
 
         JsonObject normalized = activation.deepCopy();
         normalized.remove("reachabilitySupportActivations");
-        compactScheduledActivation(normalized);
+        compactScheduledActivation(normalized, null);
         JsonObject previous = definitions.get(activationId);
         if (previous != null) {
             if (!previous.equals(normalized)) {
@@ -388,7 +387,6 @@ public final class ConcolicScheduler {
                 || executionScopeReady(result, outputClosure,
                 definitions, definitionMethods));
         result.addProperty("executionPhase", "CAPTURE_OUTPUT_PATH");
-        result.addProperty("schedulerReady", schedulerReady);
         result.addProperty("outputCaptureReady", outputCaptureReady);
         result.add("concreteFallbacks",
                 materialization.concreteFallbacks.deepCopy());
@@ -396,30 +394,40 @@ public final class ConcolicScheduler {
         if (canonicalOutputClosure) {
             OutputClosureCodec.writeTo(result, outputClosure);
         }
-        compactScheduledActivation(result);
+        compactScheduledActivation(result, schedulerReady);
         return result;
     }
 
-    /**
-     * Converts either a scheduler row or a nested runtime-discovery support
-     * row to the compact executable activation schema.  A support row may
-     * carry only the discovery-time {@code symbolicReady}; that exact boolean
-     * is promoted once and then retired.  Missing or malformed readiness is
-     * deliberately fail-closed.
-     */
-    private static void compactScheduledActivation(JsonObject activation) {
-        JsonElement scheduled = activation.get("schedulerReady");
-        JsonElement discovered = activation.get("symbolicReady");
-        boolean ready = activation.has("schedulerReady")
-                ? strictBoolean(scheduled) && scheduled.getAsBoolean()
-                : strictBoolean(discovered) && discovered.getAsBoolean();
-        activation.addProperty("schedulerReady", ready);
-        activation.remove("symbolicReady");
+    /** Promotes one discovery admission to the executable schedule schema. */
+    private static void compactScheduledActivation(
+            JsonObject activation, Boolean scheduledReady) {
+        boolean ready = scheduledReady != null
+                ? scheduledReady
+                : "READY".equals(admissionState(activation))
+                || "EXECUTABLE".equals(admissionState(activation));
+        JsonObject admission = new JsonObject();
+        admission.addProperty("state", ready ? "EXECUTABLE" : "BLOCKED");
+        admission.addProperty("mode", admissionMode(activation));
+        JsonArray blockers = new JsonArray();
+        if (!ready) blockers.add("SCHEDULER_ADMISSION_FAILED");
+        admission.add("blockers", blockers);
+        activation.add("admission", admission);
     }
 
-    private static boolean strictBoolean(JsonElement value) {
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isBoolean();
+    private static boolean admissionReplayable(JsonObject activation) {
+        String state = admissionState(activation);
+        return "READY".equals(state) || "DISCOVERED".equals(state)
+                || "EXECUTABLE".equals(state);
+    }
+
+    private static String admissionState(JsonObject activation) {
+        JsonObject admission = object(activation, "admission");
+        return admission == null ? "" : string(admission, "state");
+    }
+
+    private static String admissionMode(JsonObject activation) {
+        JsonObject admission = object(activation, "admission");
+        return admission == null ? "" : string(admission, "mode");
     }
 
     private static List<Candidate> candidates(Arguments arguments,
@@ -437,7 +445,7 @@ public final class ConcolicScheduler {
             }
             JsonObject activation = operationalActivation(
                     discoveredActivation);
-            if (!bool(activation, "replayable", false)) {
+            if (!admissionReplayable(activation)) {
                 continue;
             }
             if (!arguments.activationId.isEmpty()
@@ -1949,15 +1957,10 @@ public final class ConcolicScheduler {
                                                        String rawCell,
                                                        String inputCell) {
         if (proof == null || string(proof, "id").isEmpty()
+                || integer(proof, "schemaVersion", -1) != 2
                 || !"accessor_field_return".equals(string(proof, "kind"))
                 || !"value_flow".equals(string(proof, "relation"))
-                || !"backward_provenance".equals(string(proof,
-                "direction"))
-                || !proof.has("mappingOnly")
-                || bool(proof, "mappingOnly", true)
-                || !bool(proof, "semanticAssertionsAllowed", false)
-                || !bool(proof, "eligibleForAutomaticDerivation", false)
-                || !bool(proof, "eligibleForAutomaticSmt", false)
+                || !"ASSERTABLE".equals(string(proof, "semanticMode"))
                 || !safe(rawCell).equals(string(proof, "toCell"))
                 || !safe(inputCell).equals(string(proof, "fromCell"))) {
             return false;
@@ -2244,7 +2247,7 @@ public final class ConcolicScheduler {
         Set<String> ids = new LinkedHashSet<>();
         for (JsonObject row : rows) {
             String id = string(row, "id");
-            if (integer(row, "schemaVersion", -1) != 1
+            if (integer(row, "schemaVersion", -1) != 2
                     || id.isEmpty() || !ids.add(id)) {
                 return false;
             }
@@ -2405,7 +2408,7 @@ public final class ConcolicScheduler {
     }
 
     private static final class Region {
-        private static final int STATIC_REGION_SCHEMA_VERSION = 1;
+        private static final int STATIC_REGION_SCHEMA_VERSION = 2;
         private final String regionId;
         private final Set<String> methods = new LinkedHashSet<>();
         private final Map<String, String> portByCell = new LinkedHashMap<>();

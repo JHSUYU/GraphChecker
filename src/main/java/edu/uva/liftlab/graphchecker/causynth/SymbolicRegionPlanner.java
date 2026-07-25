@@ -2913,10 +2913,7 @@ final class SymbolicRegionPlanner {
                         obligationEntry.getValue().get("causalEdgeIds");
                 boolean relationComplete = "value_flow".equals(
                         string(edge.get("relation")))
-                        && StaticDataflowEdgeSchema
-                        .semanticAssertionsAllowed(edge)
-                        && StaticDataflowEdgeSchema
-                        .eligibleForAutomaticSmt(edge)
+                        && StaticDataflowEdgeSchema.automaticSemantics(edge)
                         && exactAssignmentRhsCell(rhsCell, rhs)
                         && obligationEdges != null
                         && obligationEdges.contains(edgeId);
@@ -7023,16 +7020,7 @@ final class SymbolicRegionPlanner {
                     && !StaticDataflowEdgeSchema.mappingOnly(edge)
                     && !string(edge.get("id")).isEmpty()
                     && !string(edge.get("siteId")).isEmpty()
-                    && (exactStaticValueFlow(edge)
-                    // Legacy compact rows predate explicit value-flow flags,
-                    // but their exact HEAP_WRITE kind/cell/site tuple still
-                    // names one concrete producer definition.
-                    || string(edge.get("relation")).isEmpty()
-                    || "value_flow".equals(string(edge.get("relation")))
-                    && StaticDataflowEdgeSchema
-                    .semanticAssertionsAllowed(edge)
-                    && StaticDataflowEdgeSchema
-                    .eligibleForAutomaticSmt(edge));
+                    && exactStaticValueFlow(edge);
         }
 
         private boolean fieldBacksProjectedBoundary(
@@ -7172,10 +7160,7 @@ final class SymbolicRegionPlanner {
                                 "mappingKind", staticMappingKind,
                                 "mappingAuthority",
                                 "STATIC_FORMAT_AND_PORT_MAPPING",
-                                "mappingOnly", true,
-                                "semanticAssertionsAllowed", false,
-                                "eligibleForAutomaticDerivation", false,
-                                "eligibleForAutomaticSmt", false,
+                                "semanticMode", "MAPPING_ONLY",
                                 "payloadEqualityCheckRequired", true,
                                 "siteId", string(edge.get("siteId")),
                                 "evidence", Arrays.asList("STATIC_PROTOCOL",

@@ -6,8 +6,11 @@ import java.util.regex.Pattern;
 
 /** Default semantics for one versioned static data-flow edge row. */
 final class StaticDataflowEdgeSchema {
-    static final int VERSION = 1;
-    static final String DEFAULT_DIRECTION = "backward_provenance";
+    static final int VERSION = 2;
+    static final String ASSERTABLE = "ASSERTABLE";
+    static final String MAPPING_ONLY = "MAPPING_ONLY";
+    static final String RUNTIME_VALIDATION_REQUIRED =
+            "RUNTIME_VALIDATION_REQUIRED";
     private static final Pattern METHOD_SIGNATURE = Pattern.compile(
             "<([^:]+):\\s+(.+)\\s+([^\\s(]+)\\((.*)\\)>");
 
@@ -15,41 +18,19 @@ final class StaticDataflowEdgeSchema {
     }
 
     static boolean mappingOnly(Map<String, Object> edge) {
-        if (edge != null && edge.containsKey("mappingOnly")) {
-            return !Boolean.FALSE.equals(edge.get("mappingOnly"));
-        }
-        return !hasDefaults(edge);
+        return MAPPING_ONLY.equals(semanticMode(edge));
     }
 
     static String mappingAuthority(Map<String, Object> edge) {
         return string(edge, "mappingAuthority", "");
     }
 
-    static boolean semanticAssertionsAllowed(Map<String, Object> edge) {
-        return flag(edge, "semanticAssertionsAllowed");
-    }
-
-    static boolean eligibleForAutomaticDerivation(
-            Map<String, Object> edge) {
-        return flag(edge, "eligibleForAutomaticDerivation");
-    }
-
-    static boolean eligibleForAutomaticSmt(Map<String, Object> edge) {
-        return flag(edge, "eligibleForAutomaticSmt");
-    }
-
-    static String direction(Map<String, Object> edge) {
-        return string(edge, "direction",
-                hasDefaults(edge) ? DEFAULT_DIRECTION : "");
-    }
-
     static boolean automaticSemantics(Map<String, Object> edge) {
-        return supported(edge)
-                && !mappingOnly(edge)
-                && semanticAssertionsAllowed(edge)
-                && eligibleForAutomaticDerivation(edge)
-                && eligibleForAutomaticSmt(edge)
-                && DEFAULT_DIRECTION.equals(direction(edge));
+        return supported(edge) && ASSERTABLE.equals(semanticMode(edge));
+    }
+
+    static String semanticMode(Map<String, Object> edge) {
+        return string(edge, "semanticMode", "");
     }
 
     static String transferKind(String kind, String unit, String invoke,
@@ -163,13 +144,6 @@ final class StaticDataflowEdgeSchema {
         return text(value).toLowerCase(Locale.ROOT);
     }
 
-    private static boolean flag(Map<String, Object> edge, String field) {
-        if (edge != null && edge.containsKey(field)) {
-            return Boolean.TRUE.equals(edge.get(field));
-        }
-        return hasDefaults(edge);
-    }
-
     static boolean supported(Map<String, Object> edge) {
         if (edge == null) {
             return false;
@@ -180,10 +154,6 @@ final class StaticDataflowEdgeSchema {
         }
         return value != null && String.valueOf(VERSION).equals(
                 String.valueOf(value));
-    }
-
-    private static boolean hasDefaults(Map<String, Object> edge) {
-        return supported(edge);
     }
 
     private static String string(Map<String, Object> edge, String field,

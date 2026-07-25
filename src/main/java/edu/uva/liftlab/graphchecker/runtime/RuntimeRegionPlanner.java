@@ -105,10 +105,9 @@ final class RuntimeRegionPlanner {
             "CONCRETE_DEMAND_SLICE_SELECTED_FROZEN_DIRECT_DEFINITION_V1";
     static final String STATIC_INPUT_FIELD_PROJECTION_DECLARATION_AUTHORITY =
             "SOOT_RESOLVED_DECLARATION_HIERARCHY";
-    private static final int STATIC_DATAFLOW_EDGE_SCHEMA_VERSION = 1;
-    private static final int STATIC_REGION_SCHEMA_VERSION = 1;
-    private static final String STATIC_DATAFLOW_EDGE_DEFAULT_DIRECTION =
-            "backward_provenance";
+    private static final int STATIC_DATAFLOW_EDGE_SCHEMA_VERSION = 2;
+    private static final int STATIC_REGION_SCHEMA_VERSION = 2;
+    private static final String STATIC_DATAFLOW_ASSERTABLE = "ASSERTABLE";
     private RuntimeRegionPlanner() {
     }
 
@@ -290,19 +289,14 @@ final class RuntimeRegionPlanner {
                         "captureGoal", object(
                                 "kind", "TARGET_BRANCH",
                                 "scope", "ONE_DIRECTED_BRANCH"),
-                        "boundaryReady", boundaryReady,
-                        "pathSignatureTruncated", pathSelection.truncated,
-                        "containedCallTreeTruncated", callSelection.truncated,
-                        "runtimePathEvidenceComplete",
-                        runtimePathEvidenceComplete,
-                        "runtimeGaps", runtimeGaps,
+                        "admission", admission(replayable, symbolicReady,
+                                replayable
+                                        ? "RUNTIME_SELECTED_ROOT_REPLAY"
+                                        : "NO_VALIDATED_RUNTIME_PATH",
+                                runtimeGaps, pathSelection.truncated,
+                                callSelection.truncated),
                         "symbolize", symbolize,
-                        "branches", branchPlan,
-                        "replayable", replayable,
-                        "symbolicReady", symbolicReady,
-                        "replayMode", replayable
-                                ? "RUNTIME_SELECTED_ROOT_REPLAY"
-                                : "NO_VALIDATED_RUNTIME_PATH");
+                        "branches", branchPlan);
                 addRootContextSelector(activation, root,
                         ordinalWithinContext);
                 if (!rootArgumentSelector.isEmpty()) {
@@ -2462,8 +2456,7 @@ final class RuntimeRegionPlanner {
 
             Map<String, Object> activation = activations.get(
                     instance.instanceId);
-            boolean replayable = activation != null
-                    && Boolean.TRUE.equals(activation.get("replayable"));
+            boolean replayable = admissionReplayable(activation);
             boolean symbolicReady = replayable && boundaryReady
                     && symbolicPotential;
 
@@ -2473,8 +2466,9 @@ final class RuntimeRegionPlanner {
                 activation.put("runtimeDefinitionMethods",
                         instance.concreteDemandSlice.definitionMethods(
                                 instance.observedMethods));
-                activation.put("boundaryReady", boundaryReady);
-                activation.put("symbolicReady", symbolicReady);
+                activation.put("admission", admission(replayable,
+                        symbolicReady, admissionMode(activation),
+                        Collections.emptyList(), false, false));
             }
         }
     }
@@ -2489,6 +2483,42 @@ final class RuntimeRegionPlanner {
             }
         }
         return result;
+    }
+
+    private static Map<String, Object> admission(
+            boolean replayable, boolean ready, String mode,
+            Collection<?> gaps, boolean pathTruncated,
+            boolean callTreeTruncated) {
+        List<Object> blockers = new ArrayList<>();
+        if (gaps != null) blockers.addAll(gaps);
+        if (pathTruncated) blockers.add(object(
+                "kind", "PATH_SIGNATURE_TRUNCATED"));
+        if (callTreeTruncated) blockers.add(object(
+                "kind", "CONTAINED_CALL_TREE_TRUNCATED"));
+        if (replayable && !ready && blockers.isEmpty()) {
+            blockers.add(object("kind", "SYMBOLIC_BOUNDARY_NOT_READY"));
+        }
+        return object(
+                "state", ready ? "READY"
+                        : replayable ? "DISCOVERED" : "BLOCKED",
+                "mode", safe(mode),
+                "blockers", blockers);
+    }
+
+    private static boolean admissionReplayable(
+            Map<String, Object> activation) {
+        Map<String, Object> admission = activation == null ? null
+                : mapValue(activation.get("admission"));
+        String state = admission == null ? ""
+                : string(admission.get("state"));
+        return "READY".equals(state) || "DISCOVERED".equals(state)
+                || "EXECUTABLE".equals(state);
+    }
+
+    private static String admissionMode(Map<String, Object> activation) {
+        Map<String, Object> admission = activation == null ? null
+                : mapValue(activation.get("admission"));
+        return admission == null ? "" : string(admission.get("mode"));
     }
 
     /**
@@ -2615,11 +2645,6 @@ final class RuntimeRegionPlanner {
             activation.put("captureGoal", object(
                     "kind", "OUTPUT_CLOSURE",
                     "scope", "BOUNDED_OUTPUT_RELEVANT_PATHS"));
-            activation.put("replayable", writerPathReplayable);
-            activation.put("replayMode",
-                    writerPathReplayable
-                            ? "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
-                            : "RUNTIME_READ_FROM_WITNESS_ONLY_PATH_TRUNCATED");
 
             Map<String, List<UpstreamEdgeBinding>> byOutput =
                     new LinkedHashMap<>();
@@ -2660,29 +2685,23 @@ final class RuntimeRegionPlanner {
             if (issues.isEmpty()) {
                 activation.put("_plannerOutputClosure", outputClosure);
                 activation.put("_plannerOutputMembers", members);
-                activation.put("boundaryReady", true);
-                activation.put("symbolicReady", true);
             } else {
                 activation.put("symbolize", Collections.emptyList());
                 activation.put("branches", Collections.emptyList());
                 activation.remove("containerElementFieldBindings");
                 activation.remove("heapStateBindings");
                 activation.put("outputClosureIssues", issues);
-                activation.put("boundaryReady", false);
-                activation.put("symbolicReady", false);
                 result.warnings.add("joint upstream output demand failed "
                         + "closed for " + first.upstream.instanceId + " -> "
                         + first.downstream.instanceId + ": " + issues);
             }
 
-            if (!writerPathReplayable) {
-                // The concrete read-from relation is still exact, but a
-                // bounded branch signature cannot replay this long-running
-                // outer region. Preserve the witness without promoting the
-                // derived activation to symbolic execution readiness.
-                activation.put("boundaryReady", false);
-                activation.put("symbolicReady", false);
-            }
+            activation.put("admission", admission(writerPathReplayable,
+                    writerPathReplayable && issues.isEmpty(),
+                    writerPathReplayable
+                            ? "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
+                            : "RUNTIME_READ_FROM_WITNESS_ONLY_PATH_TRUNCATED",
+                    issues, false, !writerPathReplayable));
 
             List<Map<String, Object>> bindingRows = new ArrayList<>();
             for (UpstreamEdgeBinding binding : demand) {
@@ -3560,8 +3579,8 @@ final class RuntimeRegionPlanner {
             // later by the importer. A static proof/declaration failure still
             // closes this activation before scheduling.
             if (!composable) {
-                activation.put("symbolicReady", false);
-                activation.put("boundaryReady", false);
+                activation.put("admission", admission(false, false,
+                        admissionMode(activation), issues, false, false));
             }
             if (!issues.isEmpty()) {
                 result.warnings.add("map value/output element projection "
@@ -5435,15 +5454,7 @@ final class RuntimeRegionPlanner {
                     && "HEAP_READ".equals(jsonString(json,
                     "transferKind"))
                     && "value_flow".equals(jsonString(json, "relation"))
-                    && STATIC_DATAFLOW_EDGE_DEFAULT_DIRECTION.equals(
-                    staticDataflowDirection(json))
-                    && !staticDataflowMappingOnly(json)
-                    && staticDataflowFlag(json,
-                    "semanticAssertionsAllowed")
-                    && staticDataflowFlag(json,
-                    "eligibleForAutomaticDerivation")
-                    && staticDataflowFlag(json,
-                    "eligibleForAutomaticSmt")
+                    && staticDataflowAssertable(json)
                     && "SOOT_RESOLVED_DECLARATION_HIERARCHY".equals(
                     jsonString(json, "declaredFieldAuthority"))
                     && "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY".equals(
@@ -6042,17 +6053,13 @@ final class RuntimeRegionPlanner {
         private final String kind;
         private final String transferKind;
         private final String relation;
-        private final String direction;
+        private final boolean assertable;
         private final String fromCell;
         private final String toCell;
         private final String objectFromCell;
         private final String objectToCell;
         private final String projectionBaseEdgeId;
         private final List<String> fieldPath;
-        private final boolean mappingOnly;
-        private final boolean semanticAssertionsAllowed;
-        private final boolean eligibleForAutomaticDerivation;
-        private final boolean eligibleForAutomaticSmt;
         private final boolean fieldSensitive;
         private final String declaredFieldSignature;
         private final String declaredFieldOwner;
@@ -6067,13 +6074,10 @@ final class RuntimeRegionPlanner {
         private final int unitIndex;
 
         private StaticDataflowProjectionEdge(String edgeId, String kind,
-                String transferKind, String relation, String direction,
+                String transferKind, String relation, boolean assertable,
                 String fromCell, String toCell, String objectFromCell,
                 String objectToCell, String projectionBaseEdgeId,
-                List<String> fieldPath, boolean mappingOnly,
-                boolean semanticAssertionsAllowed,
-                boolean eligibleForAutomaticDerivation,
-                boolean eligibleForAutomaticSmt, boolean fieldSensitive,
+                List<String> fieldPath, boolean fieldSensitive,
                 String declaredFieldSignature, String declaredFieldOwner,
                 String declaredFieldType, String declaredFieldName,
                 String declaredFieldAuthority, String invoke,
@@ -6084,18 +6088,13 @@ final class RuntimeRegionPlanner {
             this.kind = safe(kind);
             this.transferKind = safe(transferKind);
             this.relation = safe(relation);
-            this.direction = safe(direction);
+            this.assertable = assertable;
             this.fromCell = safe(fromCell);
             this.toCell = safe(toCell);
             this.objectFromCell = safe(objectFromCell);
             this.objectToCell = safe(objectToCell);
             this.projectionBaseEdgeId = safe(projectionBaseEdgeId);
             this.fieldPath = new ArrayList<>(fieldPath);
-            this.mappingOnly = mappingOnly;
-            this.semanticAssertionsAllowed = semanticAssertionsAllowed;
-            this.eligibleForAutomaticDerivation =
-                    eligibleForAutomaticDerivation;
-            this.eligibleForAutomaticSmt = eligibleForAutomaticSmt;
             this.fieldSensitive = fieldSensitive;
             this.declaredFieldSignature = safe(declaredFieldSignature);
             this.declaredFieldOwner = safe(declaredFieldOwner);
@@ -6125,20 +6124,13 @@ final class RuntimeRegionPlanner {
                     jsonString(json, "kind"),
                     jsonString(json, "transferKind"),
                     jsonString(json, "relation"),
-                    staticDataflowDirection(json),
+                    staticDataflowAssertable(json),
                     jsonString(json, "fromCell"),
                     jsonString(json, "toCell"),
                     jsonString(json, "objectFromCell"),
                     jsonString(json, "objectToCell"),
                     jsonString(json, "projectionBaseEdgeId"),
                     exactFieldPath(jsonString(json, "fieldPath")),
-                    staticDataflowMappingOnly(json),
-                    staticDataflowFlag(json,
-                            "semanticAssertionsAllowed"),
-                    staticDataflowFlag(json,
-                            "eligibleForAutomaticDerivation"),
-                    staticDataflowFlag(json,
-                            "eligibleForAutomaticSmt"),
                     jsonBoolean(json, "fieldSensitive", false),
                     jsonString(json, "declaredFieldSignature"),
                     jsonString(json, "declaredFieldOwner"),
@@ -6156,10 +6148,7 @@ final class RuntimeRegionPlanner {
         private boolean exactConcreteDefinition(
                 Set<String> observedMethods) {
             if (method.isEmpty() || !observedMethods.contains(method)
-                    || mappingOnly || !semanticAssertionsAllowed
-                    || !eligibleForAutomaticDerivation
-                    || !eligibleForAutomaticSmt
-                    || !"backward_provenance".equals(direction)
+                    || !assertable
                     || !("value_flow".equals(relation)
                     || "taint_depends_on".equals(relation))) {
                 return false;
@@ -6205,11 +6194,7 @@ final class RuntimeRegionPlanner {
         private boolean exactGuardDependency(Set<String> observedMethods) {
             return observedMethods.contains(method)
                     && "GUARD".equals(transferKind)
-                    && !mappingOnly
-                    && semanticAssertionsAllowed
-                    && eligibleForAutomaticDerivation
-                    && eligibleForAutomaticSmt
-                    && "backward_provenance".equals(direction)
+                    && assertable
                     && "control_depends_on".equals(relation)
                     && !fromCell.isEmpty();
         }
@@ -6248,11 +6233,7 @@ final class RuntimeRegionPlanner {
         }
 
         private boolean exactAutomaticValueFlow() {
-            return !mappingOnly && semanticAssertionsAllowed
-                    && eligibleForAutomaticDerivation
-                    && eligibleForAutomaticSmt
-                    && "value_flow".equals(relation)
-                    && "backward_provenance".equals(direction);
+            return assertable && "value_flow".equals(relation);
         }
 
         private ProjectionOrientation orientation(String baseCell,
@@ -6283,7 +6264,6 @@ final class RuntimeRegionPlanner {
                     base.kind)
                     || !transferKind.equals(base.transferKind)
                     || !relation.equals(base.relation)
-                    || !direction.equals(base.direction)
                     || !base.exactAutomaticValueFlow()) {
                 return false;
             }
@@ -6386,7 +6366,8 @@ final class RuntimeRegionPlanner {
             edge.requiresObjectIdentity = jsonBoolean(json,
                     "requiresObjectIdentity", false);
             edge.mappingKind = jsonString(json, "mappingKind");
-            edge.mappingOnly = jsonBoolean(json, "mappingOnly", false);
+            edge.mappingOnly = "MAPPING_ONLY".equals(
+                    jsonString(json, "semanticMode"));
             return edge;
         }
 
@@ -9406,28 +9387,11 @@ final class RuntimeRegionPlanner {
                 + "\\\"\\s*:").matcher(safe(json)).find();
     }
 
-    private static boolean staticDataflowFlag(String json, String field) {
-        return jsonHasField(json, field)
-                ? jsonBoolean(json, field, false)
-                : staticDataflowSchemaDefaults(json);
-    }
-
-    private static boolean staticDataflowMappingOnly(String json) {
-        return jsonHasField(json, "mappingOnly")
-                ? jsonBoolean(json, "mappingOnly", true)
-                : !staticDataflowSchemaDefaults(json);
-    }
-
-    private static String staticDataflowDirection(String json) {
-        return jsonHasField(json, "direction")
-                ? jsonString(json, "direction")
-                : staticDataflowSchemaDefaults(json)
-                ? STATIC_DATAFLOW_EDGE_DEFAULT_DIRECTION : "";
-    }
-
-    private static boolean staticDataflowSchemaDefaults(String json) {
+    private static boolean staticDataflowAssertable(String json) {
         return jsonTopLevelInt(json, "schemaVersion", -1)
-                == STATIC_DATAFLOW_EDGE_SCHEMA_VERSION;
+                == STATIC_DATAFLOW_EDGE_SCHEMA_VERSION
+                && STATIC_DATAFLOW_ASSERTABLE.equals(
+                jsonString(json, "semanticMode"));
     }
 
     private static int jsonTopLevelInt(String json, String field,

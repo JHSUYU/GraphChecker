@@ -353,8 +353,7 @@ validate_dependent_scalar_artifacts() {
     [.[] | select(
       .captureGoal.kind == "OUTPUT_CLOSURE"
       and .captureGoal.scope == "BOUNDED_OUTPUT_RELEVANT_PATHS"
-      and .replayable == true
-      and .symbolicReady == true)
+      and .admission.state == "READY")
       | select(
         ([output_members | .[].output.cell] | index($arithmetic)) != null
         or ([output_members | .[].output.cell] | index($text)) != null)
@@ -380,7 +379,8 @@ validate_dependent_scalar_artifacts() {
         and .canonicalInputResolutionUsed == true)
       and ([.[] | select(
           .captureGoal.kind == "TARGET_BRANCH"
-          and .replayable == true
+          and (.admission.state == "READY"
+            or .admission.state == "DISCOVERED")
           and .regionId == $edges[0].toRegion
           and .regionInstanceId == $edges[0].toRegionInstance)]
         | length) == 1)
@@ -820,8 +820,7 @@ validate_scalar_unsat_producer_artifacts() {
     jq -e -s "${output_closure_helpers}"'
       [.[] | select(
         .captureGoal.kind == "OUTPUT_CLOSURE"
-        and .replayable == true
-        and .symbolicReady == true)] as $producers
+        and .admission.state == "READY")] as $producers
       | ($producers | length) == 2
       and ([$producers[] | output_members | length] | sort) == [1, 2]
       and any($producers[];
@@ -893,9 +892,10 @@ validate_compound_target_artifacts() {
   jq -e -s --arg consumer "${consumer_name}" \
     --arg target_region "$(jq -r '.regionId' "${target_closure}")" '
     [.[] | select(.captureGoal.kind == "OUTPUT_CLOSURE"
-      and .symbolicReady == true and .replayable == true)] as $producers
+      and .admission.state == "READY")] as $producers
     | [.[] | select(.captureGoal.kind == "TARGET_BRANCH"
-      and .replayable == true
+      and (.admission.state == "READY"
+        or .admission.state == "DISCOVERED")
       and .regionId == $target_region
       and any(.branches[]?;
         .policy == "EXPLORE" and (.siteId | contains($consumer))))] as $targets

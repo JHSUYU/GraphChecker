@@ -57,8 +57,8 @@ public class RuntimeRegionPlannerTest {
                     regions.toFile(), Collections.singletonList(
                             method(1, HANDLE, 1, 0, 0)),
                     Collections.emptyList(), Collections.emptyList());
-            assertEquals(Boolean.TRUE,
-                    result.activations.get(0).get("symbolicReady"));
+            assertEquals("READY",
+                    admissionState(result.activations.get(0)));
             @SuppressWarnings("unchecked")
             Map<String, Object> action = ((List<Map<String, Object>>)
                     result.activations.get(0).get("symbolize")).get(0);
@@ -268,7 +268,7 @@ public class RuntimeRegionPlannerTest {
                     + System.lineSeparator();
             JsonObject compactWriter = JsonParser.parseString(writerRegion)
                     .getAsJsonObject();
-            compactWriter.addProperty("schemaVersion", 1);
+            compactWriter.addProperty("schemaVersion", 2);
             JsonObject compactSlice = compactWriter
                     .getAsJsonArray("outputSlices").get(0)
                     .getAsJsonObject();
@@ -320,8 +320,7 @@ public class RuntimeRegionPlannerTest {
             Map<String, Object> captureGoal = (Map<String, Object>)
                     upstream.get("captureGoal");
             assertEquals("OUTPUT_CLOSURE", captureGoal.get("kind"));
-            assertEquals(true, upstream.get("replayable"));
-            assertEquals(true, upstream.get("symbolicReady"));
+            assertEquals("READY", admissionState(upstream));
             assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
             assertEquals(11L, upstream.get("rootCallId"));
             assertEquals(1, ((List<?>) upstream.get("edgeBindings")).size());
@@ -418,8 +417,8 @@ public class RuntimeRegionPlannerTest {
                             Collections.<RuntimeRegionPlanner.RuntimeEvent>
                                     emptyList(),
                             Arrays.asList(write, read));
-            assertEquals(Boolean.FALSE, missingEdge.activations.get(2)
-                    .get("symbolicReady"));
+            assertEquals("DISCOVERED",
+                    admissionState(missingEdge.activations.get(2)));
             assertFalse(missingEdge.activations.get(2).containsKey(
                     "requestedOutputSlice"));
             assertFalse(missingEdge.activations.get(2).containsKey(
@@ -445,7 +444,7 @@ public class RuntimeRegionPlannerTest {
         Map<String, Object> joint = upstreamDemandFor(
                 derived, "REGION.DXY");
         assertCanonicalOutputOnly(joint);
-        assertEquals(Boolean.TRUE, joint.get("symbolicReady"));
+        assertEquals("READY", admissionState(joint));
         assertEquals(2, ((List<?>) outputClosure(joint).get(
                 "members")).size());
         assertEquals("<example.State: int x>",
@@ -487,8 +486,7 @@ public class RuntimeRegionPlannerTest {
 
         Map<String, Object> rejected = upstreamDemandFor(
                 derived, "REGION.DXY");
-        assertEquals(Boolean.FALSE, rejected.get("symbolicReady"));
-        assertEquals(Boolean.FALSE, rejected.get("boundaryReady"));
+        assertEquals("DISCOVERED", admissionState(rejected));
         assertFalse(rejected.containsKey("outputClosure"));
         assertFalse(rejected.containsKey("requestedOutput"));
         assertFalse(rejected.containsKey("requestedOutputSlice"));
@@ -500,7 +498,7 @@ public class RuntimeRegionPlannerTest {
         Map<String, Object> isolated = upstreamDemandFor(
                 derived, "REGION.DX");
         assertCanonicalOutputOnly(isolated);
-        assertEquals(Boolean.TRUE, isolated.get("symbolicReady"));
+        assertEquals("READY", admissionState(isolated));
         assertEquals(1, ((List<?>) outputClosure(isolated).get(
                 "members")).size());
     }
@@ -867,7 +865,7 @@ public class RuntimeRegionPlannerTest {
             assertEquals(fieldB, actions.get(1).get("cell"));
             assertFalse(String.valueOf(activation.get(
                     "runtimeDefinitionMethods")).contains(other));
-            assertEquals(Boolean.TRUE, activation.get("symbolicReady"));
+            assertEquals("READY", admissionState(activation));
         } finally {
             folder.delete();
         }
@@ -885,7 +883,8 @@ public class RuntimeRegionPlannerTest {
             String fromCell, String toCell, String method,
             String siteId, int unitIndex) {
         return "{\"id\":\"" + id + "\",\"kind\":\"test_edge\","
-                + "\"schemaVersion\":1,"
+                + "\"schemaVersion\":2,"
+                + "\"semanticMode\":\"ASSERTABLE\","
                 + "\"transferKind\":\"" + transferKind + "\","
                 + "\"relation\":\"" + relation + "\","
                 + "\"fromCell\":\"" + fromCell + "\","
@@ -1065,8 +1064,9 @@ public class RuntimeRegionPlannerTest {
                         "edgeId", "EDGE.PD",
                         "toRegionInstance", "REGION.D@test#call2",
                         "toInputPort", "REGION.D.in.keys")),
-                "symbolicReady", true,
-                "boundaryReady", true);
+                "admission", row("state", "READY", "mode",
+                        "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY",
+                        "blockers", Collections.emptyList()));
 
         Map<String, Object> downstreamBinding = row(
                 "schemaVersion", 1,
@@ -1908,11 +1908,8 @@ public class RuntimeRegionPlannerTest {
         causal.addProperty("transferKind", "HEAP_WRITE");
         causal.addProperty("kind", "field_write");
         causal.addProperty("relation", "value_flow");
-        causal.addProperty("direction", "backward_provenance");
-        causal.addProperty("mappingOnly", false);
-        causal.addProperty("semanticAssertionsAllowed", true);
-        causal.addProperty("eligibleForAutomaticDerivation", true);
-        causal.addProperty("eligibleForAutomaticSmt", true);
+        causal.addProperty("schemaVersion", 2);
+        causal.addProperty("semanticMode", "ASSERTABLE");
         JsonArray causalEdges = new JsonArray();
         causalEdges.add(causal);
         result.add("causalEdges", causalEdges);
@@ -2203,7 +2200,8 @@ public class RuntimeRegionPlannerTest {
     private static String frozenAccessorEdge(String id, String field,
                                              String getter, String site) {
         return "{\"id\":\"" + id
-                + "\",\"schemaVersion\":1"
+                + "\",\"schemaVersion\":2"
+                + ",\"semanticMode\":\"ASSERTABLE\""
                 + ",\"kind\":\"accessor_field_return\","
                 + "\"transferKind\":\"HEAP_READ\","
                 + "\"relation\":\"value_flow\","
@@ -2251,7 +2249,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"STATIC_HDFS_SASL_CONTRACT\","
                     + "\"payloadEqualityCheckRequired\":true,"
                     + "\"requiresOrder\":true,"
-                    + "\"mappingOnly\":true,"
+                    + "\"semanticMode\":\"MAPPING_ONLY\","
                     + "\"evidence\":[\"STATIC_PROTOCOL\","
                     + "\"mapping evidence retained\"],"
                     + "\"siteId\":\"synthetic:hdfs_sasl_username\"}\n";
@@ -2316,7 +2314,8 @@ public class RuntimeRegionPlannerTest {
                     + "\"mappingAuthority\":"
                     + "\"STATIC_HDFS_SASL_CONTRACT\","
                     + "\"payloadEqualityCheckRequired\":true,"
-                    + "\"requiresOrder\":true,\"mappingOnly\":true,"
+                    + "\"requiresOrder\":true,"
+                    + "\"semanticMode\":\"MAPPING_ONLY\","
                     + "\"siteId\":\"synthetic:hdfs_sasl_username\"}\n")
                     .getBytes(StandardCharsets.UTF_8));
             String frozen = frozenDemandEdge("DF.GUARD", "GUARD",
@@ -2456,7 +2455,7 @@ public class RuntimeRegionPlannerTest {
             }
             JsonObject region = JsonParser.parseString(line)
                     .getAsJsonObject();
-            region.addProperty("schemaVersion", 1);
+            region.addProperty("schemaVersion", 2);
             for (JsonElement sliceElement
                     : region.has("outputSlices")
                     ? region.getAsJsonArray("outputSlices")
@@ -2472,7 +2471,10 @@ public class RuntimeRegionPlannerTest {
                     if (id.isEmpty()) {
                         throw new IOException("embedded test edge lacks id");
                     }
-                    edge.addProperty("schemaVersion", 1);
+                    edge.addProperty("schemaVersion", 2);
+                    if (!edge.has("semanticMode")) {
+                        edge.addProperty("semanticMode", "ASSERTABLE");
+                    }
                     edge.addProperty("id", id);
                     JsonObject previous = canonicalEdges.put(id, edge);
                     if (previous != null && !previous.equals(edge)) {
@@ -2516,7 +2518,10 @@ public class RuntimeRegionPlannerTest {
             }
             JsonObject object = JsonParser.parseString(line)
                     .getAsJsonObject();
-            object.addProperty("schemaVersion", 1);
+            object.addProperty("schemaVersion", 2);
+            if (!object.has("semanticMode")) {
+                object.addProperty("semanticMode", "ASSERTABLE");
+            }
             result.append(object).append('\n');
         }
         Files.write(path, result.toString().getBytes(
@@ -2537,6 +2542,16 @@ public class RuntimeRegionPlannerTest {
             }
         }
         return count;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String admissionState(Map<String, Object> activation) {
+        Object value = activation.get("admission");
+        if (!(value instanceof Map)) {
+            return "";
+        }
+        Object state = ((Map<String, Object>) value).get("state");
+        return state == null ? "" : String.valueOf(state);
     }
 
     private static String region(String id, String method) {

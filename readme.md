@@ -1322,6 +1322,16 @@ Edge evidence 改为 discriminated schema，例如：
 `confirmed=true` 镜像。runtime planner 必须提供 static graph，同时删除
 `catalogSupplied=false`、`legacyStatic()` 等 graphless 兼容路径。
 
+截至 2026-07-25，PR 3 的第一个原子切换已经完成：static dataflow edge 与 static
+region 统一升到 V2，五个互相镜像的 edge policy 字段已由唯一 `semanticMode` 替代；
+runtime discovery、scheduler、instrumentation 与 runtime executor 的九个 readiness/
+replay/truncation 字段已由唯一 `admission {state,mode,blockers}` 替代。旧字段没有双写、
+fallback 或兼容 reader。57 项快速回归全部通过，baseline 的 target 与两个 producer
+path campaign、summary merge、SMT composition 和 Z3 端到端结果仍为 `sat`。回归还发现
+并修正了 Scheduler 遗留的 static graph V1 authority 常量；否则 V2 图会被错误降级并使
+producer activation 阻塞。PR 3 剩余的 `rootSelector`、bundle 与 edge evidence 收敛继续
+作为后续原子切换完成。
+
 ### PR 4：压缩 trace、Importer 和 replay admission
 
 默认 trace 只写 Planner 真正读取的字段。候选删除：

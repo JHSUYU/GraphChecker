@@ -8,7 +8,7 @@ import java.util.Set;
 
 /** Canonical persisted schema for static region rows. */
 final class StaticRegionArtifactSchema {
-    static final int VERSION = 1;
+    static final int VERSION = 2;
 
     private StaticRegionArtifactSchema() {
     }
