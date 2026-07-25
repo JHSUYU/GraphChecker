@@ -1717,8 +1717,8 @@ raw single-path、`protocolModel`、`explicitContracts` 或缺失 summary 的自
 reader 已删除，并增加一个只锁定 canonical target-summary contract 的聚焦回归；没有恢复
 双写或 fallback。修复后 target 与两个 producer worklist 均闭合，Composer/Importer 无
 gap，真实 Z3 再次报告 `SAT/REACHABLE`。当前手写生产 Java 为 72,113 行，相对
-81,581 行冻结基线累计净减 9,468 行；62 项快速回归通过。隔离干净 worktree 的完整
-13-fixture 结果在本里程碑 commit 后记录，不能用主工作树 artifact 代替。
+81,581 行冻结基线累计净减 9,468 行；62 项快速回归通过。这是首次 baseline gate
+通过时的数值；下面的 clean-matrix 修复恢复了少量真实 correctness evidence。
 
 首次 clean matrix 又准确指出两项 field-ledger 分类错误：non-null `String` 的 VM
 symbol 使用 `M_L'RuntimeType'_PORT_owner`，不是 primitive/reference field 的统一前缀；
@@ -1733,6 +1733,13 @@ shell assertion 仍读取已退休的
 Composer 真正消费的 canonical `heapObservation.valueExpressionWitnessCertified`
 及其 activation-local object token/scope，同时继续逐项校验 binding ID、field path 与
 key expression join；没有降低 container 语义门槛。
+
+最终里程碑为 `37075131` 加修复提交 `1b905274`。手写生产 Java 为 72,214 行，相对
+81,581 行冻结基线累计净减 9,367 行；63 项快速回归、PMD 与 shell 语法通过。`1b905274`
+的隔离干净 worktree 13-fixture 并行真实 custom-JDK/Z3 矩阵零失败，保持 6
+`SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T150913Z.3893832`。矩阵只读取提交后的 clean
+worktree，没有读取或覆盖主工作树中的用户 fixture 修改。
 
 ### 明确不能删除
 
