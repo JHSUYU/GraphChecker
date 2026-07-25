@@ -2971,7 +2971,6 @@ public final class ConcolicSummaryImporter {
                             entryReadId, branchSiteId, candidate.rawIndex,
                             candidate.rawCondition,
                             candidate.fieldExpression, semantic,
-                            candidate.codePosition,
                             "CERTIFIED_DYNAMIC_MAP_ENTRY_FIELD_RAW_PC_"
                                     + "SIBLING_BRANCH_TEMPLATE_V1");
             DynamicSemanticPcFallback sameDynamic = byDynamic.get(dynamic);
@@ -3828,8 +3827,6 @@ public final class ConcolicSummaryImporter {
             snapshot.addProperty("implementationClass", valueClass);
             snapshot.addProperty("backingMapObjectToken", backingToken);
             snapshot.addProperty("objectTokenScope", activationId);
-            snapshot.addProperty("firstMutationRawConditionIndex",
-                    firstMutation);
             snapshot.addProperty("mapKeysFullyCaptured", true);
             snapshot.addProperty("entryReadBijectionComplete", true);
             snapshot.addProperty("authority",
@@ -4035,8 +4032,6 @@ public final class ConcolicSummaryImporter {
             approximation.addProperty("source", "runtimeHeapObservations");
             approximation.addProperty("ordinal", ordinal);
             approximation.addProperty("kind", string(record, "kind"));
-            approximation.addProperty("evidenceId",
-                    string(record, "observationId"));
             approximation.addProperty("siteId", string(record, "siteId"));
             approximation.addProperty("requestedOutputCell", string(
                     analysis.output(), "cell"));
@@ -6023,14 +6018,10 @@ public final class ConcolicSummaryImporter {
                     "EXACT_REQUESTED_OUTPUT_MAP_PUT_KEY_DYNAMIC_SYMBOL");
             normalized.addProperty("consumerWitnessRawConditionIndex",
                     consumer.mutation.rawIndex);
-            normalized.addProperty("consumerWitnessCodePosition",
-                    consumer.mutation.codePosition);
             normalized.addProperty("consumerWitnessSiteId",
                     consumer.mutation.siteId);
             normalized.addProperty("consumerWitnessOccurrence",
                     consumer.mutation.occurrence);
-            normalized.addProperty("consumerWitnessInputPort",
-                    consumer.binding.inputPort);
             normalized.addProperty("consumerWitnessOutputPort",
                     consumer.binding.outputPort);
             normalized.addProperty("consumerWitnessOperation", "MAP_PUT");
@@ -6472,9 +6463,6 @@ public final class ConcolicSummaryImporter {
             observation.addProperty("pcBoundary", runtime.pcBoundary);
             observation.addProperty("statePort", state.statePort);
             observation.addProperty("stateBindingAuthority", state.authority);
-            if (!state.effectId.isEmpty()) {
-                observation.addProperty("stateEffectId", state.effectId);
-            }
             if (state.stateBaseProof != null) {
                 observation.addProperty("stateBaseComplete", true);
                 observation.add("stateBaseProof",
@@ -6552,8 +6540,7 @@ public final class ConcolicSummaryImporter {
             return statePort.isEmpty()
                     ? ObservationStateResolution.unresolved()
                     : ObservationStateResolution.resolved(statePort,
-                    "LATEST_CANONICAL_EFFECT_BEFORE_PC_BOUNDARY",
-                    string(effect, "effectId"));
+                    "LATEST_CANONICAL_EFFECT_BEFORE_PC_BOUNDARY");
         }
         Set<String> inputPorts = ports.inputPortCandidates(mapExpression);
         if (inputPorts.size() > 1) {
@@ -6564,7 +6551,7 @@ public final class ConcolicSummaryImporter {
         }
         return ObservationStateResolution.resolved(
                 inputPorts.iterator().next(),
-                "EXACT_ACTIVATION_MAP_INPUT_EXPRESSION", "");
+                "EXACT_ACTIVATION_MAP_INPUT_EXPRESSION");
     }
 
     private static ObservationStateResolution
@@ -6660,7 +6647,7 @@ public final class ConcolicSummaryImporter {
                 NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY);
         proof.addProperty("complete", true);
         return ObservationStateResolution.resolved(statePort,
-                NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY, "", proof);
+                NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY, proof);
     }
 
     private static ObservationFieldBindings observationFieldBindings(
@@ -6817,15 +6804,6 @@ public final class ConcolicSummaryImporter {
             if (exactFallback) {
                 binding.addProperty("fieldExpressionAuthority",
                         "EXACT_SEMANTIC_RAW_PC_DYNAMIC_SYMBOL_FALLBACK");
-                binding.addProperty("fieldExpressionRawConditionIndex",
-                        fallback.rawIndex);
-                binding.addProperty(
-                        "fieldExpressionNormalizedConditionIndex",
-                        normalization.index(fallback.rawIndex));
-                binding.addProperty("fieldExpressionCodePosition",
-                        fallback.codePosition);
-                binding.addProperty("fieldExpressionFallbackAuthority",
-                        fallback.authority);
             } else {
                 binding.addProperty("fieldExpressionAuthority",
                         "EXACT_BRANCH_MAPPING_DYNAMIC_SYMBOL");
@@ -7278,8 +7256,6 @@ public final class ConcolicSummaryImporter {
         identity.addProperty("inputBinding", "ACTIVATION_SYMBOL");
         identity.addProperty("outputBinding", "ACTIVATION_HEAP_OUTPUT");
         identity.add("mapExpression", mapExpression.deepCopy());
-        identity.addProperty("identityAuthority",
-                "RUNTIME_OBSERVED_DOMINATING_GUARD_EXCLUDES_WRITE");
         effects.add(identity);
         outputBindings.put(outputPort, new HeapOutputBinding(
                 stateFamily + ".1", stateFamily, effectId, outputPort));
@@ -7916,7 +7892,6 @@ public final class ConcolicSummaryImporter {
         match.addProperty("containerBindingId", bindingId);
         match.addProperty("elementIndex", selectorIndex);
         match.addProperty("rawConditionIndex", effectIndex);
-        match.addProperty("arrayLoadRawConditionIndex", loadIndex);
         match.addProperty("engineArrayId", engineArrayId);
         match.addProperty("authority",
                 "RUNTIME_CONTAINER_SELECTOR_EFFECT_TO_EXACT_STATIC_WRITE_V1");
@@ -9930,7 +9905,6 @@ public final class ConcolicSummaryImporter {
             effect.addProperty("kind", kind.name());
             effect.addProperty("methodOwner", method.owner);
             effect.addProperty("methodName", method.method);
-            effect.addProperty("methodExpressionName", method.qualifiedName);
             effect.addProperty("rawConditionIndex", rawIndex);
             effect.addProperty("normalizedConditionIndex", normalizedIndex);
             effect.addProperty("normalizationStatus", normalizationStatus);
@@ -10107,10 +10081,6 @@ public final class ConcolicSummaryImporter {
             snapshot.addProperty("authority",
                     "INITIAL_EXACT_MAP_SIZE_AND_KEYS_PLUS_COMPLETE_"
                             + "ENTRY_READ_BIJECTION_V1");
-            snapshot.addProperty("sourceObservationId", string(record,
-                    "observationId"));
-            snapshot.addProperty("sourceAuthority", string(record,
-                    "snapshotAuthority"));
             return snapshot;
         }
 
@@ -10296,44 +10266,41 @@ public final class ConcolicSummaryImporter {
         private final boolean ambiguous;
         private final String statePort;
         private final String authority;
-        private final String effectId;
         private final JsonObject stateBaseProof;
 
         private ObservationStateResolution(boolean resolved,
                                            boolean ambiguous,
                                            String statePort,
                                            String authority,
-                                           String effectId,
                                            JsonObject stateBaseProof) {
             this.resolved = resolved;
             this.ambiguous = ambiguous;
             this.statePort = statePort;
             this.authority = authority;
-            this.effectId = effectId;
             this.stateBaseProof = stateBaseProof == null ? null
                     : stateBaseProof.deepCopy();
         }
 
         private static ObservationStateResolution resolved(
-                String statePort, String authority, String effectId) {
+                String statePort, String authority) {
             return new ObservationStateResolution(true, false, statePort,
-                    authority, effectId, null);
+                    authority, null);
         }
 
         private static ObservationStateResolution resolved(
-                String statePort, String authority, String effectId,
+                String statePort, String authority,
                 JsonObject stateBaseProof) {
             return new ObservationStateResolution(true, false, statePort,
-                    authority, effectId, stateBaseProof);
+                    authority, stateBaseProof);
         }
 
         private static ObservationStateResolution unresolved() {
-            return new ObservationStateResolution(false, false, "", "", "",
+            return new ObservationStateResolution(false, false, "", "",
                     null);
         }
 
         private static ObservationStateResolution ambiguous() {
-            return new ObservationStateResolution(false, true, "", "", "",
+            return new ObservationStateResolution(false, true, "", "",
                     null);
         }
     }
@@ -10649,23 +10616,19 @@ public final class ConcolicSummaryImporter {
 
     private static final class HeapPortBinding {
         private final boolean resolved;
-        private final String inputPort;
         private final String outputPort;
 
-        private HeapPortBinding(boolean resolved, String inputPort,
-                                String outputPort) {
+        private HeapPortBinding(boolean resolved, String outputPort) {
             this.resolved = resolved;
-            this.inputPort = inputPort;
             this.outputPort = outputPort;
         }
 
-        private static HeapPortBinding resolved(String inputPort,
-                                                String outputPort) {
-            return new HeapPortBinding(true, inputPort, outputPort);
+        private static HeapPortBinding resolved(String outputPort) {
+            return new HeapPortBinding(true, outputPort);
         }
 
         private static HeapPortBinding unresolved() {
-            return new HeapPortBinding(false, "", "");
+            return new HeapPortBinding(false, "");
         }
     }
 
@@ -10841,7 +10804,7 @@ public final class ConcolicSummaryImporter {
             }
             String outputPort = outputPort(inputPort);
             return requestedPort.equals(outputPort)
-                    ? HeapPortBinding.resolved(inputPort, outputPort)
+                    ? HeapPortBinding.resolved(outputPort)
                     : HeapPortBinding.unresolved();
         }
 
@@ -11041,7 +11004,6 @@ public final class ConcolicSummaryImporter {
         private final JsonObject rawCondition;
         private final JsonObject fieldExpression;
         private final JsonObject semanticCondition;
-        private final String codePosition;
         private final String authority;
 
         private DynamicSemanticPcFallback(
@@ -11049,7 +11011,7 @@ public final class ConcolicSummaryImporter {
                 String entryReadObservationId, String branchSiteId,
                 int rawIndex, JsonObject rawCondition,
                 JsonObject fieldExpression, JsonObject semanticCondition,
-                String codePosition, String authority) {
+                String authority) {
             this.dynamicFieldSymbol = dynamicFieldSymbol;
             this.baseInputSymbol = baseInputSymbol;
             this.entryReadObservationId = entryReadObservationId;
@@ -11058,7 +11020,6 @@ public final class ConcolicSummaryImporter {
             this.rawCondition = rawCondition.deepCopy();
             this.fieldExpression = fieldExpression.deepCopy();
             this.semanticCondition = semanticCondition.deepCopy();
-            this.codePosition = codePosition;
             this.authority = authority;
         }
     }

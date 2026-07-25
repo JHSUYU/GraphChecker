@@ -47,8 +47,6 @@ import java.util.regex.Pattern;
  * state is merged as an ordered, object-sensitive version relation.</p>
  */
 public final class ConcolicScheduler {
-    private static final Gson GSON = new GsonBuilder()
-            .disableHtmlEscaping().setPrettyPrinting().create();
     private static final Gson JSONL_GSON = new GsonBuilder()
             .disableHtmlEscaping().create();
     private static final Pattern LOCAL_CELL = Pattern.compile(
@@ -83,7 +81,6 @@ public final class ConcolicScheduler {
     public static void main(String[] args) throws Exception {
         Arguments arguments = Arguments.parse(args);
         Result result = schedule(arguments);
-        System.out.println(GSON.toJson(result.summary));
         if (result.scheduledPrimaryCount == 0) {
             System.exit(2);
         }
@@ -132,9 +129,6 @@ public final class ConcolicScheduler {
         Set<String> selectedRegions = new LinkedHashSet<>();
         Map<String, JsonObject> emittedActivationDefinitions =
                 new LinkedHashMap<>();
-        int upstreamCaptureJobCount = 0;
-        int reachabilitySupportActivationCount = 0;
-        int activationBundleJobCount = 0;
         for (Candidate candidate : candidates) {
             if (result.scheduledPrimaryCount >= arguments.maxJobs) {
                 break;
@@ -173,9 +167,6 @@ public final class ConcolicScheduler {
             compactScheduledActivation(scheduledActivation,
                     materialization.ready);
 
-            if (candidate.outputClosure) {
-                upstreamCaptureJobCount++;
-            }
             if (captured != null && !candidate.outputClosure) {
                 JsonObject query = branchQuery(candidate, captured,
                         mergePlan);
@@ -183,44 +174,10 @@ public final class ConcolicScheduler {
             }
             List<JsonObject> activationBundle = scheduledActivationBundle(
                     scheduledActivation, scheduleId);
-            int supportCount = 0;
-            for (JsonObject member : activationBundle) {
-                if ("REACHABILITY_SUPPORT".equals(string(
-                        object(member, "bundle"), "role"))) {
-                    supportCount++;
-                }
-            }
-            if (supportCount > 0) {
-                activationBundleJobCount++;
-                reachabilitySupportActivationCount += supportCount;
-            }
             appendUniqueActivationBundle(result.scheduledActivations,
                     emittedActivationDefinitions, activationBundle);
             result.scheduledPrimaryCount++;
         }
-
-        result.summary.addProperty("candidateCount", candidates.size());
-        result.summary.addProperty("scheduledJobCount",
-                result.scheduledPrimaryCount);
-        result.summary.addProperty("scheduledActivationCount",
-                result.scheduledActivations.size());
-        result.summary.addProperty("upstreamCaptureJobCount",
-                upstreamCaptureJobCount);
-        result.summary.addProperty("reachabilitySupportActivationCount",
-                reachabilitySupportActivationCount);
-        result.summary.addProperty("activationBundleJobCount",
-                activationBundleJobCount);
-        result.summary.addProperty("equalityClassCount",
-                mergePlan.equalityClasses.size());
-        result.summary.addProperty("versionedStateMergeCount",
-                mergePlan.stateMerges.size());
-        result.summary.addProperty("branchQueryCount", result.queries.size());
-        result.summary.addProperty("captureOnly", arguments.captureOnly);
-        result.summary.addProperty("definitionSiteAuthority",
-                definitions.authoritative
-                        ? "STATIC_DATAFLOW_DEF_SITE" : "LOCAL_NAME_FALLBACK");
-        result.summary.addProperty("precision",
-                "STATIC_REGION_PLUS_RUNTIME_ACTIVATION_AND_EDGE_VALIDATION");
 
         writeJsonl(arguments.outputDirectory.resolve(
                         "scheduled_activation_plan.jsonl"),
@@ -1721,7 +1678,6 @@ public final class ConcolicScheduler {
     private static MergePlan buildMergePlan(Map<String, Region> regions,
                                             List<JsonObject> edges,
                                             List<JsonObject> staticGraph) {
-        UnionFind aliases = new UnionFind();
         List<JsonObject> equalityRelations = new ArrayList<>();
         List<JsonObject> stateMerges = new ArrayList<>();
         for (JsonObject edge : edges) {
@@ -1746,7 +1702,6 @@ public final class ConcolicScheduler {
                     regions.get(toRegion), toRegion, toCell, staticGraph);
             Endpoint to = consumer.endpoint;
             if ("EQUALITY".equals(relation)) {
-                aliases.union(from.id, to.id);
                 JsonObject equality = relation(edge, from, to,
                         "SYMBOLIC_EQUALITY");
                 consumer.addProof(equality);
@@ -1802,28 +1757,7 @@ public final class ConcolicScheduler {
             alternativeWriterGroups.add(group);
         }
 
-        Map<String, List<String>> classes = new LinkedHashMap<>();
-        for (JsonObject relation : equalityRelations) {
-            String left = string(relation, "fromEndpoint");
-            String right = string(relation, "toEndpoint");
-            add(classes, aliases.find(left), left);
-            add(classes, aliases.find(right), right);
-        }
-        List<JsonObject> equalityClasses = new ArrayList<>();
-        int index = 0;
-        for (List<String> members : classes.values()) {
-            LinkedHashSet<String> unique = new LinkedHashSet<>(members);
-            if (unique.size() < 2) {
-                continue;
-            }
-            JsonObject value = new JsonObject();
-            value.addProperty("canonicalSymbol", "MERGED.EQ." + index++);
-            value.add("members", JSONL_GSON.toJsonTree(unique));
-            equalityClasses.add(value);
-        }
-
-        return new MergePlan(equalityRelations, equalityClasses,
-                directStateMerges,
+        return new MergePlan(equalityRelations, directStateMerges,
                 alternativeWriterGroups);
     }
 
@@ -2607,44 +2541,15 @@ public final class ConcolicScheduler {
         }
     }
 
-    private static final class UnionFind {
-        private final Map<String, String> parent = new LinkedHashMap<>();
-
-        private String find(String value) {
-            String current = parent.get(value);
-            if (current == null) {
-                parent.put(value, value);
-                return value;
-            }
-            if (current.equals(value)) {
-                return current;
-            }
-            String root = find(current);
-            parent.put(value, root);
-            return root;
-        }
-
-        private void union(String left, String right) {
-            String leftRoot = find(left);
-            String rightRoot = find(right);
-            if (!leftRoot.equals(rightRoot)) {
-                parent.put(rightRoot, leftRoot);
-            }
-        }
-    }
-
     private static final class MergePlan {
         private final List<JsonObject> equalityRelations;
-        private final List<JsonObject> equalityClasses;
         private final List<JsonObject> stateMerges;
         private final List<JsonObject> alternativeWriterGroups;
 
         private MergePlan(List<JsonObject> equalityRelations,
-                          List<JsonObject> equalityClasses,
                           List<JsonObject> stateMerges,
                           List<JsonObject> alternativeWriterGroups) {
             this.equalityRelations = equalityRelations;
-            this.equalityClasses = equalityClasses;
             this.stateMerges = stateMerges;
             this.alternativeWriterGroups = alternativeWriterGroups;
         }
@@ -2920,7 +2825,6 @@ public final class ConcolicScheduler {
     public static final class Result {
         public final List<JsonObject> scheduledActivations = new ArrayList<>();
         public final List<JsonObject> queries = new ArrayList<>();
-        public final JsonObject summary = new JsonObject();
         public int scheduledPrimaryCount;
     }
 

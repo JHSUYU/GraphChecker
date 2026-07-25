@@ -201,7 +201,6 @@ public final class ConcolicReplayValidator {
         }
 
         result.add("failures", failures);
-        result.addProperty("failureCount", failures.size());
         result.addProperty("captureGoal",
                 RegionCaptureGoal.from(task).kind());
         result.addProperty("valid", failures.size() == 0);

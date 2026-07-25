@@ -3729,10 +3729,6 @@ public class ConcolicSummaryImporterTest {
         outputObservation.addProperty("outputArrayObjectToken", 701L);
         outputObservation.addProperty("outputVerificationAuthority",
                 "ACTIVE_REGION_ROOT_RETURN_EXACT_PROJECTED_FIELD");
-        outputObservation.addProperty("outputDeclaredFieldOwnerVerified",
-                true);
-        outputObservation.addProperty("outputDeclaredFieldTypeVerified",
-                true);
         outputObservation.addProperty("projectedFieldBindingCount", 2);
         outputObservation.addProperty("outputFieldValueVerifiedCount", 2);
         outputObservation.addProperty("outputFieldValueFlowVerified", true);

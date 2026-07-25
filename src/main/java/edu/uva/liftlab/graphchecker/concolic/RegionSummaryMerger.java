@@ -100,8 +100,6 @@ public final class RegionSummaryMerger {
         for (JsonObject summary : merged) {
             complete &= bool(summary, "relationallyComplete", false);
         }
-        manifest.addProperty("pathWorklistState", string(pathManifest,
-                "state"));
         manifest.add("diagnostics", GSON.toJsonTree(diagnostics));
         manifest.addProperty("complete", complete);
         return new Result(merged, manifest);

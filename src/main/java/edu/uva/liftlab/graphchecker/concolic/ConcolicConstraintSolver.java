@@ -9,11 +9,9 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -68,39 +66,8 @@ public final class ConcolicConstraintSolver {
         }
         String smt = encoder.finish();
         JsonObject record = baseRecord(task);
-        record.addProperty("branchConstraintAuthority",
-                "IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1");
-        record.addProperty("nonBranchPathConstraintCount",
-                solverPathContext.size());
-        record.addProperty("nonBranchPathConstraintAuthority",
-                SolverPathContext.AUTHORITY);
         record.addProperty("solver", "Z3_SMT2");
         record.addProperty("solverInputHash", sha256(smt));
-        record.addProperty("uninterpretedFunctionCount",
-                encoder.uninterpretedFunctions.size());
-        record.addProperty("integralInputRangeConstraintCount",
-                encoder.integralRangeConstrainedSymbols.size());
-        record.addProperty("numericEncodingAuthority",
-                "JAVA_PRIMITIVE_INPUT_BOUNDS_WITH_TWOS_COMPLEMENT_"
-                        + "INT_LONG_ARITHMETIC_V2");
-        record.addProperty("javaIntegralOverflowModeled", true);
-        record.addProperty("ieee754FloatingPointModeled", true);
-        record.addProperty("floatingPointEncodingAuthority",
-                "JAVA_IEEE_754_BINARY32_BINARY64_RNE_WITH_"
-                        + "UNSUPPORTED_OPERATIONS_FAIL_CLOSED_V1");
-        record.addProperty("nullableJavaStringModeled", true);
-        record.addProperty("nullableStringEncodingAuthority",
-                "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
-        record.addProperty("nullableJavaReferenceModeled", true);
-        record.addProperty("referenceNullnessEncodingAuthority",
-                "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1");
-        record.addProperty("uncontrolledEnvironmentTermCount",
-                encoder.uncontrolledEnvironmentTerms.size());
-        record.add("uncontrolledEnvironmentTerms",
-                GSON.toJsonTree(encoder.uncontrolledEnvironmentTerms));
-        record.addProperty("environmentModelAssignmentCount", 0);
-        record.addProperty("requiresUnforcedEnvironmentValidation",
-                !encoder.uncontrolledEnvironmentTerms.isEmpty());
         record.add("unsupported", GSON.toJsonTree(encoder.unsupported));
         if (!encoder.unsupported.isEmpty()) {
             record.addProperty("status", "UNSUPPORTED");
@@ -110,8 +77,6 @@ public final class ConcolicConstraintSolver {
 
         DynamicBindingRegistry dynamicBindings =
                 DynamicBindingRegistry.from(task);
-        record.addProperty("dynamicFieldBindingCount",
-                dynamicBindings.bindings.size());
         if (!dynamicBindings.problems.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
@@ -234,9 +199,6 @@ public final class ConcolicConstraintSolver {
         }
 
         Map<String, String> values = parseGetValues(output.stdout);
-        Set<String> unforcedPrefixReferenceSymbols = new LinkedHashSet<>();
-        Set<String> materializedNullPrefixReferenceSymbols =
-                new LinkedHashSet<>();
         for (String raw : encoder.controlledSymbols) {
             if (targetControlledSymbols.contains(raw)
                     || encoder.rawToSort.get(raw) != Sort.REF) {
@@ -246,50 +208,15 @@ public final class ConcolicConstraintSolver {
             String nullnessValue = nullnessName == null ? null
                     : values.get(nullnessName);
             if ("false".equals(nullnessValue)) {
-                unforcedPrefixReferenceSymbols.add(raw);
                 projectedControlledSymbols.remove(raw);
-            } else if ("true".equals(nullnessValue)) {
-                materializedNullPrefixReferenceSymbols.add(raw);
             }
             // A missing/non-Boolean nullness value intentionally leaves the
             // symbol projected. modelAssignments will omit it and the normal
             // all-path-input completeness check below will fail closed.
         }
-        record.addProperty("unforcedPrefixReferenceSymbolCount",
-                unforcedPrefixReferenceSymbols.size());
-        record.add("unforcedPrefixReferenceSymbols",
-                GSON.toJsonTree(unforcedPrefixReferenceSymbols));
-        record.addProperty("unforcedPrefixReferenceAuthority",
-                "SOURCE_NON_NULL_REFERENCE_PRESERVATION_PLUS_EXACT_"
-                        + "ORDERED_PREFIX_REPLAY_VALIDATION_V2");
-        record.addProperty("materializedNullPrefixReferenceSymbolCount",
-                materializedNullPrefixReferenceSymbols.size());
-        record.add("materializedNullPrefixReferenceSymbols",
-                GSON.toJsonTree(materializedNullPrefixReferenceSymbols));
-        record.addProperty("nullPrefixReferenceMaterializationAuthority",
-                "Z3_EXACT_REFERENCE_NULLNESS_TO_RUNTIME_NULL_"
-                        + "MATERIALIZATION_V1");
-        if (!unforcedPrefixReferenceSymbols.isEmpty()) {
-            record.addProperty("requiresUnforcedEnvironmentValidation", true);
-        }
-        Set<String> unforcedPrefixSymbols = new LinkedHashSet<>(
-                projectedControlledSymbols);
-        unforcedPrefixSymbols.removeAll(targetControlledSymbols);
         JsonArray assignments = modelAssignments(encoder, values,
                 activation, dynamicBindings, projectedControlledSymbols);
         record.add("modelAssignments", assignments.deepCopy());
-        record.addProperty("modelAssignmentCount", assignments.size());
-        record.addProperty("modelProjectionPolicy",
-                "FULL_PATH_MATERIALIZABLE_INPUTS_PLUS_MODEL_"
-                        + "PARTITIONED_PREFIX_REFERENCES_V4");
-        record.addProperty("controlledSymbolCount",
-                encoder.controlledSymbols.size());
-        record.addProperty("targetControlledSymbolCount",
-                targetControlledSymbols.size());
-        record.addProperty("materializedPrefixControlledSymbolCount",
-                unforcedPrefixSymbols.size());
-        record.add("materializedPrefixControlledSymbols",
-                GSON.toJsonTree(unforcedPrefixSymbols));
         if (targetControlledSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
@@ -355,11 +282,7 @@ public final class ConcolicConstraintSolver {
                 new LinkedHashMap<>();
         private final List<String> assertions = new ArrayList<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
-        private final Set<String> uninterpretedFunctions =
-                new LinkedHashSet<>();
         private final Set<String> controlledSymbols = new LinkedHashSet<>();
-        private final Set<String> uncontrolledEnvironmentTerms =
-                new LinkedHashSet<>();
         private final Set<String> integralRangeConstrainedSymbols =
                 new LinkedHashSet<>();
         private final Map<String, FunctionSignature> functions =
@@ -518,7 +441,6 @@ public final class ConcolicConstraintSolver {
             String name = "environment__" + safeName(identity) + "__"
                     + sha256(identity).substring(0, 10);
             declarations.put(name, Sort.INT);
-            uncontrolledEnvironmentTerms.add(identity);
             JavaPrimitiveSmtSemantics.IntegralDomain longDomain =
                     JavaPrimitiveSmtSemantics.domainOfJavaType("J");
             assertions.add("(and (<= " + longDomain.lower + " " + name
@@ -1115,7 +1037,6 @@ public final class ConcolicConstraintSolver {
                 return null;
             }
             functions.put(function, signature);
-            uninterpretedFunctions.add(function);
             // Retain the UF only so the diagnostic SMT remains inspectable.
             // No arbitrary Java call is an exact semantic adapter here, so a
             // replay candidate must never be confused with admitted meaning.

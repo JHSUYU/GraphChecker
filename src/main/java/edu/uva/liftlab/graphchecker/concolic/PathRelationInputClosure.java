@@ -58,10 +58,6 @@ final class PathRelationInputClosure {
 
         JsonObject proof = new JsonObject();
         proof.addProperty("inputPort", inputPort);
-        proof.addProperty("outputRelationAuthority", outputAuthority);
-        proof.addProperty("pathConditionCount", pathCondition.size());
-        proof.addProperty("materializationBindingMode",
-                string(uniqueAction, "bindingMode"));
         proof.addProperty("authority", PROOF_AUTHORITY);
         return proof;
     }

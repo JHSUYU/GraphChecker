@@ -67,8 +67,6 @@ public class ConcolicSchedulerTest {
                     .getAsJsonObject("captureGoal").get("kind")
                     .getAsString());
             assertEquals(0, result.queries.size());
-            assertEquals(1, result.summary.get("upstreamCaptureJobCount")
-                    .getAsInt());
             assertTrue(scheduled.has(OutputClosureContract.FIELD));
             assertFalse(scheduled.has("requestedOutput"));
 

@@ -270,8 +270,6 @@ public final class ConcolicSmtComposer {
         manifest.addProperty("schemaVersion", 2);
         manifest.addProperty("kind", "CONCOLIC_COMPOSED_SMT");
         manifest.addProperty("fatalRegion", fatalRegion);
-        manifest.addProperty("fatalActivation",
-                string(fatal, "activationId"));
         manifest.addProperty("fatalRegionInstanceId",
                 fatalRegionInstanceId);
         manifest.addProperty("fatalOccurrence", fatalOccurrence);
@@ -4061,9 +4059,6 @@ public final class ConcolicSmtComposer {
                                 "observationBindingAuthority",
                                 "EXACT_RUNTIME_SYMBOLIZE_FIELD_WITHOUT_"
                                         + "PC_EXPRESSION");
-                        metadata.addProperty("dynamicTermSourceAuthority",
-                                "EXACT_RUNTIME_SYMBOLIZE_FIELD_WITHOUT_"
-                                        + "PC_EXPRESSION");
                         metadata.addProperty("observationMatched", true);
                         matched.add(id);
                     }
@@ -4173,7 +4168,6 @@ public final class ConcolicSmtComposer {
                                     "_exp"));
                     metadata.addProperty("fieldJavaType", string(observed,
                             "fieldJavaType"));
-                    metadata.addProperty("heapObservationId", observationId);
                     metadata.addProperty("observationBindingAuthority",
                             string(observed, "authority"));
                     metadata.addProperty("observationMatched", true);
@@ -4507,7 +4501,6 @@ public final class ConcolicSmtComposer {
             String stableId = smtName(id);
             if (!relationshipIds.add(stableId)) return;
             JsonObject candidate = new JsonObject();
-            candidate.addProperty("relationshipId", stableId);
             candidate.addProperty("kind", kind);
             candidate.addProperty("formula", formula);
             candidate.addProperty("required", required);

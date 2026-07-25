@@ -130,6 +130,21 @@ runtime-output-slice	staticInputPorts/staticMethods/staticCausalEdgeIds	RuntimeR
 runtime-output-slice	excludedAlternative*/prestateElisions	RuntimeRegionPlanner	tests	none	complete/runtimeRefinementComplete remain the admission evidence	DELETE	6
 heap-coverage	coverage matches/gaps/counters	ConcolicSummaryImporter	none	none	typed HeapEffectIssue plus completeness counters actually read	DELETE	6
 internal-diagnostics	unused private fields/methods/counters	production Java	none	none	zero consumer verified by PMD and call-site search	DELETE	6
+scheduler-result	summary.*	ConcolicScheduler	stdout only	none	scheduled activation/query arrays plus scheduledPrimaryCount	DELETE	6+
+scheduler-internal	global equalityClasses/UnionFind	ConcolicScheduler	summary.equalityClassCount only	none	per-activation witness-bearing contextFor equality closure	DELETE	6+
+solver-result	encoding/count/authority mirrors	ConcolicConstraintSolver	none	none	solver status, unsupported/problems, SMT hash and modelAssignments	DELETE	6+
+solver-internal	uninterpretedFunctions/uncontrolledEnvironmentTerms diagnostic sets	ConcolicConstraintSolver	record-only count/list mirrors	none	actual declarations, assertions and unsupported gate	DELETE	6+
+raw-result	map refreshCount/lastRefreshAuthority/entryExpressionAvailable	ConcolicRegionRuntime	none	none	expressionBindingComplete plus canonical expressions	DELETE	6+
+raw-result	branch operator/switch count/completeness mirrors	ConcolicRegionRuntime	none	none	branch mapping conditions, VM attestation and unresolved gap	DELETE	6+
+raw-result	entry-read count/authority and output field verification booleans	ConcolicRegionRuntime	none	none	canonical IDs, exact verification counts and outputVerificationAuthority	DELETE	6+
+raw-result	model assignment appliedAt/location	ConcolicRegionRuntime	tests only	none	modelAssignmentKey plus exact target/path/value replay comparison	DELETE_AND_UPDATE_TEST	6+
+raw-result	runtime approximation ignoredObjectToken	ConcolicRegionRuntime	none	none	selected identity plus approximation outcome	DELETE	6+
+imported-summary	observation/effect/index/code-position diagnostic mirrors	ConcolicSummaryImporter	none	none	canonical observation/binding/effect IDs and normalized expressions	DELETE	6+
+composer-manifest	fatalActivation	ConcolicSmtComposer	none	none	fatalRegionInstanceId plus exact site/occurrence/outcome	DELETE	6+
+composer-internal	dynamicTermSourceAuthority/heapObservationId/relationshipId mirrors	ConcolicSmtComposer	none	none	canonical observation authority/ID joins and stable in-memory dedupe ID	DELETE	6+
+path-input-proof	output authority/path count/materialization mode mirrors	PathRelationInputClosure	none	none	proof admission inputs plus canonical proof authority	DELETE	6+
+merge-manifest	pathWorklistState	RegionSummaryMerger	none	none	worklist completion enforced before merge plus complete/gaps	DELETE	6+
+replay-result	failureCount	ConcolicReplayValidator	none	none	failures.length	DELETE	6+
 correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
 correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-
 correctness	transformerObligations	static planner	Runtime/Importer	matrix	not derivable	KEEP	-

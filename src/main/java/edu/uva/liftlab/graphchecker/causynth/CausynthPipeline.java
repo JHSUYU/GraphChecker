@@ -5,8 +5,6 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.C
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicOutputCaptureSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.OutputCaptureTarget;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

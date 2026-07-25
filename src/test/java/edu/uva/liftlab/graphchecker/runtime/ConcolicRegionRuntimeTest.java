@@ -105,9 +105,8 @@ public class ConcolicRegionRuntimeTest {
             JsonObject applied = result.getAsJsonArray(
                     "modelAssignmentsApplied").get(0).getAsJsonObject();
             assertEquals(symbol, applied.get("inputSymbol").getAsString());
-            assertEquals("STATIC_FIELD_READ",
-                    applied.get("appliedAt").getAsString());
             assertEquals("21", applied.get("value").getAsString());
+            assertFalse(applied.has("appliedAt"));
             assertEquals("t", applied.getAsJsonArray(
                     "materializationPath").get(0).getAsString());
         } finally {
