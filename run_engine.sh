@@ -703,23 +703,29 @@ debug_static_artifacts() {
        outputs: ((.outputs // []) | sort_by(tojson) | .[:$max])}'
   debug_jsonl_projection symbolic_region_edges "${region_edges}" '
     select(type == "object")
-    | {edgeId, kind, relation, candidateRelation, fromRegion, fromPort,
-       toRegion, toPort, requiresOrder, runtimeStatus}'
+    | {schemaVersion, edgeId, kind, relation,
+       fromRegion, fromPort, toRegion, toPort,
+       requiresOrder, requiresObjectIdentity, evidence}'
 }
 
 debug_runtime_artifacts() {
   debug_jsonl_projection runtime_region_edge_validation \
     "${runtime_edge_validations}" '
     select(type == "object")
-    | {edgeId, status, kind, relation, fromRegion, toRegion,
-       fromRegionInstance, toRegionInstance, runtimeStatus,
-       validationAuthority}'
+    | {schemaVersion, edgeId, kind, state, transportKind,
+       fromRegion, fromPort, toRegion, toPort,
+       bindingCount: ((.bindings // []) | length),
+       bindings: ((.bindings // [])[:$max])}'
   debug_jsonl_projection concolic_activation_plan \
     "${runtime_activation_plan}" '
     select(type == "object")
-    | {activationId, regionInstanceId, regionId, rootMethod,
-       symbolicReady, replayable, boundaryReady,
-       activationInputPortCount, branchCount}'
+    | {activationId, regionInstanceId, regionId, rootSelector,
+       admission: ((.admission // {})
+         | {state, mode,
+            blockerCount: ((.blockers // []) | length),
+            blockers: ((.blockers // [])[:$max])}),
+       symbolizeCount: ((.symbolize // []) | length),
+       branchCount: ((.branches // []) | length)}'
 }
 
 debug_merge_artifacts() {
@@ -733,13 +739,13 @@ debug_merge_artifacts() {
        outputs: [(.outputClosure.members[]?.output // empty)
          | {portId, cell, kind}],
        relation: {kind: ($relation.kind // ""),
-         complete: ($relation.complete // false),
-         caseCount: ($relation.caseCount // (($relation.cases // []) | length)),
+         relationallyComplete: (.relationallyComplete // false),
+         caseCount: (($relation.cases // []) | length),
          shownCaseCount: ([($relation.cases // [])[:$max][]] | length),
          cases: (($relation.cases // [])
            | map(. as $case
-             | {caseId: ($case.caseId // ""), pathKey: ($case.pathKey // ""),
-                symbolScope: ($case.symbolScope // ""),
+             | {caseId: ($case.caseId // ""),
+                sourceActivationId: ($case.sourceActivationId // ""),
                 guard: (($case.guard // {})
                   | {kind: (.kind // ""),
                      conditionCount: ((.conditions // []) | length),
@@ -747,18 +753,19 @@ debug_merge_artifacts() {
                 outputExpressionCount: (($case.outputExpressions // {}) | length),
                 outputExpressions: (($case.outputExpressions // {}) | capped_object),
                 heapEffectCount: (($case.heapEffects // []) | length),
-                heapEffects: (($case.heapEffects // [])[:$max]),
-                relationallyComplete: ($case.relationallyComplete // false),
-                normalExit: ($case.normalExit // false),
-                exceptionType: ($case.exceptionType // "")})
-           | sort_by([.caseId, .pathKey]) | .[:$max])}}'
+                heapEffects: (($case.heapEffects // [])[:$max])})
+           | sort_by(.caseId) | .[:$max])}}'
 }
 
 debug_compose_artifacts() {
   debug_json_projection composition_manifest "${composition_manifest}" '
-    {schemaVersion, kind, complete, status, fatalRegion, fatalActivationId,
-     fatalConditionCount, summaryCount, guardedCaseCount,
-     symbolicEqualityCount, versionedStateMergeCount}'
+    {schemaVersion, kind, state, trustState, fatalRegion, fatalSite,
+     gapCount: ((.gaps // []) | length),
+     gaps: ((.gaps // [])[:$max]),
+     summaryCount: ((.includedSummaries // []) | length),
+     resolvedEdgeBindingCount: ((.resolvedEdgeBindings // []) | length),
+     caseProjectionCount: ((.caseProjectionCatalog // []) | length),
+     composedSmtArtifact}'
   local path=${composed_smt}
   local bytes lines truncated=false rendered
   if [[ ! -r "${path}" ]]; then

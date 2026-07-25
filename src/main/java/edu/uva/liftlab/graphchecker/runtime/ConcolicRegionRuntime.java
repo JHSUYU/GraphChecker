@@ -4696,9 +4696,7 @@ public final class ConcolicRegionRuntime {
             String test, String rootMethod, RootArgumentSelector selector,
             RootContextSelector contextSelector, Object receiver) {
         String key = safe(test) + "\n" + safe(rootMethod) + "\n"
-                + (contextSelector == null
-                ? "LEGACY_NO_STABLE_ROOT_CONTEXT"
-                : contextSelector.identity()) + "\n" + selector.identity();
+                + contextSelector.identity() + "\n" + selector.identity();
         synchronized (ORDINALS) {
             ReceiverSelectorState state = RECEIVER_SELECTOR_STATES.get(key);
             if (state == null) {

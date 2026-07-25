@@ -1815,10 +1815,25 @@ deterministic shared-field RPC 语义。
   的 solver/model/gap 镜像；unsupported 仍不调用 Z3。
 
 该候选手写生产 Java 为 69,271 行，相对 81,581 行冻结基线累计净减 12,310 行，
-本批净减 1,335 行，进入第一轮“约 61k–69k / 净减 12k–20k”的目标区间。68 项快速回归
-零失败，PMD、CPD、generic workflow shell test、shell syntax 与 `git diff --check`
-通过。最终 13-fixture 6 SAT/7 UNSAT 仍必须从不含用户 container 修改的 clean commit
-worktree 通过后，本里程碑才算完成。
+本批净减 1,335 行，进入第一轮“约 61k–69k / 净减 12k–20k”的目标区间。一次
+`mvn clean test` 的当前精简回归集为 62 项，零 failure/error/skip；PMD/CPD report、
+generic workflow shell test、shell syntax 与 `git diff --check` 通过。此前未 clean 的
+Surefire 目录残留了已删除测试类的 XML，所以不再把那个 68 计数作为验收数字。
+
+提交 `0a23609f` 随后在不含用户 container 修改的独立 clean worktree 完成最终权威矩阵：
+`completed=13 failures=0`，保持 6 SAT/REACHABLE、7 UNSAT/UNREACHABLE；日志目录为
+`target/robustness-matrix-logs/20260725T165202Z.410183`。
+
+通过后又做了一次 retired-code audit。独立 `ConcolicReplayValidator`、
+`BranchReplayPlan`、双 trace mode、Map V1 镜像和旧 activation/merge/Composer shell
+reader 均已消失；旧 artifact 只允许在 canonical decoder 中作为明确拒绝条件出现，不再
+存在兼容执行路径。审计发现 shell debug projection 仍读取
+`candidateRelation`、三个 readiness boolean、case `pathKey` 镜像和 Composer V1 计数；
+这些 reader 已原子切到 canonical edge state、`admission`、relation cases 和 Composer
+V2 `state/trustState/gaps/artifact`。Runtime selector 中一个对永远非空
+`RootContextSelector` 的 null compatibility 分支也已删除。其余命中 “fallback/legacy”
+的代码均有实际生产消费者，或表达 fail-closed 禁止降级的语义，不能为了字符串清零而删。
+清场后手写生产 Java 为 69,269 行，相对冻结基线累计净减 12,312 行。
 
 ### 明确不能删除
 

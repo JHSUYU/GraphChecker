@@ -268,3 +268,5 @@ scheduler	scheduleId,empty admission mode/blockers,array materialization second 
 composer	resolved-edge endpoint mirrors and missing/incomplete/unbound gap mirrors	ConcolicSmtComposer	none	none	outputClosure producer,admitted binding+summary,and one COMPOSITION_GAP carrier	DELETE_AND_CONSOLIDATE	7+
 static-planning	MethodFacts/MethodFactsBuilder and projected-edge full rescan	SymbolicRegionPlanner,SeedBackwardStaticAnalyzer	StaticGraphIndex	none	canonical graph index plus endpoint-indexed dirty projected-edge queue	CONSOLIDATE_AND_DELETE_ALGORITHM	7+
 solver-result	solver constant,duplicate modelAssignments,unmaterializable symbol lists	ConcolicConstraintSolver	none	none	Result assignments plus typed resolution gaps and status/reason	DELETE	7+
+debug-schema	candidateRelation/readiness booleans/merge case mirrors/composer V1 counters	none	none	run_engine.sh	canonical edge state,admission,relation cases and Composer V2 state/gaps/artifact	DELETE_AND_UPDATE_SHELL_READER	7+
+runtime-selector	null RootContextSelector compatibility branch	ConcolicRegionRuntime	none	none	current activation always decodes a non-null tagged rootSelector	DELETE	7+
