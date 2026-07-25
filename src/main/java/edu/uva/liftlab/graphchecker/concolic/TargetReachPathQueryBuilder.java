@@ -96,7 +96,6 @@ public final class TargetReachPathQueryBuilder {
 
             JsonObject path = new JsonObject();
             String pathKey = RegionPathWorklist.stablePathKey(summary);
-            path.addProperty("summaryId", string(summary, "summaryId"));
             path.add("constraints",
                     array(summary, "pathCondition").deepCopy());
             path.add("engineArrayInputBindings",

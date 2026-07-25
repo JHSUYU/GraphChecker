@@ -1,9 +1,9 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Builds the executable activation for one solver-selected path replay. */
@@ -21,7 +21,8 @@ final class ReplayActivationFactory {
             throw new IllegalArgumentException(
                     "model assignments are required");
         }
-        BranchReplayContract contract = supportedContract(task);
+        BranchReplayContract contract = BranchReplayContract.fromJson(
+                requiredObject(task, "replayContract"));
         RegionCaptureGoal goal = RegionCaptureGoal.from(task);
         String queryKey = string(task, "queryKey");
         if (queryKey.isEmpty()) {
@@ -33,7 +34,6 @@ final class ReplayActivationFactory {
         String activationId = "ACT.PATH." + pathId;
         String scheduleId = "SCHEDULE.PATH." + pathId;
         result.addProperty("activationId", activationId);
-        result.addProperty("scheduleId", scheduleId);
         result.addProperty("executionPhase", goal.isOutputClosure()
                 ? "REPLAY_OUTPUT_PATH_FLIP" : "REPLAY_TARGET_PATH_FLIP");
         JsonObject bundle = new JsonObject();
@@ -56,21 +56,12 @@ final class ReplayActivationFactory {
 
     static JsonObject validationPlan(JsonObject task,
                                      JsonArray assignments) {
-        supportedContract(task);
+        BranchReplayContract.fromJson(requiredObject(task,
+                "replayContract"));
         JsonObject result = task.deepCopy();
         result.add("modelAssignments", assignments == null
                 ? new JsonArray() : assignments.deepCopy());
         return result;
-    }
-
-    private static BranchReplayContract supportedContract(JsonObject task) {
-        JsonElement encoded = task == null ? null
-                : task.get("replayContract");
-        if (encoded == null || !encoded.isJsonObject()) {
-            throw new IllegalArgumentException(
-                    "path replay task requires replayContract");
-        }
-        return BranchReplayContract.fromJson(encoded.getAsJsonObject());
     }
 
     private static String shortHash(String value) {

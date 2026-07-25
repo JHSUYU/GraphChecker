@@ -61,6 +61,10 @@ public class ConcolicSchedulerTest {
 
             assertEquals(1, result.scheduledPrimaryCount);
             JsonObject scheduled = result.scheduledActivations.get(0);
+            assertFalse(scheduled.has("scheduleId"));
+            assertEquals("SCHEDULE.0", scheduled.getAsJsonObject("bundle")
+                    .get("scheduleId").getAsString());
+            assertEquals(1, scheduled.getAsJsonObject("admission").size());
             assertEquals("CAPTURE_OUTPUT_PATH", scheduled
                     .get("executionPhase").getAsString());
             assertEquals("OUTPUT_CLOSURE", scheduled

@@ -237,8 +237,6 @@ public final class ConcolicSmtComposer {
         emitter.assertNamed("fatal_path", targetPathSet
                 ? or(fatalTerms) : and(fatalTerms));
 
-        Set<String> missingSummaries = new LinkedHashSet<>(
-                resolved.missingSummaryRegions);
         List<String> includedSummaries = new ArrayList<>();
         String fatalRegion = string(fatal, "regionId");
         for (RegionSummarySelection selection
@@ -276,20 +274,11 @@ public final class ConcolicSmtComposer {
                 resolved.resolvedEdgeCatalog());
         manifest.add("includedSummaries", GSON.toJsonTree(includedSummaries));
         JsonArray gaps = new JsonArray();
-        appendGaps(gaps, "MISSING_SUMMARY", missingSummaries);
-        appendGaps(gaps, "INCOMPLETE_SUMMARY",
-                emitter.incompleteSummaries);
-        appendGaps(gaps, "UNSUPPORTED_EXPRESSION", emitter.unsupported);
-        appendGaps(gaps, "UNBOUND_PORT", emitter.unboundPorts);
-        if (!bool(fatal, "readyForSolver", false)) {
-            appendGap(gaps, "INCOMPLETE_FATAL_QUERY",
-                    firstNonBlank(fatalSite, fatalRegion));
-        }
+        appendGaps(gaps, "COMPOSITION_GAP", emitter.unsupported);
         manifest.add("gaps", gaps);
         manifest.add("caseProjectionCatalog",
                 emitter.caseProjectionCatalog.deepCopy());
-        boolean structurallyComplete = gaps.size() == 0;
-        manifest.addProperty("state", structurallyComplete
+        manifest.addProperty("state", gaps.size() == 0
                 ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
         manifest.addProperty("trustState", "CANDIDATE_ONLY");
         manifest.add("composedSmtArtifact", composedSmtArtifact.deepCopy());
@@ -312,16 +301,11 @@ public final class ConcolicSmtComposer {
     private static void appendGaps(JsonArray target, String kind,
                                    Set<String> subjects) {
         for (String subject : subjects) {
-            appendGap(target, kind, subject);
+            JsonObject gap = new JsonObject();
+            gap.addProperty("kind", kind);
+            gap.addProperty("subject", subject);
+            target.add(gap);
         }
-    }
-
-    private static void appendGap(JsonArray target, String kind,
-                                  String subject) {
-        JsonObject gap = new JsonObject();
-        gap.addProperty("kind", kind);
-        gap.addProperty("subject", subject);
-        target.add(gap);
     }
 
     private static void requireCanonicalFatalQuerySchema(JsonObject fatal)
@@ -471,42 +455,25 @@ public final class ConcolicSmtComposer {
         ResolvedSummaryGraph result = new ResolvedSummaryGraph(fatalRegion,
                 fatalInstance, sourceScopeRegions, knownDemands);
 
-        registerInitialProducerDemands(result, context,
-                sourceScopeRegions);
-        for (String field : new String[]{"equalityRelations",
-                "versionedStateMerges"}) {
-            for (JsonElement element : array(context, field)) {
-                if (!element.isJsonObject()) continue;
-                seedContextRelation(result, element.getAsJsonObject(),
-                        summaries, sourceScopeRegions,
-                        "equalityRelations".equals(field)
-                                ? "EQUALITY" : "READ_FROM", true);
-            }
-        }
-        for (JsonElement element : array(context,
-                "alternativeWriterGroups")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject group = element.getAsJsonObject();
-            String consumer = firstNonBlank(string(group,
-                    "downstreamEndpoint"), alternativeConsumer(group));
-            for (JsonElement alternative : array(group, "alternatives")) {
-                if (!alternative.isJsonObject()) continue;
-                JsonObject relation = alternative.getAsJsonObject().deepCopy();
-                if (string(relation, "toEndpoint").isEmpty()) {
-                    relation.addProperty("toEndpoint", consumer);
-                }
-                seedContextRelation(result, relation, summaries,
-                        sourceScopeRegions, "READ_FROM", false);
-            }
-        }
+        List<JsonObject> equalities = relationRows(context,
+                "equalityRelations");
+        List<JsonObject> readFrom = relationRows(context,
+                "versionedStateMerges");
+        List<JsonObject> alternatives = alternativeRelations(context);
+        registerContextDemands(result, sourceScopeRegions,
+                equalities, readFrom, alternatives);
+        seedContextRelations(result, summaries, sourceScopeRegions,
+                equalities, "EQUALITY", true);
+        seedContextRelations(result, summaries, sourceScopeRegions,
+                readFrom, "READ_FROM", true);
+        seedContextRelations(result, summaries, sourceScopeRegions,
+                alternatives, "READ_FROM", false);
 
         while (!result.pending.isEmpty()) {
             ProducerKey consumer = result.pending.removeFirst();
             JsonObject consumerSummary = result.selectedSummaries.get(
                     consumer);
             if (consumerSummary == null) continue;
-            if (!result.expanded.add(result.expansionIdentity(consumer,
-                    consumerSummary))) continue;
             RegionSummarySelection consumerSelection =
                     result.selectedRegionSummaries.get(consumer.regionId);
             if (consumerSelection == null
@@ -530,7 +497,8 @@ public final class ConcolicSmtComposer {
             for (JsonObject binding : incoming) {
                 if (!bindingTargets(binding, consumer.regionId,
                         consumer.instanceId, demandedInputs)
-                        || !trustedRuntimeComposition(binding)
+                        || !AutomaticRegionEdge
+                        .trustedRuntimeCompositionBinding(binding)
                         || !allowedBoundedSource(
                         bindingSourceRegion(binding),
                         sourceScopeRegions)) {
@@ -543,7 +511,8 @@ public final class ConcolicSmtComposer {
             for (JsonObject binding : incoming) {
                 if (!bindingTargets(binding, consumer.regionId,
                         consumer.instanceId, demandedInputs)
-                        || !trustedRuntimeComposition(binding)) {
+                        || !AutomaticRegionEdge
+                        .trustedRuntimeCompositionBinding(binding)) {
                     continue;
                 }
                 String sourceRegion = bindingSourceRegion(binding);
@@ -557,22 +526,20 @@ public final class ConcolicSmtComposer {
         }
 
         result.finishBounds();
-        result.rejectRepeatedRegionInstances();
         return result;
     }
 
-    private static void registerInitialProducerDemands(
-            ResolvedSummaryGraph graph, JsonObject context,
-            Set<String> boundedRegions) {
-        for (String field : new String[]{"equalityRelations",
-                "versionedStateMerges"}) {
-            for (JsonElement element : array(context, field)) {
-                if (element.isJsonObject()) {
-                    registerContextRelationDemand(graph,
-                            element.getAsJsonObject(), boundedRegions);
-                }
-            }
+    private static List<JsonObject> relationRows(JsonObject context,
+                                                 String field) {
+        List<JsonObject> result = new ArrayList<>();
+        for (JsonElement element : array(context, field)) {
+            if (element.isJsonObject()) result.add(element.getAsJsonObject());
         }
+        return result;
+    }
+
+    private static List<JsonObject> alternativeRelations(JsonObject context) {
+        List<JsonObject> result = new ArrayList<>();
         for (JsonElement element : array(context,
                 "alternativeWriterGroups")) {
             if (!element.isJsonObject()) continue;
@@ -585,23 +552,31 @@ public final class ConcolicSmtComposer {
                 if (string(relation, "toEndpoint").isEmpty()) {
                     relation.addProperty("toEndpoint", consumer);
                 }
-                registerContextRelationDemand(graph, relation,
-                        boundedRegions);
+                result.add(relation);
+            }
+        }
+        return result;
+    }
+
+    @SafeVarargs
+    private static void registerContextDemands(
+            ResolvedSummaryGraph graph, Set<String> boundedRegions,
+            List<JsonObject>... groups) {
+        for (List<JsonObject> relations : groups) {
+            for (JsonObject relation : relations) {
+                registerContextDemand(graph, relation, boundedRegions);
             }
         }
     }
 
-    private static void registerContextRelationDemand(
-            ResolvedSummaryGraph graph, JsonObject relation,
-            Set<String> boundedRegions) {
+    private static void registerContextDemand(ResolvedSummaryGraph graph,
+                                              JsonObject relation,
+                                              Set<String> boundedRegions) {
         String output = string(relation, "fromEndpoint");
-        String input = string(relation, "toEndpoint");
         String sourceRegion = regionOf(output);
-        if (!graph.fatalRegion.equals(regionOf(input))
-                || sourceRegion.isEmpty()
-                || !allowedBoundedSource(sourceRegion, boundedRegions)) {
-            return;
-        }
+        if (!graph.fatalRegion.equals(regionOf(string(relation,
+                "toEndpoint"))) || sourceRegion.isEmpty()
+                || !allowedBoundedSource(sourceRegion, boundedRegions)) return;
         boolean scopedBindingSeen = false;
         for (JsonElement element : selectedBindings(relation)) {
             if (!element.isJsonObject()) continue;
@@ -617,6 +592,16 @@ public final class ConcolicSmtComposer {
         }
         if (!scopedBindingSeen) {
             graph.registerDemand(sourceRegion, "", output);
+        }
+    }
+
+    private static void seedContextRelations(
+            ResolvedSummaryGraph graph, SummaryIndex summaries,
+            Set<String> boundedRegions, List<JsonObject> relations,
+            String expectedKind, boolean missingProducerIsGap) {
+        for (JsonObject relation : relations) {
+            seedContextRelation(graph, relation, summaries, boundedRegions,
+                    expectedKind, missingProducerIsGap);
         }
     }
 
@@ -671,7 +656,7 @@ public final class ConcolicSmtComposer {
                                                SummaryIndex summaries,
                                                String targetRegion,
                                                String targetInstance) {
-        if (!trustedRuntimeComposition(binding)) {
+        if (!AutomaticRegionEdge.trustedRuntimeCompositionBinding(binding)) {
             graph.gaps.add("UntrustedRecursiveEdgeBinding:"
                     + firstNonBlank(string(binding, "edgeId"),
                     GSON.toJson(binding)));
@@ -699,8 +684,7 @@ public final class ConcolicSmtComposer {
                     + ":" + input);
             return;
         }
-        graph.addEdge(new ResolvedEdge(key, selected, targetRegion,
-                targetInstance, input, exact));
+        graph.addEdge(new ResolvedEdge(selected, exact));
     }
 
     private static ProducerKey selectExactProducer(
@@ -767,7 +751,6 @@ public final class ConcolicSmtComposer {
         }
         if (unique.isEmpty()) {
             if (missingProducerIsGap) {
-                graph.missingSummaryRegions.add(region);
                 graph.gaps.add("MissingExactProducerSummary:"
                         + producerLabel(region, requestedInstance,
                         demandedOutputs));
@@ -820,9 +803,6 @@ public final class ConcolicSmtComposer {
                 }
             }
             graph.relevantRegions.add(region);
-            if (graph.boundedRegions.contains(region)) {
-                graph.reachedBoundedRegions.add(region);
-            }
             graph.pending.addLast(expansionKey);
         }
         return key;
@@ -830,9 +810,7 @@ public final class ConcolicSmtComposer {
 
     private static boolean canonicalProducerPayload(
             JsonObject summary, OutputClosureContract closure) {
-        if (!bool(summary, "relationallyComplete", false)
-                || summary.has("protocolModel")
-                || array(summary, "explicitContracts").size() > 0) {
+        if (!bool(summary, "relationallyComplete", false)) {
             return false;
         }
         JsonObject relation = object(summary, "regionRelation");
@@ -879,7 +857,8 @@ public final class ConcolicSmtComposer {
             JsonObject binding = element.getAsJsonObject();
             if (!source.instanceId.equals(bindingSourceInstance(binding))
                     || !source.outputPort.equals(bindingSourceOutput(binding))
-                    || !trustedRuntimeComposition(binding)
+                    || !AutomaticRegionEdge
+                    .trustedRuntimeCompositionBinding(binding)
                     || !sameCompositionRelation(binding, preferred,
                     bindingRelationKind(preferred))
                     || !bindingTargets(binding, targetRegion,
@@ -898,19 +877,6 @@ public final class ConcolicSmtComposer {
 
     private static JsonArray selectedBindings(JsonObject relation) {
         return array(relation, "selectedBindings");
-    }
-
-    private static boolean trustedRuntimeReadFrom(JsonObject binding) {
-        return AutomaticRegionEdge.trustedRuntimeReadFromBinding(binding);
-    }
-
-    private static boolean trustedRuntimeValueEquality(JsonObject binding) {
-        return AutomaticRegionEdge.trustedRuntimeValueEqualityBinding(
-                binding);
-    }
-
-    private static boolean trustedRuntimeComposition(JsonObject binding) {
-        return AutomaticRegionEdge.trustedRuntimeCompositionBinding(binding);
     }
 
     /**
@@ -1019,15 +985,16 @@ public final class ConcolicSmtComposer {
         private static SummaryIndex build(List<JsonObject> summaries) {
             SummaryIndex result = new SummaryIndex();
             for (JsonObject summary : summaries) {
-                String region = string(summary, "regionId");
+                String region = string(object(object(summary,
+                        OutputClosureContract.FIELD), "producer"),
+                        "regionId");
+                if (region.isEmpty()) continue;
                 result.byRegion.computeIfAbsent(region,
                         ignored -> new ArrayList<>()).add(summary);
                 for (JsonElement element : array(summary, "edgeBindings")) {
                     if (!element.isJsonObject()) continue;
                     JsonObject binding = element.getAsJsonObject();
-                    String targetRegion = firstNonBlank(
-                            string(binding, "toRegion"),
-                            regionOf(bindingTargetInput(binding)));
+                    String targetRegion = string(binding, "toRegion");
                     String targetInstance = bindingTargetInstance(binding);
                     if (targetRegion.isEmpty() || targetInstance.isEmpty()) {
                         continue;
@@ -1165,29 +1132,17 @@ public final class ConcolicSmtComposer {
     }
 
     private static final class ResolvedEdge {
-        private final ProducerKey source;
         private final JsonObject summary;
-        private final String targetRegion;
-        private final String targetInstance;
-        private final String targetInput;
         private final JsonObject binding;
 
-        private ResolvedEdge(ProducerKey source, JsonObject summary,
-                             String targetRegion, String targetInstance,
-                             String targetInput, JsonObject binding) {
-            this.source = source;
+        private ResolvedEdge(JsonObject summary, JsonObject binding) {
             this.summary = summary;
-            this.targetRegion = firstNonBlank(targetRegion);
-            this.targetInstance = firstNonBlank(targetInstance);
-            this.targetInput = firstNonBlank(targetInput);
             this.binding = binding.deepCopy();
         }
 
         private String identity() {
-            return source + "->" + targetRegion + "@" + targetInstance
-                    + ":" + targetInput + "\n" + GSON.toJson(binding);
+            return GSON.toJson(binding);
         }
-
     }
 
     private static final class ResolvedSummaryGraph {
@@ -1202,12 +1157,7 @@ public final class ConcolicSmtComposer {
         private final List<ResolvedEdge> selectedEdges = new ArrayList<>();
         private final Set<String> selectedEdgeIds = new LinkedHashSet<>();
         private final Deque<ProducerKey> pending = new ArrayDeque<>();
-        private final Set<String> expanded = new LinkedHashSet<>();
         private final Set<String> relevantRegions = new LinkedHashSet<>();
-        private final Set<String> reachedBoundedRegions =
-                new LinkedHashSet<>();
-        private final Set<String> missingSummaryRegions =
-                new LinkedHashSet<>();
         private final Set<String> gaps = new LinkedHashSet<>();
 
         private ResolvedSummaryGraph(String fatalRegion,
@@ -1268,12 +1218,6 @@ public final class ConcolicSmtComposer {
                     key.outputPort);
         }
 
-        private String expansionIdentity(ProducerKey key,
-                                         JsonObject summary) {
-            return key.regionId + "@" + key.instanceId + ":"
-                    + string(summary, "summaryId");
-        }
-
         private void addDirectBindingIfPresent(ProducerKey source,
                                                String targetRegion,
                                                String targetInstance,
@@ -1291,7 +1235,8 @@ public final class ConcolicSmtComposer {
                 if (!source.instanceId.equals(bindingSourceInstance(binding))
                         || !source.outputPort.equals(
                         bindingSourceOutput(binding))
-                        || !trustedRuntimeComposition(binding)
+                        || !AutomaticRegionEdge
+                        .trustedRuntimeCompositionBinding(binding)
                         || !sameCompositionRelation(binding,
                         expectedRelation, expectedRelationKind)
                         || expectedBinding != null
@@ -1304,8 +1249,7 @@ public final class ConcolicSmtComposer {
                 if (seen.add(GSON.toJson(binding))) matches.add(binding);
             }
             if (matches.size() == 1) {
-                addEdge(new ResolvedEdge(source, summary, targetRegion,
-                        targetInstance, targetInput, matches.get(0)));
+                addEdge(new ResolvedEdge(summary, matches.get(0)));
             } else if (matches.size() > 1) {
                 gaps.add("AmbiguousDirectEdgeBinding:" + source + "->"
                         + targetRegion + "@" + targetInstance + ":"
@@ -1315,24 +1259,8 @@ public final class ConcolicSmtComposer {
 
         private void finishBounds() {
             for (String region : boundedRegions) {
-                if (!reachedBoundedRegions.contains(region)) {
+                if (!relevantRegions.contains(region)) {
                     gaps.add("UnreachableBoundedRegion:" + region);
-                }
-            }
-        }
-
-        private void rejectRepeatedRegionInstances() {
-            for (Map.Entry<ProducerKey, JsonObject> entry
-                    : selectedSummaries.entrySet()) {
-                RegionSummarySelection selected = selectedRegionSummaries.get(
-                        entry.getKey().regionId);
-                if (selected == null
-                        || !selected.instanceId.equals(
-                        entry.getKey().instanceId)
-                        || !sameSummary(selected.summary,
-                        entry.getValue())) {
-                    gaps.add("ConflictingProducerRegionPortNamespace:"
-                            + entry.getKey());
                 }
             }
         }
@@ -1425,18 +1353,6 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    private static boolean edgeBindingSourceMatches(JsonObject binding,
-                                                    JsonObject summary) {
-        String sourceInstance = string(binding, "fromRegionInstance");
-        if (sourceInstance.isEmpty()) return false;
-        try {
-            return sourceInstance.equals(OutputClosureCodec.decode(summary)
-                    .producer().regionInstanceId());
-        } catch (IllegalArgumentException malformed) {
-            return false;
-        }
-    }
-
     private static String regionOf(String endpoint) {
         if (endpoint == null) return "";
         int marker = endpoint.indexOf(".in.");
@@ -1513,8 +1429,6 @@ public final class ConcolicSmtComposer {
         private final Set<String> boundPorts = new LinkedHashSet<>();
         private final Set<String> mentionedPorts = new LinkedHashSet<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
-        private final Set<String> incompleteSummaries = new LinkedHashSet<>();
-        private final Set<String> unboundPorts = new LinkedHashSet<>();
         private final Set<String> canonicalPortTermBindings =
                 new LinkedHashSet<>();
         private final Set<String> javaIntRangeAssertions =
@@ -1658,21 +1572,9 @@ public final class ConcolicSmtComposer {
                 JsonObject binding = edge.binding;
                 String output = bindingSourceOutput(binding);
                 String input = bindingTargetInput(binding);
-                long writeSeq = longInteger(binding, "writerEventSeq", -1);
-                long readSeq = longInteger(binding, "readerEventSeq", -1);
-                if (!trustedRuntimeValueEquality(binding)
+                if (!AutomaticRegionEdge
+                        .trustedRuntimeValueEqualityBinding(binding)
                         || bool(binding, "inputProjectionUsed", false)
-                        || !edgeBindingSourceMatches(binding, edge.summary)
-                        || !edge.source.instanceId.equals(
-                        bindingSourceInstance(binding))
-                        || !edge.targetInstance.equals(
-                        bindingTargetInstance(binding))
-                        || !edge.source.outputPort.equals(output)
-                        || !edge.targetInput.equals(input)
-                        || !edge.source.regionId.equals(regionOf(output))
-                        || !edge.targetRegion.equals(regionOf(input))
-                        || writeSeq < 0L || readSeq < 0L
-                        || writeSeq >= readSeq
                         || !ports.contains(output) || !ports.contains(input)
                         || sortOfJava(ports.get(output).javaType)
                         != Sort.STRING
@@ -1688,8 +1590,8 @@ public final class ConcolicSmtComposer {
                 }
                 EqualityBoundExpression candidate =
                         new EqualityBoundExpression(input, output,
-                                edge.source.instanceId,
-                                edge.targetInstance, value);
+                                bindingSourceInstance(binding),
+                                bindingTargetInstance(binding), value);
                 EqualityBoundExpression previous =
                         exactEqualityBoundExpressions.get(input);
                 if (previous == null
@@ -3381,10 +3283,10 @@ public final class ConcolicSmtComposer {
 
         private void regionSummary(JsonObject summary,
                                    OutputClosureContract outputClosure) {
-            String region = string(summary, "regionId");
+            String region = outputClosure.producer().regionId();
             String previousScope = enterSymbolScope("summary:"
                     + firstNonBlank(string(summary, "summaryId"),
-                    string(summary, "activationId"), region, "selected"));
+                    region, "selected"));
             try {
                 registerEngineArrayInputBindings(summary,
                         "summary " + region);
@@ -3402,7 +3304,7 @@ public final class ConcolicSmtComposer {
                                            OutputClosureContract outputClosure) {
             JsonArray cases = array(relation, "cases");
             if (cases.size() == 0) {
-                heapGap(region, "GuardedPathCaseCountGap@" + region);
+                heapGap("GuardedPathCaseCountGap@" + region);
                 return;
             }
             List<String> selectors = new ArrayList<>();
@@ -3415,14 +3317,14 @@ public final class ConcolicSmtComposer {
                 // under the wrong path.
                 currentGuard = previousGuard;
                 if (!cases.get(index).isJsonObject()) {
-                    heapGap(region, "MalformedGuardedPathCase@" + region
+                    heapGap("MalformedGuardedPathCase@" + region
                             + ":" + index);
                     continue;
                 }
                 JsonObject item = cases.get(index).getAsJsonObject();
                 JsonObject guardIr = object(item, "guard");
                 if (!"PATH_CONDITION".equals(string(guardIr, "kind"))) {
-                    heapGap(region, "UnsupportedRegionGuard@" + region
+                    heapGap("UnsupportedRegionGuard@" + region
                             + ":" + index);
                     continue;
                 }
@@ -3491,7 +3393,7 @@ public final class ConcolicSmtComposer {
                     caseProjectionCatalog.add(capture.toJson());
                     if (!capture.complete()) {
                         for (String gap : capture.gaps) {
-                            heapGap(region, "CaseProjectionCatalogGap@"
+                            heapGap("CaseProjectionCatalogGap@"
                                     + region + ":"
                                     + firstNonBlank(string(item, "caseId"),
                                     String.valueOf(index)) + ":" + gap);
@@ -3509,7 +3411,7 @@ public final class ConcolicSmtComposer {
                 assertNamed("region_case_selector_partition_" + region,
                         partition.append(") 1)").toString());
             } else {
-                heapGap(region, "CaseSelectorPartitionGap@" + region);
+                heapGap("CaseSelectorPartitionGap@" + region);
             }
         }
 
@@ -3999,7 +3901,7 @@ public final class ConcolicSmtComposer {
             for (int index = 0; index < effects.size(); index++) {
                 JsonElement element = effects.get(index);
                 if (!element.isJsonObject()) {
-                    heapGap(region, "MalformedHeapEffect@" + region
+                    heapGap("MalformedHeapEffect@" + region
                             + ":" + index);
                     continue;
                 }
@@ -4007,7 +3909,7 @@ public final class ConcolicSmtComposer {
                 String effectId = firstNonBlank(string(effect, "effectId"),
                         "effect-" + index);
                 if (!effect.has("effectId") || !effectIds.add(effectId)) {
-                    heapGap(region, "HeapEffectIdentityGap@" + region
+                    heapGap("HeapEffectIdentityGap@" + region
                             + ":" + effectId);
                 }
                 String family = string(effect, "stateFamily");
@@ -4024,45 +3926,45 @@ public final class ConcolicSmtComposer {
                         || outputPort.isEmpty()
                         || before == Integer.MIN_VALUE
                         || after == Integer.MIN_VALUE) {
-                    heapGap(region, "HeapStateMetadataMissing@" + region
+                    heapGap("HeapStateMetadataMissing@" + region
                             + ":" + effectId);
                     continue;
                 }
                 if (after != before + 1) {
-                    heapGap(region, "HeapStateOrdinalGap@" + region
+                    heapGap("HeapStateOrdinalGap@" + region
                             + ":" + effectId + ":" + before + "->" + after);
                 }
                 HeapStateCursor cursor = cursors.get(family);
                 if (cursor == null) {
                     if (before != 0) {
-                        heapGap(region, "HeapStateInitialOrdinalGap@" + region
+                        heapGap("HeapStateInitialOrdinalGap@" + region
                                 + ":" + effectId + ":" + before);
                     }
                     JsonObject initializer = initializersByFamily.get(family);
                     boolean freshInput = "STATIC_FRESH_EMPTY_MAP".equals(
                             string(effect, "inputBinding"));
                     if (freshInput && initializer == null) {
-                        heapGap(region, "MissingFreshMapInitializer@" + region
+                        heapGap("MissingFreshMapInitializer@" + region
                                 + ":" + effectId);
                     } else if (!freshInput && initializer != null) {
-                        heapGap(region, "UnusedFreshMapInitializerBinding@"
+                        heapGap("UnusedFreshMapInitializerBinding@"
                                 + region + ":" + effectId);
                     } else if (freshInput
                             && (!inputPort.equals(string(initializer,
                             "statePort"))
                             || !preState.equals(string(initializer,
                             "stateId")))) {
-                        heapGap(region, "FreshMapInitializerStateMismatch@"
+                        heapGap("FreshMapInitializerStateMismatch@"
                                 + region + ":" + effectId);
                     }
                 } else {
                     if (before != cursor.after
                             || !preState.equals(cursor.postState)) {
-                        heapGap(region, "HeapStateChainGap@" + region
+                        heapGap("HeapStateChainGap@" + region
                                 + ":" + effectId);
                     }
                     if (!inputPort.equals(cursor.outputPort)) {
-                        heapGap(region, "HeapPortChainGap@" + region
+                        heapGap("HeapPortChainGap@" + region
                                 + ":" + effectId);
                     }
                 }
@@ -4073,7 +3975,7 @@ public final class ConcolicSmtComposer {
                     : initializersByFamily.entrySet()) {
                 HeapStateCursor cursor = cursors.get(entry.getKey());
                 if (cursor == null) {
-                    heapGap(region, "UnusedFreshMapInitializer@" + region
+                    heapGap("UnusedFreshMapInitializer@" + region
                             + ":" + entry.getKey());
                     continue;
                 }
@@ -4081,7 +3983,7 @@ public final class ConcolicSmtComposer {
                         "requestedOutputPort");
                 if (requestedOutput.isEmpty()
                         || !requestedOutput.equals(cursor.outputPort)) {
-                    heapGap(region, "FreshMapInitializerOutputMismatch@"
+                    heapGap("FreshMapInitializerOutputMismatch@"
                             + region + ":" + entry.getKey());
                 }
             }
@@ -4095,7 +3997,7 @@ public final class ConcolicSmtComposer {
             for (int index = 0; index < initializers.size(); index++) {
                 JsonElement element = initializers.get(index);
                 if (!element.isJsonObject()) {
-                    heapGap(region, "MalformedHeapInitializer@" + region
+                    heapGap("MalformedHeapInitializer@" + region
                             + ":" + index);
                     continue;
                 }
@@ -4105,14 +4007,14 @@ public final class ConcolicSmtComposer {
                 String family = string(initializer, "stateFamily");
                 boolean valid = validMapEmptyInitializer(initializer);
                 if (!valid) {
-                    heapGap(region, "MalformedMapEmptyInitializer@" + region
+                    heapGap("MalformedMapEmptyInitializer@" + region
                             + ":" + index);
                     continue;
                 }
                 if (!initializerIds.add(id)
                         || !statePorts.add(statePort)
                         || result.containsKey(family)) {
-                    heapGap(region, "HeapInitializerIdentityGap@" + region
+                    heapGap("HeapInitializerIdentityGap@" + region
                             + ":" + id);
                     continue;
                 }
@@ -4125,7 +4027,7 @@ public final class ConcolicSmtComposer {
             JsonElement declared = summary.get("finiteMapSnapshots");
             if (declared == null) return;
             if (!declared.isJsonArray()) {
-                heapGap(region, "MalformedFiniteMapSnapshots@" + region);
+                heapGap("MalformedFiniteMapSnapshots@" + region);
                 return;
             }
             JsonArray snapshots = declared.getAsJsonArray();
@@ -4145,7 +4047,7 @@ public final class ConcolicSmtComposer {
             for (int index = 0; index < snapshots.size(); index++) {
                 JsonElement element = snapshots.get(index);
                 if (!element.isJsonObject()) {
-                    heapGap(region, "MalformedFiniteMapSnapshot@" + region
+                    heapGap("MalformedFiniteMapSnapshot@" + region
                             + ":" + index);
                     continue;
                 }
@@ -4251,7 +4153,7 @@ public final class ConcolicSmtComposer {
                     valid = false;
                 }
                 if (!valid) {
-                    heapGap(region, "InvalidFiniteMapSnapshot@" + region
+                    heapGap("InvalidFiniteMapSnapshot@" + region
                             + ":" + firstNonBlank(id,
                             String.valueOf(index)));
                     continue;
@@ -4260,7 +4162,7 @@ public final class ConcolicSmtComposer {
                 String statePort = scopedHeapPort(rawStatePort);
                 if (ports.contains(rawStatePort)
                         && ports.sort(rawStatePort) != Sort.MAP) {
-                    heapGap(region, "FiniteMapSnapshotStateSortGap@"
+                    heapGap("FiniteMapSnapshotStateSortGap@"
                             + region + ":" + id);
                     continue;
                 }
@@ -4467,7 +4369,7 @@ public final class ConcolicSmtComposer {
             JsonElement declared = summary.get("heapObservations");
             if (declared == null) return;
             if (!declared.isJsonArray()) {
-                heapGap(region, "MalformedHeapObservations@" + region);
+                heapGap("MalformedHeapObservations@" + region);
                 return;
             }
             JsonArray observations = declared.getAsJsonArray();
@@ -4528,8 +4430,7 @@ public final class ConcolicSmtComposer {
                         stateBasePortCounts, stateBaseSelectorCounts,
                         stateBaseDynamicBindingCounts);
                 if (!admitted) {
-                    heapGap(region,
-                            "InvalidOrAmbiguousHeapObservationStateBase@"
+                    heapGap("InvalidOrAmbiguousHeapObservationStateBase@"
                                     + region + ":" + firstNonBlank(string(
                                     observation, "observationId"),
                                     String.valueOf(index)));
@@ -4542,7 +4443,7 @@ public final class ConcolicSmtComposer {
             for (int index = 0; index < observations.size(); index++) {
                 JsonElement element = observations.get(index);
                 if (!element.isJsonObject()) {
-                    heapGap(region, "MalformedHeapObservation@" + region
+                    heapGap("MalformedHeapObservation@" + region
                             + ":" + index);
                     continue;
                 }
@@ -4708,7 +4609,7 @@ public final class ConcolicSmtComposer {
                     }
                 }
                 if (!valid) {
-                    heapGap(region, (baseOnlyBinding
+                    heapGap((baseOnlyBinding
                             ? "BaseOnlyEntryFieldBindingRequiresDynamicExpression@"
                             : "IncompleteOrAmbiguousMapEntryRead@")
                             + region + ":" + firstNonBlank(id,
@@ -4719,14 +4620,14 @@ public final class ConcolicSmtComposer {
                 Term key = mapKeyTerm(observation.get("keyExpression"),
                         "heap_observation_" + region + "_" + id);
                 if (key == null) {
-                    heapGap(region, "MapEntryReadKeyTypeUnsupported@"
+                    heapGap("MapEntryReadKeyTypeUnsupported@"
                             + region + ":" + id);
                     continue;
                 }
                 Term valueRef = term(observation.get("valueExpression"),
                         Sort.REF);
                 if (valueRef.sort != Sort.REF) {
-                    heapGap(region, "MapEntryReadValueIsNotReference@" + region
+                    heapGap("MapEntryReadValueIsNotReference@" + region
                             + ":" + id);
                     continue;
                 }
@@ -4759,8 +4660,7 @@ public final class ConcolicSmtComposer {
                             fieldSignature, array(binding, "fieldPath"),
                             resultSort, "heap observation " + id);
                     if (accessor.isEmpty()) {
-                        heapGap(region,
-                                "CanonicalExactFieldAccessorGap@" + region
+                        heapGap("CanonicalExactFieldAccessorGap@" + region
                                         + ":" + id + ":" + fieldSignature);
                         continue;
                     }
@@ -4773,8 +4673,7 @@ public final class ConcolicSmtComposer {
                         Term fieldPort = canonicalPortTerm(fieldSymbol,
                                 resultSort);
                         if (fieldPort.sort != resultSort) {
-                            heapGap(region,
-                                    "HeapObservationFieldPortSortGap@"
+                            heapGap("HeapObservationFieldPortSortGap@"
                                             + region + ":" + id + ":"
                                             + fieldSymbol);
                             continue;
@@ -4853,7 +4752,7 @@ public final class ConcolicSmtComposer {
                     continue;
                 }
                 if (portSort(port) == Sort.ARRAY_VALUE) {
-                    heapGap(region, "ArrayValueExpressionRequired@" + region
+                    heapGap("ArrayValueExpressionRequired@" + region
                             + ":" + port);
                     continue;
                 }
@@ -4958,7 +4857,7 @@ public final class ConcolicSmtComposer {
             }
             if (!issues.isEmpty()) {
                 for (String issue : issues) {
-                    heapGap(region, "ArrayValueExpression@" + region + ":"
+                    heapGap("ArrayValueExpression@" + region + ":"
                             + port + ":" + issue);
                 }
                 return null;
@@ -4966,7 +4865,7 @@ public final class ConcolicSmtComposer {
 
             Term lengthTerm = term(lengthExpression, Sort.INT);
             if (lengthTerm.sort != Sort.INT) {
-                heapGap(region, "ArrayValueExpression@" + region + ":"
+                heapGap("ArrayValueExpression@" + region + ":"
                         + port + ":LENGTH_TERM_NOT_INT");
                 return null;
             }
@@ -4990,7 +4889,7 @@ public final class ConcolicSmtComposer {
                         || value.sort == Sort.ARRAY
                         || value.sort == Sort.MAP
                         || value.sort == Sort.VALUE) {
-                    heapGap(region, "ArrayValueExpression@" + region + ":"
+                    heapGap("ArrayValueExpression@" + region + ":"
                             + port + ":ELEMENT_TERM_SORT_MISMATCH:" + index
                             + ":" + value.sort + "!=" + componentSort);
                     return null;
@@ -5102,7 +5001,7 @@ public final class ConcolicSmtComposer {
                     "containerElementFieldBindings");
             if (declared == null) return;
             if (!declared.isJsonArray()) {
-                heapGap(region, "MalformedContainerElementFieldBindings@"
+                heapGap("MalformedContainerElementFieldBindings@"
                         + region);
                 return;
             }
@@ -5118,7 +5017,7 @@ public final class ConcolicSmtComposer {
             for (int ordinal = 0; ordinal < bindings.size(); ordinal++) {
                 JsonElement rawBinding = bindings.get(ordinal);
                 if (!rawBinding.isJsonObject()) {
-                    heapGap(region, "MalformedContainerElementFieldBinding@"
+                    heapGap("MalformedContainerElementFieldBinding@"
                             + region + ":" + ordinal);
                     continue;
                 }
@@ -5129,7 +5028,7 @@ public final class ConcolicSmtComposer {
                         binding, requestedOutputSlice, requestedInputs,
                         bindingIds);
                 if (!issue.isEmpty()) {
-                    heapGap(region, "ContainerElementFieldBinding@" + region
+                    heapGap("ContainerElementFieldBinding@" + region
                             + ":" + bindingId + ":" + issue);
                     continue;
                 }
@@ -5142,7 +5041,7 @@ public final class ConcolicSmtComposer {
                 ContainerFieldSelector selector = containerFieldSelector(
                         summary, binding);
                 if (!selector.complete()) {
-                    heapGap(region, "ContainerElementFieldBinding@" + region
+                    heapGap("ContainerElementFieldBinding@" + region
                             + ":" + bindingId + ":" + selector.gap);
                     continue;
                 }
@@ -5187,7 +5086,7 @@ public final class ConcolicSmtComposer {
                         array(binding, "fieldPath"), fieldSort,
                         "container element field " + bindingId);
                 if (accessor.isEmpty()) {
-                    heapGap(region, "ContainerElementFieldBinding@" + region
+                    heapGap("ContainerElementFieldBinding@" + region
                             + ":" + bindingId
                             + ":CANONICAL_FIELD_ACCESSOR_INVALID");
                     continue;
@@ -5200,7 +5099,7 @@ public final class ConcolicSmtComposer {
                             selector.fieldExpression,
                             selector.dynamicFieldSymbol, fieldSort);
                     if (dynamic.sort != fieldSort) {
-                        heapGap(region, "ContainerElementFieldBinding@"
+                        heapGap("ContainerElementFieldBinding@"
                                 + region + ":" + bindingId
                                 + ":DYNAMIC_FIELD_SORT_CONFLICT");
                         continue;
@@ -5211,7 +5110,7 @@ public final class ConcolicSmtComposer {
                 } else {
                     Term base = containerFieldPortTerm(basePort, fieldSort);
                     if (base == null) {
-                        heapGap(region, "ContainerElementFieldBinding@"
+                        heapGap("ContainerElementFieldBinding@"
                                 + region + ":" + bindingId
                                 + ":FIELD_PORT_SORT_CONFLICT");
                         continue;
@@ -5514,7 +5413,7 @@ public final class ConcolicSmtComposer {
         }
 
         private void mapProjectionGap(String region, String detail) {
-            heapGap(region, "MapProjectionElementField@" + region + ":"
+            heapGap("MapProjectionElementField@" + region + ":"
                     + detail);
             if (currentCaseProjection != null) {
                 currentCaseProjection.gap("MAP_PROJECTION:" + detail);
@@ -6035,8 +5934,7 @@ public final class ConcolicSmtComposer {
             String rawInput = string(effect, "inputPort");
             String rawOutput = string(effect, "outputPort");
             if (rawInput.isEmpty() || rawOutput.isEmpty()) {
-                heapGap(region,
-                        "HeapEffectWithoutPorts:" + kind + "@" + region);
+                heapGap("HeapEffectWithoutPorts:" + kind + "@" + region);
                 return;
             }
             String input = scopedHeapPort(rawInput);
@@ -6055,14 +5953,14 @@ public final class ConcolicSmtComposer {
                         || !authenticatedValueRefWitness(effect,
                         "valueExpression", "valueExpressionAuthority",
                         "valueObjectToken")) {
-                    heapGap(region, "MalformedHeapEffect:" + kind + "@"
+                    heapGap("MalformedHeapEffect:" + kind + "@"
                             + region);
                     return;
                 }
                 Term key = mapKeyTerm(effect.get("keyExpression"),
                         "heap_effect_" + region + "_" + kind);
                 if (key == null) {
-                    heapGap(region, "HeapEffectKeyTypeUnsupported:" + kind
+                    heapGap("HeapEffectKeyTypeUnsupported:" + kind
                             + "@" + region);
                     return;
                 }
@@ -6071,14 +5969,14 @@ public final class ConcolicSmtComposer {
                         + " " + value.text + ")";
             } else if ("MAP_REMOVE".equals(kind)) {
                 if (!hasExpression(effect, "keyExpression")) {
-                    heapGap(region, "MalformedHeapEffect:" + kind + "@"
+                    heapGap("MalformedHeapEffect:" + kind + "@"
                             + region);
                     return;
                 }
                 Term key = mapKeyTerm(effect.get("keyExpression"),
                         "heap_effect_" + region + "_" + kind);
                 if (key == null) {
-                    heapGap(region, "HeapEffectKeyTypeUnsupported:" + kind
+                    heapGap("HeapEffectKeyTypeUnsupported:" + kind
                             + "@" + region);
                     return;
                 }
@@ -6090,7 +5988,7 @@ public final class ConcolicSmtComposer {
                 rhs = portName(input);
             } else if ("MAP_PUT_ALL".equals(kind)) {
                 if (!hasExpression(effect, "sourceExpression")) {
-                    heapGap(region, "MalformedHeapEffect:" + kind + "@"
+                    heapGap("MalformedHeapEffect:" + kind + "@"
                             + region);
                     return;
                 }
@@ -6098,7 +5996,7 @@ public final class ConcolicSmtComposer {
                 rhs = "(map_put_all " + portName(input) + " "
                         + source.text + ")";
             } else {
-                heapGap(region, "HeapEffect:" + kind);
+                heapGap("HeapEffect:" + kind);
                 return;
             }
             assertNamed("heap_effect_" + region + "_" + assertionCount,
@@ -6121,8 +6019,7 @@ public final class ConcolicSmtComposer {
             return false;
         }
 
-        private void heapGap(String region, String detail) {
-            incompleteSummaries.add(region);
+        private void heapGap(String detail) {
             unsupported.add(detail);
         }
 
@@ -6411,62 +6308,26 @@ public final class ConcolicSmtComposer {
                 List<ResolvedEdge> edges, Set<String> relevantRegions) {
             int edgeIndex = 0;
             for (ResolvedEdge edge : edges) {
-                String region = edge.source.regionId;
+                JsonObject binding = edge.binding;
+                String region = bindingSourceRegion(binding);
+                String targetRegion = string(binding, "toRegion");
                 if (!relevantRegions.contains(region)
-                        || !relevantRegions.contains(edge.targetRegion)) {
+                        || !relevantRegions.contains(targetRegion)) {
                     continue;
                 }
-                JsonObject binding = edge.binding;
-                JsonObject summary = edge.summary;
                 String output = bindingSourceOutput(binding);
                 String input = bindingTargetInput(binding);
                 String label = "edge_binding_" + region + "_to_"
-                        + edge.targetRegion + "_" + edgeIndex++;
-                if (!edgeBindingSourceMatches(binding, summary)
-                        || !edge.source.instanceId.equals(
-                        bindingSourceInstance(binding))) {
-                    heapGap(region, "EdgeBindingSourceInstanceGap@"
-                            + region + ":" + output + "->" + input);
-                    continue;
-                }
-                if (!edge.targetInstance.equals(bindingTargetInstance(binding))) {
-                    heapGap(region, "EdgeBindingTargetInstanceGap@"
-                            + region + ":" + output + "->" + input);
-                    continue;
-                }
-                if (!region.equals(regionOf(output))
-                        || !edge.targetRegion.equals(regionOf(input))
-                        || !edge.source.outputPort.equals(output)
-                        || !edge.targetInput.equals(input)
-                        || !ports.contains(output) || !ports.contains(input)) {
-                    heapGap(region, "EdgeBindingPortGap@" + region
+                        + targetRegion + "_" + edgeIndex++;
+                if (!ports.contains(output) || !ports.contains(input)) {
+                    heapGap("EdgeBindingPortGap@" + region
                             + ":" + output + "->" + input);
                     continue;
                 }
-                boolean valueEquality = trustedRuntimeValueEquality(binding);
-                boolean readFrom = trustedRuntimeReadFrom(binding);
-                if (!valueEquality && !readFrom) {
-                    heapGap(region, "EdgeBindingAuthorityGap@" + region
-                            + ":" + output + "->" + input);
-                    continue;
-                }
+                boolean valueEquality = "EQUALITY".equals(
+                        bindingRelationKind(binding));
                 long writeSeq = longInteger(binding, "writerEventSeq", -1);
                 long readSeq = longInteger(binding, "readerEventSeq", -1);
-                if (writeSeq < 0L || readSeq < 0L
-                        || writeSeq >= readSeq) {
-                    heapGap(region, "EdgeBindingSequenceGap@" + region
-                            + ":" + output + "->" + input);
-                    continue;
-                }
-                int receiver = 0;
-                if (readFrom) {
-                    receiver = integer(binding, "receiverObjectId", 0);
-                    if (receiver == 0) {
-                        heapGap(region, "EdgeBindingIdentityGap@" + region
-                                + ":zero-receiver");
-                        continue;
-                    }
-                }
                 boolean projection = bool(binding,
                         "inputProjectionUsed", false);
                 boolean equalityEmitted = projection
@@ -6474,7 +6335,7 @@ public final class ConcolicSmtComposer {
                         input, binding, label)
                         : assertPortEquality(output, input, label);
                 if (!equalityEmitted) {
-                    heapGap(region, "EdgeBindingEqualityGap@" + region
+                    heapGap("EdgeBindingEqualityGap@" + region
                             + ":" + output + "->" + input);
                     continue;
                 }
@@ -6521,9 +6382,11 @@ public final class ConcolicSmtComposer {
                 declare(writerReceiver, Sort.INT);
                 declare(readerReceiver, Sort.INT);
                 assertNamed(writerReceiver + "_id", "(= "
-                        + writerReceiver + " " + receiver + ")");
+                        + writerReceiver + " "
+                        + integer(binding, "receiverObjectId", 0) + ")");
                 assertNamed(readerReceiver + "_id", "(= "
-                        + readerReceiver + " " + receiver + ")");
+                        + readerReceiver + " "
+                        + integer(binding, "receiverObjectId", 0) + ")");
                 assertNamed("identity_" + label, "(= "
                         + writerReceiver + " " + readerReceiver + ")");
             }
@@ -6797,7 +6660,7 @@ public final class ConcolicSmtComposer {
             }
             for (String port : mentionedPorts) {
                 if (!boundPorts.contains(port) && ports.isInput(port)) {
-                    unboundPorts.add(port);
+                    unsupported.add("UnboundPort:" + port);
                 }
             }
         }

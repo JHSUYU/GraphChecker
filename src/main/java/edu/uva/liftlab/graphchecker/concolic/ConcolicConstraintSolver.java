@@ -13,7 +13,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -70,7 +69,6 @@ public final class ConcolicConstraintSolver {
         }
         String smt = encoder.finish();
         JsonObject record = baseRecord(task);
-        record.addProperty("solver", "Z3_SMT2");
         record.addProperty("solverInputHash", sha256(smt));
         record.add("unsupported", GSON.toJsonTree(encoder.unsupported));
         if (!encoder.unsupported.isEmpty()) {
@@ -100,8 +98,6 @@ public final class ConcolicConstraintSolver {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
                     "FLIP_CONDITION_DEPENDS_ON_UNMATERIALIZABLE_SYMBOLS");
-            record.add("unmaterializableFlipSymbols",
-                    GSON.toJsonTree(targetGaps.keySet()));
             writeResolutionGaps(record, targetGaps);
             return new Result(record, smt, new JsonArray());
         }
@@ -122,8 +118,6 @@ public final class ConcolicConstraintSolver {
             record.addProperty("reason",
                     "PATH_CONSTRAINT_DEPENDS_ON_UNMATERIALIZABLE_"
                             + "CONTROLLED_SYMBOLS");
-            record.add("unmaterializableControlledSymbols",
-                    GSON.toJsonTree(controlledGaps.keySet()));
             writeResolutionGaps(record, controlledGaps);
             return new Result(record, smt, new JsonArray());
         }
@@ -182,7 +176,6 @@ public final class ConcolicConstraintSolver {
         }
         JsonArray assignments = modelAssignments(encoder, values,
                 activation, dynamicBindings, projectedControlledSymbols);
-        record.add("modelAssignments", assignments.deepCopy());
         if (targetControlledSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
@@ -192,7 +185,6 @@ public final class ConcolicConstraintSolver {
                     "NOT_ALL_PATH_INPUT_SYMBOLS_HAVE_MATERIALIZATION_TARGETS");
             Set<String> missing = unmapped(projectedControlledSymbols,
                     assignments);
-            record.add("unmappedInputSymbols", GSON.toJsonTree(missing));
             writeResolutionGaps(record, materializationGaps(missing,
                     actions, dynamicBindings, false));
         } else {
@@ -419,7 +411,7 @@ public final class ConcolicConstraintSolver {
                         Sort.BOOL);
             }
             if (sort == Sort.INT) {
-                String literal = integerLiteral(payload);
+                String literal = SmtModelValueCodec.integerLiteral(payload);
                 if (literal == null) {
                     unsupported.add(origin + ":INVALID_INTEGER_LITERAL:"
                             + firstNonBlank(raw, "MISSING"));
@@ -459,12 +451,14 @@ public final class ConcolicConstraintSolver {
         private Term typeCast(JsonObject expression, String origin) {
             JsonElement sourceExpression = expression.get("_exp");
             Term source = term(sourceExpression, null, origin + ":castSource");
-            String sourceType = castDescriptor(
+            String sourceType = JavaPrimitiveSmtSemantics
+                    .primitiveDescriptor(
                     firstNonBlank(string(expression, "sourceJavaType"),
                             expressionJavaType(sourceExpression)));
-            String targetType = castTargetDescriptor(firstNonBlank(
-                    string(expression, "targetJavaType"),
-                    string(expression, "_java_type")), sourceType);
+            String targetType = JavaPrimitiveSmtSemantics
+                    .primitiveTargetDescriptor(firstNonBlank(
+                            string(expression, "targetJavaType"),
+                            string(expression, "_java_type")), sourceType);
             Sort sourceSort = castSort(sourceType);
             Sort targetSort = castSort(targetType);
             boolean primitivePair = JavaPrimitiveSmtSemantics
@@ -1946,31 +1940,19 @@ public final class ConcolicConstraintSolver {
     }
 
     private static Sort sortOfJava(String javaType) {
-        String value = javaType == null ? "" : javaType;
-        if ("Z".equals(value) || "boolean".equals(value)) return Sort.BOOL;
-        if ("B".equals(value) || "C".equals(value) || "S".equals(value)
-                || "I".equals(value) || "J".equals(value)
-                || "byte".equals(value) || "char".equals(value)
-                || "short".equals(value) || "int".equals(value)
-                || "long".equals(value)) return Sort.INT;
-        if ("F".equals(value) || "float".equals(value)
-                || "java/lang/Float".equals(value)
-                || "java.lang.Float".equals(value)) return Sort.FLOAT32;
-        if ("D".equals(value) || "double".equals(value)
-                || "java/lang/Double".equals(value)
-                || "java.lang.Double".equals(value)) return Sort.FLOAT64;
-        // Only java.lang.String has the SMT String/content semantics.  A
-        // user class whose name happens to contain "String" (for example
-        // StringHolder or StringBuilder) is an ordinary reference and may be
-        // modeled here only through exact reference/null equality.
-        if ("java.lang.String".equals(value)
-                || "java/lang/String".equals(value)
-                || "Ljava/lang/String;".equals(value)) return Sort.STRING;
-        if (value.startsWith("L") || value.startsWith("[")
-                || value.contains("/") || value.contains(".")) {
-            return Sort.REF;
+        String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
+                javaType);
+        if ("Z".equals(descriptor)) return Sort.BOOL;
+        if (descriptor.length() == 1 && "BCSIJ".contains(descriptor)) {
+            return Sort.INT;
         }
-        return Sort.UNKNOWN;
+        FloatingKind floating = JavaPrimitiveSmtSemantics
+                .floatingKindOfJavaType(javaType);
+        if (floating == FloatingKind.JAVA_FLOAT) return Sort.FLOAT32;
+        if (floating == FloatingKind.JAVA_DOUBLE) return Sort.FLOAT64;
+        if ("Ljava/lang/String;".equals(descriptor)) return Sort.STRING;
+        return descriptor.startsWith("L") || descriptor.startsWith("[")
+                ? Sort.REF : Sort.UNKNOWN;
     }
 
     private static boolean numeric(Sort sort) {
@@ -1999,27 +1981,7 @@ public final class ConcolicConstraintSolver {
     }
 
     private static Sort castSort(String descriptor) {
-        if ("Z".equals(descriptor)) return Sort.BOOL;
-        if ("B".equals(descriptor) || "C".equals(descriptor)
-                || "S".equals(descriptor) || "I".equals(descriptor)
-                || "J".equals(descriptor)) return Sort.INT;
-        if ("F".equals(descriptor)) return Sort.FLOAT32;
-        if ("D".equals(descriptor)) return Sort.FLOAT64;
-        return descriptor.startsWith("L") || descriptor.startsWith("[")
-                ? Sort.REF : Sort.UNKNOWN;
-    }
-
-    private static String castDescriptor(String javaType) {
-        return JavaPrimitiveSmtSemantics.primitiveDescriptor(javaType);
-    }
-
-    /** The VM uses bare L for primitive long conversions, while other IR
-     * nodes also use it as a legacy reference tag.  The primitive source
-     * disambiguates conversion bytecodes without mistyping a reference cast. */
-    private static String castTargetDescriptor(String javaType,
-                                               String sourceType) {
-        return JavaPrimitiveSmtSemantics.primitiveTargetDescriptor(
-                javaType, sourceType);
+        return sortOfJava(descriptor);
     }
 
     private static FloatingKind floatingKind(Sort sort) {
@@ -2046,19 +2008,6 @@ public final class ConcolicConstraintSolver {
         int first = raw.indexOf('_');
         int second = first < 0 ? -1 : raw.indexOf('_', first + 1);
         return second < 0 ? raw : raw.substring(second + 1);
-    }
-
-    private static String integerLiteral(String value) {
-        String raw = firstNonBlank(value).trim();
-        if (raw.isEmpty() || raw.length() > 1024) return null;
-        try {
-            BigInteger parsed = new BigInteger(raw);
-            return parsed.signum() < 0
-                    ? "(- " + parsed.negate().toString() + ")"
-                    : parsed.toString();
-        } catch (NumberFormatException ignored) {
-            return null;
-        }
     }
 
     private static String quote(String value) {

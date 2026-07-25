@@ -57,17 +57,6 @@ public final class ConcolicScheduler {
             "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
     private static final Pattern FIELD_PROJECTION = Pattern.compile(
             "#field:([^#]+)");
-    private static final String CONSUMED_FIELD_SITE_AUTHORITY =
-            "RUNTIME_UNIQUE_STATIC_LEAF_GETFIELD_SITE_AND_"
-                    + "OWNER_WITHIN_REGION_INSTANCE_V1";
-    private static final String DIRECT_FIELD_ROOT_AUTHORITY =
-            "DIRECT_EXACT_LEAF_GETFIELD_BASE_IS_INPUT_OWNER_V1";
-    private static final String ARGUMENT_FIELD_ROOT_AUTHORITY =
-            "ROOT_ARGUMENT_IDENTITY_AT_REGION_ENTRY_AND_"
-                    + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
-    private static final String RECEIVER_FIELD_ROOT_AUTHORITY =
-            "ROOT_RECEIVER_IDENTITY_AT_REGION_ENTRY_AND_"
-                    + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
     private static final String LOCAL_FIELD_ROOT_AUTHORITY =
             "LOCAL_DEFINITION_IDENTITY_AT_EXACT_DEFINITION_SITE_AND_"
                     + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
@@ -145,7 +134,6 @@ public final class ConcolicScheduler {
             RegionCaptureGoal goal = RegionCaptureGoal.from(
                     candidate.activation);
             goal.writeTo(scheduledActivation);
-            scheduledActivation.addProperty("scheduleId", scheduleId);
             scheduledActivation.addProperty("executionPhase", executionPhase);
             scheduledActivation.add("materializations",
                     materialization.actions.deepCopy());
@@ -341,10 +329,6 @@ public final class ConcolicScheduler {
                 || "EXECUTABLE".equals(admissionState(activation));
         JsonObject admission = new JsonObject();
         admission.addProperty("state", ready ? "EXECUTABLE" : "BLOCKED");
-        admission.addProperty("mode", admissionMode(activation));
-        JsonArray blockers = new JsonArray();
-        if (!ready) blockers.add("SCHEDULER_ADMISSION_FAILED");
-        admission.add("blockers", blockers);
         activation.add("admission", admission);
     }
 
@@ -357,11 +341,6 @@ public final class ConcolicScheduler {
     private static String admissionState(JsonObject activation) {
         JsonObject admission = object(activation, "admission");
         return admission == null ? "" : string(admission, "state");
-    }
-
-    private static String admissionMode(JsonObject activation) {
-        JsonObject admission = object(activation, "admission");
-        return admission == null ? "" : string(admission, "mode");
     }
 
     private static List<Candidate> candidates(Arguments arguments,
@@ -733,12 +712,6 @@ public final class ConcolicScheduler {
                     dischargeDeferredResolution(localBinding);
                     localBinding.addProperty("lazy", true);
                     finalizePendingLocalArrayRoot(localBinding, true);
-                    String issue = exactArrayFieldMaterializationIssue(
-                            localBinding);
-                    if (!issue.isEmpty()) {
-                        concreteFallbacks.add(concreteFallback(localBinding));
-                        continue;
-                    }
                     result.add(localBinding);
                 }
                 continue;
@@ -836,7 +809,7 @@ public final class ConcolicScheduler {
                 continue;
             }
             if (containerInputPorts.contains(string(binding, "symbol"))
-                    && ArrayFieldContract.from(binding).fieldBackedArray) {
+                    && fieldBackedArray(binding)) {
                 binding.addProperty("bindingMode",
                         "CONTAINER_INPUT_OBSERVATION");
                 binding.addProperty("arrayFieldObservationOnly", true);
@@ -861,11 +834,6 @@ public final class ConcolicScheduler {
                 binding.addProperty("mapStateRequestedOutputCell",
                         requestedMapStateCell);
                 result.add(binding);
-                continue;
-            }
-            String issue = exactArrayFieldMaterializationIssue(binding);
-            if (!issue.isEmpty()) {
-                concreteFallbacks.add(concreteFallback(binding));
                 continue;
             }
             result.add(binding);
@@ -918,12 +886,6 @@ public final class ConcolicScheduler {
             selected = declaration;
         }
         if (selected == null) return false;
-        JsonArray path = array(selected, "fieldPath");
-        JsonArray actionPath = array(action, "fieldPath");
-        JsonArray proofIds = array(selected, "proofCausalEdgeIds");
-        String leafSignature = string(selected,
-                "declaredFieldSignature");
-        String[] leaf = declaredField(leafSignature);
         return integer(selected, "schemaVersion", -1) == 2
                 && "ARRAY_ELEMENT_FIELD".equals(string(selected, "kind"))
                 && "CONTAINER_SNAPSHOT".equals(string(selected,
@@ -935,29 +897,12 @@ public final class ConcolicScheduler {
                 "selectorAuthority"))
                 && integer(selected, "elementIndex", -1) >= 0
                 && integer(selected, "elementOccurrence", -1) > 0
-                && path.size() >= 2 && path.size() <= 4
-                && validStringPath(path) && path.equals(actionPath)
-                && proofIds.size() == 4 * path.size()
-                && stringSet(selected, "proofCausalEdgeIds").size()
-                == proofIds.size()
-                && leaf != null
-                && ("boolean".equals(leaf[1])
-                || "java.lang.Boolean".equals(leaf[1]))
-                && leaf[2].equals(path.get(path.size() - 1).getAsString())
-                && leafSignature.equals(string(action, "field"))
-                && leafSignature.equals(string(action,
-                        "leafFieldSignature"))
-                && leaf[0].equals(string(selected,
-                "declaredFieldOwnerClass"))
-                && leaf[1].equals(string(selected, "declaredFieldType"))
+                && array(selected, "fieldPath").equals(array(action,
+                "fieldPath"))
+                && string(selected, "declaredFieldSignature").equals(
+                string(action, "field"))
                 && !string(selected, "containerInputPort").isEmpty()
-                && !symbol.equals(string(selected, "containerInputPort"))
-                && declaredField(string(selected,
-                "containerInputCell")) != null
-                && string(selected, "fieldMaterializationSiteId")
-                .matches("^<.+>#u[0-9]+$")
-                && string(selected, "arrayLoadSiteId")
-                .matches("^<.+>#u[0-9]+$");
+                && !symbol.equals(string(selected, "containerInputPort"));
     }
 
     /**
@@ -1161,7 +1106,7 @@ public final class ConcolicScheduler {
                         string(action, "consumedFieldRootAuthority"))) {
             return false;
         }
-        return ArrayFieldContract.from(action).fieldBackedArray;
+        return fieldBackedArray(action);
     }
 
     private static boolean validFieldPaths(JsonObject action) {
@@ -1201,49 +1146,6 @@ public final class ConcolicScheduler {
             return true;
         }
         return existing.equals(derived);
-    }
-
-    /**
-     * Scheduler-side defense for array-valued fields.  The planner's exact
-     * consumed-getfield evidence is data, not a hint: definition refinement
-     * may preserve it but cannot synthesize a missing field-read site or
-     * silently replace its root authority.
-     */
-    private static String exactArrayFieldMaterializationIssue(
-            JsonObject binding) {
-        ArrayFieldContract contract = ArrayFieldContract.from(binding);
-        if (!contract.fieldBackedArray) {
-            return "";
-        }
-        String issue = contract.issue;
-        String consumedMethod = string(binding, "consumedFieldMethod");
-        int consumedUnit = integer(binding, "consumedFieldUnitIndex", -1);
-        String consumedSite = string(binding, "consumedFieldSiteId");
-        if (issue.isEmpty() && !bool(binding,
-                "consumedFieldBindingComplete", false)) {
-            issue = "PLANNER_CONSUMED_FIELD_BINDING_INCOMPLETE";
-        }
-        if (issue.isEmpty() && (consumedMethod.isEmpty()
-                || consumedUnit < 0
-                || !consumedSite.equals(consumedMethod + "#u"
-                + consumedUnit))) {
-            issue = "EXACT_CONSUMED_FIELD_METHOD_UNIT_SITE_MISSING";
-        }
-        if (issue.isEmpty() && !CONSUMED_FIELD_SITE_AUTHORITY.equals(
-                string(binding, "consumedFieldSiteAuthority"))) {
-            issue = "EXACT_CONSUMED_FIELD_SITE_AUTHORITY_MISSING";
-        }
-        if (issue.isEmpty()
-                && (integer(binding, "consumedFieldOccurrence", -1) != 1
-                || !"UNIQUE_CONTAINED_RUNTIME_FIELD_READ_V1".equals(
-                string(binding,
-                        "consumedFieldOccurrenceAuthority")))) {
-            issue = "EXACT_CONSUMED_FIELD_OCCURRENCE_INVALID";
-        }
-        if (issue.isEmpty()) {
-            issue = exactArrayRootIssue(binding, contract.path);
-        }
-        return issue;
     }
 
     private static void finalizePendingLocalArrayRoot(
@@ -1290,171 +1192,40 @@ public final class ConcolicScheduler {
         binding.remove("consumedFieldBindingIssue");
     }
 
-    private static String exactArrayRootIssue(JsonObject binding,
-                                              JsonArray path) {
+    private static boolean fieldBackedArray(JsonObject binding) {
         String location = string(binding, "location");
         String mode = string(binding, "bindingMode");
-        String authority = string(binding, "consumedFieldRootAuthority");
-        if ("ARGUMENT_FIELD".equals(location)
-                || "ARGUMENT_FIELD_PATH".equals(location)) {
-            return integer(binding, "index", -1) >= 0
-                    && ARGUMENT_FIELD_ROOT_AUTHORITY.equals(authority)
-                    ? "" : "ARGUMENT_ARRAY_ROOT_AUTHORITY_INVALID";
-        }
-        if ("RECEIVER_FIELD".equals(location)) {
-            return RECEIVER_FIELD_ROOT_AUTHORITY.equals(authority)
-                    ? "" : "RECEIVER_ARRAY_ROOT_AUTHORITY_INVALID";
-        }
-        if ("LOCAL_DEFINITION".equals(mode)) {
-            String method = string(binding, "method");
-            String local = string(binding, "local");
-            JsonArray definitions = array(binding, "definitionSites");
-            if (!LOCAL_FIELD_ROOT_AUTHORITY.equals(authority)
-                    || method.isEmpty() || local.isEmpty()
-                    || definitions.size() != 1
-                    || !definitions.get(0).isJsonObject()) {
-                return "LOCAL_ARRAY_ROOT_DEFINITION_AUTHORITY_INVALID";
-            }
-            JsonObject definition = definitions.get(0).getAsJsonObject();
-            int unit = integer(definition, "unitIndex", -1);
-            return unit >= 0
-                    && method.equals(string(definition, "method"))
-                    && local.equals(string(definition, "local"))
-                    && (string(definition, "siteId").isEmpty()
-                    || string(definition, "siteId").equals(method + "#u"
-                    + unit))
-                    ? "" : "LOCAL_ARRAY_ROOT_DEFINITION_SITE_MISMATCH";
-        }
-        if (RECEIVER_FIELD_ROOT_AUTHORITY.equals(authority)) {
-            return "";
-        }
-        return DIRECT_FIELD_ROOT_AUTHORITY.equals(authority)
-                && path.size() == 1 ? ""
-                : "DIRECT_ARRAY_ROOT_REQUIRES_ONE_EXACT_LEAF";
-    }
-
-    private static final class ArrayFieldContract {
-        private final boolean fieldBackedArray;
-        private final JsonArray path;
-        private final String issue;
-
-        private ArrayFieldContract(boolean fieldBackedArray,
-                                   JsonArray path, String issue) {
-            this.fieldBackedArray = fieldBackedArray;
-            this.path = path;
-            this.issue = safe(issue);
-        }
-
-        private static ArrayFieldContract from(JsonObject binding) {
-            String location = string(binding, "location");
-            String mode = string(binding, "bindingMode");
-            boolean fieldShape = "ARGUMENT_FIELD".equals(location)
-                    || "ARGUMENT_FIELD_PATH".equals(location)
-                    || "RECEIVER_FIELD".equals(location)
-                    || "HEAP_OBJECT_FIELD".equals(location)
-                    || "FIELD".equals(location)
-                    || "FIELD_ACCESS".equals(mode);
-
-            Set<String> signatures = new LinkedHashSet<>();
-            for (String field : new String[]{"leafFieldSignature",
-                    "accessFieldSignature", "field", "cell"}) {
-                signatures.add(string(binding, field));
-            }
-            JsonArray declarations = array(binding,
-                    "fieldPathLeafDeclarations");
-            for (JsonElement element : declarations) {
-                if (element.isJsonObject()) {
-                    signatures.add(string(element.getAsJsonObject(),
-                            "fieldSignature"));
-                }
-            }
-            signatures.remove("");
-            Set<String> arrayDeclarations = new LinkedHashSet<>();
-            String leafName = "";
-            String leafType = "";
-            for (String signature : signatures) {
-                String[] field = declaredField(signature);
-                if (field != null && isArrayType(field[1])) {
-                    arrayDeclarations.add("<" + field[0] + ": "
-                            + field[1] + " " + field[2] + ">");
-                    leafName = field[2];
-                    leafType = field[1];
-                }
-            }
-            String javaType = firstNonBlank(string(binding, "javaType"),
-                    string(binding, "inputJavaType"));
-            boolean array = isArrayType(javaType)
-                    || !arrayDeclarations.isEmpty();
-            if ("CALL_RETURN".equals(location)
-                    && "CALL_RETURN_DEFINITION".equals(string(binding,
-                    "consumedFieldPendingRootKind"))
-                    && (binding.has("fieldPath")
-                    || binding.has("fieldPaths")
-                    || declarations.size() > 0)) {
-                fieldShape = true;
-            }
-            if ("LOCAL_DEFINITION".equals(mode)
-                    && !arrayDeclarations.isEmpty()
-                    && (binding.has("fieldPath")
-                    || binding.has("fieldPaths")
-                    || declarations.size() > 0)) {
-                fieldShape = true;
-            }
-            boolean backed = fieldShape && array;
-            if (!backed) {
-                return new ArrayFieldContract(false, new JsonArray(), "");
-            }
-
-            JsonArray path = exactBindingFieldPath(binding);
-            String issue = "";
-            if (arrayDeclarations.size() != 1) {
-                issue = "EXACT_ARRAY_LEAF_DECLARATION_NOT_UNIQUE";
-            } else if (javaType.isEmpty()
-                    || !isArrayType(javaType)
-                    || !sameArrayType(javaType, leafType)) {
-                issue = "ACTION_ARRAY_TYPE_CONFLICTS_WITH_LEAF_DECLARATION";
-            } else if (path.size() == 0) {
-                issue = "EXACT_ARRAY_FIELD_PATH_NOT_UNIQUE";
-            } else if (!leafName.equals(path.get(path.size() - 1)
-                    .getAsString())) {
-                issue = "EXACT_ARRAY_FIELD_PATH_LEAF_MISMATCH";
-            }
-            return new ArrayFieldContract(true, path, issue);
-        }
-    }
-
-    private static JsonArray exactBindingFieldPath(JsonObject binding) {
-        JsonArray direct = array(binding, "fieldPath");
-        if (validStringPath(direct)) {
-            return direct.deepCopy();
-        }
-        JsonArray paths = array(binding, "fieldPaths");
-        if (paths.size() == 1 && paths.get(0).isJsonArray()
-                && validStringPath(paths.get(0).getAsJsonArray())) {
-            return paths.get(0).getAsJsonArray().deepCopy();
-        }
-        return new JsonArray();
-    }
-
-    private static boolean validStringPath(JsonArray path) {
-        if (path == null || path.size() == 0) return false;
-        for (JsonElement segment : path) {
-            if (!segment.isJsonPrimitive()
-                    || safe(segment.getAsString()).trim().isEmpty()) {
-                return false;
+        boolean fieldShape = "ARGUMENT_FIELD".equals(location)
+                || "ARGUMENT_FIELD_PATH".equals(location)
+                || "RECEIVER_FIELD".equals(location)
+                || "HEAP_OBJECT_FIELD".equals(location)
+                || "FIELD".equals(location)
+                || "FIELD_ACCESS".equals(mode)
+                || "LOCAL_DEFINITION".equals(mode)
+                || "CALL_RETURN_DEFINITION".equals(string(binding,
+                "consumedFieldPendingRootKind"));
+        if (!fieldShape) return false;
+        for (String member : new String[]{"leafFieldSignature",
+                "accessFieldSignature", "field", "cell"}) {
+            String[] declaration = declaredField(string(binding, member));
+            if (declaration != null && (declaration[1].startsWith("[")
+                    || declaration[1].endsWith("[]"))) {
+                return true;
             }
         }
-        return true;
-    }
-
-    private static boolean isArrayType(String type) {
-        String value = safe(type).trim();
-        return value.startsWith("[") || value.endsWith("[]");
-    }
-
-    private static boolean sameArrayType(String left, String right) {
-        return safe(left).replace(" ", "").equals(
-                safe(right).replace(" ", ""));
+        for (JsonElement element : array(binding,
+                "fieldPathLeafDeclarations")) {
+            if (!element.isJsonObject()) continue;
+            String[] declaration = declaredField(string(
+                    element.getAsJsonObject(), "fieldSignature"));
+            if (declaration != null && (declaration[1].startsWith("[")
+                    || declaration[1].endsWith("[]"))) {
+                return true;
+            }
+        }
+        String type = firstNonBlank(string(binding, "javaType"),
+                string(binding, "inputJavaType"));
+        return type.startsWith("[") || type.endsWith("[]");
     }
 
     private static Set<String> stringSet(JsonObject object, String field) {
@@ -1554,9 +1325,8 @@ public final class ConcolicScheduler {
             }
             Endpoint from = endpoint(regions.get(fromRegion), fromRegion,
                     fromCell);
-            ConsumerEndpointResolution consumer = consumerEndpoint(
-                    regions.get(toRegion), toRegion, toCell, staticGraph);
-            Endpoint to = consumer.endpoint;
+            Endpoint to = consumerEndpoint(regions.get(toRegion), toRegion,
+                    toCell, staticGraph);
             if ("EQUALITY".equals(relation)) {
                 JsonObject equality = relation(edge, from, to,
                         "SYMBOLIC_EQUALITY");
@@ -1662,22 +1432,22 @@ public final class ConcolicScheduler {
      * match remains preferred; missing or ambiguous proof retains the raw
      * synthetic endpoint so later context selection fails closed.
      */
-    private static ConsumerEndpointResolution consumerEndpoint(
+    private static Endpoint consumerEndpoint(
             Region region, String regionId, String rawCell,
             List<JsonObject> staticGraph) {
         if (region == null) {
-            return ConsumerEndpointResolution.raw(regionId, rawCell);
+            return new Endpoint(regionId + "::" + rawCell, rawCell);
         }
         String direct = region.uniqueInputPort(rawCell);
         if (!direct.isEmpty()) {
-            return ConsumerEndpointResolution.direct(direct, rawCell);
+            return new Endpoint(direct, rawCell);
         }
         // A duplicated exact input is already ambiguous.  Do not escape that
         // ambiguity through a different static projection.
         if (region.hasInputCell(rawCell)) {
-            return ConsumerEndpointResolution.raw(regionId, rawCell);
+            return new Endpoint(regionId + "::" + rawCell, rawCell);
         }
-        List<ConsumerInputProof> matches = new ArrayList<>();
+        List<Endpoint> matches = new ArrayList<>();
         for (JsonObject proof : staticGraph == null
                 ? Collections.<JsonObject>emptyList() : staticGraph) {
             String inputCell = string(proof, "fromCell");
@@ -1687,14 +1457,12 @@ public final class ConcolicScheduler {
                     inputCell)) {
                 continue;
             }
-            matches.add(new ConsumerInputProof(inputPort, inputCell));
+            matches.add(new Endpoint(inputPort, inputCell));
         }
         if (matches.size() != 1) {
-            return ConsumerEndpointResolution.raw(regionId, rawCell);
+            return new Endpoint(regionId + "::" + rawCell, rawCell);
         }
-        ConsumerInputProof proof = matches.get(0);
-        return ConsumerEndpointResolution.canonical(proof.inputPort,
-                proof.inputCell);
+        return matches.get(0);
     }
 
     private static boolean completeAccessorInputProof(JsonObject proof,
@@ -1775,10 +1543,10 @@ public final class ConcolicScheduler {
         query.addProperty("regionInstanceId",
                 string(candidate.activation, "regionInstanceId"));
         try {
-            BranchReplayPlan replay = BranchReplayPlan.fromSummary(summary,
+            BranchReplayContract contract =
+                    BranchReplayContract.fromSummary(summary,
                     candidate.target.siteId,
                     candidate.target.selectedOccurrence);
-            BranchReplayContract contract = replay.replayContract();
             if (contract.source().sourceTakenOutcome()
                     != candidate.target.observedOutcome
                     || contract.requiredTakenOutcome()
@@ -1786,9 +1554,7 @@ public final class ConcolicScheduler {
                 throw new IllegalArgumentException(
                         "captured branch polarity differs from selection");
             }
-            query.add("replayContract", contract.toJson());
-            query.add("solverPathContext",
-                    replay.solverPathContext().toJson());
+            contract.addTo(query);
             query.addProperty("readyForSolver", true);
         } catch (IllegalArgumentException incompleteWitness) {
             query.addProperty("readyForSolver", false);
@@ -2104,40 +1870,6 @@ public final class ConcolicScheduler {
         private Endpoint(String id, String cell) {
             this.id = safe(id);
             this.cell = safe(cell);
-        }
-    }
-
-    private static final class ConsumerInputProof {
-        private final String inputPort;
-        private final String inputCell;
-
-        private ConsumerInputProof(String inputPort, String inputCell) {
-            this.inputPort = safe(inputPort);
-            this.inputCell = safe(inputCell);
-        }
-    }
-
-    private static final class ConsumerEndpointResolution {
-        private final Endpoint endpoint;
-
-        private ConsumerEndpointResolution(Endpoint endpoint) {
-            this.endpoint = endpoint;
-        }
-
-        private static ConsumerEndpointResolution direct(String port,
-                                                          String cell) {
-            return new ConsumerEndpointResolution(new Endpoint(port, cell));
-        }
-
-        private static ConsumerEndpointResolution raw(String regionId,
-                                                       String cell) {
-            return new ConsumerEndpointResolution(new Endpoint(
-                    safe(regionId) + "::" + safe(cell), cell));
-        }
-
-        private static ConsumerEndpointResolution canonical(
-                String port, String cell) {
-            return new ConsumerEndpointResolution(new Endpoint(port, cell));
         }
     }
 

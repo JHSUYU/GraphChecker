@@ -287,9 +287,9 @@ public final class RegionPathWorklist {
                 JsonArray conditions, List<SummaryBranchMapping> mappings,
                 SummaryBranchMapping mapping) {
             int conditionIndex = mapping.summaryPcIndex();
-            BranchReplayPlan replay;
+            BranchReplayContract replay;
             try {
-                replay = BranchReplayPlan.fromSummary(summary, mappings,
+                replay = BranchReplayContract.fromSummary(summary, mappings,
                         mapping);
             } catch (IllegalArgumentException incompleteWitness) {
                 gap("INVALID_BRANCH_WITNESS_PREFIX",
@@ -303,11 +303,10 @@ public final class RegionPathWorklist {
             for (int index = 0; index < conditionIndex; index++) {
                 prefix.add(conditions.get(index).deepCopy());
             }
-            BranchReplayContract replayContract = replay.replayContract();
-            boolean desired = replayContract.requiredTakenOutcome();
+            boolean desired = replay.requiredTakenOutcome();
             String region = string(summary, "regionId");
-            String site = replayContract.source().siteId();
-            int occurrence = replayContract.source().occurrence();
+            String site = replay.source().siteId();
+            int occurrence = replay.source().occurrence();
             AlphaNormalizer alpha = new AlphaNormalizer(summary);
             String key = stableFlipKey(region, scope.identity, site,
                     occurrence, desired, alphaCanonical(prefix, alpha),
@@ -345,9 +344,7 @@ public final class RegionPathWorklist {
                 task.add(OutputClosureContract.FIELD,
                         scope.contract.toJson());
             }
-            task.add("replayContract", replayContract.toJson());
-            task.add("solverPathContext",
-                    replay.solverPathContext().toJson());
+            replay.addTo(task);
             task.add("dynamicFieldBindings", array(summary,
                     "dynamicFieldBindings").deepCopy());
             tasks.add(task);

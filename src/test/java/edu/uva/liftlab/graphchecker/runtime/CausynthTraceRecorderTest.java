@@ -72,6 +72,11 @@ public class CausynthTraceRecorderTest {
             List<String> lines = Files.readAllLines(
                     output.resolve("runtime_trace.jsonl"), StandardCharsets.UTF_8);
             String trace = String.join("\n", lines);
+            String manifest = new String(Files.readAllBytes(output.resolve(
+                    "streaming_trace_manifest.json")),
+                    StandardCharsets.UTF_8);
+            assertTrue(manifest.contains("\"status\":\"CLOSED\""));
+            assertTrue(manifest.contains("\"complete\":true"));
             assertTrue(trace.contains("\"event\":\"METHOD_ENTER\""));
             assertTrue(trace.contains("\"event\":\"CALL_SITE_ENTER\""));
             assertTrue(trace.contains("\"event\":\"CALL_ARGUMENT\""));

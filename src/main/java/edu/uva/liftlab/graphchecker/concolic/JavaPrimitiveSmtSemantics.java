@@ -314,17 +314,7 @@ public final class JavaPrimitiveSmtSemantics {
     static String primitiveDescriptor(String javaType) {
         String type = javaType == null ? ""
                 : javaType.trim().replace('.', '/');
-        if ("boolean".equals(type)) return "Z";
-        if ("byte".equals(type)) return "B";
-        if ("char".equals(type)) return "C";
-        if ("short".equals(type)) return "S";
-        if ("int".equals(type)) return "I";
-        if ("long".equals(type)) return "J";
-        if ("float".equals(type)) return "F";
-        if ("double".equals(type)) return "D";
-        // Do not rewrite reference descriptors: diagnostics and legacy
-        // readers rely on their exact L...; spelling.
-        return type;
+        return "L".equals(type) ? type : javaTypeDescriptor(type);
     }
 
     /**

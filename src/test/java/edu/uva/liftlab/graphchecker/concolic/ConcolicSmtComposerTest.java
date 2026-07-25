@@ -443,107 +443,6 @@ public class ConcolicSmtComposerTest {
         }
     }
 
-    private static JsonObject protocolModel() {
-        JsonObject model = new JsonObject();
-        model.addProperty("complete", true);
-        JsonArray relations = new JsonArray();
-
-        JsonObject codec = protocolRelation("FIXTURE.CODEC",
-                "LOSSLESS_CODEC");
-        codec.addProperty("codecId", "FIXTURE_INTEGER_CODEC");
-        codec.addProperty("lossless", true);
-        codec.addProperty("transportEqualityConfirmed", true);
-        codec.add("source", protocolPort("REGION.P.in.2", "INT"));
-        codec.add("encoded", protocolPort("REGION.P.out.1", "VALUE"));
-        codec.add("transport", protocolPort("REGION.F.in.2", "VALUE"));
-        JsonObject decoded = new JsonObject();
-        decoded.addProperty("kind", "EXPRESSION");
-        decoded.addProperty("valueType", "INT");
-        decoded.add("expression", symbol("java/lang/Integer",
-                "boxed_lookup_key"));
-        codec.add("decoded", decoded);
-        relations.add(codec);
-
-        JsonObject constant = protocolRelation("FIXTURE.CONSTANT",
-                "CONSTANT_BINDING");
-        constant.add("target", protocolPort("REGION.F.in.7", "INT"));
-        JsonObject value = new JsonObject();
-        value.addProperty("kind", "CONSTANT");
-        value.addProperty("valueType", "INT");
-        value.addProperty("value", 23);
-        constant.add("value", value);
-        relations.add(constant);
-
-        JsonObject lifecycle = protocolRelation("FIXTURE.LIFECYCLE",
-                "EXPIRING_CACHE_MEMBERSHIP");
-        lifecycle.addProperty("exactExpiryRemoval", true);
-        lifecycle.addProperty("currentValuePresent", true);
-        lifecycle.addProperty("retainsCachedValue", true);
-        lifecycle.addProperty("uniqueSuccessorValues", true);
-        lifecycle.add("cachedValue", protocolPort("REGION.P.in.2", "INT"));
-        lifecycle.add("currentValue", protocolPort("REGION.F.in.3", "INT"));
-        lifecycle.add("state", protocolPort("REGION.P.out.0", "MAP"));
-        lifecycle.add("observationTime",
-                protocolPort("REGION.F.in.4", "INT"));
-        lifecycle.add("updateInterval",
-                protocolPort("REGION.F.in.5", "INT"));
-        lifecycle.add("lifetime", protocolPort("REGION.F.in.6", "INT"));
-        lifecycle.add("issueTime", protocolSymbol("issue", "INT"));
-        lifecycle.add("retirementTime", protocolSymbol("retire", "INT"));
-        lifecycle.add("credentialExpiry",
-                protocolSymbol("credential_expiry", "INT"));
-        lifecycle.add("memberExpiry",
-                protocolSymbol("member_expiry", "INT"));
-        relations.add(lifecycle);
-
-        model.addProperty("relationCount", relations.size());
-        model.add("relations", relations);
-        return model;
-    }
-
-    private static JsonObject guardedWriter(String guard, String from,
-                                            int writeSeq, int readSeq) {
-        JsonObject relation = new JsonObject();
-        relation.addProperty("edgeId", "EDGE." + guard);
-        relation.addProperty("fromEndpoint", from);
-        relation.addProperty("toEndpoint", "REGION.F.in.0");
-        relation.addProperty("guardSymbol", guard);
-        JsonObject binding = new JsonObject();
-        binding.addProperty("evidenceKind",
-                "FIELD_ASSIGNMENT_READ_FROM_V1");
-        binding.addProperty("writerEventSeq", writeSeq);
-        binding.addProperty("readerEventSeq", readSeq);
-        binding.addProperty("receiverObjectId", 41);
-        JsonArray bindings = new JsonArray();
-        bindings.add(binding);
-        relation.add("selectedBindings", bindings);
-        return relation;
-    }
-
-    private static JsonObject protocolRelation(String id, String kind) {
-        JsonObject relation = new JsonObject();
-        relation.addProperty("relationId", id);
-        relation.addProperty("kind", kind);
-        relation.addProperty("evidenceConfirmed", true);
-        return relation;
-    }
-
-    private static JsonObject protocolPort(String port, String valueType) {
-        JsonObject endpoint = new JsonObject();
-        endpoint.addProperty("kind", "PORT");
-        endpoint.addProperty("portId", port);
-        endpoint.addProperty("valueType", valueType);
-        return endpoint;
-    }
-
-    private static JsonObject protocolSymbol(String symbol, String valueType) {
-        JsonObject endpoint = new JsonObject();
-        endpoint.addProperty("kind", "SYMBOL");
-        endpoint.addProperty("symbol", symbol);
-        endpoint.addProperty("valueType", valueType);
-        return endpoint;
-    }
-
     private static JsonArray singlePutEffect() {
         JsonArray effects = new JsonArray();
         effects.add(mapEffect("MAP_PUT", "REGION.P.in.0",
@@ -662,21 +561,6 @@ public class ConcolicSmtComposerTest {
         closure.add("producer", producer);
         closure.add("members", members);
         summary.add(OutputClosureContract.FIELD, closure);
-    }
-
-    private static JsonObject requestedOutput(String port) {
-        JsonObject result = new JsonObject();
-        result.addProperty("portId", port);
-        return result;
-    }
-
-    private static JsonObject requestedSlice(String... inputs) {
-        JsonObject result = new JsonObject();
-        JsonArray ports = new JsonArray();
-        for (String input : inputs) ports.add(input);
-        result.add("inputPorts", ports);
-        result.addProperty("complete", true);
-        return result;
     }
 
     private static void explicitPrimitiveOutputClosure(
@@ -830,21 +714,6 @@ public class ConcolicSmtComposerTest {
         binding.addProperty("valueFingerprint", "sha256:" + fromInstance
                 + ":" + toInstance + ":" + writerSeq + ":" + readerSeq);
         return binding;
-    }
-
-    private static JsonObject scalarSummary(String region, String summaryId,
-                                            String activationId,
-                                            String instanceId,
-                                            String symbolName) {
-        JsonObject result = producerSummary(new JsonArray(), true);
-        result.addProperty("summaryId", summaryId);
-        result.addProperty("activationId", activationId);
-        result.addProperty("regionId", region);
-        result.addProperty("regionInstanceId", instanceId);
-        result.add("requestedOutput", requestedOutput(region + ".out.0"));
-        result.getAsJsonObject("outputExpressions").add(
-                region + ".out.0", symbol("I", symbolName));
-        return result;
     }
 
     private static JsonObject port(String portId, String cell) {

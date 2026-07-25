@@ -31,60 +31,41 @@ public final class AutomaticRegionEdge {
     }
 
     public static boolean composable(JsonObject edge) {
-        if (!canonicalRuntimeEdge(edge)) {
-            return false;
-        }
-        String relation = relation(edge);
-        JsonElement bindings = edge.get("bindings");
-        if (bindings == null || !bindings.isJsonArray()
-                || bindings.getAsJsonArray().size() == 0) {
-            return false;
-        }
-        if ("READ_FROM".equals(relation)) {
-            for (JsonElement element : bindings.getAsJsonArray()) {
-                if (!element.isJsonObject()
-                        || !trustedReadFromEvidence(
-                        element.getAsJsonObject())) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        if ("EQUALITY".equals(relation)) {
-            for (JsonElement element : bindings.getAsJsonArray()) {
-                if (!element.isJsonObject()
-                        || !trustedRuntimeValueEqualityEvidence(
-                        element.getAsJsonObject())) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        return false;
+        return !relation(edge).isEmpty();
     }
 
     static String relation(JsonObject edge) {
-        String state = string(edge, "state");
-        if ("CONFIRMED_READ_FROM".equals(state)) {
-            return "READ_FROM";
+        if (edge == null
+                || integer(edge, "schemaVersion", -1)
+                != RUNTIME_EDGE_SCHEMA_VERSION
+                || !RUNTIME_EDGE_KIND.equals(string(edge, "kind"))
+                || string(edge, "edgeId").isEmpty()
+                || string(edge, "fromRegion").isEmpty()
+                || string(edge, "toRegion").isEmpty()
+                || string(edge, "transportKind").isEmpty()
+                || string(edge, "fromPort").isEmpty()
+                || string(edge, "toPort").isEmpty()) {
+            return "";
         }
-        if ("CONFIRMED_RUNTIME_VALUE_EQUALITY".equals(state)) {
-            return "EQUALITY";
+        String relation = "CONFIRMED_READ_FROM".equals(string(edge, "state"))
+                ? "READ_FROM"
+                : "CONFIRMED_RUNTIME_VALUE_EQUALITY".equals(
+                string(edge, "state")) ? "EQUALITY" : "";
+        JsonElement bindings = edge.get("bindings");
+        if (relation.isEmpty() || bindings == null || !bindings.isJsonArray()
+                || bindings.getAsJsonArray().size() == 0) {
+            return "";
         }
-        return "";
-    }
-
-    private static boolean canonicalRuntimeEdge(JsonObject edge) {
-        return edge != null
-                && integer(edge, "schemaVersion", -1)
-                == RUNTIME_EDGE_SCHEMA_VERSION
-                && RUNTIME_EDGE_KIND.equals(string(edge, "kind"))
-                && !string(edge, "edgeId").isEmpty()
-                && !string(edge, "fromRegion").isEmpty()
-                && !string(edge, "toRegion").isEmpty()
-                && !string(edge, "transportKind").isEmpty()
-                && !string(edge, "fromPort").isEmpty()
-                && !string(edge, "toPort").isEmpty();
+        for (JsonElement element : bindings.getAsJsonArray()) {
+            if (!element.isJsonObject()
+                    || ("READ_FROM".equals(relation)
+                    ? !trustedReadFromEvidence(element.getAsJsonObject())
+                    : !trustedRuntimeValueEqualityEvidence(
+                    element.getAsJsonObject()))) {
+                return "";
+            }
+        }
+        return relation;
     }
 
     /**
@@ -108,19 +89,9 @@ public final class AutomaticRegionEdge {
      */
     public static boolean trustedRuntimeValueEqualityBinding(
             JsonObject binding) {
-        if (binding == null
-                || !COMPLETE_VALUE_EQUALITY.equals(string(binding,
-                "evidenceKind"))
-                || string(binding, "fromRegionInstance").isEmpty()
-                || string(binding, "toRegionInstance").isEmpty()
-                || string(binding, "fromOutputPort").isEmpty()
-                || string(binding, "toInputPort").isEmpty()
-                || string(binding, "valueFingerprint").isEmpty()) {
-            return false;
-        }
-        long writer = longInteger(binding, "writerEventSeq", -1L);
-        long reader = longInteger(binding, "readerEventSeq", -1L);
-        return writer >= 0L && reader > writer;
+        return trustedRuntimeValueEqualityEvidence(binding)
+                && !string(binding, "fromOutputPort").isEmpty()
+                && !string(binding, "toInputPort").isEmpty();
     }
 
     /**
@@ -137,9 +108,7 @@ public final class AutomaticRegionEdge {
                 || string(evidence, "valueFingerprint").isEmpty()) {
             return false;
         }
-        long writer = longInteger(evidence, "writerEventSeq", -1L);
-        long reader = longInteger(evidence, "readerEventSeq", -1L);
-        return writer >= 0L && reader > writer;
+        return ordered(evidence);
     }
 
     /** Runtime evidence admitted for recursive summary composition. */
@@ -152,11 +121,9 @@ public final class AutomaticRegionEdge {
     public static boolean trustedReadFromEvidence(JsonObject evidence) {
         if (evidence == null) return false;
         String kind = string(evidence, "evidenceKind");
-        long writer = longInteger(evidence, "writerEventSeq", -1L);
-        long reader = longInteger(evidence, "readerEventSeq", -1L);
         if (FIELD_ASSIGNMENT_READ_FROM.equals(kind)) {
             return longInteger(evidence, "receiverObjectId", 0L) != 0L
-                    && writer >= 0L && reader > writer;
+                    && ordered(evidence);
         }
         if (!CONTAINER_MUTATION_READ_FROM.equals(kind)
                 || string(evidence, "mutatorDeclaredCallee").isEmpty()) {
@@ -166,6 +133,7 @@ public final class AutomaticRegionEdge {
         long enter = longInteger(evidence, "mutatorEnterSeq", -1L);
         long completion = longInteger(evidence,
                 "mutationCompletionSeq", -1L);
+        long writer = longInteger(evidence, "writerEventSeq", -1L);
         long fieldReceiver = longInteger(evidence,
                 "receiverObjectId", 0L);
         long writerContainer = longInteger(evidence, "valueObjectId", 0L);
@@ -173,10 +141,16 @@ public final class AutomaticRegionEdge {
                 "readerValueObjectId", 0L);
         return fieldRead >= 0L && enter > fieldRead
                 && completion > enter && writer == completion
-                && reader > completion && fieldReceiver != 0L
+                && longInteger(evidence, "readerEventSeq", -1L) > completion
+                && fieldReceiver != 0L
                 && longInteger(evidence, "mutationInvocationId", 0L) > 0L
                 && writerContainer != 0L
                 && writerContainer == readerContainer;
     }
 
+    private static boolean ordered(JsonObject evidence) {
+        long writer = longInteger(evidence, "writerEventSeq", -1L);
+        return writer >= 0L
+                && longInteger(evidence, "readerEventSeq", -1L) > writer;
+    }
 }

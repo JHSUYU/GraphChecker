@@ -153,15 +153,15 @@ final class RuntimeRegionPlanner {
                         trace.runtimeEvents(containedCalls);
                 List<FieldAccessEvent> containedFields =
                         trace.fieldEvents(containedCalls);
-                PathSignatureSelection pathSelection = pathSignature(
+                boolean pathSignatureTruncated = pathSignatureTruncated(
                         containedRuntime);
                 boolean runtimePathEvidenceComplete = !callSelection.truncated
-                        && !pathSelection.truncated;
+                        && !pathSignatureTruncated;
                 List<String> runtimeGaps = new ArrayList<>();
                 if (callSelection.truncated) {
                     runtimeGaps.add("CONTAINED_CALL_TREE_LIMIT_EXCEEDED");
                 }
-                if (pathSelection.truncated) {
+                if (pathSignatureTruncated) {
                     runtimeGaps.add("PATH_SIGNATURE_LIMIT_EXCEEDED");
                 }
                 ConcreteDemandSlice demandSlice = staticProjections.reslice(
@@ -242,8 +242,7 @@ final class RuntimeRegionPlanner {
                                 replayable
                                         ? "RUNTIME_SELECTED_ROOT_REPLAY"
                                         : "NO_VALIDATED_RUNTIME_PATH",
-                                runtimeGaps, pathSelection.truncated,
-                                callSelection.truncated),
+                                runtimeGaps),
                         "symbolize", symbolize,
                         "branches", branchPlan);
                 result.activations.add(activation);
@@ -548,17 +547,17 @@ final class RuntimeRegionPlanner {
                 && safe(left.test).equals(safe(right.test));
     }
 
-    private static PathSignatureSelection pathSignature(
+    private static boolean pathSignatureTruncated(
             List<RuntimeEvent> events) {
         int total = 0;
         for (RuntimeEvent event : events) {
             if ("BRANCH".equals(event.kind) && event.hasOutcome) {
                 if (++total > MAX_PATH_SIGNATURE_EVENTS) {
-                    return new PathSignatureSelection(true);
+                    return true;
                 }
             }
         }
-        return new PathSignatureSelection(false);
+        return false;
     }
 
     private static boolean invokedAnchor(List<RuntimeEvent> events,
@@ -2025,7 +2024,7 @@ final class RuntimeRegionPlanner {
                                 instance.observedMethods));
                 activation.put("admission", admission(replayable,
                         symbolicReady, admissionMode(activation),
-                        Collections.emptyList(), false, false));
+                        Collections.emptyList()));
             }
         }
     }
@@ -2044,14 +2043,9 @@ final class RuntimeRegionPlanner {
 
     private static Map<String, Object> admission(
             boolean replayable, boolean ready, String mode,
-            Collection<?> gaps, boolean pathTruncated,
-            boolean callTreeTruncated) {
+            Collection<?> gaps) {
         List<Object> blockers = new ArrayList<>();
         if (gaps != null) blockers.addAll(gaps);
-        if (pathTruncated) blockers.add(object(
-                "kind", "PATH_SIGNATURE_TRUNCATED"));
-        if (callTreeTruncated) blockers.add(object(
-                "kind", "CONTAINED_CALL_TREE_TRUNCATED"));
         if (replayable && !ready && blockers.isEmpty()) {
             blockers.add(object("kind", "SYMBOLIC_BOUNDARY_NOT_READY"));
         }
@@ -2199,7 +2193,7 @@ final class RuntimeRegionPlanner {
                     writerPathReplayable
                             ? "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
                             : "RUNTIME_READ_FROM_WITNESS_ONLY_PATH_TRUNCATED",
-                    issues, false, !writerPathReplayable));
+                    issues));
 
             List<Map<String, Object>> bindingRows = new ArrayList<>();
             for (UpstreamEdgeBinding binding : demand) {
@@ -3057,7 +3051,7 @@ final class RuntimeRegionPlanner {
             // closes this activation before scheduling.
             if (!composable) {
                 activation.put("admission", admission(false, false,
-                        admissionMode(activation), issues, false, false));
+                        admissionMode(activation), issues));
             }
         }
     }
@@ -4019,12 +4013,6 @@ final class RuntimeRegionPlanner {
                 }
                 types.observe(event.argumentIndex, event.runtimeType);
             }
-            for (Map<Long, RootArgumentTypes> byCall
-                    : result.byMethod.values()) {
-                for (RootArgumentTypes types : byCall.values()) {
-                    types.freeze();
-                }
-            }
             return result;
         }
 
@@ -4045,7 +4033,6 @@ final class RuntimeRegionPlanner {
     private static final class RootArgumentTypes {
         private final Map<Integer, String> observed = new LinkedHashMap<>();
         private final Set<Integer> ambiguous = new LinkedHashSet<>();
-        private Map<Integer, String> frozen = Collections.emptyMap();
 
         private void observe(int index, String runtimeType) {
             if (ambiguous.contains(index)) {
@@ -4060,13 +4047,8 @@ final class RuntimeRegionPlanner {
             }
         }
 
-        private void freeze() {
-            frozen = Collections.unmodifiableMap(
-                    new LinkedHashMap<>(observed));
-        }
-
         private Map<Integer, String> values() {
-            return frozen;
+            return observed;
         }
     }
 
@@ -4076,14 +4058,6 @@ final class RuntimeRegionPlanner {
 
         private ContainedCallSelection(Set<Long> calls, boolean truncated) {
             this.calls = calls;
-            this.truncated = truncated;
-        }
-    }
-
-    private static final class PathSignatureSelection {
-        private final boolean truncated;
-
-        private PathSignatureSelection(boolean truncated) {
             this.truncated = truncated;
         }
     }

@@ -38,6 +38,19 @@ public final class SmtModelValueCodec {
         return raw;
     }
 
+    /** Converts one exact decimal integer atom into SMT-LIB syntax. */
+    static String integerLiteral(String value) {
+        String raw = value == null ? "" : value.trim();
+        if (raw.isEmpty() || raw.length() > 1024) return null;
+        try {
+            BigInteger parsed = new BigInteger(raw);
+            return parsed.signum() < 0 ? "(- " + parsed.negate() + ")"
+                    : parsed.toString();
+        } catch (NumberFormatException malformed) {
+            return null;
+        }
+    }
+
     /**
      * Converts an exact SMT Real model value to a Java decimal literal.
      * Returns {@code null} for an unsupported expression, division by zero,

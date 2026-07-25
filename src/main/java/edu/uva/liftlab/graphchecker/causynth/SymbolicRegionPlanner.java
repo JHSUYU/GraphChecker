@@ -112,101 +112,6 @@ final class SymbolicRegionPlanner {
         boolean coverageComplete;
     }
 
-    /** Only the method facts consumed while constructing region contracts. */
-    private static final class MethodFacts {
-        private final String method;
-        private final boolean symbolicExecution;
-        private final List<String> symbolicInputs;
-        private final List<String> outputs;
-        private final List<String> siteIds;
-
-        private MethodFacts(String method, boolean symbolicExecution,
-                            Collection<String> symbolicInputs,
-                            Collection<String> outputs,
-                            Collection<String> siteIds) {
-            this.method = method;
-            this.symbolicExecution = symbolicExecution;
-            this.symbolicInputs = sorted(symbolicInputs);
-            this.outputs = sorted(outputs);
-            this.siteIds = sorted(siteIds);
-        }
-    }
-
-    private static final class MethodFactsBuilder {
-        private final String method;
-        private final Set<String> inputs = new LinkedHashSet<>();
-        private final Set<String> defined = new LinkedHashSet<>();
-        private final Set<String> heapInputs = new LinkedHashSet<>();
-        private final Set<String> environmentInputs = new LinkedHashSet<>();
-        private final Set<String> transferKinds = new LinkedHashSet<>();
-        private final Set<String> siteIds = new LinkedHashSet<>();
-        private boolean hasGuard;
-        private boolean hasException;
-
-        private MethodFactsBuilder(String method) {
-            this.method = method;
-        }
-
-        private void observe(Map<String, Object> edge) {
-            String from = string(edge.get("fromCell"));
-            String to = string(edge.get("toCell"));
-            String transfer = string(edge.get("transferKind"));
-            if (!from.isEmpty()) inputs.add(from);
-            if (!to.isEmpty()) {
-                defined.add(to);
-            }
-            if (!transfer.isEmpty()) transferKinds.add(transfer);
-            String site = string(edge.get("siteId"));
-            if (!site.isEmpty()) siteIds.add(site);
-            if ("HEAP_READ".equals(transfer)
-                    || "HEAP_LOOKUP".equals(transfer)
-                    || from.contains("#field:")
-                    || declaredField(from)) {
-                heapInputs.add(from);
-            }
-            hasGuard |= "GUARD".equals(transfer);
-            hasException |= "EXCEPTION".equals(transfer);
-            String unit = string(edge.get("unit")).toLowerCase(Locale.ROOT);
-            if (unit.contains("time.now")
-                    || unit.contains("currenttimemillis")
-                    || unit.contains("nanotime")) {
-                environmentInputs.add("environment.now");
-            }
-        }
-
-        private MethodFacts finish() {
-            Set<String> liveIns = new LinkedHashSet<>(inputs);
-            liveIns.removeAll(defined);
-            for (String input : inputs) {
-                if (input.contains(".param") || input.contains("@this")
-                        || input.contains("#field:")
-                        || declaredField(input)) {
-                    liveIns.add(input);
-                }
-            }
-            liveIns.addAll(heapInputs);
-            liveIns.addAll(environmentInputs);
-            return new MethodFacts(method, requiresSymbolicExecution(),
-                    liveIns, defined, siteIds);
-        }
-
-        private boolean requiresSymbolicExecution() {
-            return transferKinds.contains("COMPUTE") || hasGuard || hasException
-                    || transferKinds.contains("HEAP_WRITE")
-                    || transferKinds.contains("MODEL_TRANSFORM")
-                    || transferKinds.contains("PROTOCOL_TRANSFER")
-                    || transferKinds.contains("CONSTRUCT")
-                    || transferKinds.contains("UNKNOWN")
-                    || transferKinds.contains("HEAP_LOOKUP")
-                    && (hasGuard || hasException);
-        }
-
-        private static boolean declaredField(String value) {
-            return value != null
-                    && DECLARED_FIELD_PATTERN.matcher(value).matches();
-        }
-    }
-
     private static final class FieldSignature {
         private final String owner;
         private final String name;
@@ -398,8 +303,6 @@ final class SymbolicRegionPlanner {
         private final StaticGraphIndex graph;
         private final Map<String, List<Map<String, Object>>>
                 edgesByMethodSet = new LinkedHashMap<>();
-        private final Map<String, MethodFacts> factsByMethod =
-                new LinkedHashMap<>();
         /**
          * Region-local targets that have an in-region definition.  Input
          * selection asks this question for hundreds of candidates; scanning
@@ -438,17 +341,6 @@ final class SymbolicRegionPlanner {
         private final Set<String> anchorMethods = new LinkedHashSet<>();
         private Planner(List<Map<String, Object>> edges) {
             graph = new StaticGraphIndex(edges);
-            Map<String, MethodFactsBuilder> builders = new LinkedHashMap<>();
-            for (Map<String, Object> edge : graph.edges()) {
-                String method = string(edge.get("method"));
-                if (method.isEmpty()) continue;
-                builders.computeIfAbsent(method, MethodFactsBuilder::new)
-                        .observe(edge);
-            }
-            for (MethodFactsBuilder builder : builders.values()) {
-                MethodFacts facts = builder.finish();
-                factsByMethod.put(facts.method, facts);
-            }
             index();
         }
 
@@ -457,10 +349,9 @@ final class SymbolicRegionPlanner {
             List<String> anchors = new ArrayList<>(anchorMethods);
             Collections.sort(anchors);
             if (anchors.isEmpty()) {
-                for (Map.Entry<String, MethodFacts> entry
-                        : factsByMethod.entrySet()) {
-                    if (entry.getValue().symbolicExecution) {
-                        anchors.add(entry.getKey());
+                for (String method : graph.methods()) {
+                    if (graph.requiresSymbolicExecution(method)) {
+                        anchors.add(method);
                     }
                 }
             }
@@ -499,9 +390,7 @@ final class SymbolicRegionPlanner {
             }
 
             Set<String> coveredBeforeModels = methodsCovered(result.regions);
-            for (Map.Entry<String, MethodFacts> entry
-                    : factsByMethod.entrySet()) {
-                String method = entry.getKey();
+            for (String method : graph.methods()) {
                 if (coveredBeforeModels.contains(method)) {
                     continue;
                 }
@@ -548,7 +437,7 @@ final class SymbolicRegionPlanner {
                             ignored -> new LinkedHashSet<>()).add(regionId);
                 }
             }
-            for (String method : factsByMethod.keySet()) {
+            for (String method : graph.methods()) {
                 if (!regionsByMethod.containsKey(method)) {
                     return false;
                 }
@@ -571,10 +460,10 @@ final class SymbolicRegionPlanner {
                     continue;
                 }
                 String callee = string(edge.get("invoke"));
-                if (callee.isEmpty() || !factsByMethod.containsKey(callee)) {
+                if (callee.isEmpty() || !graph.hasMethod(callee)) {
                     callee = invokedMethodFromCells(edge);
                 }
-                if (!callee.isEmpty() && factsByMethod.containsKey(callee)) {
+                if (!callee.isEmpty() && graph.hasMethod(callee)) {
                     if (!shareRegion(method, callee, regionsByMethod,
                             methodsByRegion)
                             && !alternativeNonCausalEdge(edge,
@@ -658,7 +547,7 @@ final class SymbolicRegionPlanner {
                 if (coveredMethods.contains(toMethod)
                         && !fromMethod.isEmpty()
                         && !coveredMethods.contains(fromMethod)
-                        && factsByMethod.containsKey(fromMethod)) {
+                        && graph.hasMethod(fromMethod)) {
                     anchors.add(fromMethod);
                 }
             }
@@ -714,7 +603,7 @@ final class SymbolicRegionPlanner {
                     if (!"HEAP_WRITE".equals(string(edge.get("transferKind")))
                             || !consumedFields.contains(string(edge.get("toCell")))
                             || method.isEmpty()
-                            || !factsByMethod.containsKey(method)) {
+                            || !graph.hasMethod(method)) {
                         continue;
                     }
                     if (coveredMethods.contains(method)) {
@@ -815,18 +704,18 @@ final class SymbolicRegionPlanner {
                 String kind = string(edge.get("kind"));
                 if (("SEED".equals(transfer)
                         || lower(kind).contains("seed"))
-                        && factsByMethod.containsKey(method)) {
+                        && graph.hasMethod(method)) {
                     anchorMethods.add(method);
                 }
 
                 String callee = string(edge.get("invoke"));
-                if (callee.isEmpty() || !factsByMethod.containsKey(callee)) {
+                if (callee.isEmpty() || !graph.hasMethod(callee)) {
                     callee = invokedMethodFromCells(edge);
                 }
                 if (method.isEmpty() || callee.isEmpty()
                         || method.equals(callee)
-                        || !factsByMethod.containsKey(method)
-                        || !factsByMethod.containsKey(callee)) {
+                        || !graph.hasMethod(method)
+                        || !graph.hasMethod(callee)) {
                     continue;
                 }
                 if (isBoundary(edge)) {
@@ -1073,7 +962,7 @@ final class SymbolicRegionPlanner {
 
         private String calleeForEdge(Map<String, Object> edge) {
             String callee = string(edge.get("invoke"));
-            if (callee.isEmpty() || !factsByMethod.containsKey(callee)) {
+            if (callee.isEmpty() || !graph.hasMethod(callee)) {
                 callee = invokedMethodFromCells(edge);
             }
             return callee;
@@ -1108,7 +997,7 @@ final class SymbolicRegionPlanner {
                 if (draft.methods.size() >= MAX_REGION_METHODS) {
                     break;
                 }
-                if (factsByMethod.containsKey(method)
+                if (graph.hasMethod(method)
                         && reachableFrom(draft.rootMethod, method)) {
                     draft.methods.add(method);
                 }
@@ -1216,7 +1105,7 @@ final class SymbolicRegionPlanner {
             Deque<String> queue = new ArrayDeque<>();
             seen.add(root);
             queue.add(root);
-            while (!queue.isEmpty() && seen.size() <= factsByMethod.size()) {
+            while (!queue.isEmpty() && seen.size() <= graph.methods().size()) {
                 String current = queue.removeFirst();
                 for (String next : values(calleesByCaller.get(current))) {
                     if (!seen.add(next)) {
@@ -1304,13 +1193,13 @@ final class SymbolicRegionPlanner {
             predecessor.put(from, null);
             queue.add(from);
             while (!queue.isEmpty()
-                    && predecessor.size() <= factsByMethod.size()) {
+                    && predecessor.size() <= graph.methods().size()) {
                 String current = queue.removeFirst();
                 if (current.equals(target)) {
                     break;
                 }
                 for (String next : sorted(calleesByCaller.get(current))) {
-                    if (!factsByMethod.containsKey(next)
+                    if (!graph.hasMethod(next)
                             || predecessor.containsKey(next)) {
                         continue;
                     }
@@ -1343,17 +1232,16 @@ final class SymbolicRegionPlanner {
             List<Map<String, Object>> branchPolicies = new ArrayList<>();
 
             for (String method : draft.methods) {
-                MethodFacts facts = factsByMethod.get(method);
-                if (facts == null) {
+                if (!graph.hasMethod(method)) {
                     continue;
                 }
-                Collection<String> inputs = facts.symbolicInputs;
-                Collection<String> outputs = facts.outputs;
+                Collection<String> inputs = graph.inputs(method);
+                Collection<String> outputs = graph.outputs(method);
                 inputCandidates.addAll(inputs);
                 outputCandidates.addAll(outputs);
                 produced.addAll(outputs);
                 if (!draft.exceptionDirected) {
-                    sites.addAll(facts.siteIds);
+                    sites.addAll(graph.sites(method));
                 }
             }
             if (draft.exceptionDirected) {
@@ -1610,12 +1498,11 @@ final class SymbolicRegionPlanner {
                 Set<String> candidates = new LinkedHashSet<>();
                 Set<String> produced = new LinkedHashSet<>();
                 for (String method : slice.methods) {
-                    MethodFacts facts = factsByMethod.get(method);
-                    if (facts == null) {
+                    if (!graph.hasMethod(method)) {
                         continue;
                     }
-                    candidates.addAll(facts.symbolicInputs);
-                    produced.addAll(facts.outputs);
+                    candidates.addAll(graph.inputs(method));
+                    produced.addAll(graph.outputs(method));
                 }
                 InputSelection selection = selectExternalInputs(slice,
                         candidates, produced);
@@ -4417,7 +4304,7 @@ final class SymbolicRegionPlanner {
                         || string(edge.get("toCell")).isEmpty()
                         || declaredCallee.isEmpty()
                         || implementation.isEmpty()
-                        || !factsByMethod.containsKey(implementation)
+                        || !graph.hasMethod(implementation)
                         || declaredSubSignature.isEmpty()
                         || !declaredSubSignature.equals(
                                 implementationSubSignature)
@@ -4451,15 +4338,15 @@ final class SymbolicRegionPlanner {
             Set<String> reachable = new LinkedHashSet<>();
             Deque<String> queue = new ArrayDeque<>();
             if (!rootMethod.isEmpty()
-                    && factsByMethod.containsKey(rootMethod)) {
+                    && graph.hasMethod(rootMethod)) {
                 reachable.add(rootMethod);
                 queue.add(rootMethod);
             }
             while (!queue.isEmpty()
-                    && reachable.size() <= factsByMethod.size()) {
+                    && reachable.size() <= graph.methods().size()) {
                 String method = queue.removeFirst();
                 for (String callee : values(calleesByCaller.get(method))) {
-                    if (factsByMethod.containsKey(callee)
+                    if (graph.hasMethod(callee)
                             && reachable.add(callee)) {
                         queue.addLast(callee);
                     }
@@ -6038,10 +5925,7 @@ final class SymbolicRegionPlanner {
          */
         private boolean planBackedSameThreadCallResult(
                 String candidate, String returnedMethod, RegionDraft draft) {
-            MethodFacts producerFacts = factsByMethod.get(
-                    returnedMethod);
-            if (producerFacts == null
-                    || !producerFacts.outputs.contains(candidate)
+            if (!graph.outputs(returnedMethod).contains(candidate)
                     || !reachableFrom(draft.rootMethod, returnedMethod)) {
                 return false;
             }
@@ -6068,10 +5952,7 @@ final class SymbolicRegionPlanner {
             }
             Set<String> targets = new LinkedHashSet<>();
             for (String method : draft.methods) {
-                MethodFacts facts = factsByMethod.get(method);
-                if (facts != null) {
-                    targets.addAll(facts.outputs);
-                }
+                targets.addAll(graph.outputs(method));
             }
             for (Map<String, Object> edge : analysisGraph(draft).edges()) {
                 if (draft.methods.contains(string(edge.get("method")))) {
@@ -6717,10 +6598,9 @@ final class SymbolicRegionPlanner {
             // compact test/static slice has not retained a separate HEAP_READ
             // row.  Exact cell identity plus a method outside the producer
             // region is still a cross-region def-to-live-in boundary.
-            for (Map.Entry<String, MethodFacts> entry
-                    : factsByMethod.entrySet()) {
-                if (!region.methods.contains(entry.getKey())
-                        && entry.getValue().symbolicInputs.contains(field)) {
+            for (String method : graph.methods()) {
+                if (!region.methods.contains(method)
+                        && graph.inputs(method).contains(field)) {
                     return true;
                 }
             }
@@ -7191,11 +7071,8 @@ final class SymbolicRegionPlanner {
             candidates.addAll(portCells(region.get("symbolicInputs")));
             candidates.addAll(portCells(region.get("outputs")));
             for (String method : strings(region.get("methods"))) {
-                MethodFacts facts = factsByMethod.get(method);
-                if (facts != null) {
-                    candidates.addAll(facts.symbolicInputs);
-                    candidates.addAll(facts.outputs);
-                }
+                candidates.addAll(graph.inputs(method));
+                candidates.addAll(graph.outputs(method));
             }
             String thisProjection = "@this: " + signature.owner
                     + "#field:" + signature.name;

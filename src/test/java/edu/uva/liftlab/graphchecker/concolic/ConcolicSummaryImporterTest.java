@@ -1221,7 +1221,7 @@ public class ConcolicSummaryImporterTest {
             int occurrence, long eventSequence) {
         String siteId = originMethod + "#u" + originUnitIndex;
         JsonObject observation = new JsonObject();
-        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("schemaVersion", 2);
         observation.addProperty("kind", "MAP_ENTRY_READ");
         observation.addProperty("operation", "java.util.Iterator.next");
         observation.addProperty("observationId",
@@ -1268,11 +1268,6 @@ public class ConcolicSummaryImporterTest {
         observation.add("keyExpression", keyExpression.deepCopy());
         observation.add("valueExpression",
                 symbol("expiredValue", "example/Value"));
-        observation.addProperty("entryBindingComplete", true);
-        observation.addProperty("expressionBindingComplete", true);
-        observation.addProperty("objectTokenBindingComplete", true);
-        observation.addProperty("bindingAuthorityComplete", true);
-        observation.addProperty("runtimeProvenanceComplete", true);
         observation.addProperty("complete", true);
         return observation;
     }
@@ -1293,12 +1288,11 @@ public class ConcolicSummaryImporterTest {
         entry.addProperty("keyObjectToken", 102L);
         entry.add("valueExpression", valueExpression.deepCopy());
         entry.addProperty("valueObjectToken", 103L);
-        entry.addProperty("valueWasNull", false);
         entry.addProperty("valueExpressionAuthority",
                 "ACTIVATION_LOCAL_OBJECT_TOKEN_REF_WITNESS_V1");
 
         JsonObject snapshot = new JsonObject();
-        snapshot.addProperty("schemaVersion", 1);
+        snapshot.addProperty("schemaVersion", 2);
         snapshot.addProperty("kind", "FINITE_MAP_ENTRY_SNAPSHOT");
         snapshot.addProperty("operation", "java.util.Map.entrySet");
         snapshot.addProperty("observationId",
@@ -1325,37 +1319,15 @@ public class ConcolicSummaryImporterTest {
         snapshot.add("mapExpression", mapExpression.deepCopy());
         snapshot.addProperty("mapExpressionAuthority",
                 "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_FIRST_ENTRY_SET_NEXT");
-        snapshot.addProperty("entryCount", 1);
-        snapshot.addProperty("finiteEntryBound", 4096);
-        snapshot.addProperty("sizeBefore", 1);
-        snapshot.addProperty("entrySetSizeBefore", 1);
-        snapshot.addProperty("sizeAfter", 1);
-        snapshot.addProperty("entrySetSizeAfter", 1);
-        JsonArray keys = new JsonArray();
-        keys.add(keyExpression.deepCopy());
-        snapshot.add("keyExpressions", keys);
-        JsonArray keyTokens = new JsonArray();
-        keyTokens.add(102L);
-        snapshot.add("keyObjectTokens", keyTokens);
         snapshot.addProperty("keyExpressionAuthority",
                 "CONCRETE_IMMUTABLE_MAP_ENTRY_KEYS_AT_SAME_EXECUTION_"
                         + "ENTRY_SET_SNAPSHOT");
-        JsonArray valueTokens = new JsonArray();
-        valueTokens.add(103L);
-        snapshot.add("valueObjectTokens", valueTokens);
-        JsonArray values = new JsonArray();
-        values.add(valueExpression.deepCopy());
-        snapshot.add("valueExpressions", values);
         snapshot.addProperty("valueExpressionAuthority",
                 "PER_ENTRY_EXACT_RUNTIME_NULL_OR_ACTIVATION_LOCAL_OBJECT_"
                         + "TOKEN_REF_WITNESS_V1");
         JsonArray entries = new JsonArray();
         entries.add(entry);
         snapshot.add("entries", entries);
-        snapshot.addProperty("keysDistinct", true);
-        snapshot.addProperty("firstIteratorEntryMatched", true);
-        snapshot.addProperty("sizeStable", true);
-        snapshot.addProperty("entrySetStable", true);
         snapshot.addProperty("authority",
                 "FIRST_BOUND_ENTRY_SET_ITERATOR_NEXT_EXACT_HASHMAP_OR_"
                         + "LINKEDHASHMAP_SAME_EXECUTION_AT_ITERATOR_NEXT_"
@@ -1923,7 +1895,7 @@ public class ConcolicSummaryImporterTest {
         String symbol = action.get("symbol").getAsString();
         String cell = action.get("cell").getAsString();
         int marker = site.lastIndexOf("#u");
-        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("schemaVersion", 2);
         observation.addProperty("kind", "MAP_STATE_INPUT_OBSERVATION");
         observation.addProperty("symbol", symbol);
         observation.addProperty("phase", "AT_MAP_STATE_INPUT");
@@ -1958,24 +1930,17 @@ public class ConcolicSummaryImporterTest {
         observation.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         observation.addProperty("objectTokenScope", "ACT.P");
-        observation.addProperty("identityBindingComplete",
-                identityComplete);
-        observation.addProperty("entryCount", 0);
-        observation.addProperty("finiteEntryBound", 4096);
-        observation.add("keyExpressions", new JsonArray());
-        observation.add("valueObjectTokens", new JsonArray());
         observation.add("entries", new JsonArray());
-        observation.addProperty("snapshotComplete", snapshotComplete);
         observation.addProperty("snapshotAuthority",
                 "SAME_FIELD_HOOK_STABLE_BOUNDED_ENTRY_SET_SNAPSHOT_V1");
-        observation.addProperty("complete", true);
+        observation.addProperty("complete",
+                identityComplete && snapshotComplete);
         observation.addProperty("mapStateInputSymbol", symbol);
         observation.addProperty("mapStateInputCell", cell);
         observation.addProperty("mapStateInputObservationId",
                 observation.get("observationId").getAsString());
         observation.addProperty("mapStateInputObjectToken", 2);
         observation.addProperty("mapStateInputBindingAuthority", authority);
-        observation.addProperty("mapStateInputBindingComplete", true);
         return observation;
     }
 
@@ -1999,7 +1964,7 @@ public class ConcolicSummaryImporterTest {
     private static JsonObject incompleteMapEntryObservation(String siteId) {
         int marker = siteId.lastIndexOf("#u");
         JsonObject observation = new JsonObject();
-        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("schemaVersion", 2);
         observation.addProperty("kind", "MAP_ENTRY_READ");
         observation.addProperty("operation", "java.util.Iterator.next");
         observation.addProperty("originMethod", siteId.substring(0, marker));

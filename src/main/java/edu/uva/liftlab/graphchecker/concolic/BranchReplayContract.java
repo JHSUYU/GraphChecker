@@ -8,7 +8,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveString;
@@ -16,33 +18,28 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
 
 /** Immutable natural replay request derived from one source branch witness. */
 public final class BranchReplayContract {
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
     public static final String KIND = "BINARY_BRANCH_REPLAY_CONTRACT";
-    public static final String DROP_SOURCE_SUFFIX = "DROP_SOURCE_SUFFIX";
 
     private final List<BranchWitness> orderedPrefix;
     private final BranchWitness source;
-    private final boolean requiredTakenOutcome;
-    private final JsonElement requiredSatisfiedPredicate;
+    private final SolverPathContext solverPathContext;
 
     private BranchReplayContract(List<BranchWitness> orderedPrefix,
-                                 BranchWitness source) {
+                                 BranchWitness source,
+                                 SolverPathContext solverPathContext) {
         if (source == null) {
             throw new IllegalArgumentException("source witness is required");
         }
-        List<BranchWitness> prefixCopy = new ArrayList<>();
+        if (orderedPrefix == null) {
+            throw new IllegalArgumentException("ordered prefix is required");
+        }
+        List<BranchWitness> prefixCopy = new ArrayList<>(orderedPrefix);
         Set<String> events = new LinkedHashSet<>();
-        if (orderedPrefix != null) {
-            for (BranchWitness witness : orderedPrefix) {
-                if (witness == null) {
-                    throw new IllegalArgumentException(
-                            "ordered prefix contains a missing witness");
-                }
-                if (!events.add(eventIdentity(witness))) {
-                    throw new IllegalArgumentException(
-                            "ordered prefix contains a duplicate branch event");
-                }
-                prefixCopy.add(witness);
+        for (BranchWitness witness : prefixCopy) {
+            if (witness == null || !events.add(eventIdentity(witness))) {
+                throw new IllegalArgumentException(
+                        "ordered prefix contains a missing or duplicate event");
             }
         }
         if (!events.add(eventIdentity(source))) {
@@ -51,22 +48,56 @@ public final class BranchReplayContract {
         }
         this.orderedPrefix = Collections.unmodifiableList(prefixCopy);
         this.source = source;
-        this.requiredTakenOutcome = !source.sourceTakenOutcome();
-        this.requiredSatisfiedPredicate = BranchPredicateAlgebra.complement(
-                source.sourceSatisfiedPredicate());
+        this.solverPathContext = solverPathContext;
     }
 
     /** The only operation in the protocol that derives opposite polarity. */
     public static BranchReplayContract flip(List<BranchWitness> orderedPrefix,
                                             BranchWitness source) {
-        return new BranchReplayContract(orderedPrefix, source);
+        return new BranchReplayContract(orderedPrefix, source, null);
+    }
+
+    public static BranchReplayContract fromSummary(
+            JsonObject summary, String siteId, int occurrence) {
+        List<SummaryBranchMapping> mappings =
+                SummaryBranchMapping.fromSummary(summary);
+        for (SummaryBranchMapping mapping : mappings) {
+            if (siteId.equals(mapping.siteId())
+                    && occurrence == mapping.occurrence()) {
+                return fromSummary(summary, mappings, mapping);
+            }
+        }
+        throw new IllegalArgumentException("target branch mapping is missing");
+    }
+
+    static BranchReplayContract fromSummary(
+            JsonObject summary, List<SummaryBranchMapping> mappings,
+            SummaryBranchMapping selected) {
+        if (selected == null || !selected.isWitnessed()) {
+            throw new IllegalArgumentException(
+                    "target branch has no immutable witness");
+        }
+        int targetPosition = selected.summaryPcIndex();
+        Map<Integer, BranchWitness> prefixByPosition = new TreeMap<>();
+        for (SummaryBranchMapping mapping : mappings) {
+            if (mapping.isWitnessed()
+                    && mapping.summaryPcIndex() < targetPosition) {
+                prefixByPosition.put(mapping.summaryPcIndex(),
+                        mapping.witness());
+            }
+        }
+        SolverPathContext context = SolverPathContext.fromPath(
+                summary.getAsJsonArray("pathCondition"),
+                prefixByPosition.keySet(),
+                targetPosition);
+        return new BranchReplayContract(
+                new ArrayList<>(prefixByPosition.values()),
+                selected.witness(), context);
     }
 
     public static BranchReplayContract fromJson(JsonObject json) {
         if (primitiveInteger(json, "schemaVersion", -1) != SCHEMA_VERSION
-                || !KIND.equals(primitiveString(json, "kind"))
-                || !DROP_SOURCE_SUFFIX.equals(primitiveString(json,
-                "suffixPolicy"))) {
+                || !KIND.equals(primitiveString(json, "kind"))) {
             throw new IllegalArgumentException(
                     "unsupported binary branch replay contract schema");
         }
@@ -89,7 +120,25 @@ public final class BranchReplayContract {
     }
 
     public JsonObject toJson() {
-        return coreJson();
+        JsonObject result = new JsonObject();
+        result.addProperty("schemaVersion", SCHEMA_VERSION);
+        result.addProperty("kind", KIND);
+        JsonArray prefix = new JsonArray();
+        for (BranchWitness witness : orderedPrefix) {
+            prefix.add(witness.toJson());
+        }
+        result.add("orderedPrefix", prefix);
+        result.add("source", source.toJson());
+        return (JsonObject) CanonicalJson.copy(result);
+    }
+
+    public void addTo(JsonObject target) {
+        if (solverPathContext == null) {
+            throw new IllegalStateException(
+                    "solver context is unavailable for parsed contract");
+        }
+        target.add("replayContract", toJson());
+        target.add("solverPathContext", solverPathContext.toJson());
     }
 
     public List<BranchWitness> orderedPrefix() {
@@ -101,11 +150,12 @@ public final class BranchReplayContract {
     }
 
     public boolean requiredTakenOutcome() {
-        return requiredTakenOutcome;
+        return !source.sourceTakenOutcome();
     }
 
     public JsonElement requiredSatisfiedPredicate() {
-        return CanonicalJson.copy(requiredSatisfiedPredicate);
+        return BranchPredicateAlgebra.complement(
+                source.sourceSatisfiedPredicate());
     }
 
     public JsonArray requiredPathPredicates() {
@@ -115,35 +165,6 @@ public final class BranchReplayContract {
         }
         result.add(requiredSatisfiedPredicate());
         return result;
-    }
-
-    public boolean sameContent(BranchReplayContract other) {
-        if (other == null
-                || orderedPrefix.size() != other.orderedPrefix.size()
-                || !source.sameContent(other.source)) {
-            return false;
-        }
-        for (int index = 0; index < orderedPrefix.size(); index++) {
-            if (!orderedPrefix.get(index).sameContent(
-                    other.orderedPrefix.get(index))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private JsonObject coreJson() {
-        JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", SCHEMA_VERSION);
-        result.addProperty("kind", KIND);
-        JsonArray prefix = new JsonArray();
-        for (BranchWitness witness : orderedPrefix) {
-            prefix.add(witness.toJson());
-        }
-        result.add("orderedPrefix", prefix);
-        result.add("source", source.toJson());
-        result.addProperty("suffixPolicy", DROP_SOURCE_SUFFIX);
-        return (JsonObject) CanonicalJson.copy(result);
     }
 
     private static String eventIdentity(BranchWitness witness) {

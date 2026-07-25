@@ -219,32 +219,14 @@ public final class RegionSummaryMerger {
         item.add("guard", guard);
         item.add("outputExpressions", object(summary,
                 "outputExpressions").deepCopy());
-        item.add("heapStateInitializers", array(summary,
-                "heapStateInitializers").deepCopy());
-        item.add("heapObservations", array(summary,
-                "heapObservations").deepCopy());
-        item.add("finiteMapSnapshots", array(summary,
-                "finiteMapSnapshots").deepCopy());
-        // Occurrence-specific symbols stay inside their source case and are
-        // never unioned at the merged root.
-        item.add("dynamicFieldBindings", array(summary,
-                "dynamicFieldBindings").deepCopy());
-        item.add("engineArrayInputBindings", array(summary,
-                "engineArrayInputBindings").deepCopy());
-        item.add("vmIntrinsicPlaceholderBindings", array(summary,
-                "vmIntrinsicPlaceholderBindings").deepCopy());
-        item.add("unforcedEnvironmentValidationRequirements",
-                array(summary,
-                        "unforcedEnvironmentValidationRequirements")
-                        .deepCopy());
-        item.add("heapEffects", array(summary,
-                "heapEffects").deepCopy());
-        item.addProperty("normalExit", bool(summary,
-                "normalExit", false));
-        item.addProperty("exceptionType", string(summary,
-                "exceptionType"));
-        item.addProperty("sourceSummaryId", string(summary,
-                "summaryId"));
+        for (String field : new String[]{"heapStateInitializers",
+                "heapObservations", "finiteMapSnapshots",
+                "dynamicFieldBindings", "engineArrayInputBindings",
+                "vmIntrinsicPlaceholderBindings",
+                "unforcedEnvironmentValidationRequirements",
+                "heapEffects"}) {
+            item.add(field, array(summary, field).deepCopy());
+        }
         item.addProperty("sourceActivationId", string(summary,
                 "activationId"));
         return item;
@@ -257,22 +239,12 @@ public final class RegionSummaryMerger {
      */
     private static String stableCasePayload(JsonObject summary) {
         JsonObject stable = new JsonObject();
-        stable.add("heapStateInitializers", array(summary,
-                "heapStateInitializers").deepCopy());
-        stable.add("heapObservations", array(summary,
-                "heapObservations").deepCopy());
-        stable.add("finiteMapSnapshots", array(summary,
-                "finiteMapSnapshots").deepCopy());
-        stable.add("vmIntrinsicPlaceholderBindings", array(summary,
-                "vmIntrinsicPlaceholderBindings").deepCopy());
-        stable.add("unforcedEnvironmentValidationRequirements",
-                array(summary,
-                        "unforcedEnvironmentValidationRequirements")
-                        .deepCopy());
-        stable.addProperty("normalExit", bool(summary,
-                "normalExit", false));
-        stable.addProperty("exceptionType", string(summary,
-                "exceptionType"));
+        for (String field : new String[]{"heapStateInitializers",
+                "heapObservations", "finiteMapSnapshots",
+                "vmIntrinsicPlaceholderBindings",
+                "unforcedEnvironmentValidationRequirements"}) {
+            stable.add(field, array(summary, field).deepCopy());
+        }
         return render(stable);
     }
 

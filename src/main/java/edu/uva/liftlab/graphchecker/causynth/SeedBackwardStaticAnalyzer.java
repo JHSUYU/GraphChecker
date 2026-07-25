@@ -111,6 +111,11 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, Set<String>> relevantByMethod = new LinkedHashMap<>();
     private final Deque<String> dirtyMethods = new ArrayDeque<>();
     private final Set<String> queuedMethods = new LinkedHashSet<>();
+    private final Map<String, List<Map<String, Object>>>
+            projectableEdgesByEndpoint = new LinkedHashMap<>();
+    private final Deque<Map<String, Object>> dirtyProjectedEdges =
+            new ArrayDeque<>();
+    private final Set<String> queuedProjectedEdgeIds = new LinkedHashSet<>();
     private final Set<String> selectedMethods = new MethodWorkSet();
     private final Map<String, Map<String, Object>> emittedEdgeRows =
             new LinkedHashMap<>();
@@ -751,7 +756,11 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void runWorklist() {
-        while (edges.size() < maxEdges) {
+        // Monotone fixed point: selecting a method or adding one relevant
+        // cell queues that method once. Adding a projected cell queues only
+        // previously emitted base edges with a matching endpoint prefix.
+        while ((!dirtyMethods.isEmpty() || !dirtyProjectedEdges.isEmpty())
+                && edges.size() < maxEdges) {
             while (!dirtyMethods.isEmpty() && edges.size() < maxEdges) {
                 String method = dirtyMethods.removeFirst();
                 queuedMethods.remove(method);
@@ -766,8 +775,12 @@ final class SeedBackwardStaticAnalyzer {
                 expandConstructorCallers(method);
                 expandMethodCallers(method);
             }
-            if (!propagateProjectedEdgesFromExistingEdges()) {
-                break;
+            while (!dirtyProjectedEdges.isEmpty()
+                    && edges.size() < maxEdges) {
+                Map<String, Object> edge =
+                        dirtyProjectedEdges.removeFirst();
+                queuedProjectedEdgeIds.remove(stringValue(edge.get("id")));
+                propagateProjectedEdge(edge);
             }
         }
     }
@@ -1199,7 +1212,8 @@ final class SeedBackwardStaticAnalyzer {
                 .filter(param -> param != null)
                 .collect(Collectors.toList());
         String thisNode = methodThisNode(method);
-        Set<String> thisProjectionSuffixes = projectionSuffixesForBase(method, thisNode);
+        Set<String> thisProjectionSuffixes =
+                projectionSuffixesForBase(thisNode);
         if (params.isEmpty() && thisProjectionSuffixes.isEmpty()) {
             return;
         }
@@ -1270,7 +1284,8 @@ final class SeedBackwardStaticAnalyzer {
         }
         Set<String> calleeRelevant = relevant(method);
         String thisNode = methodThisNode(method);
-        Set<String> thisProjectionSuffixes = projectionSuffixesForBase(method, thisNode);
+        Set<String> thisProjectionSuffixes =
+                projectionSuffixesForBase(thisNode);
         boolean thisRelevant = thisNode != null
                 && (calleeRelevant.contains(thisNode)
                 || !thisProjectionSuffixes.isEmpty());
@@ -2114,8 +2129,7 @@ final class SeedBackwardStaticAnalyzer {
             String callerMethod, Fact fact, MethodSig constructor,
             List<String> actuals, String callerReceiver,
             Set<String> callerRelevant) {
-        Set<String> suffixes = projectionSuffixesForBase(callerMethod,
-                callerReceiver);
+        Set<String> suffixes = projectionSuffixesForBase(callerReceiver);
         if (suffixes.isEmpty()) {
             return false;
         }
@@ -2297,7 +2311,7 @@ final class SeedBackwardStaticAnalyzer {
             return false;
         }
         String callerReceiver = canonical(callerMethod, receiver);
-        Set<String> suffixes = projectionSuffixesForBase(callerMethod, callerReceiver);
+        Set<String> suffixes = projectionSuffixesForBase(callerReceiver);
         if (suffixes.isEmpty()) {
             return false;
         }
@@ -3345,7 +3359,7 @@ final class SeedBackwardStaticAnalyzer {
                 || containsProjection(targetRelevant, returnNode);
         String targetThis = methodThisNode(targetMethod);
         Set<String> targetThisProjectionSuffixes =
-                projectionSuffixesForBase(targetMethod, targetThis);
+                projectionSuffixesForBase(targetThis);
         boolean targetThisRelevant = targetThis != null
                 && (targetRelevant.contains(targetThis)
                 || !targetThisProjectionSuffixes.isEmpty());
@@ -3500,39 +3514,58 @@ final class SeedBackwardStaticAnalyzer {
         return sources;
     }
 
-    private boolean propagateProjectedEdgesFromExistingEdges() {
-        if (edges.isEmpty() || edges.size() >= maxEdges) {
-            return false;
+    private void propagateProjectedEdge(Map<String, Object> edge) {
+        if (!projectableEdge(edge)) {
+            return;
         }
-        boolean changed = false;
-        List<Map<String, Object>> snapshot = new ArrayList<>(edges);
-        for (Map<String, Object> edge : snapshot) {
-            if (edges.size() >= maxEdges) {
-                break;
-            }
-            String kind = String.valueOf(edge.get("kind"));
-            String from = String.valueOf(edge.get("fromCell"));
-            String to = String.valueOf(edge.get("toCell"));
-            String method = String.valueOf(edge.get("method"));
-            boolean edgeHasInvoke = edge.get("invoke") != null;
-            if (!supportsProjectedPropagation(kind)
-                    || ("local_def_use".equals(kind) && edgeHasInvoke)
-                    || !canCarryProjectedFields(from)
-                    || !canCarryProjectedFields(to)) {
-                continue;
-            }
-            Set<String> suffixes = new LinkedHashSet<>();
-            suffixes.addAll(projectionSuffixesForBase(method, from));
-            suffixes.addAll(projectionSuffixesForBase(method, to));
-            if (suffixes.isEmpty()) {
-                continue;
-            }
-            if (addProjectedEdgesForObjectFlow(kind, from, to, method,
-                    null, edge)) {
-                changed = true;
+        String kind = stringValue(edge.get("kind"));
+        String from = stringValue(edge.get("fromCell"));
+        String to = stringValue(edge.get("toCell"));
+        addProjectedEdgesForObjectFlow(kind, from, to,
+                stringValue(edge.get("method")), null, edge);
+    }
+
+    private void indexProjectableEdge(Map<String, Object> edge) {
+        if (!projectableEdge(edge)) {
+            return;
+        }
+        String from = stringValue(edge.get("fromCell"));
+        String to = stringValue(edge.get("toCell"));
+        projectableEdgesByEndpoint.computeIfAbsent(from,
+                ignored -> new ArrayList<>()).add(edge);
+        if (!from.equals(to)) {
+            projectableEdgesByEndpoint.computeIfAbsent(to,
+                    ignored -> new ArrayList<>()).add(edge);
+        }
+    }
+
+    private boolean projectableEdge(Map<String, Object> edge) {
+        String kind = stringValue(edge.get("kind"));
+        String from = stringValue(edge.get("fromCell"));
+        String to = stringValue(edge.get("toCell"));
+        return supportsProjectedPropagation(kind)
+                && (!"local_def_use".equals(kind)
+                || edge.get("invoke") == null)
+                && canCarryProjectedFields(from)
+                && canCarryProjectedFields(to);
+    }
+
+    private void enqueueProjectionConsumers(String cell) {
+        int projection = cell == null ? -1 : cell.indexOf("#field:");
+        while (projection >= 0) {
+            enqueueProjectableEdges(cell.substring(0, projection));
+            projection = cell.indexOf("#field:", projection + 7);
+        }
+    }
+
+    private void enqueueProjectableEdges(String endpoint) {
+        for (Map<String, Object> edge : projectableEdgesByEndpoint
+                .getOrDefault(endpoint, Collections.emptyList())) {
+            String id = stringValue(edge.get("id"));
+            if (!id.isEmpty() && queuedProjectedEdgeIds.add(id)) {
+                dirtyProjectedEdges.addLast(edge);
             }
         }
-        return changed;
     }
 
     private boolean isExpandableMethod(String signature) {
@@ -3589,6 +3622,7 @@ final class SeedBackwardStaticAnalyzer {
             boolean changed = super.add(cell);
             if (changed) {
                 markDirty(method);
+                enqueueProjectionConsumers(cell);
             }
             return changed;
         }
@@ -3866,14 +3900,10 @@ final class SeedBackwardStaticAnalyzer {
         return false;
     }
 
-    private Set<String> projectionSuffixesForBase(String method, String base) {
+    private Set<String> projectionSuffixesForBase(String base) {
         Set<String> suffixes = new LinkedHashSet<>();
         if (base == null || base.isEmpty()) {
             return suffixes;
-        }
-        Set<String> methodRelevant = relevantByMethod.get(method);
-        if (methodRelevant != null) {
-            collectProjectionSuffixes(methodRelevant, base, suffixes);
         }
         for (Set<String> relevant : relevantByMethod.values()) {
             collectProjectionSuffixes(relevant, base, suffixes);
@@ -3953,8 +3983,8 @@ final class SeedBackwardStaticAnalyzer {
         String baseEdgeId = baseEdge == null ? ""
                 : stringValue(baseEdge.get("id"));
         Set<String> suffixes = new LinkedHashSet<>();
-        suffixes.addAll(projectionSuffixesForBase(method, fromText));
-        suffixes.addAll(projectionSuffixesForBase(method, toText));
+        suffixes.addAll(projectionSuffixesForBase(fromText));
+        suffixes.addAll(projectionSuffixesForBase(toText));
         if (suffixes.isEmpty()) {
             return false;
         }
@@ -4398,6 +4428,7 @@ final class SeedBackwardStaticAnalyzer {
             }
             edges.add(edge);
             emittedEdgeRows.put(key, edge);
+            indexProjectableEdge(edge);
             changed = true;
         }
         if (deriveProjectedEdges && edge != null) {

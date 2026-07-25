@@ -1779,6 +1779,47 @@ clean commit worktree 上通过后，才记录本批为已完成。
 declaration、EngineArrayInputBinding V2、replay/solver/boolean/trace 收敛没有改变既有
 deterministic shared-field RPC 语义。
 
+下一里程碑完成第一轮目标，不为行数删除 correctness evidence：
+
+- 删除独立 `ConcolicReplayValidator`。Importer 在唯一 replay admission 中用 canonical
+  `modelAssignmentKey` 和唯一 `dynamicBindingId` 连接 plan/applied/raw row；fresh
+  `Map.Entry` 的当前 key/observation，以及 container 的 activation-local
+  token/scope/selector 仍逐项检查。Branch replay 一次性切到 Contract V2，
+  `BranchReplayPlan` 删除；contract 直接携带 exact code position/site/occurrence/
+  outcome、predicate witness 与 solver path context，observation validator 只做一次
+  event uniqueness/order/outcome/predicate 校验。
+- Scheduler 删除 array materialization 的第二次准入、固定空 admission/schedule 镜像；
+  definition-site、field-path 与 object identity 仍由各自 canonical boundary 检查。
+  Composer 的 producer region 只来自 `outputClosure`，resolved edge 内部只保留已准入
+  binding+summary；event sequence、receiver/value identity、mutation invocation 和
+  fingerprint 仍在 `AutomaticRegionEdge` 唯一准入边界验证。missing/incomplete/unbound
+  四套集合合并成唯一 `COMPOSITION_GAP`，仍直接关闭候选。
+- `MAP_ENTRY_READ`、`FINITE_MAP_ENTRY_SNAPSHOT` 与
+  `MAP_STATE_INPUT_OBSERVATION` 原子升级 V2。canonical `entries` 保存实际 key/value
+  expression 和 object token；删除并行数组、四份 size 镜像、固定 true 的稳定性字段、
+  五个 binding-complete 镜像和 warning。Runtime 对 live Map 的双遍历、顺序/identity、
+  `map.get`/`containsKey` 与 unresolved fail-closed 没有删除。
+- Runtime trace 只保留一种生产路径：workload JVM 流式写 canonical trace 和 CLOSED
+  manifest，host JVM 检查 `complete && !truncated && !writeFailure` 后离线聚合。删除
+  workload JVM 同时保留第二份 Method/Field/Execution DTO 并在 shutdown 内聚合的模式；
+  recorder 与 planner 共享 canonical event carrier。baseline trace 实跑得到 88 rows、
+  CLOSED/complete manifest、5 activations 和 6 runtime edge rows。
+- 静态 MethodFacts/Builder 中间层并入 `StaticGraphIndex`，不再第二次全扫 edge。
+  projected-edge fixed point 删除每轮复制并扫描全部已有 edge 的路径，改成 endpoint
+  index + dirty projected-edge queue；edge-before-demand 与 demand-before-edge 都由同一
+  增量规则覆盖，没有保留旧算法 fallback。小 fixture 的时间差仍在噪声内，因此只声明
+  复杂度收益，不夸大为已证明的 wall-clock 加速。
+- Boolean extractor 不再二次解析 Composer 已 hash 绑定的 case projection catalog；
+  保留 canonical roots、所有 valuations/gaps 和 reach condition。Solver 的 Java type、
+  primitive cast 与 integer literal 统一到现有 typed codec/semantics，并删除无 reader
+  的 solver/model/gap 镜像；unsupported 仍不调用 Z3。
+
+该候选手写生产 Java 为 69,271 行，相对 81,581 行冻结基线累计净减 12,310 行，
+本批净减 1,335 行，进入第一轮“约 61k–69k / 净减 12k–20k”的目标区间。68 项快速回归
+零失败，PMD、CPD、generic workflow shell test、shell syntax 与 `git diff --check`
+通过。最终 13-fixture 6 SAT/7 UNSAT 仍必须从不含用户 container 修改的 clean commit
+worktree 通过后，本里程碑才算完成。
+
 ### 明确不能删除
 
 必须保留：

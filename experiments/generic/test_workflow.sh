@@ -100,6 +100,7 @@ printf '%s\n' \
   'z3_bin=bin/z3' \
   'workload_work_dir=@repo/module' \
   'workload_command=echo workflow' \
+  'trace_test=workflow-shell-test' \
   'runtime_activation_plan=artifacts/runtime/concolic_activation_plan.jsonl' \
   'runtime_edge_validations=artifacts/runtime/runtime_region_edge_validation.jsonl' \
   'schedule_output_dir=artifacts/schedule' \

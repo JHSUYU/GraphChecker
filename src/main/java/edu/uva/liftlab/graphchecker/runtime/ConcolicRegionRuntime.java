@@ -1475,10 +1475,6 @@ public final class ConcolicRegionRuntime {
             Object[] before = map.entrySet().toArray();
             if (before.length != sizeBefore) return;
 
-            JsonArray keys = new JsonArray();
-            JsonArray keyTokens = new JsonArray();
-            JsonArray valueTokens = new JsonArray();
-            JsonArray values = new JsonArray();
             JsonArray entries = new JsonArray();
             String[] selectors = new String[sizeBefore];
             Object[] concreteValues = new Object[sizeBefore];
@@ -1504,17 +1500,12 @@ public final class ConcolicRegionRuntime {
                         : activationLocalValueRefWitnessExpression(
                         active.activation.activationId, valueToken);
 
-                keys.add(copyJsonTree(keyExpression));
-                keyTokens.add(new JsonPrimitive(Long.valueOf(keyToken)));
-                valueTokens.add(new JsonPrimitive(Long.valueOf(valueToken)));
-                values.add(copyJsonTree(valueExpression));
                 JsonObject row = new JsonObject();
                 row.addProperty("index", index);
                 row.add("keyExpression", copyJsonTree(keyExpression));
                 row.addProperty("keyObjectToken", keyToken);
                 row.add("valueExpression", copyJsonTree(valueExpression));
                 row.addProperty("valueObjectToken", valueToken);
-                row.addProperty("valueWasNull", value == null);
                 row.addProperty("valueExpressionAuthority", value == null
                         ? EXACT_RUNTIME_NULL_AUTHORITY
                         : VALUE_REF_WITNESS_AUTHORITY);
@@ -1551,12 +1542,12 @@ public final class ConcolicRegionRuntime {
             }
 
             long mapToken = active.objectToken(map);
-            String dedupe = mapToken + "|" + distinct + "|" + valueTokens;
+            String dedupe = mapToken + "|" + entries;
             if (!active.finiteMapSnapshotIdentities.add(dedupe)) return;
             String site = siteId(method, unitIndex);
             int occurrence = active.nextFiniteMapSnapshotOccurrence(site);
             JsonObject observation = new JsonObject();
-            observation.addProperty("schemaVersion", 1);
+            observation.addProperty("schemaVersion", 2);
             observation.addProperty("kind", "FINITE_MAP_ENTRY_SNAPSHOT");
             observation.addProperty("operation", "java.util.Map.entrySet");
             observation.addProperty("observationId",
@@ -1577,7 +1568,6 @@ public final class ConcolicRegionRuntime {
                     map.getClass().getName());
             observation.addProperty("mapImplementationAuthority",
                     MAP_PROJECTION_IMPLEMENTATION_AUTHORITY);
-            observation.addProperty("mapObjectToken", mapToken);
             observation.addProperty("backingMapObjectToken", mapToken);
             observation.addProperty("objectTokenAuthority",
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
@@ -1591,28 +1581,12 @@ public final class ConcolicRegionRuntime {
                             + "ENTRY_SET_NEXT"
                             : "CONCRETE_REPLAY_RUNTIME_VALUE_AT_FIRST_"
                             + "ENTRY_SET_NEXT");
-            observation.addProperty("entryCount", sizeBefore);
-            observation.addProperty("finiteEntryBound",
-                    MAX_MAP_PROJECTION_ELEMENTS);
-            observation.addProperty("sizeBefore", sizeBefore);
-            observation.addProperty("entrySetSizeBefore",
-                    entrySetSizeBefore);
-            observation.addProperty("sizeAfter", sizeAfter);
-            observation.addProperty("entrySetSizeAfter", entrySetSizeAfter);
-            observation.add("keyExpressions", keys);
-            observation.add("keyObjectTokens", keyTokens);
             observation.addProperty("keyExpressionAuthority",
                     "CONCRETE_IMMUTABLE_MAP_ENTRY_KEYS_AT_SAME_EXECUTION_"
                             + "ENTRY_SET_SNAPSHOT");
-            observation.add("valueObjectTokens", valueTokens);
-            observation.add("valueExpressions", values);
             observation.addProperty("valueExpressionAuthority",
                     FINITE_MAP_VALUE_EXPRESSION_AUTHORITY);
             observation.add("entries", entries);
-            observation.addProperty("keysDistinct", true);
-            observation.addProperty("firstIteratorEntryMatched", true);
-            observation.addProperty("sizeStable", true);
-            observation.addProperty("entrySetStable", true);
             observation.addProperty("authority",
                     FINITE_MAP_SNAPSHOT_AUTHORITY);
             observation.addProperty("complete", true);
@@ -1638,7 +1612,7 @@ public final class ConcolicRegionRuntime {
             MapStateInputBinding binding) {
         JsonObject observation = fieldObservation(active, action.symbol,
                 accessOwner, action.fieldPath, "AT_MAP_STATE_INPUT");
-        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("schemaVersion", 2);
         observation.addProperty("kind", "MAP_STATE_INPUT_OBSERVATION");
         observation.addProperty("observationId", binding.observationId);
         observation.addProperty("eventSequence",
@@ -1662,24 +1636,15 @@ public final class ConcolicRegionRuntime {
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         observation.addProperty("objectTokenScope",
                 active.activation.activationId);
-        observation.addProperty("identityBindingComplete", true);
-
         boolean snapshotComplete = false;
-        String snapshotProblem = "";
-        JsonArray keys = new JsonArray();
-        JsonArray valueTokens = new JsonArray();
         JsonArray entries = new JsonArray();
         try {
             int sizeBefore = map.size();
             Object[] before = map.entrySet().toArray();
-            if (!supportedMapProjectionImplementation(map)) {
-                snapshotProblem = "unsupported exact Map implementation";
-            } else if (sizeBefore < 0
-                    || sizeBefore > MAX_MAP_PROJECTION_ELEMENTS
-                    || before.length != sizeBefore) {
-                snapshotProblem = "Map entry snapshot exceeds bound or size "
-                        + "changed before capture";
-            } else {
+            if (supportedMapProjectionImplementation(map)
+                    && sizeBefore >= 0
+                    && sizeBefore <= MAX_MAP_PROJECTION_ELEMENTS
+                    && before.length == sizeBefore) {
                 String[] selectors = new String[before.length];
                 Object[] values = new Object[before.length];
                 Set<String> distinct = new LinkedHashSet<>();
@@ -1687,8 +1652,6 @@ public final class ConcolicRegionRuntime {
                 for (int index = 0; index < before.length; index++) {
                     if (!(before[index] instanceof Map.Entry<?, ?>)) {
                         valid = false;
-                        snapshotProblem = "entrySet snapshot contains a "
-                                + "non-entry value";
                         break;
                     }
                     Map.Entry<?, ?> entry = (Map.Entry<?, ?>) before[index];
@@ -1698,24 +1661,18 @@ public final class ConcolicRegionRuntime {
                     if (key == null || selector.isEmpty()
                             || !distinct.add(selector)) {
                         valid = false;
-                        snapshotProblem = "entry key lacks one exact stable "
-                                + "immutable selector";
                         break;
                     }
                     Object value = entry.getValue();
                     selectors[index] = selector;
                     values[index] = value;
                     long valueToken = active.objectToken(value);
-                    keys.add(copyJsonTree(key));
-                    valueTokens.add(new JsonPrimitive(
-                            Long.valueOf(valueToken)));
                     JsonObject row = new JsonObject();
                     row.addProperty("index", index);
                     row.add("keyExpression", copyJsonTree(key));
                     row.addProperty("keyObjectToken",
                             active.objectToken(entry.getKey()));
                     row.addProperty("valueObjectToken", valueToken);
-                    row.addProperty("valueWasNull", value == null);
                     entries.add(row);
                 }
                 Object[] after = valid ? map.entrySet().toArray()
@@ -1723,14 +1680,10 @@ public final class ConcolicRegionRuntime {
                 if (valid && (map.size() != sizeBefore
                         || after.length != before.length)) {
                     valid = false;
-                    snapshotProblem = "Map size changed during input "
-                            + "snapshot";
                 }
                 for (int index = 0; valid && index < after.length; index++) {
                     if (!(after[index] instanceof Map.Entry<?, ?>)) {
                         valid = false;
-                        snapshotProblem = "Map entry shape changed during "
-                                + "input snapshot";
                         break;
                     }
                     Map.Entry<?, ?> entry = (Map.Entry<?, ?>) after[index];
@@ -1740,32 +1693,17 @@ public final class ConcolicRegionRuntime {
                                             entry.getKey())))
                             || entry.getValue() != values[index]) {
                         valid = false;
-                        snapshotProblem = "Map entry order or value identity "
-                                + "changed during input snapshot";
                     }
                 }
                 snapshotComplete = valid;
             }
-            observation.addProperty("entryCount", sizeBefore);
-        } catch (Throwable throwable) {
-            snapshotProblem = "Map input snapshot failed: "
-                    + rootCause(throwable);
+        } catch (Throwable ignored) {
+            // Optional finite-domain expansion is unavailable.
         }
-        observation.addProperty("finiteEntryBound",
-                MAX_MAP_PROJECTION_ELEMENTS);
-        observation.add("keyExpressions", keys);
-        observation.add("valueObjectTokens", valueTokens);
         observation.add("entries", entries);
-        observation.addProperty("snapshotComplete", snapshotComplete);
         observation.addProperty("snapshotAuthority",
                 "SAME_FIELD_HOOK_STABLE_BOUNDED_ENTRY_SET_SNAPSHOT_V1");
-        if (!snapshotComplete) {
-            observation.addProperty("snapshotProblem", snapshotProblem);
-        }
-        // The binding itself is exact even if the optional finite-domain
-        // expansion is unavailable.  Consumers must inspect snapshotComplete
-        // before deriving cardinality or individual entries.
-        observation.addProperty("complete", true);
+        observation.addProperty("complete", snapshotComplete);
         annotateMapStateInputBinding(observation, active, map);
         return observation;
     }
@@ -1783,7 +1721,6 @@ public final class ConcolicRegionRuntime {
                 binding.mapObjectToken);
         target.addProperty("mapStateInputBindingAuthority",
                 binding.action.containerObservationAuthority);
-        target.addProperty("mapStateInputBindingComplete", true);
     }
 
     private static JsonObject nullReferenceExpression() {
@@ -1815,7 +1752,7 @@ public final class ConcolicRegionRuntime {
                 + occurrence;
 
         JsonObject observation = new JsonObject();
-        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("schemaVersion", 2);
         observation.addProperty("kind", "MAP_ENTRY_READ");
         observation.addProperty("operation", "java.util.Iterator.next");
         observation.addProperty("observationId", observationId);
@@ -1852,19 +1789,6 @@ public final class ConcolicRegionRuntime {
                 cursor.keyExpressionAuthority);
         observation.addProperty("valueExpressionAuthority",
                 cursor.valueExpressionAuthority);
-        if (!cursor.entryExpressionWarning.isEmpty()) {
-            observation.addProperty("entryExpressionWarning",
-                    cursor.entryExpressionWarning);
-        }
-        if (!cursor.valueExpressionWarning.isEmpty()) {
-            observation.addProperty("initialValueExpressionWarning",
-                    cursor.valueExpressionWarning);
-        }
-        if (!cursor.mapExpressionWarning.isEmpty()) {
-            observation.addProperty("initialMapExpressionWarning",
-                    cursor.mapExpressionWarning);
-        }
-
         Object map = cursor.binding.map;
         long backingMapObjectToken = active.objectToken(map);
         long entryObjectToken = active.objectToken(cursor.element);
@@ -1903,10 +1827,6 @@ public final class ConcolicRegionRuntime {
         if (cursor.valueExpression != null) {
             observation.add("valueExpression", cursor.valueExpression);
         }
-        if (cursor.entryExpression != null) {
-            observation.add("entryExpression", cursor.entryExpression);
-        }
-
         annotateMapStateInputBinding(observation, active, map);
         active.runtimeHeapObservations.add(observation);
         cursor.entryObservationId = observationId;
@@ -1922,7 +1842,7 @@ public final class ConcolicRegionRuntime {
 
     static boolean completeMapEntryReadPayload(
             JsonElement mapExpression, JsonElement keyExpression,
-            JsonElement valueExpression, JsonElement optionalEntryExpression,
+            JsonElement valueExpression,
             long backingMapObjectToken, long keyObjectToken,
             long valueObjectToken, long entryObjectToken) {
         // The custom JDK does not promise a symbolic reference for the
@@ -1967,9 +1887,6 @@ public final class ConcolicRegionRuntime {
         }
         if (completeRuntimeExpression(cursor.valueExpression)) {
             observation.add("valueExpression", cursor.valueExpression);
-        }
-        if (completeRuntimeExpression(cursor.entryExpression)) {
-            observation.add("entryExpression", cursor.entryExpression);
         }
         observation.addProperty("keyExpressionAuthority",
                 cursor.keyExpressionAuthority);
@@ -2016,7 +1933,7 @@ public final class ConcolicRegionRuntime {
         }
         boolean payloadComplete = completeMapEntryReadPayload(
                 cursor.mapExpression, cursor.keyExpression,
-                cursor.valueExpression, cursor.entryExpression,
+                cursor.valueExpression,
                 backingMapObjectToken, keyObjectToken, valueObjectToken,
                 entryObjectToken);
         boolean keyAuthorityComplete =
@@ -2059,20 +1976,6 @@ public final class ConcolicRegionRuntime {
                 && cursor.hasCurrent && entryKnown
                 && cursor.keyKnown && cursor.valueKnown
                 && payloadComplete && bindingAuthorityComplete;
-        observation.addProperty("entryBindingComplete",
-                cursor.hasCurrent && entryKnown
-                        && cursor.keyKnown && cursor.valueKnown);
-        observation.addProperty("expressionBindingComplete",
-                missingExpressions.isEmpty());
-        observation.addProperty("objectTokenBindingComplete",
-                backingMapObjectToken > 0L
-                        && (keyObjectToken > 0L
-                        || cursor.keyKnown && cursor.key == null
-                        && nullEntryKeyExpression(cursor.keyExpression))
-                        && valueObjectToken > 0L && entryObjectToken > 0L);
-        observation.addProperty("bindingAuthorityComplete",
-                bindingAuthorityComplete);
-        observation.addProperty("runtimeProvenanceComplete", complete);
         observation.addProperty("complete", complete);
 
         if (!cursor.entryObservationUnresolved.isEmpty()) {
@@ -2107,12 +2010,9 @@ public final class ConcolicRegionRuntime {
                     clearValueRefWitness(cursor.entryObservation);
                     cursor.entryObservation.addProperty(
                             "valueExpressionAuthority", refreshAuthority);
-                    cursor.entryObservation.addProperty(
-                            "valueExpressionResolvedAfterRefresh", true);
                 }
-            } catch (Throwable throwable) {
-                cursor.entryObservation.addProperty("valueExpressionWarning",
-                        rootCause(throwable));
+            } catch (Throwable ignored) {
+                // The activation-local value witness remains available.
             }
         }
         ensureActivationLocalValueRefWitness(active, cursor);
@@ -2310,7 +2210,6 @@ public final class ConcolicRegionRuntime {
             cursor.mapExpression = concreteExpression(cursor.binding.map);
             cursor.mapExpressionAuthority =
                     "CONCRETE_REPLAY_RUNTIME_VALUE_AT_ITERATOR_NEXT";
-            cursor.entryExpression = concreteExpression(cursor.element);
             cursor.keyExpressionAuthority =
                     "CONCRETE_REPLAY_RUNTIME_VALUE_AT_ITERATOR_NEXT";
             if (cursor.keyKnown) {
@@ -2332,21 +2231,10 @@ public final class ConcolicRegionRuntime {
                 cursor.mapExpressionAuthority =
                         "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT";
             }
-        } catch (Throwable throwable) {
-            cursor.mapExpressionWarning = "map expression unavailable: "
-                    + rootCause(throwable);
+        } catch (Throwable ignored) {
+            // The activation-local map witness is installed below.
         }
         ensureActivationLocalMapRefWitness(active, cursor);
-        try {
-            cursor.entryExpression = canonicalEngineExpression(
-                    api.expression(cursor.element));
-        } catch (Throwable throwable) {
-            // HashMap.Node/Map.Entry is a concrete provenance wrapper.  The
-            // custom JDK does not guarantee that it has a symbolic reference;
-            // its activation-local object token remains authoritative.
-            cursor.entryExpressionWarning = "entry expression unavailable: "
-                    + rootCause(throwable);
-        }
         if (cursor.keyKnown) {
             Throwable keyExpressionFailure = null;
             try {
@@ -2379,11 +2267,9 @@ public final class ConcolicRegionRuntime {
                     cursor.valueExpressionAuthority =
                             "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT";
                 }
-            } catch (Throwable throwable) {
+            } catch (Throwable ignored) {
                 // A subsequent field-symbolization hook gets one or more
                 // chances to refresh this expression.
-                cursor.valueExpressionWarning = "value expression unavailable: "
-                        + rootCause(throwable);
             }
         }
         try {
@@ -4951,13 +4837,9 @@ public final class ConcolicRegionRuntime {
         private JsonElement mapExpression;
         private JsonElement keyExpression;
         private JsonElement valueExpression;
-        private JsonElement entryExpression;
         private String mapExpressionAuthority = "";
         private String keyExpressionAuthority = "";
         private String valueExpressionAuthority = "";
-        private String mapExpressionWarning = "";
-        private String entryExpressionWarning = "";
-        private String valueExpressionWarning = "";
         private String entryObservationId = "";
         private long entryObservationSequence;
         private boolean entryObservationComplete;
@@ -4983,13 +4865,9 @@ public final class ConcolicRegionRuntime {
             mapExpression = null;
             keyExpression = null;
             valueExpression = null;
-            entryExpression = null;
             mapExpressionAuthority = "";
             keyExpressionAuthority = "";
             valueExpressionAuthority = "";
-            mapExpressionWarning = "";
-            entryExpressionWarning = "";
-            valueExpressionWarning = "";
             entryObservationId = "";
             entryObservationSequence = 0L;
             entryObservationComplete = false;

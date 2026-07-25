@@ -43,9 +43,12 @@ public final class CausynthTraceRecorder {
     private static final Object LOCK = new Object();
     private static final AtomicBoolean INITIALIZED = new AtomicBoolean();
     private static final AtomicLong EVENT_COUNTER = new AtomicLong();
-    private static final List<TraceEvent> EVENTS = new ArrayList<>();
-    private static final List<FieldEvent> FIELD_EVENTS = new ArrayList<>();
-    private static final List<ExecutionEvent> EXECUTION_EVENTS = new ArrayList<>();
+    private static final List<RuntimeRegionPlanner.MethodEvent> EVENTS =
+            new ArrayList<>();
+    private static final List<RuntimeRegionPlanner.FieldAccessEvent>
+            FIELD_EVENTS = new ArrayList<>();
+    private static final List<RuntimeRegionPlanner.RuntimeEvent>
+            EXECUTION_EVENTS = new ArrayList<>();
     private static final ThreadLocal<Deque<ActiveCall>> ACTIVE_CALLS =
             ThreadLocal.withInitial(ArrayDeque::new);
     private static final ThreadLocal<Deque<ActiveCallSite>> ACTIVE_CALL_SITES =
@@ -66,15 +69,6 @@ public final class CausynthTraceRecorder {
     private static volatile File traceFile;
     private static volatile String testName;
     private static volatile int maxEvents;
-    /**
-     * Rich campaign replays may emit hundreds of thousands of events.  When
-     * aggregation is performed by a fresh host JVM, retaining the same rows
-     * in the instrumented JVM only doubles memory and can make shutdown
-     * aggregation fail.  Streaming-only mode keeps the call-stack TLS needed
-     * by instrumentation, but writes event rows directly to disk without
-     * building the offline graph inputs in this JVM.
-     */
-    private static volatile boolean retainRecordedEventsInMemory = true;
     /** Guarded by {@link #LOCK}; persisted in the streaming close manifest. */
     private static boolean traceWriteFailure;
     private static BufferedWriter traceWriter;
@@ -175,17 +169,15 @@ public final class CausynthTraceRecorder {
         ActiveCallSite parentSite = sites.peek();
         long parentCallId = parent == null ? 0L : parent.callId;
         long parentSiteId = parentSite == null ? 0L : parentSite.invocationId;
-        TraceEvent event = new TraceEvent(id, process, threadName, tid,
-                method, objectId, id, parentCallId, parentSiteId,
-                runtimeType(receiver));
+        RuntimeRegionPlanner.MethodEvent event =
+                new RuntimeRegionPlanner.MethodEvent(id, testName, process,
+                        threadName, tid, method, objectId,
+                        runtimeType(receiver), id, parentCallId, parentSiteId);
         calls.push(new ActiveCall(id, parentSiteId, method));
         if (contextOnlyConcolicReplay) {
             return id;
         }
         synchronized (LOCK) {
-            if (retainRecordedEventsInMemory) {
-                EVENTS.add(event);
-            }
             writeTraceLine(event);
         }
         return id;
@@ -367,16 +359,13 @@ public final class CausynthTraceRecorder {
                 ? ValueFingerprint.capture(valueObject, primitiveValue)
                 : ValueFingerprint.disabled();
         ActiveCall activeCall = ACTIVE_CALLS.get().peek();
-        FieldEvent event = new FieldEvent(id, method, unitIndex, kind, field,
-                receiverObjectId,
-                valueObjectId, primitiveValue,
-                activeCall == null ? 0L : activeCall.callId,
-                siteId(method, unitIndex), fingerprint.digest,
-                fingerprint.complete);
+        RuntimeRegionPlanner.FieldAccessEvent event =
+                new RuntimeRegionPlanner.FieldAccessEvent(id, kind, method,
+                        activeCall == null ? 0L : activeCall.callId,
+                        unitIndex, siteId(method, unitIndex), field,
+                        receiverObjectId, valueObjectId, primitiveValue,
+                        fingerprint.digest, fingerprint.complete);
         synchronized (LOCK) {
-            if (retainRecordedEventsInMemory) {
-                FIELD_EVENTS.add(event);
-            }
             writeFieldTraceLine(event);
         }
     }
@@ -404,9 +393,6 @@ public final class CausynthTraceRecorder {
             return;
         }
         synchronized (LOCK) {
-            if (retainRecordedEventsInMemory) {
-                EXECUTION_EVENTS.add(event);
-            }
             writeExecutionTraceLine(event);
         }
     }
@@ -539,12 +525,6 @@ public final class CausynthTraceRecorder {
                     System.getProperty("causynth.trace.max.events"),
                     System.getenv("CAUSYNTH_TRACE_MAX_EVENTS"),
                     String.valueOf(DEFAULT_MAX_EVENTS)), DEFAULT_MAX_EVENTS);
-            boolean configuredStreamingOnly = Boolean.parseBoolean(
-                    firstNonBlank(System.getProperty(
-                                    "causynth.trace.streaming.only"),
-                            System.getenv(
-                                    "CAUSYNTH_TRACE_STREAMING_ONLY"),
-                            "false"));
             boolean configuredContextOnly =
                     configuredContextOnlyConcolicReplay();
             boolean configuredFingerprints =
@@ -565,7 +545,6 @@ public final class CausynthTraceRecorder {
                     // selected region executes.
                     testName = configuredTestName;
                     maxEvents = Integer.MAX_VALUE;
-                    retainRecordedEventsInMemory = false;
                     traceWriteFailure = false;
                     outputDir = null;
                     traceFile = null;
@@ -594,7 +573,6 @@ public final class CausynthTraceRecorder {
                 // or the JVM default value of an event limit.
                 testName = configuredTestName;
                 maxEvents = configuredMaxEvents;
-                retainRecordedEventsInMemory = !configuredStreamingOnly;
                 traceWriteFailure = false;
                 outputDir = configuredOutputDir;
                 traceFile = configuredTraceFile;
@@ -654,7 +632,7 @@ public final class CausynthTraceRecorder {
                 }
                 traceWriter = null;
             }
-            if (!retainRecordedEventsInMemory && outputDir != null) {
+            if (outputDir != null) {
                 long attempted = EVENT_COUNTER.get();
                 boolean truncated = attempted > maxEvents;
                 writeFileQuietly(new File(outputDir,
@@ -672,26 +650,7 @@ public final class CausynthTraceRecorder {
                                 "complete", !truncated
                                         && !traceWriteFailure));
             }
-            try {
-                if (aggregateOnShutdown()) {
-                    if (!retainRecordedEventsInMemory) {
-                        throw new IllegalStateException(
-                                "streaming-only trace requires offline "
-                                        + "aggregation in a fresh JVM");
-                    }
-                    writeRuntimeRegionArtifacts();
-                }
-            } catch (Throwable throwable) {
-                writeShutdownFailure(throwable);
-            }
         }
-    }
-
-    private static boolean aggregateOnShutdown() {
-        return Boolean.parseBoolean(firstNonBlank(
-                System.getProperty("causynth.trace.aggregate.on.shutdown"),
-                System.getenv("CAUSYNTH_TRACE_AGGREGATE_ON_SHUTDOWN"),
-                "false"));
     }
 
     private static void aggregateExistingTrace(File directory, File staticGraph,
@@ -700,16 +659,36 @@ public final class CausynthTraceRecorder {
             clearInMemoryTrace();
             outputDir = directory;
             traceFile = new File(directory, "runtime_trace.jsonl");
+            requireClosedTrace(new File(directory,
+                    "streaming_trace_manifest.json"));
             testName = test;
             maxEvents = Integer.MAX_VALUE;
-            // This JVM is the offline aggregator.  Rows loaded below must be
-            // retained regardless of the recording-mode property inherited
-            // from a caller.
-            retainRecordedEventsInMemory = true;
             traceWriter = null;
             System.setProperty("causynth.static.graph", staticGraph.getPath());
             loadExistingTrace(traceFile);
-            writeRuntimeRegionArtifacts();
+            normalizeRecordedEventOrder();
+            writeRuntimeRegionPlans(staticGraph);
+        }
+    }
+
+    private static void requireClosedTrace(File manifestFile)
+            throws IOException {
+        if (!manifestFile.isFile()) {
+            throw new IOException("Runtime trace manifest not found: "
+                    + manifestFile);
+        }
+        JsonElement parsed = JsonParser.parseString(new String(
+                Files.readAllBytes(manifestFile.toPath()),
+                StandardCharsets.UTF_8));
+        JsonObject manifest = parsed.isJsonObject()
+                ? parsed.getAsJsonObject() : new JsonObject();
+        if (integer(manifest, "schemaVersion", -1) != 1
+                || !"STREAMING_RUNTIME_TRACE".equals(
+                string(manifest, "kind"))
+                || !"CLOSED".equals(string(manifest, "status"))
+                || !bool(manifest, "complete", false)) {
+            throw new IOException("Runtime trace is incomplete: "
+                    + manifestFile);
         }
     }
 
@@ -721,7 +700,6 @@ public final class CausynthTraceRecorder {
         EXECUTION_EVENTS.clear();
         ACTIVE_CALLS.remove();
         ACTIVE_CALL_SITES.remove();
-        retainRecordedEventsInMemory = true;
         contextOnlyConcolicReplay = false;
         valueFingerprintsEnabled = true;
         traceWriteFailure = false;
@@ -758,37 +736,61 @@ public final class CausynthTraceRecorder {
                 if ("METHOD_ENTER".equals(eventKind)) {
                     String method = string(row, "method");
                     String threadName = string(row, "threadName");
+                    String process = string(row, "process");
+                    if (process.isEmpty()) {
+                        throw new IOException("METHOD_ENTER has no process at "
+                                + file + ":" + lineNumber);
+                    }
                     long seq = longInteger(row, "seq", 0L);
-                    addTraceEvent(new TraceEvent(
+                    addTraceEvent(new RuntimeRegionPlanner.MethodEvent(
                             seq,
-                            normalizeRecordedProcess(string(row, "process"),
-                                    method, threadName),
+                            testName,
+                            process,
                             threadName,
                             longInteger(row, "tid", 0L),
                             method,
                             integer(row, "objectId", 0),
+                            string(row, "receiverType"),
                             longInteger(row, "callId", seq),
                             longInteger(row, "parentCallId", 0L),
-                            longInteger(row, "parentSiteId", 0L),
-                            string(row, "receiverType")));
+                            longInteger(row, "parentSiteId", 0L)));
                 } else if ("FIELD_READ".equals(eventKind)
                         || "FIELD_WRITE".equals(eventKind)) {
                     String method = string(row, "method");
-                    addFieldEvent(new FieldEvent(
+                    addFieldEvent(new RuntimeRegionPlanner.FieldAccessEvent(
                             longInteger(row, "seq", 0L),
-                            method,
-                            integer(row, "unitIndex", -1),
                             eventKind,
+                            method,
+                            longInteger(row, "callId", 0L),
+                            integer(row, "unitIndex", -1),
+                            string(row, "siteId"),
                             string(row, "field"),
                             integer(row, "fieldReceiverObjectId", 0),
                             integer(row, "valueObjectId", 0),
                             string(row, "primitiveValue"),
-                            longInteger(row, "callId", 0L),
-                            string(row, "siteId"),
                             string(row, "valueFingerprint"),
                             bool(row, "valueFingerprintComplete", false)));
                 } else if (isExecutionEventKind(eventKind)) {
-                    addExecutionEvent(ExecutionEvent.fromJson(row, eventKind));
+                    addExecutionEvent(new RuntimeRegionPlanner.RuntimeEvent(
+                            longInteger(row, "seq", 0L), eventKind,
+                            string(row, "method"),
+                            longInteger(row, "callId", 0L),
+                            longInteger(row, "invocationId", 0L),
+                            longInteger(row, "parentSiteId", 0L),
+                            string(row, "siteId"),
+                            string(row, "declaredCallee"),
+                            integer(row, "argumentIndex", -1),
+                            string(row, "runtimeType"),
+                            integer(row, "objectId", 0),
+                            string(row, "primitiveValue"),
+                            row.has("outcome"),
+                            bool(row, "outcome", false),
+                            string(row, "valueFingerprint"),
+                            bool(row, "valueFingerprintComplete", false),
+                            row.has("successorIndex"),
+                            integer(row, "successorIndex", -1),
+                            string(row, "branchKind"),
+                            string(row, "switchCaseKeys")));
                 }
             }
         }
@@ -803,35 +805,38 @@ public final class CausynthTraceRecorder {
      * execution order.
      */
     private static void normalizeRecordedEventOrder() {
-        EVENTS.sort((left, right) -> Long.compare(left.id, right.id));
-        FIELD_EVENTS.sort((left, right) -> Long.compare(left.id, right.id));
-        EXECUTION_EVENTS.sort((left, right) -> Long.compare(left.id, right.id));
+        EVENTS.sort((left, right) -> Long.compare(left.seq, right.seq));
+        FIELD_EVENTS.sort((left, right) -> Long.compare(left.seq, right.seq));
+        EXECUTION_EVENTS.sort((left, right) ->
+                Long.compare(left.seq, right.seq));
     }
 
-    private static void addTraceEvent(TraceEvent event) {
+    private static void addTraceEvent(RuntimeRegionPlanner.MethodEvent event) {
         if (event == null || event.method == null || event.method.isEmpty()) {
             return;
         }
         EVENTS.add(event);
-        EVENT_COUNTER.set(Math.max(EVENT_COUNTER.get(), event.id));
+        EVENT_COUNTER.set(Math.max(EVENT_COUNTER.get(), event.seq));
     }
 
-    private static void addFieldEvent(FieldEvent event) {
+    private static void addFieldEvent(
+            RuntimeRegionPlanner.FieldAccessEvent event) {
         if (event == null || event.method == null || event.method.isEmpty()
                 || event.field == null || event.field.isEmpty()) {
             return;
         }
         FIELD_EVENTS.add(event);
-        EVENT_COUNTER.set(Math.max(EVENT_COUNTER.get(), event.id));
+        EVENT_COUNTER.set(Math.max(EVENT_COUNTER.get(), event.seq));
     }
 
-    private static void addExecutionEvent(ExecutionEvent event) {
-        if (event == null || event.id <= 0L || event.kind == null
+    private static void addExecutionEvent(
+            RuntimeRegionPlanner.RuntimeEvent event) {
+        if (event == null || event.seq <= 0L || event.kind == null
                 || event.kind.isEmpty()) {
             return;
         }
         EXECUTION_EVENTS.add(event);
-        EVENT_COUNTER.set(Math.max(EVENT_COUNTER.get(), event.id));
+        EVENT_COUNTER.set(Math.max(EVENT_COUNTER.get(), event.seq));
     }
 
     private static boolean isExecutionEventKind(String kind) {
@@ -846,7 +851,7 @@ public final class CausynthTraceRecorder {
                 || "BRANCH".equals(kind);
     }
 
-    private static void writeTraceLine(TraceEvent event) {
+    private static void writeTraceLine(RuntimeRegionPlanner.MethodEvent event) {
         if (traceWriter == null) {
             return;
         }
@@ -854,7 +859,7 @@ public final class CausynthTraceRecorder {
             traceWriter.write(jsonObject(
                     "schemaVersion", 2,
                     "event", "METHOD_ENTER",
-                    "seq", event.id,
+                    "seq", event.seq,
                     "process", event.process,
                     "threadName", event.threadName,
                     "tid", event.tid,
@@ -870,7 +875,8 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static void writeFieldTraceLine(FieldEvent event) {
+    private static void writeFieldTraceLine(
+            RuntimeRegionPlanner.FieldAccessEvent event) {
         if (traceWriter == null) {
             return;
         }
@@ -878,7 +884,7 @@ public final class CausynthTraceRecorder {
             traceWriter.write(jsonObject(
                     "schemaVersion", 2,
                     "event", event.kind,
-                    "seq", event.id,
+                    "seq", event.seq,
                     "method", event.method,
                     "callId", event.callId,
                     "siteId", event.siteId,
@@ -929,14 +935,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static void writeRuntimeRegionArtifacts() throws IOException {
-        normalizeRecordedEventOrder();
-        File staticGraph = new File(firstNonBlank(
-                System.getProperty("causynth.static.graph"),
-                System.getenv("CAUSYNTH_STATIC_GRAPH"),
-                new File(outputDir, "static_dataflow_edges.jsonl").getPath()));
-        writeRuntimeRegionPlans(staticGraph);
-    }
     private static String inferProcessName(String method, String threadName) {
         StringBuilder evidence = new StringBuilder();
         evidence.append(method == null ? "" : method).append(' ')
@@ -956,11 +954,6 @@ public final class CausynthTraceRecorder {
             return configuredProcess;
         }
         return "unknown";
-    }
-
-    private static String normalizeRecordedProcess(String recorded, String method,
-                                                   String threadName) {
-        return firstNonBlank(recorded, inferProcessName(method, threadName), "unknown");
     }
 
     private static String matchConfiguredRole(String propertyName, String envName,
@@ -1035,35 +1028,12 @@ public final class CausynthTraceRecorder {
                 parent == null ? "symbolic_region_edges.jsonl"
                         : new File(parent, "symbolic_region_edges.jsonl").getPath()));
 
-        List<RuntimeRegionPlanner.MethodEvent> methods = new ArrayList<>();
-        for (TraceEvent event : EVENTS) {
-            methods.add(new RuntimeRegionPlanner.MethodEvent(
-                    event.id, testName, event.process, event.threadName,
-                    event.tid, event.method, event.objectId, event.receiverType,
-                    event.callId, event.parentCallId, event.parentSiteId));
-        }
-        List<RuntimeRegionPlanner.RuntimeEvent> runtimeEvents = new ArrayList<>();
-        for (ExecutionEvent event : EXECUTION_EVENTS) {
-            runtimeEvents.add(new RuntimeRegionPlanner.RuntimeEvent(
-                    event.id, event.kind, event.method, event.callId,
-                    event.invocationId, event.parentSiteId, event.siteId,
-                    event.declaredCallee, event.argumentIndex,
-                    event.runtimeType, event.objectId,
-                    event.primitiveValue, event.hasOutcome, event.outcome,
-                    event.valueFingerprint,
-                    event.valueFingerprintComplete,
-                    event.hasSuccessorIndex, event.successorIndex,
-                    event.branchKind, event.switchCaseKeys));
-        }
-        List<RuntimeRegionPlanner.FieldAccessEvent> fields = new ArrayList<>();
-        for (FieldEvent event : FIELD_EVENTS) {
-            fields.add(new RuntimeRegionPlanner.FieldAccessEvent(
-                    event.id, event.kind, event.method, event.callId,
-                    event.unitIndex, event.siteId, event.field,
-                    event.receiverObjectId, event.valueObjectId,
-                    event.primitiveValue, event.valueFingerprint,
-                    event.valueFingerprintComplete));
-        }
+        List<RuntimeRegionPlanner.MethodEvent> methods =
+                new ArrayList<>(EVENTS);
+        List<RuntimeRegionPlanner.RuntimeEvent> runtimeEvents =
+                new ArrayList<>(EXECUTION_EVENTS);
+        List<RuntimeRegionPlanner.FieldAccessEvent> fields =
+                new ArrayList<>(FIELD_EVENTS);
 
         RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
                 regionFile, regionEdgeFile, staticGraph, methods,
@@ -1121,35 +1091,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static final class TraceEvent {
-        private final long id;
-        private final String process;
-        private final String threadName;
-        private final long tid;
-        private final String method;
-        private final int objectId;
-        private final long callId;
-        private final long parentCallId;
-        private final long parentSiteId;
-        private final String receiverType;
-
-        private TraceEvent(long id, String process, String threadName,
-                           long tid, String method, int objectId,
-                           long callId, long parentCallId, long parentSiteId,
-                           String receiverType) {
-            this.id = id;
-            this.process = process;
-            this.threadName = threadName;
-            this.tid = tid;
-            this.method = method;
-            this.objectId = objectId;
-            this.callId = callId;
-            this.parentCallId = parentCallId;
-            this.parentSiteId = parentSiteId;
-            this.receiverType = safe(receiverType);
-        }
-    }
-
     private static final class ExecutionEvent {
         private long id;
         private String kind = "";
@@ -1171,33 +1112,6 @@ public final class CausynthTraceRecorder {
         private String switchCaseKeys = "";
         private boolean hasSuccessorIndex;
         private int successorIndex = -1;
-
-        private static ExecutionEvent fromJson(JsonObject row,
-                                               String eventKind) {
-            ExecutionEvent event = new ExecutionEvent();
-            event.id = longInteger(row, "seq", 0L);
-            event.kind = safe(eventKind);
-            event.method = string(row, "method");
-            event.callId = longInteger(row, "callId", 0L);
-            event.parentSiteId = longInteger(row, "parentSiteId", 0L);
-            event.invocationId = longInteger(row, "invocationId", 0L);
-            event.siteId = string(row, "siteId");
-            event.declaredCallee = string(row, "declaredCallee");
-            event.argumentIndex = integer(row, "argumentIndex", -1);
-            event.runtimeType = string(row, "runtimeType");
-            event.objectId = integer(row, "objectId", 0);
-            event.primitiveValue = string(row, "primitiveValue");
-            event.valueFingerprint = string(row, "valueFingerprint");
-            event.valueFingerprintComplete = bool(row,
-                    "valueFingerprintComplete", false);
-            event.hasOutcome = row.has("outcome");
-            event.outcome = bool(row, "outcome", false);
-            event.branchKind = string(row, "branchKind");
-            event.switchCaseKeys = string(row, "switchCaseKeys");
-            event.hasSuccessorIndex = row.has("successorIndex");
-            event.successorIndex = integer(row, "successorIndex", -1);
-            return event;
-        }
 
         private void captureValueFingerprint(Object value,
                                              String primitiveValue) {
@@ -1236,42 +1150,6 @@ public final class CausynthTraceRecorder {
             this.siteId = safe(siteId);
             this.caller = safe(caller);
             this.declaredCallee = safe(declaredCallee);
-        }
-    }
-
-    private static final class FieldEvent {
-        private final long id;
-        private final String method;
-        private final int unitIndex;
-        private final String kind;
-        private final String field;
-        private final int receiverObjectId;
-        private final int valueObjectId;
-        private final String primitiveValue;
-        private final String valueFingerprint;
-        private final boolean valueFingerprintComplete;
-        private final long callId;
-        private final String siteId;
-
-        private FieldEvent(long id, String method,
-                           int unitIndex, String kind,
-                           String field, int receiverObjectId,
-                           int valueObjectId, String primitiveValue,
-                           long callId, String siteId,
-                           String valueFingerprint,
-                           boolean valueFingerprintComplete) {
-            this.id = id;
-            this.method = method;
-            this.unitIndex = unitIndex;
-            this.kind = kind;
-            this.field = field;
-            this.receiverObjectId = receiverObjectId;
-            this.valueObjectId = valueObjectId;
-            this.primitiveValue = primitiveValue == null ? "" : primitiveValue;
-            this.valueFingerprint = safe(valueFingerprint);
-            this.valueFingerprintComplete = valueFingerprintComplete;
-            this.callId = callId;
-            this.siteId = safe(siteId);
         }
     }
 

@@ -51,9 +51,9 @@ public class RegionPathWorklistTest {
         assertEquals(2, replay.requiredPathPredicates().size());
         assertEquals(">=", replay.requiredSatisfiedPredicate()
                 .getAsJsonObject().get("_op").getAsString());
-        assertEquals(BranchReplayContract.DROP_SOURCE_SUFFIX,
+        assertEquals(BranchReplayContract.SCHEMA_VERSION,
                 latest.getAsJsonObject("replayContract")
-                        .get("suffixPolicy").getAsString());
+                        .get("schemaVersion").getAsInt());
         assertEquals(RegionPathWorklist.State.PENDING.name(),
                 result.manifest.get("state").getAsString());
         assertFalse(result.manifest.has("observedPathCount"));
