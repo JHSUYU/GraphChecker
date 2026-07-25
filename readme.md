@@ -1541,6 +1541,21 @@ custom-JDK/Z3 矩阵全部通过，仍为 6 `SAT/REACHABLE`、7
 `UNSAT/UNREACHABLE`、零 failure；日志目录为
 `target/robustness-matrix-logs/20260725T075103Z.1490066`。
 
+截至 `f48efa8d`，剩余八个 concolic value/query stage 的 forgiving JSON field
+reader 也已收敛到 `JsonFields`。Importer 不再输出无人消费的命令行 summary 和
+`skippedEventCount`；Scheduler、target query 与 raw runtime result 删除了可由
+canonical admission、数组或 gap 推导的 readiness、count、authority 和 VM
+内部校验镜像。数组的 symbolization expression、activation-local identity、
+consumed leaf、model assignment、branch witness 唯一性与所有 fail-closed gate
+仍保留并继续参与准入。robustness shell 同一提交切换为直接校验 canonical
+`constraints`，没有保留旧字段 fallback。
+
+手写生产 Java 现为 76,912 行，相对冻结基线累计净减 4,669 行。57 项快速回归、
+generic workflow shell test 与隔离干净 worktree 的 13-fixture 并行真实
+custom-JDK/Z3 矩阵全部通过，仍为 6 `SAT/REACHABLE`、7
+`UNSAT/UNREACHABLE`、零 failure；日志目录为
+`target/robustness-matrix-logs/20260725T080803Z.1672266`。
+
 ### 明确不能删除
 
 必须保留：
