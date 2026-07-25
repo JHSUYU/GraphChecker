@@ -336,15 +336,12 @@ validate_dependent_scalar_artifacts() {
   # lines are deliberately excluded because they are not semantic identity.
   jq -e --arg method "${target_method}" \
     --arg exception "${target_exception}" '
-    .seedMode == "EXCEPTION_ANNOTATION"
-    and .seedException == $exception
-    and .exceptionTarget.id == "dependent-scalar"
-    and .exceptionTarget.method == $method
-    and .exceptionTarget.exception == $exception
-    and .exceptionTarget.authority
-      == "CLASSFILE_CAUSYNTH_EXCEPTION_TARGET_TYPE_USE_V1"
-    and .discoveredSeedCount == 1
-    and .discoveredSeedMethods == [$method]
+    .schemaVersion == 2
+    and .kind == "TARGET_ATTESTATION"
+    and .targetId == "dependent-scalar"
+    and .method == $method
+    and .exception == $exception
+    and .constructionOrdinal == 0
   ' "${target_resolution}" >/dev/null \
     || die "dependent-scalar lost its exact annotated target root"
 

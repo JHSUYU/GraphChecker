@@ -15,7 +15,6 @@ import java.util.Map;
 final class CausynthAnalysisResult {
     final List<Map<String, Object>> edges = new ArrayList<>();
     final List<Map<String, Object>> traceMethods = new ArrayList<>();
-    final List<Map<String, Object>> symbolicPlan = new ArrayList<>();
     final List<Map<String, Object>> symbolicRegions = new ArrayList<>();
     final List<Map<String, Object>> symbolicRegionEdges = new ArrayList<>();
     final Map<String, Object> symbolicCoverage = new LinkedHashMap<>();

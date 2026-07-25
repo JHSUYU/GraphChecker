@@ -1253,6 +1253,13 @@ Scheduler binding 候选：
 候选删除 `seedMode`、重复 `seedException`、恒等于 1 的 count、singleton method list 和
 纯诊断变量列表，并在同一个 PR 同步 Java/shell readers。
 
+截至 2026-07-25，PR 0、PR 1 已完成，PR 1 的隔离全矩阵为 13/13、6 SAT/7 UNSAT。
+PR 2 已完成实现：method plan rich Map 两个类已经删除，region planner 只保留五字段
+`MethodFacts`；static region 直接产生 canonical row，output slice 只存 canonical edge
+ID；target attestation 已一次性切到 V2。该里程碑已通过快速回归以及 baseline、
+dependent-scalar 的完整 concolic/worklist/merge/compose/Z3 流程。用户工作树中的
+container fixture 修改不属于重构提交，也不会被覆盖或暂存。
+
 ### PR 3：静态 edge 和 runtime activation schema V2
 
 #### Static edge

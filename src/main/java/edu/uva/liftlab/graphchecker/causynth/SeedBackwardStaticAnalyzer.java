@@ -111,9 +111,7 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashSet<>();
     private final Set<String> truncatedMethodCallerIndexMethods =
             new LinkedHashSet<>();
-    private final List<Map<String, Object>> discoveredExceptionSeeds = new ArrayList<>();
-    private final Set<String> discoveredExceptionMethods = new LinkedHashSet<>();
-    private final Set<String> discoveredExceptionVariables = new LinkedHashSet<>();
+    private int discoveredExceptionSeedCount;
     private final Map<String, Boolean> receiverProjectionWriteSummary =
             new LinkedHashMap<>();
     /**
@@ -270,10 +268,15 @@ final class SeedBackwardStaticAnalyzer {
 
     CausynthAnalysisResult analyze() throws IOException {
         CausynthAnalysisResult result = new CausynthAnalysisResult();
-        result.targetResolved.put("seedMode", "EXCEPTION_ANNOTATION");
-        result.targetResolved.put("seedException", target.seedException);
-        result.targetResolved.put("exceptionTarget",
-                target.exceptionTargetSite.toMap());
+        result.targetResolved.put("schemaVersion", 2);
+        result.targetResolved.put("kind", "TARGET_ATTESTATION");
+        result.targetResolved.put("targetId",
+                target.exceptionTargetSite.id);
+        result.targetResolved.put("method",
+                target.exceptionTargetSite.methodSignature);
+        result.targetResolved.put("exception", target.seedException);
+        result.targetResolved.put("constructionOrdinal",
+                target.exceptionTargetSite.exceptionConstructionOrdinal);
         result.targetResolved.put("analysisScope", target.analysisScope);
         Set<String> candidateClasses = findCandidateClasses();
         loadClasses(candidateClasses);
@@ -309,17 +312,11 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void finishSeedDiscovery(CausynthAnalysisResult result) {
-        result.targetResolved.put("discoveredSeedCount",
-                discoveredExceptionSeeds.size());
-        result.targetResolved.put("discoveredSeedMethods",
-                new ArrayList<>(discoveredExceptionMethods));
-        result.targetResolved.put("discoveredSeedVariables",
-                new ArrayList<>(discoveredExceptionVariables));
-        if (discoveredExceptionSeeds.size() != 1) {
+        if (discoveredExceptionSeedCount != 1) {
             throw new IllegalStateException("Annotated exception target did "
                     + "not resolve to exactly one Jimple throw: "
                     + target.exceptionTargetSite.stableIdentity()
-                    + "; matches=" + discoveredExceptionSeeds.size());
+                    + "; matches=" + discoveredExceptionSeedCount);
         }
     }
 
@@ -378,7 +375,6 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void initializeExceptionSeedAnchors() {
-        int seedIndex = 0;
         for (Map.Entry<String, List<Fact>> entry : factsByMethod.entrySet()) {
             String method = entry.getKey();
             if (!target.exceptionTargetSite.methodSignature.equals(method)) {
@@ -396,17 +392,10 @@ final class SeedBackwardStaticAnalyzer {
                 String exceptionNode = factNode(throwFact) + "#exception:"
                         + target.seedException;
                 Set<String> methodRelevant = relevant(method);
-                Set<String> throwVariables = new LinkedHashSet<>();
-                Set<String> payloadVariables = new LinkedHashSet<>();
-                Set<String> guardVariables = new LinkedHashSet<>();
-                List<Map<String, Object>> pathGuards = new ArrayList<>();
-
                 ThrowStmt throwStmt = (ThrowStmt) throwFact.unit;
                 String thrownValue = canonical(method, throwStmt.getOp().toString());
                 if (!ignoreNode(thrownValue)) {
                     methodRelevant.add(thrownValue);
-                    throwVariables.add(thrownValue);
-                    discoveredExceptionVariables.add(thrownValue);
                     addEdge("seed_exception_throw", thrownValue, exceptionNode,
                             method, throwFact,
                             "direct throw at annotated exception target");
@@ -418,8 +407,6 @@ final class SeedBackwardStaticAnalyzer {
                         continue;
                     }
                     methodRelevant.add(node);
-                    payloadVariables.add(node);
-                    discoveredExceptionVariables.add(node);
                     addEdge("exception_payload_argument", node, exceptionNode,
                             method, construction.fact,
                             "exception constructor payload contributes to thrown value");
@@ -433,8 +420,6 @@ final class SeedBackwardStaticAnalyzer {
                             continue;
                         }
                         methodRelevant.add(node);
-                        guardVariables.add(node);
-                        discoveredExceptionVariables.add(node);
                         addEdge("exception_guard", node, exceptionNode,
                                 method, guard.fact,
                                 "dominating branch requires Jimple outcome "
@@ -456,46 +441,15 @@ final class SeedBackwardStaticAnalyzer {
                             guard.branchShape.annotate(edge);
                         }
                     }
-                    pathGuards.add(object(
-                            "siteId", stableSiteId(method,
-                                    guard.fact.unitIndex, "exception_guard"),
-                            "line", guard.fact.line,
-                            "unitIndex", guard.fact.unitIndex,
-                            "jimpleCondition", guard.condition,
-                            "requiredOutcome", guard.requiredOutcome,
-                            "reachingSuccessorIndices",
-                            guard.reachingSuccessorIndices,
-                            "branchKind", guard.branchShape.kind,
-                            "switchCaseKeys",
-                            guard.branchShape.caseKeys,
-                            "defaultSuccessorIndex",
-                            guard.branchShape.defaultSuccessorIndex,
-                            "successorIndexAuthority",
-                            "STATIC_BRANCH_CASE_ORDER_THEN_DEFAULT_V1"));
                 }
 
                 selectedMethods.add(method);
-                discoveredExceptionMethods.add(method);
-                discoveredExceptionSeeds.add(object(
-                        "id", "seed.exception_site." + seedIndex++,
-                        "kind", "discovered_exception_site",
-                        "exception", target.seedException,
-                        "method", method,
-                        "line", throwFact.line,
-                        "unitIndex", throwFact.unitIndex,
-                        "throwUnit", throwFact.unitText,
-                        "annotation", target.exceptionTargetSite.toMap(),
-                        "throwVariables", new ArrayList<>(throwVariables),
-                        "payloadVariables", new ArrayList<>(payloadVariables),
-                        "guardVariables", new ArrayList<>(guardVariables),
-                        "pathGuards", pathGuards,
-                        "authority",
-                        "CLASSFILE_ANNOTATED_EXCEPTION_CAUSALITY_V1"));
+                discoveredExceptionSeedCount++;
             }
         }
         LOG.info("Discovered {} direct throw sites for {} in {} methods",
-                discoveredExceptionSeeds.size(), target.seedException,
-                discoveredExceptionMethods.size());
+                discoveredExceptionSeedCount, target.seedException,
+                discoveredExceptionSeedCount == 0 ? 0 : 1);
     }
 
     private ExceptionConstruction annotatedExceptionConstruction(
@@ -4520,7 +4474,7 @@ final class SeedBackwardStaticAnalyzer {
             String mappingAuthority = mappingOnly
                     ? StaticDataflowEdgeSchema.mappingAuthority(
                     projectionBaseEdge) : "";
-            String edgeTransferKind = SymbolicPlanningStage.transferKind(
+            String edgeTransferKind = StaticDataflowEdgeSchema.transferKind(
                     kind,
                     fact == null ? "" : fact.unitText,
                     fact == null ? null : fact.invoke,

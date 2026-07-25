@@ -104,7 +104,6 @@ public final class CausynthPipeline {
                 exceptionTarget.stableIdentity());
         CausynthAnalysisResult result =
                 new SeedBackwardStaticAnalyzer(target).analyze();
-        SymbolicPlanningStage.build(result);
         SymbolicRegionAssemblyStage.assemble(result);
         instrumentRuntimeTrace(result);
         InstrumentationResult instrumentation =
@@ -1471,8 +1470,8 @@ public final class CausynthPipeline {
     private static TraceSiteSelection traceSiteSelection(
             CausynthAnalysisResult result) {
         TraceSiteSelection selection = new TraceSiteSelection();
-        for (Map<String, Object> row : result.symbolicPlan) {
-            String method = stringValue(row.get("method"));
+        for (Map<String, Object> edge : result.edges) {
+            String method = stringValue(edge.get("method"));
             if (!method.isEmpty()) {
                 selection.relevantMethods.add(method);
             }
