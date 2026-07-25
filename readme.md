@@ -1609,9 +1609,11 @@ fallback。
 solver path context 和 required successor evidence 不变。十个零调用 helper/API 也一并
 退休，避免保留“看似支持、实际无人调用”的表面积。
 
-当前手写生产 Java 为 75,769 行，相对 81,581 行冻结基线累计净减 5,812 行。57 项快速
-回归、PMD 和 generic shell 语法检查通过；本段将在对应 clean 13-fixture 矩阵通过后记录
-提交与日志。
+手写生产 Java 为 75,769 行，相对 81,581 行冻结基线累计净减 5,812 行。57 项快速
+回归、PMD、generic shell 语法和真实 baseline 均通过。对应里程碑 `2b165d25` 的隔离
+干净 worktree 13-fixture 并行真实 custom-JDK/Z3 矩阵也已零失败，保持 6
+`SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T124250Z.2537011`。
 
 ### 明确不能删除
 
