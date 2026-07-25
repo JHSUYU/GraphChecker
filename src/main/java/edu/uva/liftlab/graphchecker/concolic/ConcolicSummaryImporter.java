@@ -2860,7 +2860,9 @@ public final class ConcolicSummaryImporter {
                     && activationId.equals(string(read,
                     "objectTokenScope"))
                     && bool(field, "available", false)
-                    && bool(field, "complete", false)
+                    && bindingId.equals(string(field,
+                    "dynamicBindingId"))
+                    && dynamic.equals(string(field, "symbol"))
                     && bool(field, "accessOwnerObjectTokenKnown", false)
                     && entryValueOwnerToken == longInteger(field,
                     "accessOwnerObjectToken", -1L)
@@ -2869,14 +2871,8 @@ public final class ConcolicSummaryImporter {
                     "leafOwnerObjectToken", -1L)
                     && activationId.equals(string(field,
                     "objectTokenScope"))
-                    && site.equals(string(field,
-                    "materializationSiteId"))
-                    && occurrence == integer(field,
-                    "materializationOccurrence", -2)
-                    && fieldSignature.equals(string(field,
-                    "fieldSignature"))
                     && array(binding, "fieldPath").equals(array(field,
-                    "fieldPath"))
+                    "path"))
                     && !leafOwnerClass.isEmpty();
             if (!identityJoin) continue;
 
@@ -6010,7 +6006,7 @@ public final class ConcolicSummaryImporter {
                 ? observed.get(0) : null;
         complete &= observed.size() == 1
                 && completeContainerDynamicFieldObservation(observation,
-                record, selector, activationId);
+                record, activationId);
         if (snapshotDeclaration && observation != null && action != null) {
             complete &= bool(observation, "accessOwnerObjectTokenKnown",
                     false)
@@ -6358,8 +6354,7 @@ public final class ConcolicSummaryImporter {
     }
 
     private static boolean completeContainerDynamicFieldObservation(
-            JsonObject observation, JsonObject binding, JsonObject selector,
-            String activationId) {
+            JsonObject observation, JsonObject binding, String activationId) {
         if (observation == null
                 || observation.has("entryReadObservationId")
                 || observation.has("entryReadObservationIds")
@@ -6367,53 +6362,13 @@ public final class ConcolicSummaryImporter {
                 || observation.has("keyExpressionAuthority")) {
             return false;
         }
-        JsonObject observedSelector = object(observation,
-                "containerSelector");
         return bool(observation, "available", false)
                 && "AT_MATERIALIZATION".equals(string(observation,
                 "phase"))
-                && string(binding, "baseInputSymbol").equals(string(
-                observation, "baseInputSymbol"))
                 && string(binding, "dynamicBindingId").equals(string(
                 observation, "dynamicBindingId"))
                 && string(binding, "dynamicFieldSymbol").equals(string(
-                observation, "dynamicFieldSymbol"))
-                && string(binding, "materializationSiteId").equals(string(
-                observation, "materializationSiteId"))
-                && integer(binding, "materializationOccurrence", -1)
-                == integer(observation, "materializationOccurrence", -2)
-                && string(binding, "actualHookSiteId").equals(string(
-                observation, "actualHookSiteId"))
-                && integer(binding, "actualHookOccurrence", -1)
-                == integer(observation, "actualHookOccurrence", -2)
-                && string(binding, "effectiveMaterializationSiteId").equals(
-                string(observation, "effectiveMaterializationSiteId"))
-                && integer(binding,
-                "effectiveMaterializationOccurrence", -1)
-                == integer(observation,
-                "effectiveMaterializationOccurrence", -2)
-                && string(binding,
-                "materializationSiteBridgeAuthority").equals(string(
-                observation, "materializationSiteBridgeAuthority"))
-                && string(binding,
-                "materializationSiteBridgeBindingId").equals(string(
-                observation, "materializationSiteBridgeBindingId"))
-                && longInteger(binding,
-                "materializationSiteBridgeElementObjectToken", 0L)
-                == longInteger(observation,
-                "materializationSiteBridgeElementObjectToken", -1L)
-                && string(binding,
-                "materializationSiteBridgeObjectTokenScope").equals(string(
-                observation,
-                "materializationSiteBridgeObjectTokenScope"))
-                && integer(observation,
-                "dynamicFieldBindingSchemaVersion", -1) == 2
-                && "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(string(
-                observation, "dynamicFieldBindingKind"))
-                && string(binding, "fieldSignature").equals(string(
-                observation, "fieldSignature"))
-                && array(binding, "fieldPath").equals(array(observation,
-                "fieldPath"))
+                observation, "symbol"))
                 && array(binding, "fieldPath").equals(array(observation,
                 "path"))
                 && bool(observation, "leafOwnerObjectTokenKnown", false)
@@ -6422,12 +6377,7 @@ public final class ConcolicSummaryImporter {
                 && "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
                 string(observation, "objectTokenAuthority"))
                 && activationId.equals(string(observation,
-                "objectTokenScope"))
-                && selector.equals(observedSelector)
-                && string(binding, "authority").equals(string(observation,
-                "dynamicFieldBindingAuthority"))
-                && bool(observation, "dynamicFieldBindingComplete", false)
-                && bool(observation, "complete", false);
+                "objectTokenScope"));
     }
 
     private static String normalizeContainerType(String type) {
@@ -6445,8 +6395,6 @@ public final class ConcolicSummaryImporter {
             if (!element.isJsonObject()) continue;
             JsonObject observation = element.getAsJsonObject();
             if (bindingId.equals(string(observation, "dynamicBindingId"))
-                    && dynamicSymbol.equals(string(observation,
-                    "dynamicFieldSymbol"))
                     && dynamicSymbol.equals(string(observation, "symbol"))) {
                 result.add(observation);
             }
@@ -6460,20 +6408,10 @@ public final class ConcolicSummaryImporter {
         String entryReadId = string(binding, "entryReadObservationId");
         return bool(observation, "available", false)
                 && "AT_MATERIALIZATION".equals(string(observation, "phase"))
-                && string(binding, "baseInputSymbol").equals(string(
-                observation, "baseInputSymbol"))
                 && string(binding, "dynamicBindingId").equals(string(
                 observation, "dynamicBindingId"))
                 && string(binding, "dynamicFieldSymbol").equals(string(
-                observation, "dynamicFieldSymbol"))
-                && string(binding, "materializationSiteId").equals(string(
-                observation, "materializationSiteId"))
-                && integer(binding, "materializationOccurrence", -1)
-                == integer(observation, "materializationOccurrence", -2)
-                && string(binding, "fieldSignature").equals(string(
-                observation, "fieldSignature"))
-                && array(binding, "fieldPath").equals(array(observation,
-                "fieldPath"))
+                observation, "symbol"))
                 && array(binding, "fieldPath").equals(array(observation,
                 "path"))
                 && longInteger(binding, "leafOwnerObjectToken", 0L)
@@ -6485,18 +6423,12 @@ public final class ConcolicSummaryImporter {
                 "accessOwnerObjectToken", -1L)
                 && bool(observation,
                 "accessOwnerObjectTokenKnown", false)
-                && entryReadId.equals(string(observation,
-                "entryReadObservationId"))
                 && arrayContainsString(array(observation,
                 "entryReadObservationIds"), entryReadId)
                 && "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
                 string(observation, "objectTokenAuthority"))
                 && string(binding, "objectTokenScope").equals(string(
-                observation, "objectTokenScope"))
-                && "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
-                .concat("FIELD_SITE_OCCURRENCE").equals(string(observation,
-                "dynamicFieldBindingAuthority"))
-                && bool(observation, "dynamicFieldBindingComplete", false);
+                observation, "objectTokenScope"));
     }
 
     private static boolean arrayContainsString(JsonArray values,

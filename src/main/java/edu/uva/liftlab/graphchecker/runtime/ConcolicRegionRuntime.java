@@ -1273,8 +1273,7 @@ public final class ConcolicRegionRuntime {
                         action.field, action.cell), materializationSite,
                 occurrence, cursor);
         DynamicFieldBinding binding = selection.binding;
-        annotateDynamicFieldBinding(cursor.entryObservation, binding,
-                cursor.entryObservationId);
+        annotateDynamicFieldBinding(cursor.entryObservation, binding);
         if (!selection.created) {
             // The heap cell was already symbolized.  Re-reading the same
             // concrete owner must reuse its first dynamic symbol so aliases
@@ -1322,10 +1321,8 @@ public final class ConcolicRegionRuntime {
                         binding.dynamicFieldSymbol, binding);
             }
             binding.refresh(active, cursor);
-            annotateDynamicFieldBinding(cursor.entryObservation, binding,
-                    cursor.entryObservationId);
-            annotateDynamicFieldBinding(observation, binding,
-                    binding.entryReadObservationId);
+            annotateDynamicFieldBinding(cursor.entryObservation, binding);
+            annotateDynamicFieldBinding(observation, binding);
         } catch (Throwable throwable) {
             active.unresolved.add(binding.dynamicBindingId
                     + ": dynamic field-site materialization "
@@ -2306,87 +2303,25 @@ public final class ConcolicRegionRuntime {
                 }
                 if (binding != null) {
                     annotateDynamicFieldBinding(cursor.entryObservation,
-                            binding, cursor.entryObservationId);
+                            binding);
                 }
                 refreshMapEntryValueExpression(active, cursor,
                         "AFTER_MATCHED_FIELD_SYMBOLIZATION");
                 if (binding != null) {
                     binding.refresh(active, cursor);
                     annotateDynamicFieldBinding(cursor.entryObservation,
-                            binding, cursor.entryObservationId);
+                            binding);
                 }
             }
         }
     }
 
     private static void annotateDynamicFieldBinding(
-            JsonObject target, DynamicFieldBinding binding,
-            String entryReadObservationId) {
+            JsonObject target, DynamicFieldBinding binding) {
         if (target == null || binding == null) {
             return;
         }
         target.addProperty("dynamicBindingId", binding.dynamicBindingId);
-        target.addProperty("baseInputSymbol", binding.baseInputSymbol);
-        target.addProperty("dynamicFieldSymbol",
-                binding.dynamicFieldSymbol);
-        target.addProperty("materializationSiteId",
-                binding.materializationSiteId);
-        target.addProperty("materializationOccurrence",
-                binding.materializationOccurrence);
-        if (binding.containerSelector != null) {
-            target.addProperty("actualHookSiteId",
-                    binding.actualHookSiteId);
-            target.addProperty("actualHookOccurrence",
-                    binding.actualHookOccurrence);
-            target.addProperty("effectiveMaterializationSiteId",
-                    binding.materializationSiteId);
-            target.addProperty("effectiveMaterializationOccurrence",
-                    binding.materializationOccurrence);
-            target.addProperty("materializationSiteBridgeAuthority",
-                    binding.materializationSiteBridgeAuthority);
-            target.addProperty("materializationSiteBridgeBindingId",
-                    binding.materializationSiteBridgeBindingId);
-            target.addProperty(
-                    "materializationSiteBridgeElementObjectToken",
-                    binding.materializationSiteBridgeElementObjectToken);
-            target.addProperty(
-                    "materializationSiteBridgeObjectTokenScope",
-                    binding.materializationSiteBridgeObjectTokenScope);
-        }
-        target.addProperty("dynamicFieldBindingSchemaVersion",
-                binding.schemaVersion);
-        target.addProperty("dynamicFieldBindingKind", binding.kind);
-        target.addProperty("fieldSignature", binding.fieldSignature);
-        target.add("fieldPath", GSON.toJsonTree(binding.fieldPath));
-        target.addProperty("leafOwnerObjectToken",
-                binding.leafOwnerObjectToken);
-        if (binding.entryValueOwnerObjectToken > 0L) {
-            target.addProperty("entryValueOwnerObjectToken",
-                    binding.entryValueOwnerObjectToken);
-        }
-        String entryRead = firstNonBlank(entryReadObservationId,
-                binding.entryReadObservationId);
-        if (!entryRead.isEmpty()) {
-            target.addProperty("entryReadObservationId", entryRead);
-        }
-        if (binding.keyExpression != null) {
-            target.add("keyExpression", copyJsonTree(binding.keyExpression));
-        }
-        if (!safe(binding.keyExpressionAuthority).isEmpty()) {
-            target.addProperty("keyExpressionAuthority",
-                    binding.keyExpressionAuthority);
-        }
-        if (binding.containerSelector != null) {
-            target.add("containerSelector",
-                    binding.containerSelector.toJson());
-        }
-        target.addProperty("dynamicFieldBindingAuthority",
-                binding.authority);
-        target.addProperty("dynamicFieldBindingComplete", binding.complete);
-        boolean enclosingComplete = !"MAP_ENTRY_READ".equals(
-                string(target, "kind")) || bool(target, "complete", true);
-        target.addProperty("complete", binding.complete
-                && enclosingComplete);
     }
 
     private static void captureIteratorExpressions(ActiveRegion active,
@@ -4720,8 +4655,7 @@ public final class ConcolicRegionRuntime {
         result.addProperty("valueObjectTokenKnown", value != null);
         appendValueObservation(result, value);
         if (binding != null) {
-            annotateDynamicFieldBinding(result, binding,
-                    binding.entryReadObservationId);
+            annotateDynamicFieldBinding(result, binding);
         }
         return result;
     }
