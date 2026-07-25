@@ -103,24 +103,14 @@ final class RuntimeRegionPlanner {
     private RuntimeRegionPlanner() {
     }
 
-    static Result plan(File regionFile, List<MethodEvent> methods,
-                       List<RuntimeEvent> runtimeEvents,
-                       List<FieldAccessEvent> fieldEvents) {
-        return plan(regionFile, null, methods, runtimeEvents, fieldEvents);
-    }
-
-    static Result plan(File regionFile, File regionEdgeFile,
-                       List<MethodEvent> methods,
-                       List<RuntimeEvent> runtimeEvents,
-                       List<FieldAccessEvent> fieldEvents) {
-        return plan(regionFile, regionEdgeFile, null, methods, runtimeEvents,
-                fieldEvents);
-    }
-
     static Result plan(File regionFile, File regionEdgeFile,
                        File staticGraphFile, List<MethodEvent> methods,
                        List<RuntimeEvent> runtimeEvents,
                        List<FieldAccessEvent> fieldEvents) {
+        if (staticGraphFile == null || !staticGraphFile.isFile()) {
+            throw new IllegalArgumentException(
+                    "runtime planning requires the frozen static graph");
+        }
         Result result = new Result();
         List<StaticRegion> regions = readRegions(regionFile, result.warnings);
         List<StaticRegionEdge> regionEdges = readRegionEdges(regionEdgeFile,
@@ -2072,21 +2062,12 @@ final class RuntimeRegionPlanner {
                             && !siteObserved))) {
                         continue;
                     }
-                    // Runtime has already selected one exact call closure and
-                    // demand-sliced its static candidates. A relation into a
-                    // discarded candidate port remains diagnostic evidence,
-                    // but cannot reintroduce that port into the symbolic
-                    // graph. Graphless legacy catalogs have no re-slice and
-                    // therefore do not enforce this gate.
-                    ConsumerInputResolution retainedInputResolution = null;
-                    if (downstream.concreteDemandSliceApplied) {
-                        retainedInputResolution = downstream
-                                .resolveConsumerInput(edge.toPort,
-                                        staticProjections);
-                        if (retainedInputResolution == null) {
-                            demandPrunedPairCount++;
-                            continue;
-                        }
+                    ConsumerInputResolution retainedInputResolution =
+                            downstream.resolveConsumerInput(edge.toPort,
+                                    staticProjections);
+                    if (retainedInputResolution == null) {
+                        demandPrunedPairCount++;
+                        continue;
                     }
                     endpointPairs++;
                     boolean sameProcess = upstream.root.process.equals(
@@ -2591,23 +2572,18 @@ final class RuntimeRegionPlanner {
                     binding.readFrom)) {
                 inputResolution = null;
             }
-            if (inputResolution == null
-                    && binding.downstream.concreteDemandSliceApplied) {
+            if (inputResolution == null) {
                 result.warnings.add("confirmed upstream edge has no retained "
                         + "concrete downstream input: " + binding.edge.edgeId
                         + " -> " + binding.downstream.instanceId);
                 continue;
             }
-            binding.downstreamInput = inputResolution == null
-                    ? null : inputResolution.port;
-            binding.downstreamInputProjection = inputResolution == null
-                    ? null : inputResolution.projection;
+            binding.downstreamInput = inputResolution.port;
+            binding.downstreamInputProjection = inputResolution.projection;
             binding.downstreamInputResolutionAuthority =
-                    inputResolution == null ? "" : inputResolution.authority;
+                    inputResolution.authority;
             binding.downstreamInputResolutionEvidenceEdgeIds =
-                    inputResolution == null
-                            ? Collections.emptyList()
-                            : new ArrayList<>(inputResolution.evidenceEdgeIds);
+                    new ArrayList<>(inputResolution.evidenceEdgeIds);
             String identity = binding.identity();
             if (!seen.add(identity)) {
                 continue;
@@ -4467,10 +4443,6 @@ final class RuntimeRegionPlanner {
     private static StaticProjectionIndex readStaticProjectionIndex(
             File file, List<String> warnings) {
         StaticProjectionIndex result = new StaticProjectionIndex();
-        if (file == null) {
-            return result;
-        }
-        result.catalogSupplied = true;
         if (!file.isFile()) {
             result.catalogReadComplete = false;
             result.catalogFailure = "FROZEN_STATIC_GRAPH_NOT_FOUND";
@@ -5607,7 +5579,6 @@ final class RuntimeRegionPlanner {
     }
 
     private static final class StaticProjectionIndex {
-        private boolean catalogSupplied;
         private boolean catalogReadComplete = true;
         private int catalogRowCount;
         private int catalogInvalidRowCount;
@@ -5671,8 +5642,8 @@ final class RuntimeRegionPlanner {
             if (slice.causalEdgeIds.isEmpty()) {
                 return "";
             }
-            if (!catalogSupplied || !catalogReadComplete
-                    || catalogRowCount == 0 || catalogInvalidRowCount > 0) {
+            if (!catalogReadComplete || catalogRowCount == 0
+                    || catalogInvalidRowCount > 0) {
                 return firstNonBlank(catalogFailure,
                         "STATIC_DATAFLOW_CATALOG_NOT_AUTHORITATIVE");
             }
@@ -5804,16 +5775,7 @@ final class RuntimeRegionPlanner {
                 Set<String> observedMethods, String runtimeRootMethod,
                 MethodEvent runtimeRoot, Set<Long> containedCalls,
                 RuntimeFieldAccessIndex runtimeFieldAccesses) {
-            // Old unit/catalog callers that genuinely have no frozen graph
-            // retain their legacy behavior.  A real frozen catalog never
-            // falls back to its broad candidate input list after runtime has
-            // selected an invocation.
-            if (!catalogSupplied) {
-                return ConcreteDemandSlice.legacyStatic();
-            }
-
             ConcreteDemandSlice result = new ConcreteDemandSlice();
-            result.applied = true;
             if (!catalogReadComplete || catalogRowCount == 0
                     || catalogInvalidRowCount > 0 || byId.isEmpty()) {
                 return result;
@@ -5983,20 +5945,12 @@ final class RuntimeRegionPlanner {
 
     /** Result of the post-runtime demand slice over the frozen static graph. */
     private static final class ConcreteDemandSlice {
-        private boolean applied;
         private boolean externalInputPromoted;
         private final Set<String> inputPortIds = new LinkedHashSet<>();
         private final Set<String> methods = new LinkedHashSet<>();
         private final Set<String> edgeIds = new LinkedHashSet<>();
 
-        private static ConcreteDemandSlice legacyStatic() {
-            return new ConcreteDemandSlice();
-        }
-
         private List<StaticPort> inputs(StaticRegion region) {
-            if (!applied) {
-                return new ArrayList<>(region.inputs);
-            }
             List<StaticPort> result = new ArrayList<>();
             for (StaticPort input : region.inputs) {
                 if (inputPortIds.contains(input.portId)) {
@@ -6011,9 +5965,7 @@ final class RuntimeRegionPlanner {
             if (observedMethods != null) {
                 result.addAll(observedMethods);
             }
-            if (applied) {
-                result.addAll(methods);
-            }
+            result.addAll(methods);
             return sorted(result);
         }
 
@@ -6476,7 +6428,6 @@ final class RuntimeRegionPlanner {
         private final Set<String> concreteInputPortIds;
         private final Set<String> concreteDemandEdgeIds;
         private final ConcreteDemandSlice concreteDemandSlice;
-        private final boolean concreteDemandSliceApplied;
         private final Map<String, ConsumerInputResolution>
                 consumerInputResolutionCache = new LinkedHashMap<>();
         private final Set<String> unresolvedConsumerInputCache =
@@ -6518,7 +6469,6 @@ final class RuntimeRegionPlanner {
             this.concreteDemandSlice = concreteDemandSlice;
             this.concreteDemandEdgeIds = new LinkedHashSet<>(
                     concreteDemandSlice.edgeIds);
-            this.concreteDemandSliceApplied = concreteDemandSlice.applied;
             this.runtimePathEvidenceComplete = runtimePathEvidenceComplete;
             this.containedCallTreeComplete = containedCallTreeComplete;
             this.pathSignatureComplete = pathSignatureComplete;
@@ -6580,11 +6530,8 @@ final class RuntimeRegionPlanner {
             }
             projections.consumerInputResolutionCacheMissCount++;
             ConsumerInputResolution resolution = region.resolveConsumerInput(
-                    key, projections,
-                    concreteDemandSliceApplied
-                            ? concreteInputPortIds : null,
-                    concreteDemandSliceApplied
-                            ? concreteDemandEdgeIds : Collections.emptySet(),
+                    key, projections, concreteInputPortIds,
+                    concreteDemandEdgeIds,
                     observedMethods);
             if (resolution == null) {
                 unresolvedConsumerInputCache.add(key);

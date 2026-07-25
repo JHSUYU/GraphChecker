@@ -54,7 +54,9 @@ public class RuntimeRegionPlannerTest {
                     + "\"branchPolicies\":[],\"models\":[]}\n";
             writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
+                    regions.toFile(), null,
+                    companionStaticGraph(regions).toFile(),
+                    Collections.singletonList(
                             method(1, HANDLE, 1, 0, 0)),
                     Collections.emptyList(), Collections.emptyList());
             assertEquals("READY",
@@ -100,7 +102,8 @@ public class RuntimeRegionPlannerTest {
                 fields.add(exactFieldRead(3, method, 1, 7, field, receiver,
                         701));
             }
-            return RuntimeRegionPlanner.plan(regions.toFile(),
+            return RuntimeRegionPlanner.plan(regions.toFile(), null,
+                    companionStaticGraph(regions).toFile(),
                     Collections.singletonList(methodContext(1, method, 1,
                             "PROCESS", "reader", 55L)),
                     Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
@@ -1742,6 +1745,7 @@ public class RuntimeRegionPlannerTest {
                             "FIELD_READ", reader, 3, field, 273814159,
                             readerContainerObjectId, "");
             return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                    companionStaticGraph(regions).toFile(),
                     Arrays.asList(writer, contained, read), runtime,
                     Arrays.asList(writerFieldRead, readerFieldRead));
         } finally {
@@ -2255,6 +2259,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"siteId\":\"synthetic:hdfs_sasl_username\"}\n";
             Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
             return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                    companionStaticGraph(regions).toFile(),
                     methods, events, Collections.emptyList());
         } finally {
             folder.delete();

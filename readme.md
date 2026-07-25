@@ -1337,7 +1337,10 @@ root selection 也已一次性收敛成 tagged
 `rootMethod/receiverType/invocationOrdinal`、context authority/boolean 镜像和 argument
 selector schema/authority 镜像，不保留 legacy/global fallback。迁移回归发现并修正了
 worklist identity 的旧顶层 root 读点；57 项快速回归和 baseline 全流程仍通过。PR 3
-剩余的 edge evidence 收敛继续作为后续原子切换完成。
+同时删除 runtime planner 的 graphless overload、`catalogSupplied=false` 和
+`legacyStatic()` 宽泛输入路径；所有 planning 现在必须消费同一份 frozen static graph，
+57 项快速回归和 baseline 全流程仍通过。PR 3 剩余的 edge evidence 收敛继续作为后续
+原子切换完成。
 
 ### PR 4：压缩 trace、Importer 和 replay admission
 
