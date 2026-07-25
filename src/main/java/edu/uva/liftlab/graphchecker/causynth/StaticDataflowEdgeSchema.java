@@ -21,10 +21,6 @@ final class StaticDataflowEdgeSchema {
         return MAPPING_ONLY.equals(semanticMode(edge));
     }
 
-    static String mappingAuthority(Map<String, Object> edge) {
-        return string(edge, "mappingAuthority", "");
-    }
-
     static boolean automaticSemantics(Map<String, Object> edge) {
         return supported(edge) && ASSERTABLE.equals(semanticMode(edge));
     }

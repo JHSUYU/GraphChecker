@@ -1722,8 +1722,8 @@ final class RuntimeRegionPlanner {
                     // after the consumer read, so comparing region lastSeq()
                     // values must not override the concrete writeSeq <=
                     // readSeq witness established by sharedReadFrom().
-                    boolean ordered = !edge.requiresOrder || siteObserved
-                            || valueMatch != null || readFrom != null
+                    boolean ordered = siteObserved || valueMatch != null
+                            || readFrom != null
                             || (sameProcess && upstream.lastSeq()
                             <= downstream.lastSeq());
                     if (ordered) {
@@ -1799,9 +1799,6 @@ final class RuntimeRegionPlanner {
                     "toPort", edge.toPort,
                     "state", state,
                     "bindings", validatedBindings);
-            if (!edge.mappingKind.isEmpty()) {
-                validationRow.put("mappingKind", edge.mappingKind);
-            }
             if (edge.usesCanonicalOutput()) {
                 validationRow.put("fromOutputPort", edge.fromOutputPort);
                 validationRow.put("fromOutputCell", edge.fromOutputCell);
@@ -3566,7 +3563,7 @@ final class RuntimeRegionPlanner {
         FingerprintMatch best = null;
         for (EndpointFingerprint source : sources) {
             if (!source.digest.equals(target.digest)
-                    || (edge.requiresOrder && source.seq > target.seq)) {
+                    || source.seq > target.seq) {
                 continue;
             }
             FingerprintMatch candidate = new FingerprintMatch(source, target);
@@ -3919,8 +3916,6 @@ final class RuntimeRegionPlanner {
                 if (failure.isEmpty()) {
                     continue;
                 }
-                slice.structuralComplete = false;
-                slice.complete = false;
                 if (!slice.structuralIssues.contains(failure)) {
                     slice.structuralIssues.add(failure);
                 }
@@ -5540,9 +5535,6 @@ final class RuntimeRegionPlanner {
         private String toPort = "";
         private String kind = "";
         private String siteId = "";
-        private boolean requiresOrder;
-        private boolean requiresObjectIdentity;
-        private String mappingKind = "";
         private boolean mappingOnly;
         private FieldCell fromField = FieldCell.unresolved();
         private FieldCell toField = FieldCell.unresolved();
@@ -5566,10 +5558,6 @@ final class RuntimeRegionPlanner {
             edge.toField = fieldCell(edge.toPort);
             edge.kind = jsonString(json, "kind");
             edge.siteId = jsonString(json, "siteId");
-            edge.requiresOrder = jsonBoolean(json, "requiresOrder", false);
-            edge.requiresObjectIdentity = jsonBoolean(json,
-                    "requiresObjectIdentity", false);
-            edge.mappingKind = jsonString(json, "mappingKind");
             edge.mappingOnly = "MAPPING_ONLY".equals(
                     jsonString(json, "semanticMode"));
             return edge;
@@ -6284,13 +6272,8 @@ final class RuntimeRegionPlanner {
     private static final class StaticOutputSlice {
         private String outputPort = "";
         private String outputCell = "";
-        private String selection = "";
         private boolean complete;
         private boolean structuralComplete;
-        private boolean regionTruncated;
-        private boolean sliceTruncated;
-        private boolean methodBudgetTruncated;
-        private boolean causalCellBudgetTruncated;
         private final List<String> structuralIssues = new ArrayList<>();
         private final Set<String> inputPorts = new LinkedHashSet<>();
         private final Set<String> methods = new LinkedHashSet<>();
@@ -6352,8 +6335,6 @@ final class RuntimeRegionPlanner {
             StaticOutputSlice slice = new StaticOutputSlice();
             slice.outputPort = jsonString(json, "outputPort");
             slice.outputCell = jsonString(json, "outputCell");
-            slice.selection = jsonString(json, "selection");
-            slice.complete = jsonBoolean(json, "complete", false);
             slice.inputPorts.addAll(jsonStringArray(json, "inputPorts"));
             slice.methods.addAll(jsonStringArray(json, "methods"));
             slice.sites.addAll(jsonStringArray(json, "sites"));
@@ -6505,17 +6486,8 @@ final class RuntimeRegionPlanner {
                         "reason", jsonString(detail, "reason"),
                         "diagnostic", jsonString(detail, "diagnostic")));
             }
-            slice.regionTruncated = jsonBoolean(json,
-                    "regionTruncated", false);
-            slice.sliceTruncated = jsonBoolean(json, "truncated", false);
-            slice.methodBudgetTruncated = jsonBoolean(json,
-                    "methodBudgetTruncated", false);
-            slice.causalCellBudgetTruncated = jsonBoolean(json,
-                    "causalCellBudgetTruncated", false);
             slice.structuralIssues.addAll(jsonStringArray(json,
                     "truncationReasons"));
-            slice.structuralComplete = jsonBoolean(json,
-                    "structuralComplete", false);
             return slice;
         }
 
@@ -6891,12 +6863,6 @@ final class RuntimeRegionPlanner {
             StaticOutputSlice refined = new StaticOutputSlice();
             refined.outputPort = outputPort;
             refined.outputCell = outputCell;
-            refined.selection = selection;
-            refined.structuralComplete = structuralComplete;
-            refined.regionTruncated = regionTruncated;
-            refined.sliceTruncated = sliceTruncated;
-            refined.methodBudgetTruncated = methodBudgetTruncated;
-            refined.causalCellBudgetTruncated = causalCellBudgetTruncated;
             refined.structuralIssues.addAll(structuralIssues);
             refined.staticSites.addAll(sites);
             refined.captureBindingsRequired = captureBindingsRequired;
@@ -7166,10 +7132,8 @@ final class RuntimeRegionPlanner {
             if (!causalMetadataComplete && !causalEdgeIds.isEmpty()) {
                 refined.runtimeRefinementComplete = false;
             }
-            refined.structuralComplete = structuralComplete
-                    && !sliceTruncated
-                    && !methodBudgetTruncated
-                    && !causalCellBudgetTruncated
+            refined.structuralComplete = structuralIssues.isEmpty()
+                    && !causalEdgeIds.isEmpty()
                     && !refined.causalEdgeIds.isEmpty();
             boolean staticTransformerContractLedgerComplete =
                     requestedStateTransformerContractComplete
@@ -7664,8 +7628,7 @@ final class RuntimeRegionPlanner {
                     containerElementFieldBindings,
                     "inputGaps", inputGaps,
                     "truncationReasons", structuralIssues,
-                    "complete", complete,
-                    "selection", selection);
+                    "complete", complete);
             if (requestedStateTransformerContractPresent) {
                 result.put("requestedStateTransformerObligations",
                         requestedStateTransformerObligations);

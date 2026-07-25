@@ -1347,10 +1347,6 @@ final class SymbolicRegionPlanner {
                         "cell", output,
                         "javaType", cellJavaType(output),
                         "kind", outputKind(output, draft.anchorMethod));
-                if (prioritySeedOutputs.contains(output)) {
-                    port.put("selectionAuthority",
-                            "DIRECT_STATIC_SEED_INTERFACE_V1");
-                }
                 outputPorts.add(port);
             }
             List<Map<String, Object>> outputSlices = outputSlices(draft,
@@ -1371,11 +1367,6 @@ final class SymbolicRegionPlanner {
                     "outputs", outputPorts,
                     "outputSlices", outputSlices,
                     "branchPolicies", branchPolicies,
-                    "methodBudgetTruncated", draft.methodBudgetTruncated,
-                    "causalCellBudgetTruncated",
-                    draft.causalCellBudgetTruncated,
-                    "truncated", draft.truncated,
-                    "truncationReasons", truncationReasons(draft, false),
                     "causalEdgeIds", draft.exceptionDirected
                             ? causalEdgeIds(draft.causalEdges)
                             : Collections.emptyList(),
@@ -1396,13 +1387,10 @@ final class SymbolicRegionPlanner {
             return sorted(ids);
         }
 
-        private List<String> truncationReasons(RegionDraft draft,
-                                               boolean requestedOutputSlice) {
+        private List<String> truncationReasons(RegionDraft draft) {
             List<String> reasons = new ArrayList<>();
             if (draft.methodBudgetTruncated) {
-                reasons.add(requestedOutputSlice
-                        ? "REQUESTED_OUTPUT_METHOD_LIMIT_EXCEEDED"
-                        : "METHOD_LIMIT_EXCEEDED");
+                reasons.add("REQUESTED_OUTPUT_METHOD_LIMIT_EXCEEDED");
             }
             if (draft.causalCellBudgetTruncated) {
                 reasons.add("BACKWARD_DEPENDENCY_CELL_LIMIT_EXCEEDED");
@@ -1733,7 +1721,6 @@ final class SymbolicRegionPlanner {
                         frameBinding.put("dependencyMethods",
                                 sorted(frameMethods));
                     }
-                    frameBinding.put("frameConditionInput", true);
                 }
 
                 Set<String> sites = new LinkedHashSet<>();
@@ -1765,13 +1752,6 @@ final class SymbolicRegionPlanner {
                         containerElementFieldBindings(containerCandidates,
                                 inputPorts, selectedPorts,
                                 string(output.get("portId")));
-                boolean structuralComplete = !slice.truncated
-                        && !slice.causalEdges.isEmpty();
-                boolean complete = structuralComplete
-                        && unresolvedDetails.isEmpty()
-                        && (!heapStateOutput
-                        || transformerContract.complete)
-                        && outputCapture.complete;
                 Map<String, Object> outputSlice = object(
                         "outputPort", string(output.get("portId")),
                         "outputCell", outputCell,
@@ -1781,13 +1761,7 @@ final class SymbolicRegionPlanner {
                                 region.rootMethod),
                         "sites", sorted(sites),
                         "causalEdgeIds", causalEdgeIds(slice.causalEdges),
-                        "regionTruncated", slice.inheritedRegionTruncated,
-                        "methodBudgetTruncated",
-                        slice.methodBudgetTruncated,
-                        "causalCellBudgetTruncated",
-                        slice.causalCellBudgetTruncated,
-                        "truncated", slice.truncated,
-                        "truncationReasons", truncationReasons(slice, true),
+                        "truncationReasons", truncationReasons(slice),
                         "heapInitializers", heapInitializers,
                         "captureBindings", outputCapture.bindings,
                         "captureBindingsRequired", outputCapture.required,
@@ -1796,11 +1770,7 @@ final class SymbolicRegionPlanner {
                         "containerElementFieldBindings",
                         containerBindings,
                         "inputGaps",
-                        new ArrayList<>(unresolvedDetails.values()),
-                        "structuralComplete", structuralComplete,
-                        "complete", complete,
-                        "selection",
-                        "REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE");
+                        new ArrayList<>(unresolvedDetails.values()));
                 if (heapStateOutput) {
                     outputSlice.putAll(transformerContract.toMap());
                 }
@@ -1843,7 +1813,6 @@ final class SymbolicRegionPlanner {
             exact.put("sourceKind", "HEAP_PRESTATE");
             exact.put("selectionReason",
                     "REQUESTED_OUTPUT_FRAME_CONDITION");
-            exact.put("frameConditionInput", true);
             return exact;
         }
 
@@ -6791,7 +6760,6 @@ final class SymbolicRegionPlanner {
                         String fromRegionId = fromRegion == null
                                 ? "EXTERNAL"
                                 : string(fromRegion.get("regionId"));
-                        String staticMappingKind = string(edge.get("kind"));
                         String key = fromRegionId + "\n" + toRegionId + "\n"
                                 + fromCell + "\n" + toCell + "\n"
                                 + string(edge.get("siteId"));
@@ -6812,15 +6780,8 @@ final class SymbolicRegionPlanner {
                                 // values are equal.  RuntimeRegionPlanner may
                                 // promote the candidate only after observing a
                                 // complete value fingerprint on both endpoints.
-                                "relation", "",
-                                "requiresOrder", true,
-                                "mappingKind", staticMappingKind,
-                                "mappingAuthority",
-                                "STATIC_FORMAT_AND_PORT_MAPPING",
                                 "semanticMode", "MAPPING_ONLY",
-                                "siteId", string(edge.get("siteId")),
-                                "evidence", Arrays.asList("STATIC_PROTOCOL",
-                                        string(edge.get("evidence"))));
+                                "siteId", string(edge.get("siteId")));
                         CanonicalOutputResolution canonical =
                                 canonicalProducerOutput(fromRegion, fromCell);
                         if (canonical != null) {
@@ -6915,11 +6876,8 @@ final class SymbolicRegionPlanner {
                                 "toRegion", consumer,
                                 "toPort", field,
                                 "kind", "SHARED_STATE",
-                                "relation", "READ_FROM_CANDIDATE",
-                                "requiresOrder", true,
-                                "requiresObjectIdentity", true,
-                                "evidence", Collections.singletonList(
-                                        "STATIC_FIELD"));
+                                "semanticMode",
+                                "RUNTIME_VALIDATION_REQUIRED");
                         result.regionEdges.add(sharedEdge);
                     }
                 }

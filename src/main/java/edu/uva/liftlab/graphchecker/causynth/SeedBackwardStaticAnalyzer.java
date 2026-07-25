@@ -4345,9 +4345,6 @@ final class SeedBackwardStaticAnalyzer {
                     .equals(semanticMode);
             boolean assertable = StaticDataflowEdgeSchema.ASSERTABLE
                     .equals(semanticMode);
-            String mappingAuthority = mappingOnly
-                    ? StaticDataflowEdgeSchema.mappingAuthority(
-                    projectionBaseEdge) : "";
             String edgeTransferKind = StaticDataflowEdgeSchema.transferKind(
                     kind,
                     fact == null ? "" : fact.unitText,
@@ -4374,9 +4371,6 @@ final class SeedBackwardStaticAnalyzer {
                     "siteId", stableSiteId(method,
                             fact == null ? -1 : fact.unitIndex, kind),
                     "evidence", evidence);
-            if (mappingOnly && !mappingAuthority.isEmpty()) {
-                edge.put("mappingAuthority", mappingAuthority);
-            }
             if (hasProjectionBase) {
                 edge.put("projectionBaseEdgeId", stringValue(
                         projectionBaseEdge.get("id")));

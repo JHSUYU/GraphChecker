@@ -2080,6 +2080,14 @@ raw execution 建一个保留重复 row 的只读 `EvidenceIndex`，让完整 ca
 site/occurrence、event sequence 和 object identity 继续 fail closed，同时删除 joint-output
 member 之间对相同 capture、branch、dynamic-field 和 input-action evidence 的重复扫描。
 
+随后 static artifact 也只保留可重建 runtime closure 所需的事实。region 顶层不再写
+truncation 镜像；output slice 不再写 selection、regionTruncated 和五个
+complete/truncated boolean，Runtime 由 `truncationReasons + causalEdgeIds + inputGaps`
+唯一推导 readiness。region edge 不再携带固定 order/object-identity、relation/evidence
+或 mapping authority 镜像；所有 edge 仍无条件执行 event order 检查。frame prestate
+只由 `HEAP_PRESTATE + bindingAuthority` 识别，不再额外写 `frameConditionInput=true`。
+该切换净减 89 行生产 Java，62 项快速回归以及同一三个真实 core workflow 全部通过。
+
 ### 明确不能删除
 
 必须保留：
