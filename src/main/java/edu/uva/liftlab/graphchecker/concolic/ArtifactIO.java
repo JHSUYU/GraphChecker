@@ -48,6 +48,14 @@ final class ArtifactIO {
         return parsed.getAsJsonObject();
     }
 
+    static List<JsonObject> readJsonl(Path path) throws IOException {
+        if (path == null || !Files.isRegularFile(path)) {
+            throw new IOException("JSONL input not found: " + path);
+        }
+        return readJsonl(path, "Malformed JSONL %1$s:%2$d",
+                "Non-object JSONL row %1$s:%2$d");
+    }
+
     static List<JsonObject> readJsonl(Path path, String malformedFormat,
                                       String nonObjectFormat)
             throws IOException {

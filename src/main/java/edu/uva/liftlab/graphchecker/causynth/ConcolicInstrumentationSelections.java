@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import soot.SootClass;
@@ -15,8 +14,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -132,9 +129,8 @@ final class ConcolicInstrumentationSelections {
     /**
      * Returns whether one exact scheduler-selected activation carries all of
      * the evidence needed to analyze only its bounded requested-output
-     * closure.  This is deliberately stricter than root selection: older
-     * discovery plans and branch-target plans must continue to require global
-     * symbolic-region coverage.
+     * closure. Discovery plans and branch-target plans continue to require
+     * global symbolic-region coverage.
      */
     static boolean selectedBoundedOutputClosureCoverageReady(
             Path activationPlan, String selectedActivation)
@@ -192,30 +188,8 @@ final class ConcolicInstrumentationSelections {
             return false;
         }
 
-        String scheduleId = jsonString(row, "scheduleId");
-        JsonObject bundle = bundle(row);
         if (!selected.equals(jsonString(row, "activationId"))
-                || !selected.equals(jsonString(bundle, "selection"))
-                || !selected.equals(jsonString(bundle,
-                "rootActivationId"))
-                || scheduleId.isEmpty()
-                || !scheduleId.equals(jsonString(bundle, "scheduleId"))
-                || !strictJsonIntEquals(bundle, "size", 1)
-                || !strictJsonIntEquals(bundle, "index", 0)
-                || !"PRIMARY".equals(jsonString(bundle, "role"))) {
-            return false;
-        }
-
-        if (!admissionExecutable(row) || !admissionBlockersEmpty(row)) {
-            return false;
-        }
-        boolean seedReplay = "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
-                .equals(admissionMode(row))
-                && "CAPTURE_OUTPUT_PATH".equals(jsonString(row,
-                        "executionPhase"))
-                && absentOrEmptyJsonArray(row, "modelAssignments");
-        boolean solverFlipReplay = solverOutputPathFlipReady(row, selected);
-        if (!seedReplay && !solverFlipReplay) {
+                || !admissionExecutable(row)) {
             return false;
         }
 
@@ -237,30 +211,8 @@ final class ConcolicInstrumentationSelections {
     private static boolean boundedOutputMemberReady(
             JsonObject row, OutputClosureContract.Member member) {
         JsonObject slice = member.slice();
-        if (!strictJsonBooleanEquals(slice, "complete", true)
-                || !strictJsonBooleanEquals(slice,
-                "structuralComplete", true)
-                || !strictJsonBooleanEquals(slice, "runtimeRefined", true)
-                || !strictJsonBooleanEquals(slice,
-                "runtimeRefinementComplete", true)
-                || jsonString(slice, "runtimeRefinementAuthority").isEmpty()
-                || !strictJsonBooleanEquals(slice,
-                "unresolvedInputProvenanceComplete", true)
-                || !strictJsonBooleanEquals(slice,
-                "captureBindingsComplete", true)
-                || !strictJsonBooleanEquals(slice,
-                "methodBudgetTruncated", false)
-                || !strictJsonBooleanEquals(slice,
-                "causalCellBudgetTruncated", false)
-                || !strictJsonBooleanEquals(slice,
-                "regionTruncated", false)
-                || !strictJsonBooleanEquals(slice, "truncated", false)) {
-            return false;
-        }
-        if (!emptyJsonArray(slice, "unresolvedInputs")
-                || !emptyJsonArray(slice, "unresolvedInputDetails")
-                || !emptyJsonArray(slice, "truncationReasons")
-                || !emptyJsonArray(slice, "captureBindingIssues")) {
+        if (!jsonBoolean(slice, "complete", false)
+                || !member.captureComplete()) {
             return false;
         }
         if (!member.captureRequired()
@@ -271,115 +223,12 @@ final class ConcolicInstrumentationSelections {
         return true;
     }
 
-    /**
-     * Admits the one non-seed replay shape that can soundly reuse a bounded
-     * requested-output closure: an input-model-only Z3 path flip.  The model
-     * may change concrete program inputs at their real definitions, but the
-     * branch remains an observation target and no edge is forced.
-     */
-    private static boolean solverOutputPathFlipReady(JsonObject row,
-                                                     String selected) {
-        if (!selected.startsWith("ACT.PATH.")
-                || !"RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY".equals(
-                strictAdmissionMode(row))
-                || !"REPLAY_OUTPUT_PATH_FLIP".equals(
-                strictJsonString(row, "executionPhase"))) {
-            return false;
-        }
-
-        String queryKey = strictJsonString(row, "pathQueryKey");
-        String pathId = shortSha256(queryKey, 16);
-        if (!queryKey.matches("[0-9a-f]{64}")
-                || !selected.equals("ACT.PATH." + pathId)
-                || !("SCHEDULE.PATH." + pathId).equals(
-                strictJsonString(row, "scheduleId"))) {
-            return false;
-        }
-
-        JsonElement assignmentsElement = row.get("modelAssignments");
-        if (assignmentsElement == null || !assignmentsElement.isJsonArray()
-                || assignmentsElement.getAsJsonArray().size() == 0) {
-            return false;
-        }
-        Set<String> engineSymbols = new LinkedHashSet<>();
-        Set<String> solverSymbols = new LinkedHashSet<>();
-        for (JsonElement element : assignmentsElement.getAsJsonArray()) {
-            if (!element.isJsonObject()
-                    || !z3PathFlipAssignmentReady(element.getAsJsonObject(),
-                    engineSymbols, solverSymbols)) {
-                return false;
-            }
-        }
-
-        JsonElement contractElement = row.get("replayContract");
-        if (contractElement == null || !contractElement.isJsonObject()) {
-            return false;
-        }
-        try {
-            BranchReplayContract.fromJson(
-                    contractElement.getAsJsonObject());
-        } catch (RuntimeException malformed) {
-            return false;
-        }
-        return true;
-    }
-
-    private static boolean z3PathFlipAssignmentReady(
-            JsonObject assignment, Set<String> engineSymbols,
-            Set<String> solverSymbols) {
-        String engineSymbol = strictJsonString(assignment,
-                "engineSymbol");
-        String solverSymbol = strictJsonString(assignment,
-                "solverSymbol");
-        String inputSymbol = strictJsonString(assignment,
-                "inputSymbol");
-        String valueType = strictJsonString(assignment, "valueType");
-        JsonElement value = assignment.get("value");
-        JsonElement targetElement = assignment.get("target");
-        if (engineSymbol.isEmpty() || solverSymbol.isEmpty()
-                || inputSymbol.isEmpty()
-                || !("BOOL".equals(valueType) || "INT".equals(valueType)
-                || "REAL".equals(valueType)
-                || "STRING".equals(valueType))
-                || value == null || !value.isJsonPrimitive()
-                || !value.getAsJsonPrimitive().isString()
-                || !"Z3_PATH_FLIP_MODEL".equals(strictJsonString(
-                assignment, "authority"))
-                || !strictJsonBooleanEquals(assignment,
-                "materializeAtRealDefinition", true)
-                || targetElement == null || !targetElement.isJsonObject()
-                || !inputSymbol.equals(strictJsonString(
-                targetElement.getAsJsonObject(), "symbol"))
-                || !engineSymbols.add(engineSymbol)
-                || !solverSymbols.add(solverSymbol)) {
-            return false;
-        }
-        String modelValue = value.getAsString();
-        return !"BOOL".equals(valueType)
-                || "true".equals(modelValue) || "false".equals(modelValue);
-    }
-
-    private static String shortSha256(String value, int length) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(value.getBytes(
-                    StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder();
-            for (byte item : bytes) {
-                result.append(String.format("%02x", item & 0xff));
-            }
-            return result.substring(0, length);
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
-    }
-
     private static boolean heapEffectCaptureDischargeReady(
             JsonObject row, JsonObject slice, String outputPort,
             String outputCell) {
         String inputPort = jsonString(slice, "captureDischargeInputPort");
-        if (!strictJsonBooleanEquals(slice,
-                "captureDischargedByHeapEffectTransformer", true)
+        if (!jsonBoolean(slice,
+                "captureDischargedByHeapEffectTransformer", false)
                 || !"HEAP_EFFECT_STATE_TRANSFORMER".equals(jsonString(slice,
                 "captureDischargeAuthority"))
                 || inputPort.isEmpty()
@@ -387,42 +236,15 @@ final class ConcolicInstrumentationSelections {
                 "captureDischargeOutputPort"))
                 || !outputCell.equals(jsonString(slice,
                 "captureDischargeOutputCell"))
-                || !strictJsonBooleanEquals(slice,
-                "requestedStateTransformerContractApplicable", true)
-                || !strictJsonBooleanEquals(slice,
-                "requestedStateTransformerContractComplete", true)
-                || !strictJsonIntEquals(slice,
-                "requestedStateTransformerContractVersion", 1)
-                || jsonString(slice,
-                "requestedStateTransformerContractAuthority").isEmpty()
+                || !jsonBoolean(slice,
+                "requestedStateTransformerContractComplete", false)
+                || intValue(slice.get(
+                "requestedStateTransformerContractVersion"), -1) != 1
                 || !outputPort.equals(jsonString(slice,
                 "requestedStateTransformerContractOutputPort"))
                 || !outputCell.equals(jsonString(slice,
-                "requestedStateTransformerContractOutputCell"))
-                || !emptyJsonArray(slice,
-                "requestedStateTransformerContractIssues")) {
+                "requestedStateTransformerContractOutputCell"))) {
             return false;
-        }
-
-        JsonElement obligations = slice.get(
-                "requestedStateTransformerObligations");
-        int obligationCount = strictJsonInt(slice,
-                "requestedStateTransformerObligationCount", -1);
-        if (obligations == null || !obligations.isJsonArray()
-                || obligationCount <= 0
-                || obligations.getAsJsonArray().size() != obligationCount) {
-            return false;
-        }
-        for (JsonElement element : obligations.getAsJsonArray()) {
-            if (!element.isJsonObject()
-                    || !outputCell.equals(jsonString(element.getAsJsonObject(),
-                    "targetCell"))
-                    || jsonString(element.getAsJsonObject(), "siteId").isEmpty()
-                    || jsonString(element.getAsJsonObject(), "method").isEmpty()
-                    || jsonString(element.getAsJsonObject(),
-                    "authority").isEmpty()) {
-                return false;
-            }
         }
 
         JsonElement bindings = row.get("heapStateBindings");
@@ -442,58 +264,6 @@ final class ConcolicInstrumentationSelections {
             }
         }
         return matchingBindings == 1;
-    }
-
-    private static boolean strictJsonBooleanEquals(JsonObject object,
-                                                   String field,
-                                                   boolean expected) {
-        JsonElement value = object.get(field);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isBoolean()
-                && value.getAsBoolean() == expected;
-    }
-
-    private static String strictJsonString(JsonObject object, String field) {
-        JsonElement value = object.get(field);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isString()
-                ? value.getAsString() : "";
-    }
-
-    private static boolean strictJsonIntEquals(JsonObject object,
-                                               String field, int expected) {
-        return strictJsonInt(object, field, Integer.MIN_VALUE) == expected;
-    }
-
-    private static int strictJsonInt(JsonObject object, String field,
-                                     int fallback) {
-        JsonElement value = object.get(field);
-        if (value == null || !value.isJsonPrimitive()
-                || !value.getAsJsonPrimitive().isNumber()) {
-            return fallback;
-        }
-        try {
-            String encoded = value.getAsString();
-            if (!encoded.matches("-?(0|[1-9][0-9]*)")) {
-                return fallback;
-            }
-            return Integer.parseInt(encoded);
-        } catch (RuntimeException malformed) {
-            return fallback;
-        }
-    }
-
-    private static boolean emptyJsonArray(JsonObject object, String field) {
-        JsonElement value = object.get(field);
-        return value != null && value.isJsonArray()
-                && value.getAsJsonArray().size() == 0;
-    }
-
-    private static boolean absentOrEmptyJsonArray(JsonObject object,
-                                                  String field) {
-        JsonElement value = object.get(field);
-        return value == null || (value.isJsonArray()
-                && value.getAsJsonArray().size() == 0);
     }
 
     static final class ConcolicBranchSelection {
@@ -1449,21 +1219,6 @@ final class ConcolicInstrumentationSelections {
         JsonObject admission = admission(row);
         return admission != null
                 && "EXECUTABLE".equals(jsonString(admission, "state"));
-    }
-
-    private static boolean admissionBlockersEmpty(JsonObject row) {
-        JsonObject admission = admission(row);
-        return admission != null
-                && emptyJsonArray(admission, "blockers");
-    }
-
-    private static String admissionMode(JsonObject row) {
-        return jsonString(admission(row), "mode");
-    }
-
-    private static String strictAdmissionMode(JsonObject row) {
-        JsonObject admission = admission(row);
-        return admission == null ? "" : strictJsonString(admission, "mode");
     }
 
     private static boolean jsonBoolean(JsonObject object, String field,

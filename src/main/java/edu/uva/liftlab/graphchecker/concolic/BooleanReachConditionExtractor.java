@@ -7,7 +7,6 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
 import java.io.File;
 import java.io.IOException;
@@ -90,7 +89,7 @@ public final class BooleanReachConditionExtractor {
                               int maxInputs, int maxValuations)
             throws IOException, InterruptedException {
         JsonObject report = new JsonObject();
-        report.addProperty("schemaVersion", 2);
+        report.addProperty("schemaVersion", 3);
         report.addProperty("kind", "BOOLEAN_REACH_CONDITION_REPORT");
         report.addProperty("trustState", "CANDIDATE_ONLY");
 
@@ -104,10 +103,11 @@ public final class BooleanReachConditionExtractor {
         Discovery discovery = discover(composedSmt, manifest,
                 relationships, ports, gaps);
         List<BooleanInput> inputs = discovery.rootInputs;
-        report.add("rootBooleanInputs", inputCatalog(inputs));
-        report.add("existentialNonBooleanRootInputs",
-                scalarInputCatalog(
-                        discovery.existentialNonBooleanRootInputs));
+        JsonObject roots = new JsonObject();
+        roots.add("booleanInputs", inputCatalog(inputs));
+        roots.add("existentialInputs", scalarInputCatalog(
+                discovery.existentialNonBooleanRootInputs));
+        report.add("roots", roots);
 
         long valuationCount = inputs.size() >= 63
                 ? Long.MAX_VALUE : 1L << inputs.size();
@@ -128,7 +128,7 @@ public final class BooleanReachConditionExtractor {
         String domainBase = appendBooleanDomain(base,
                 discovery.booleanDomainInputs);
         List<Valuation> valuations = new ArrayList<>();
-        JsonArray truthTable = new JsonArray();
+        JsonArray valuationRows = new JsonArray();
         int satisfying = 0;
         int unsatisfying = 0;
         int solverErrors = 0;
@@ -137,28 +137,22 @@ public final class BooleanReachConditionExtractor {
             boolean[] values = valuation(ordinal, inputs.size());
             String query = valuationQuery(domainBase, inputs, values);
             SolverResult result = solver.check(query);
-            Valuation valuation = new Valuation(ordinal, values,
-                    result.status);
+            Valuation valuation = new Valuation(values, result.status);
             valuations.add(valuation);
             JsonObject row = valuation.toJson(inputs);
             if ("sat".equals(result.status)) {
-                row.addProperty("reachesBug", true);
                 satisfying++;
             } else if ("unsat".equals(result.status)) {
-                row.addProperty("reachesBug", false);
                 unsatisfying++;
             } else {
-                row.addProperty("reachesBug", false);
                 row.addProperty("solverOutput", result.output);
                 solverErrors++;
             }
-            truthTable.add(row);
+            valuationRows.add(row);
         }
 
         Dnf dnf = Dnf.from(inputs, valuations);
-        report.add("truthTable", truthTable);
-        report.add("reachCondition", dnf.toJson());
-        report.addProperty("reachConditionSmtLib", dnf.formula);
+        report.add("valuations", valuationRows);
 
         String implicationStatus = "not_checked";
         String implicationOutput = "";
@@ -175,9 +169,12 @@ public final class BooleanReachConditionExtractor {
                 && satisfying + unsatisfying == valuationCount;
         boolean truthTableDecided = solverErrors == 0
                 && satisfying + unsatisfying == valuationCount;
-        report.addProperty("reachability", !truthTableDecided
+        String reachability = !truthTableDecided
                 ? "UNKNOWN" : satisfying > 0
-                ? "REACHABLE" : "UNREACHABLE");
+                ? "REACHABLE" : "UNREACHABLE";
+        JsonObject reachCondition = dnf.toJson();
+        reachCondition.addProperty("reachability", reachability);
+        report.add("reachCondition", reachCondition);
         JsonArray resultGaps = new JsonArray();
         if (solverErrors > 0) {
             resultGaps.add("UNDECIDED_SOLVER_VALUATIONS:"
@@ -188,7 +185,7 @@ public final class BooleanReachConditionExtractor {
                     + implicationStatus + ":"
                     + firstNonBlank(implicationOutput));
         }
-        report.add("discoveryGaps", resultGaps);
+        report.add("gaps", resultGaps);
         report.addProperty("state", complete
                 ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
         return new Extraction(report);
@@ -551,20 +548,16 @@ public final class BooleanReachConditionExtractor {
 
     private static JsonArray inputCatalog(List<BooleanInput> inputs) {
         JsonArray result = new JsonArray();
-        for (int index = 0; index < inputs.size(); index++) {
-            JsonObject row = inputs.get(index).toJson();
-            row.addProperty("ordinal", index);
-            result.add(row);
+        for (BooleanInput input : inputs) {
+            result.add(input.toJson());
         }
         return result;
     }
 
     private static JsonArray scalarInputCatalog(List<ScalarInput> inputs) {
         JsonArray result = new JsonArray();
-        for (int index = 0; index < inputs.size(); index++) {
-            JsonObject row = inputs.get(index).toJson();
-            row.addProperty("ordinal", index);
-            result.add(row);
+        for (ScalarInput input : inputs) {
+            result.add(input.toJson());
         }
         return result;
     }
@@ -592,9 +585,12 @@ public final class BooleanReachConditionExtractor {
 
     private static Extraction incomplete(JsonObject report,
                                          List<String> gaps) {
-        report.add("truthTable", new JsonArray());
-        report.add("discoveryGaps", GSON.toJsonTree(gaps));
-        report.addProperty("reachability", "UNKNOWN");
+        report.add("valuations", new JsonArray());
+        JsonObject reachCondition = new JsonObject();
+        reachCondition.addProperty("formula", "");
+        reachCondition.addProperty("reachability", "UNKNOWN");
+        report.add("reachCondition", reachCondition);
+        report.add("gaps", GSON.toJsonTree(gaps));
         report.addProperty("state", "CANDIDATE_WITH_GAPS");
         return new Extraction(report);
     }
@@ -905,74 +901,48 @@ public final class BooleanReachConditionExtractor {
     }
 
     private static final class Valuation {
-        private final int ordinal;
         private final boolean[] values;
         private final String status;
 
-        private Valuation(int ordinal, boolean[] values, String status) {
-            this.ordinal = ordinal;
+        private Valuation(boolean[] values, String status) {
             this.values = values.clone();
             this.status = firstNonBlank(status, "unknown");
         }
 
         private JsonObject toJson(List<BooleanInput> inputs) {
             JsonObject result = new JsonObject();
-            result.addProperty("ordinal", ordinal);
-            StringBuilder key = new StringBuilder();
             JsonArray assignments = new JsonArray();
             for (int index = 0; index < inputs.size(); index++) {
-                key.append(values[index] ? '1' : '0');
                 JsonObject assignment = new JsonObject();
                 assignment.addProperty("portId", inputs.get(index).port.id);
-                assignment.addProperty("solverTerm",
-                        inputs.get(index).solverTerm);
                 assignment.addProperty("value", values[index]);
-                assignment.addProperty("solverLiteral",
-                        inputs.get(index).literal(values[index]));
                 assignments.add(assignment);
             }
-            result.addProperty("valuationKey", key.toString());
             result.add("assignments", assignments);
-            result.addProperty("solverStatus", status);
+            result.addProperty("status", status);
             return result;
         }
     }
 
     private static final class Dnf {
         private final String formula;
-        private final JsonArray clauses;
 
-        private Dnf(String formula, JsonArray clauses) {
+        private Dnf(String formula) {
             this.formula = formula;
-            this.clauses = clauses;
         }
 
         private static Dnf from(List<BooleanInput> inputs,
                                 List<Valuation> valuations) {
             List<String> terms = new ArrayList<>();
-            JsonArray clauses = new JsonArray();
             for (Valuation valuation : valuations) {
                 if (!"sat".equals(valuation.status)) continue;
                 List<String> literals = new ArrayList<>();
-                JsonObject clause = new JsonObject();
-                clause.addProperty("valuationOrdinal", valuation.ordinal);
-                JsonArray members = new JsonArray();
                 for (int index = 0; index < inputs.size(); index++) {
                     String literal = inputs.get(index).literal(
                             valuation.values[index]);
                     literals.add(literal);
-                    JsonObject member = new JsonObject();
-                    member.addProperty("portId", inputs.get(index).port.id);
-                    member.addProperty("solverTerm",
-                            inputs.get(index).solverTerm);
-                    member.addProperty("value", valuation.values[index]);
-                    member.addProperty("formula", literal);
-                    members.add(member);
                 }
                 String conjunction = join("and", literals, "true");
-                clause.add("literals", members);
-                clause.addProperty("formula", conjunction);
-                clauses.add(clause);
                 terms.add(conjunction);
             }
             String formula;
@@ -983,13 +953,12 @@ public final class BooleanReachConditionExtractor {
             } else {
                 formula = join("or", terms, "false");
             }
-            return new Dnf(formula, clauses);
+            return new Dnf(formula);
         }
 
         private JsonObject toJson() {
             JsonObject result = new JsonObject();
             result.addProperty("formula", formula);
-            result.add("clauses", clauses.deepCopy());
             return result;
         }
     }
@@ -1167,7 +1136,6 @@ public final class BooleanReachConditionExtractor {
         result.addProperty("path", path.toAbsolutePath().normalize()
                 .toString());
         result.addProperty("sha256", ArtifactIO.sha256(bytes));
-        result.addProperty("sizeBytes", bytes.length);
         return result;
     }
 
@@ -1199,9 +1167,7 @@ public final class BooleanReachConditionExtractor {
                 || !string(actual, "path").equals(normalizedPath(
                 string(expected, "path")))
                 || !string(actual, "sha256").equals(string(expected,
-                "sha256"))
-                || longInteger(actual, "sizeBytes", -1L)
-                != longInteger(expected, "sizeBytes", -2L)) {
+                "sha256"))) {
             throw new IOException(label + " artifact fingerprint mismatch");
         }
     }
@@ -1212,16 +1178,11 @@ public final class BooleanReachConditionExtractor {
     }
 
     private static JsonObject readJson(Path path) throws IOException {
-        JsonElement value = JsonParser.parseString(ArtifactIO.readText(path));
-        if (!value.isJsonObject()) {
-            throw new IOException("Expected JSON object: " + path);
-        }
-        return value.getAsJsonObject();
+        return ArtifactIO.readObject(path);
     }
 
     private static List<JsonObject> readJsonl(Path path) throws IOException {
-        return ArtifactIO.readJsonl(path, null,
-                "Expected JSON object at %1$s:%2$d");
+        return ArtifactIO.readJsonl(path);
     }
 
     private static String cellJavaType(String cell) {
@@ -1291,17 +1252,6 @@ public final class BooleanReachConditionExtractor {
             JsonElement value = object == null ? null : object.get(key);
             return value != null && value.isJsonPrimitive()
                     ? value.getAsInt() : fallback;
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject object, String key,
-                                    long fallback) {
-        try {
-            JsonElement value = object == null ? null : object.get(key);
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsLong() : fallback;
         } catch (RuntimeException ignored) {
             return fallback;
         }

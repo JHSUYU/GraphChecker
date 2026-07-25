@@ -67,8 +67,6 @@ public class ConcolicSchedulerTest {
                     .getAsJsonObject("captureGoal").get("kind")
                     .getAsString());
             assertEquals(0, result.queries.size());
-            assertEquals(1, result.summary.get("upstreamCaptureJobCount")
-                    .getAsInt());
             assertTrue(scheduled.has(OutputClosureContract.FIELD));
             assertFalse(scheduled.has("requestedOutput"));
 
@@ -174,7 +172,6 @@ public class ConcolicSchedulerTest {
                 activation, Collections.<JsonObject>emptyList());
 
         assertEquals("EXECUTABLE", admissionState(prepared));
-        assertTrue(prepared.get("outputCaptureReady").getAsBoolean());
         assertTrue(prepared.has(OutputClosureContract.FIELD));
         assertFalse(prepared.has("requestedOutput"));
         assertFalse(prepared.has("requestedOutputSlice"));
@@ -223,7 +220,6 @@ public class ConcolicSchedulerTest {
         JsonObject prepared = ConcolicScheduler.prepareOutputCapture(
                 activation, Collections.<JsonObject>emptyList());
 
-        assertFalse(prepared.get("outputCaptureReady").getAsBoolean());
         assertEquals("BLOCKED", admissionState(prepared));
         assertEquals(2, prepared.getAsJsonObject(
                 OutputClosureContract.FIELD).getAsJsonArray("members")

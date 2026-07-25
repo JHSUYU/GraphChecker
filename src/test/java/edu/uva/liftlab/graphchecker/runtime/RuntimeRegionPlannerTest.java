@@ -368,7 +368,8 @@ public class RuntimeRegionPlannerTest {
                     .contains("UNIQUE_ROOT_ARGUMENT_CARRIER"));
             assertTrue(String.valueOf(retainedSlice.get("heapInitializers"))
                     .contains("FRESH_DEFAULT_CONSTRUCTED_OBJECT"));
-            assertEquals(2, retainedSlice.get("causalEdgeCount"));
+            assertEquals(2, ((List<?>) retainedSlice.get(
+                    "causalEdgeIds")).size());
             assertEquals(1, retainedSlice.get(
                     "requestedStateTransformerContractVersion"));
             assertEquals(true, retainedSlice.get(
@@ -718,9 +719,6 @@ public class RuntimeRegionPlannerTest {
                     constructor + "#u1"));
             assertFalse(String.valueOf(slice.get("sites")).contains(
                     unobservedBranch));
-            assertTrue(String.valueOf(slice.get(
-                    "excludedPathAlternativeSites")).contains(
-                    unobservedBranch));
             assertEquals(Collections.singletonList("DF.U"),
                     slice.get("causalEdgeIds"));
             assertTrue(((java.util.List<?>) slice.get("heapInitializers"))
@@ -737,13 +735,7 @@ public class RuntimeRegionPlannerTest {
                     "requestedStateTransformerObligationCount"));
             assertTrue(((java.util.List<?>) slice.get("captureBindings"))
                     .isEmpty());
-            assertTrue(String.valueOf(slice.get(
-                    "excludedAlternativeInputPorts")).contains(
-                    "REGION.W.in.2"));
             assertTrue(((List<?>) slice.get("unresolvedInputs")).isEmpty());
-            assertTrue(String.valueOf(slice.get(
-                    "excludedAlternativeUnresolvedInputs")).contains(
-                    unresolvedAlternative));
         } finally {
             folder.delete();
         }
@@ -1702,8 +1694,7 @@ public class RuntimeRegionPlannerTest {
             RuntimeRegionPlanner.MethodEvent contained =
                     new RuntimeRegionPlanner.MethodEvent(5190, "testHandle",
                             "DATANODE", "KeyUpdater", 101L, addKeys,
-                            273814159, "example.SecretManager", 2, 1, 0,
-                            519000L);
+                            273814159, "example.SecretManager", 2, 1, 0);
             RuntimeRegionPlanner.MethodEvent read = methodContext(14000,
                     reader, 3, "DATANODE", "DataXceiver", 202L);
             List<RuntimeRegionPlanner.RuntimeEvent> runtime =
@@ -2420,15 +2411,14 @@ public class RuntimeRegionPlannerTest {
                                                             long parentSiteId) {
         return new RuntimeRegionPlanner.MethodEvent(seq, "testHandle", "DATANODE",
                 "DataXceiver-1", 27L, method, 42, "example.Handler", callId,
-                parentCallId, parentSiteId, seq * 100L);
+                parentCallId, parentSiteId);
     }
 
     private static RuntimeRegionPlanner.MethodEvent methodWithReceiver(
             long seq, String method, long callId, int receiverObjectId) {
         return new RuntimeRegionPlanner.MethodEvent(seq, "testHandle",
                 "DATANODE", "DataXceiver-1", 27L, method,
-                receiverObjectId, "example.Actor", callId, 0, 0,
-                seq * 100L);
+                receiverObjectId, "example.Actor", callId, 0, 0);
     }
 
     private static RuntimeRegionPlanner.MethodEvent rootContextMethod(
@@ -2436,7 +2426,7 @@ public class RuntimeRegionPlannerTest {
             String receiverRuntimeClass, long tid) {
         return new RuntimeRegionPlanner.MethodEvent(seq, "testHandle",
                 "WORKER", threadName, tid, method, (int) (100 + callId),
-                receiverRuntimeClass, callId, 0, 0, seq * 100L);
+                receiverRuntimeClass, callId, 0, 0);
     }
 
     private static RuntimeRegionPlanner.MethodEvent methodContext(
@@ -2444,7 +2434,7 @@ public class RuntimeRegionPlannerTest {
             String threadName, long tid) {
         return new RuntimeRegionPlanner.MethodEvent(seq, "testHandle", process,
                 threadName, tid, method, 42, "example.State", callId,
-                0, 0, seq * 100L);
+                0, 0);
     }
 
     private static void writeRegions(Path path, byte[] rows)

@@ -9,18 +9,14 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -30,6 +26,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+
+import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Solves one normalized concolic branch-flip query and maps scalar model values
@@ -68,39 +73,8 @@ public final class ConcolicConstraintSolver {
         }
         String smt = encoder.finish();
         JsonObject record = baseRecord(task);
-        record.addProperty("branchConstraintAuthority",
-                "IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1");
-        record.addProperty("nonBranchPathConstraintCount",
-                solverPathContext.size());
-        record.addProperty("nonBranchPathConstraintAuthority",
-                SolverPathContext.AUTHORITY);
         record.addProperty("solver", "Z3_SMT2");
-        record.addProperty("solverInputHash", sha256(smt));
-        record.addProperty("uninterpretedFunctionCount",
-                encoder.uninterpretedFunctions.size());
-        record.addProperty("integralInputRangeConstraintCount",
-                encoder.integralRangeConstrainedSymbols.size());
-        record.addProperty("numericEncodingAuthority",
-                "JAVA_PRIMITIVE_INPUT_BOUNDS_WITH_TWOS_COMPLEMENT_"
-                        + "INT_LONG_ARITHMETIC_V2");
-        record.addProperty("javaIntegralOverflowModeled", true);
-        record.addProperty("ieee754FloatingPointModeled", true);
-        record.addProperty("floatingPointEncodingAuthority",
-                "JAVA_IEEE_754_BINARY32_BINARY64_RNE_WITH_"
-                        + "UNSUPPORTED_OPERATIONS_FAIL_CLOSED_V1");
-        record.addProperty("nullableJavaStringModeled", true);
-        record.addProperty("nullableStringEncodingAuthority",
-                "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
-        record.addProperty("nullableJavaReferenceModeled", true);
-        record.addProperty("referenceNullnessEncodingAuthority",
-                "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1");
-        record.addProperty("uncontrolledEnvironmentTermCount",
-                encoder.uncontrolledEnvironmentTerms.size());
-        record.add("uncontrolledEnvironmentTerms",
-                GSON.toJsonTree(encoder.uncontrolledEnvironmentTerms));
-        record.addProperty("environmentModelAssignmentCount", 0);
-        record.addProperty("requiresUnforcedEnvironmentValidation",
-                !encoder.uncontrolledEnvironmentTerms.isEmpty());
+        record.addProperty("solverInputHash", ArtifactIO.sha256(smt));
         record.add("unsupported", GSON.toJsonTree(encoder.unsupported));
         if (!encoder.unsupported.isEmpty()) {
             record.addProperty("status", "UNSUPPORTED");
@@ -110,8 +84,6 @@ public final class ConcolicConstraintSolver {
 
         DynamicBindingRegistry dynamicBindings =
                 DynamicBindingRegistry.from(task);
-        record.addProperty("dynamicFieldBindingCount",
-                dynamicBindings.bindings.size());
         if (!dynamicBindings.problems.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
@@ -234,9 +206,6 @@ public final class ConcolicConstraintSolver {
         }
 
         Map<String, String> values = parseGetValues(output.stdout);
-        Set<String> unforcedPrefixReferenceSymbols = new LinkedHashSet<>();
-        Set<String> materializedNullPrefixReferenceSymbols =
-                new LinkedHashSet<>();
         for (String raw : encoder.controlledSymbols) {
             if (targetControlledSymbols.contains(raw)
                     || encoder.rawToSort.get(raw) != Sort.REF) {
@@ -246,50 +215,15 @@ public final class ConcolicConstraintSolver {
             String nullnessValue = nullnessName == null ? null
                     : values.get(nullnessName);
             if ("false".equals(nullnessValue)) {
-                unforcedPrefixReferenceSymbols.add(raw);
                 projectedControlledSymbols.remove(raw);
-            } else if ("true".equals(nullnessValue)) {
-                materializedNullPrefixReferenceSymbols.add(raw);
             }
             // A missing/non-Boolean nullness value intentionally leaves the
             // symbol projected. modelAssignments will omit it and the normal
             // all-path-input completeness check below will fail closed.
         }
-        record.addProperty("unforcedPrefixReferenceSymbolCount",
-                unforcedPrefixReferenceSymbols.size());
-        record.add("unforcedPrefixReferenceSymbols",
-                GSON.toJsonTree(unforcedPrefixReferenceSymbols));
-        record.addProperty("unforcedPrefixReferenceAuthority",
-                "SOURCE_NON_NULL_REFERENCE_PRESERVATION_PLUS_EXACT_"
-                        + "ORDERED_PREFIX_REPLAY_VALIDATION_V2");
-        record.addProperty("materializedNullPrefixReferenceSymbolCount",
-                materializedNullPrefixReferenceSymbols.size());
-        record.add("materializedNullPrefixReferenceSymbols",
-                GSON.toJsonTree(materializedNullPrefixReferenceSymbols));
-        record.addProperty("nullPrefixReferenceMaterializationAuthority",
-                "Z3_EXACT_REFERENCE_NULLNESS_TO_RUNTIME_NULL_"
-                        + "MATERIALIZATION_V1");
-        if (!unforcedPrefixReferenceSymbols.isEmpty()) {
-            record.addProperty("requiresUnforcedEnvironmentValidation", true);
-        }
-        Set<String> unforcedPrefixSymbols = new LinkedHashSet<>(
-                projectedControlledSymbols);
-        unforcedPrefixSymbols.removeAll(targetControlledSymbols);
         JsonArray assignments = modelAssignments(encoder, values,
                 activation, dynamicBindings, projectedControlledSymbols);
         record.add("modelAssignments", assignments.deepCopy());
-        record.addProperty("modelAssignmentCount", assignments.size());
-        record.addProperty("modelProjectionPolicy",
-                "FULL_PATH_MATERIALIZABLE_INPUTS_PLUS_MODEL_"
-                        + "PARTITIONED_PREFIX_REFERENCES_V4");
-        record.addProperty("controlledSymbolCount",
-                encoder.controlledSymbols.size());
-        record.addProperty("targetControlledSymbolCount",
-                targetControlledSymbols.size());
-        record.addProperty("materializedPrefixControlledSymbolCount",
-                unforcedPrefixSymbols.size());
-        record.add("materializedPrefixControlledSymbols",
-                GSON.toJsonTree(unforcedPrefixSymbols));
         if (targetControlledSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
@@ -355,11 +289,7 @@ public final class ConcolicConstraintSolver {
                 new LinkedHashMap<>();
         private final List<String> assertions = new ArrayList<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
-        private final Set<String> uninterpretedFunctions =
-                new LinkedHashSet<>();
         private final Set<String> controlledSymbols = new LinkedHashSet<>();
-        private final Set<String> uncontrolledEnvironmentTerms =
-                new LinkedHashSet<>();
         private final Set<String> integralRangeConstrainedSymbols =
                 new LinkedHashSet<>();
         private final Map<String, FunctionSignature> functions =
@@ -518,7 +448,6 @@ public final class ConcolicConstraintSolver {
             String name = "environment__" + safeName(identity) + "__"
                     + sha256(identity).substring(0, 10);
             declarations.put(name, Sort.INT);
-            uncontrolledEnvironmentTerms.add(identity);
             JavaPrimitiveSmtSemantics.IntegralDomain longDomain =
                     JavaPrimitiveSmtSemantics.domainOfJavaType("J");
             assertions.add("(and (<= " + longDomain.lower + " " + name
@@ -1115,7 +1044,6 @@ public final class ConcolicConstraintSolver {
                 return null;
             }
             functions.put(function, signature);
-            uninterpretedFunctions.add(function);
             // Retain the UF only so the diagnostic SMT remains inspectable.
             // No arbitrary Java call is an exact semantic adapter here, so a
             // replay candidate must never be confused with admitted meaning.
@@ -1927,7 +1855,7 @@ public final class ConcolicConstraintSolver {
             if (!map && !container) {
                 result.add("WRONG_KIND");
             }
-            int expectedSchema = container ? 2 : 1;
+            int expectedSchema = container ? 3 : 1;
             if (integer(raw, "schemaVersion", -1) != expectedSchema) {
                 result.add("UNSUPPORTED_SCHEMA_VERSION");
             }
@@ -2156,13 +2084,6 @@ public final class ConcolicConstraintSolver {
                         CONTAINER_REPLAY_REBINDING_AUTHORITY);
                 assignment.addProperty(
                         "sourceContainerObjectTokensRetained", false);
-                for (String member : new String[]{"containerBindingId",
-                        "containerInputPort", "containerInputCell",
-                        "selectorAuthority", "elementIndex",
-                        "elementOccurrence", "declaredFieldOwnerClass",
-                        "declaredFieldType"}) {
-                    copy(raw, assignment, member);
-                }
             } else {
                 // Never put a seed-JVM entry id or concrete key into the
                 // replay plan.  They identify an activation-local observation,
@@ -2533,39 +2454,10 @@ public final class ConcolicConstraintSolver {
                 .toLowerCase();
     }
 
-    private static String sha256(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest((value == null ? "" : value)
-                    .getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder();
-            for (byte current : bytes) {
-                result.append(String.format("%02x", current & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException(exception);
-        }
-    }
-
     private static String firstLine(String value) {
         if (value == null) return "";
         int newline = value.indexOf('\n');
         return (newline < 0 ? value : value.substring(0, newline)).trim();
-    }
-
-    private static JsonObject object(JsonObject parent, String name) {
-        if (parent == null) return new JsonObject();
-        JsonElement value = parent.get(name);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    private static JsonArray array(JsonObject parent, String name) {
-        if (parent == null) return new JsonArray();
-        JsonElement value = parent.get(name);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
     }
 
     private static List<String> stringList(JsonArray values) {
@@ -2584,60 +2476,4 @@ public final class ConcolicConstraintSolver {
         return result;
     }
 
-    private static String string(JsonObject object, String name) {
-        if (object == null) return "";
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? "" : value.getAsString();
-        } catch (RuntimeException ignored) {
-            return "";
-        }
-    }
-
-    private static boolean bool(JsonObject object, String name,
-                                boolean fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static int integer(JsonObject object, String name, int fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject object, String name,
-                                    long fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.trim().isEmpty()) {
-                    return value.trim();
-                }
-            }
-        }
-        return "";
-    }
 }

@@ -173,10 +173,7 @@ runtime_channel_rows() {
       output_member_rows | .output
       | select(type == "object");
     def output_demand_key:
-      if (.outputDemandKey | type) == "string"
-          and (.outputDemandKey | length) > 0
-      then .outputDemandKey
-      else {
+      {
         schemaVersion: 1,
         producerRegionId: .regionId,
         outputs: ([output_member_rows
@@ -188,21 +185,23 @@ runtime_channel_rows() {
               javaTypeDescriptor: (.javaTypeDescriptor // "")
             }]
           | sort_by(.portId))
-      } | canonical_identity
-      end;
+      } | canonical_identity;
     def output_closure_fingerprint:
-      if (.outputClosureFingerprint | type) == "string"
-          and (.outputClosureFingerprint | length) > 0
-      then .outputClosureFingerprint
-      else .outputClosure | canonical_identity
-      end;
+      .outputClosure | canonical_identity;
+    def read_from_evidence:
+      (.evidenceKind == "FIELD_ASSIGNMENT_READ_FROM_V1"
+        or .evidenceKind == "CONTAINER_MUTATION_READ_FROM_V1")
+      and (.writerEventSeq | type) == "number"
+      and (.readerEventSeq | type) == "number"
+      and .writerEventSeq < .readerEventSeq
+      and (.receiverObjectId | type) == "number"
+      and .receiverObjectId != 0;
 
     . as $activations
     | [$activations[]
         | select(.captureGoal.kind == "OUTPUT_CLOSURE")
         | .edgeBindings[]?
-        | select(.relation == "READ_FROM"
-            and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM")
+        | select(read_from_evidence)
       ] as $validatedEdges
     | ($validatedEdges | map(.fromRegion) | unique) as $sourceRegions
     | ($validatedEdges | map(.toRegion) | unique
@@ -223,17 +222,12 @@ runtime_channel_rows() {
             | type == "string" and length > 0))
     | $activation.edgeBindings[]? as $edge
     | select(
-        $edge.relation == "READ_FROM"
-        and $edge.selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+        ($edge | read_from_evidence)
         and $edge.toRegion == $terminalRegion
         and $edge.fromRegion == $activation.regionId
         and $edge.fromRegionInstance == $activation.regionInstanceId
         and $edge.fromOutputCell == $output.cell
-        and $edge.rawFromPort == $output.cell
-        and $edge.canonicalOutputAliasUsed == false
-        and $edge.canonicalInputResolutionUsed == true
-        and $edge.objectIdentityConfirmed == true
-        and $edge.orderConfirmed == true
+        and $edge.inputProjectionUsed == false
         and ($edge.toInputCell | type == "string" and length > 0))
     | ($output.cell
         | capture("^<[^:]+:[[:space:]]+[^[:space:]]+"
@@ -998,29 +992,46 @@ run_path_task() {
 
   raw="${task_dir}/concolic_region_results.jsonl"
   imported="${task_dir}/concolic_region_summaries.jsonl"
-  replay_verification="${task_dir}/path_replay_verification.json"
   run_custom_plan "${task_dir}/activation_plan.jsonl" \
     "${replay_activation}" "${classes}" "${raw}" false false true \
     "${task_dir}"
   import_plan "${task_dir}/activation_plan.jsonl" "${raw}" \
     "${imported}" "${task_dir}"
-  run_graphchecker_main \
-    edu.uva.liftlab.graphchecker.concolic.ConcolicPathReplayVerifier \
-    --task "${task_dir}/replay_validation_plan.json" \
-    --activation-plan "${task_dir}/activation_plan.jsonl" \
-    --results "${raw}" \
-    --summary "${imported}" \
-    --output "${replay_verification}"
-  jq -c '{
-    schemaVersion: 1,
-    kind: "PATH_EXPLORATION_RECORD",
-    queryKey,
-    regionId,
-    activationId,
-    observedPathKey,
-    summaryId,
-    status
-  }' "${replay_verification}" >"${task_dir}/exploration_record.jsonl"
+  jq -e -c -s \
+    --slurpfile task "${task_dir}/replay_validation_plan.json" \
+    --slurpfile activation "${task_dir}/activation_plan.jsonl" \
+    --slurpfile raw "${raw}" '
+    if length == 1
+      and ($task | length) == 1
+      and ($activation | length) == 1
+      and ($raw | length) == 1
+      and .[0].relationallyComplete == true
+      and .[0].activationId == $activation[0].activationId
+      and .[0].regionId == $task[0].regionId
+      and $raw[0].activationId == $activation[0].activationId
+      and $raw[0].regionId == $task[0].regionId
+      and $raw[0].pathQueryKey == $task[0].queryKey
+      and $activation[0].pathQueryKey == $task[0].queryKey
+      and ($task[0].captureGoal.kind != "OUTPUT_CLOSURE"
+        or (.[0].normalExit == true
+          and (.[0].outputExpressions | keys | sort)
+            == (.[0].outputClosure.members
+              | map(.output.portId) | sort)))
+    then {
+      schemaVersion: 1,
+      kind: "PATH_EXPLORATION_RECORD",
+      queryKey: $task[0].queryKey,
+      regionId: $task[0].regionId,
+      activationId: $activation[0].activationId,
+      status: (if $task[0].captureGoal.kind == "OUTPUT_CLOSURE"
+        then "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
+        else "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY"
+        end)
+    }
+    else error("imported replay did not satisfy the canonical admission")
+    end
+  ' "${imported}" >"${task_dir}/exploration_record.jsonl" \
+    || die "path replay admission failed; inspect ${task_dir}/replay_validation_plan.json, ${raw}, ${imported}, and ${task_dir}/concolic_import_diagnostics.jsonl"
 }
 
 wait_for_path_wave() {
@@ -1290,7 +1301,6 @@ do_explore_producer() {
     length == 1
     and .[0].regionId == $region
     and .[0].relationallyComplete == true
-    and .[0].regionRelation.complete == true
   ' "${campaign}/merged_region_summaries.jsonl" >/dev/null \
     || die "producer merged relation is not complete for channel ${channel}"
   discard_successful_iteration "${campaign}"
@@ -1415,7 +1425,6 @@ do_candidate_compose() {
       and .[0].regionId == $region
       and (.[0].summaryId | type == "string" and length > 0)
       and .[0].relationallyComplete == true
-      and .[0].regionRelation.complete == true
     ' "${producer_summary}" >/dev/null \
       || die "producer relation is incomplete for channel ${channel}"
     bounded_args+=(--bounded-upstream-region "${producer_region}")
@@ -1437,14 +1446,12 @@ do_candidate_compose() {
     CAUSYNTH_FATAL_REGION="${target_region}" \
     CAUSYNTH_FATAL_ACTIVATION_ID="${target_activation}" \
     "${runner}" --config "${config}" compose "${bounded_args[@]}")
-  jq -e --argjson expected "${#channels[@]}" '
+  jq -e '
     .schemaVersion == 2
     and .kind == "CONCOLIC_COMPOSED_SMT"
     and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
-    and ((.boundedUpstreamRegions // []) | length) == $expected
-    and ((.unsupportedExpressions // []) | length) == 0
-    and ((.unboundPorts // []) | length) == 0
+    and (.gaps | type == "array" and length == 0)
   ' "${candidate_root}/candidate_composition_manifest.json" >/dev/null \
     || die "composition is not a structurally complete candidate model"
   jq -e '
@@ -1471,32 +1478,28 @@ do_candidate_solve() {
     CAUSYNTH_REACH_REPORT="${candidate_root}/candidate_boolean_model.json" \
     "${runner}" --config "${config}" reach)
   if jq -e '
-    .schemaVersion == 2
+    .schemaVersion == 3
     and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
     and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
-    and .reachability == "REACHABLE"
-    and ((.discoveryGaps // []) | length) == 0
-    and (.truthTable | type == "array" and length > 0)
-    and all(.truthTable[];
-      (.solverStatus == "sat" and .reachesBug == true)
-      or (.solverStatus == "unsat" and .reachesBug == false))
-    and any(.truthTable[];
-      .solverStatus == "sat" and .reachesBug == true)
+    and .reachCondition.reachability == "REACHABLE"
+    and (.gaps | type == "array" and length == 0)
+    and (.valuations | type == "array" and length > 0)
+    and all(.valuations[];
+      .status == "sat" or .status == "unsat")
+    and any(.valuations[]; .status == "sat")
   ' "${candidate_root}/candidate_boolean_model.json" >/dev/null; then
     :
   elif jq -e '
-    .schemaVersion == 2
+    .schemaVersion == 3
     and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
     and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
-    and .reachability == "UNREACHABLE"
-    and ((.discoveryGaps // []) | length) == 0
-    and (.truthTable | type == "array" and length > 0)
-    and ([.truthTable[] | select(.reachesBug == true)] | length) == 0
-    and all(.truthTable[]; .solverStatus == "unsat"
-      and .reachesBug == false)
-    and .reachConditionSmtLib == "false"
+    and .reachCondition.reachability == "UNREACHABLE"
+    and (.gaps | type == "array" and length == 0)
+    and (.valuations | type == "array" and length > 0)
+    and all(.valuations[]; .status == "unsat")
+    and .reachCondition.formula == "false"
   ' "${candidate_root}/candidate_boolean_model.json" >/dev/null; then
     echo "[three-thread-rpc] candidate SMT is UNSAT"
   else
@@ -1585,37 +1588,31 @@ write_candidate_manifest() {
   require_file "candidate composition manifest" "${composition}"
   require_file "candidate reach model" "${reach}"
   require_file "candidate relationships" "${relationships}"
-  status=$(jq -er '.reachability
+  status=$(jq -er '.reachCondition.reachability
     | select(. == "REACHABLE" or . == "UNREACHABLE")' "${reach}") \
     || die "candidate reach model has no exact reachability status"
   jq -n \
     --arg status "${status}" \
     --arg smt "$(realpath -m -- "${smt}")" \
     --arg smt_hash "$(sha256_file "${smt}")" \
-    --argjson smt_size "$(stat -c '%s' "${smt}")" \
     --arg composition "$(realpath -m -- "${composition}")" \
     --arg composition_hash "$(sha256_file "${composition}")" \
-    --argjson composition_size "$(stat -c '%s' "${composition}")" \
     --arg reach "$(realpath -m -- "${reach}")" \
     --arg reach_hash "$(sha256_file "${reach}")" \
-    --argjson reach_size "$(stat -c '%s' "${reach}")" \
     --arg relationships "$(realpath -m -- "${relationships}")" \
-    --arg relationships_hash "$(sha256_file "${relationships}")" \
-    --argjson relationships_size "$(stat -c '%s' "${relationships}")" '
+    --arg relationships_hash "$(sha256_file "${relationships}")" '
       {
         schemaVersion: 2,
         kind: "CONCOLIC_CANDIDATE_RESULT",
         state: "CANDIDATE_READY",
         trustState: "CANDIDATE_ONLY",
         reachability: $status,
-        candidateSmtArtifact: {path: $smt, sha256: $smt_hash,
-          sizeBytes: $smt_size},
+        candidateSmtArtifact: {path: $smt, sha256: $smt_hash},
         compositionManifestArtifact: {path: $composition,
-          sha256: $composition_hash, sizeBytes: $composition_size},
-        candidateReachModelArtifact: {path: $reach, sha256: $reach_hash,
-          sizeBytes: $reach_size},
+          sha256: $composition_hash},
+        candidateReachModelArtifact: {path: $reach, sha256: $reach_hash},
         relationshipCandidatesArtifact: {path: $relationships,
-          sha256: $relationships_hash, sizeBytes: $relationships_size}
+          sha256: $relationships_hash}
       }
     ' >"${output}"
   jq -e '

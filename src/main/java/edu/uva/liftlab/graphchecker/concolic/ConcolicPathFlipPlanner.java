@@ -2,8 +2,8 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -14,6 +14,8 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Plans the deterministic branch-flip frontier for one captured output
@@ -34,7 +36,9 @@ public final class ConcolicPathFlipPlanner {
         Arguments arguments = Arguments.parse(argv);
         RegionPathWorklist.Result result = plan(arguments);
         writeOutputs(arguments.outputDirectory, result);
-        System.out.println(PRETTY.toJson(result.manifest));
+        JsonObject display = result.manifest.deepCopy();
+        display.remove(OutputClosureContract.FIELD);
+        System.out.println(PRETTY.toJson(display));
         String state = string(result.manifest, "state");
         if (RegionPathWorklist.State.GAPPED.name().equals(state)
                 || RegionPathWorklist.State.NOT_STARTED.name().equals(state)) {
@@ -128,17 +132,6 @@ public final class ConcolicPathFlipPlanner {
             content.append(JSON.toJson(row)).append(System.lineSeparator());
         }
         ArtifactIO.replace(path, content.toString());
-    }
-
-    private static String string(JsonObject object, String field) {
-        if (object == null) return "";
-        JsonElement value = object.get(field);
-        try {
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsString() : "";
-        } catch (RuntimeException ignored) {
-            return "";
-        }
     }
 
     static final class Arguments {

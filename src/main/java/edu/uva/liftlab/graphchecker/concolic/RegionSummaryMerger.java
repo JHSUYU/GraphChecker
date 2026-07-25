@@ -5,19 +5,15 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -26,6 +22,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+
+import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
+import static edu.uva.liftlab.graphchecker.concolic.CanonicalJson.render;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Merges validated executions of the same requested region output into one
@@ -96,18 +100,10 @@ public final class RegionSummaryMerger {
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 1);
         manifest.addProperty("kind", "REGION_RELATION_MERGE_MANIFEST");
-        manifest.addProperty("inputSummaryCount", safe(summaries).size());
-        manifest.addProperty("mergedRelationCount", merged.size());
-        int caseCount = 0;
         boolean complete = diagnostics.isEmpty() && !merged.isEmpty();
         for (JsonObject summary : merged) {
-            JsonObject relation = object(summary, "regionRelation");
-            caseCount += array(relation, "cases").size();
-            complete &= bool(relation, "complete", false);
+            complete &= bool(summary, "relationallyComplete", false);
         }
-        manifest.addProperty("guardedCaseCount", caseCount);
-        manifest.addProperty("pathWorklistState", string(pathManifest,
-                "state"));
         manifest.add("diagnostics", GSON.toJsonTree(diagnostics));
         manifest.addProperty("complete", complete);
         return new Result(merged, manifest);
@@ -148,7 +144,7 @@ public final class RegionSummaryMerger {
                                 + pathKey));
                 continue;
             }
-            cases.add(pathCase(summary, region, pathKey));
+            cases.add(pathCase(summary, pathKey));
             if (!bool(summary, "relationallyComplete", false)) {
                 casesComplete = false;
                 diagnostics.add(gap(region,
@@ -173,21 +169,24 @@ public final class RegionSummaryMerger {
             diagnostics.add(gap(region,
                     "PATH_WORKLIST_NOT_CLOSED:" + pathState));
         }
-        String demand = string(pathManifest, "outputDemandKey");
-        String fingerprint = string(pathManifest,
-                "outputClosureFingerprint");
-        if (!firstInput.contract.demandKey().equals(demand)) {
+        OutputClosureContract pathContract = null;
+        try {
+            pathContract = OutputClosureCodec.decode(pathManifest);
+        } catch (IllegalArgumentException malformed) {
             outputScopeMatches = false;
             diagnostics.add(gap(region,
-                    "PATH_WORKLIST_OUTPUT_DEMAND_MISMATCH:"
-                            + firstNonBlank(demand, "MISSING")));
+                    "INVALID_PATH_WORKLIST_OUTPUT_CLOSURE:"
+                            + firstNonBlank(malformed.getMessage(),
+                            "MISSING")));
         }
-        if (!firstInput.contract.closureFingerprint().equals(
-                fingerprint)) {
+        if (pathContract != null
+                && (!firstInput.contract.demandKey().equals(
+                pathContract.demandKey())
+                || !firstInput.contract.closureFingerprint().equals(
+                pathContract.closureFingerprint()))) {
             outputScopeMatches = false;
             diagnostics.add(gap(region,
-                    "PATH_WORKLIST_OUTPUT_CLOSURE_FINGERPRINT_MISMATCH:"
-                            + firstNonBlank(fingerprint, "MISSING")));
+                    "PATH_WORKLIST_OUTPUT_CLOSURE_MISMATCH"));
         }
         boolean complete = pathClosed && outputScopeMatches
                 && casesComplete && cases.size() > 0;
@@ -196,27 +195,17 @@ public final class RegionSummaryMerger {
         relation.addProperty("kind", "GUARDED_PATH_MERGE");
         relation.add("cases", cases);
         relation.addProperty("pathClosureState", pathState);
-        relation.addProperty("complete", complete);
 
         String relationHash = sha256(region + "\n"
                 + firstInput.outputIdentity + "\n"
-                + canonical(cases));
-        Set<String> sourceInstances = new TreeSet<>();
+                + render(cases));
         Map<String, JsonObject> bindingsByKey = new LinkedHashMap<>();
         for (MergeInput input : values) {
             JsonObject summary = input.summary;
-            String instance = string(summary, "regionInstanceId");
-            if (!instance.isEmpty()) sourceInstances.add(instance);
             for (JsonElement element : array(summary, "edgeBindings")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject binding = element.getAsJsonObject();
-                String sourceInstance = firstNonBlank(string(binding,
-                        "fromRegionInstance"), string(binding,
-                        "producerRegionInstance"));
-                if (!sourceInstance.isEmpty()) {
-                    sourceInstances.add(sourceInstance);
-                }
-                bindingsByKey.put(canonical(binding), binding.deepCopy());
+                bindingsByKey.put(render(binding), binding.deepCopy());
             }
         }
         JsonArray mergedBindings = new JsonArray();
@@ -230,16 +219,8 @@ public final class RegionSummaryMerger {
         merged.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
         merged.addProperty("summaryId", "SUMMARY." + region
                 + ".MERGED." + relationHash);
-        merged.addProperty("activationId", "MERGED_PATHS");
         merged.addProperty("regionId", region);
-        merged.add("sourceRegionInstanceIds",
-                GSON.toJsonTree(sourceInstances));
         merged.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
-        OutputClosureContract.Producer producer =
-                firstInput.contract.producer();
-        merged.addProperty("regionInstanceId",
-                producer.regionInstanceId());
-        merged.addProperty("rootCallId", producer.rootCallId());
         OutputClosureCodec.writeTo(merged, firstInput.contract);
         merged.add("edgeBindings", mergedBindings);
         merged.add("regionRelation", relation);
@@ -247,16 +228,10 @@ public final class RegionSummaryMerger {
         return merged;
     }
 
-    private static JsonObject pathCase(JsonObject summary, String region,
-                                       String pathKey) {
+    private static JsonObject pathCase(JsonObject summary, String pathKey) {
         JsonObject item = new JsonObject();
-        String caseId = "CASE." + pathKey.substring(0, 16);
+        String caseId = "CASE." + pathKey;
         item.addProperty("caseId", caseId);
-        item.addProperty("pathKey", pathKey);
-        // Engine-local ids are recycled by every concolic JVM. Preserve a
-        // deterministic namespace per case.
-        item.addProperty("symbolScope", "region:" + region
-                + "/case:" + caseId);
         JsonObject guard = new JsonObject();
         guard.addProperty("kind", "PATH_CONDITION");
         guard.add("conditions", array(summary,
@@ -284,8 +259,6 @@ public final class RegionSummaryMerger {
                         .deepCopy());
         item.add("heapEffects", array(summary,
                 "heapEffects").deepCopy());
-        item.addProperty("relationallyComplete", bool(summary,
-                "relationallyComplete", false));
         item.addProperty("normalExit", bool(summary,
                 "normalExit", false));
         item.addProperty("exceptionType", string(summary,
@@ -316,13 +289,11 @@ public final class RegionSummaryMerger {
                 array(summary,
                         "unforcedEnvironmentValidationRequirements")
                         .deepCopy());
-        stable.addProperty("relationallyComplete", bool(summary,
-                "relationallyComplete", false));
         stable.addProperty("normalExit", bool(summary,
                 "normalExit", false));
         stable.addProperty("exceptionType", string(summary,
                 "exceptionType"));
-        return canonical(stable);
+        return render(stable);
     }
 
     private static boolean exactOutputExpressions(
@@ -334,7 +305,7 @@ public final class RegionSummaryMerger {
     }
 
     private static String outputIdentity(JsonObject summary) {
-        return canonical(summary.get(OutputClosureContract.FIELD));
+        return render(summary.get(OutputClosureContract.FIELD));
     }
 
     private static final class MergeInput {
@@ -370,7 +341,7 @@ public final class RegionSummaryMerger {
                     + contract.demandKey() + "\n"
                     + contract.closureFingerprint();
             return new MergeInput(summary, contract, key,
-                    canonical(contract.toJson()));
+                    render(contract.toJson()));
         }
     }
 
@@ -422,24 +393,11 @@ public final class RegionSummaryMerger {
     }
 
     private static List<JsonObject> readJsonl(Path path) throws IOException {
-        List<JsonObject> result = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(path,
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) continue;
-                JsonElement value = JsonParser.parseString(line);
-                if (value.isJsonObject()) result.add(value.getAsJsonObject());
-            }
-        }
-        return result;
+        return ArtifactIO.readJsonl(path);
     }
 
     private static JsonObject readJson(Path path) throws IOException {
-        JsonElement value = JsonParser.parseString(new String(
-                Files.readAllBytes(path), StandardCharsets.UTF_8));
-        return value.isJsonObject() ? value.getAsJsonObject()
-                : new JsonObject();
+        return ArtifactIO.readObject(path);
     }
 
     private static void writeJsonl(Path path, List<JsonObject> rows)
@@ -455,67 +413,8 @@ public final class RegionSummaryMerger {
                 StandardOpenOption.WRITE);
     }
 
-    private static String canonical(JsonElement value) {
-        if (value == null || value.isJsonNull()) return "null";
-        if (value.isJsonPrimitive()) return GSON.toJson(value);
-        if (value.isJsonArray()) {
-            StringBuilder result = new StringBuilder("[");
-            boolean first = true;
-            for (JsonElement element : value.getAsJsonArray()) {
-                if (!first) result.append(',');
-                first = false;
-                result.append(canonical(element));
-            }
-            return result.append(']').toString();
-        }
-        StringBuilder result = new StringBuilder("{");
-        boolean first = true;
-        for (String key : new TreeSet<>(value.getAsJsonObject().keySet())) {
-            if (!first) result.append(',');
-            first = false;
-            result.append(GSON.toJson(key)).append(':')
-                    .append(canonical(value.getAsJsonObject().get(key)));
-        }
-        return result.append('}').toString();
-    }
-
-    private static String sha256(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder();
-            for (byte item : bytes) result.append(String.format("%02x",
-                    item & 0xff));
-            return result.toString();
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException(exception);
-        }
-    }
-
     private static List<JsonObject> safe(List<JsonObject> values) {
         return values == null ? Collections.<JsonObject>emptyList() : values;
-    }
-
-    private static JsonObject object(JsonObject owner, String field) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    private static JsonArray array(JsonObject owner, String field) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
-    }
-
-    private static String string(JsonObject owner, String field) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? "" : value.getAsString();
-        } catch (RuntimeException ignored) {
-            return "";
-        }
     }
 
     private static String firstNonBlank(String... values) {
@@ -526,25 +425,4 @@ public final class RegionSummaryMerger {
         return "";
     }
 
-    private static boolean bool(JsonObject owner, String field,
-                                boolean fallback) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static int integer(JsonObject owner, String field,
-                               int fallback) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
 }

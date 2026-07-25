@@ -10,9 +10,6 @@ import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -23,6 +20,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+
+import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Builds bounded branch-flip work for path-sensitive summaries of region
@@ -204,7 +209,7 @@ public final class RegionPathWorklist {
                             pathKey, "", -1);
                     continue;
                 }
-                planSummary(summary, activation, scope, pathKey,
+                planSummary(summary, scope, pathKey,
                         branchMappings.get(summary));
                 if (tasks.size() >= bounds.maxTasks) break;
             }
@@ -215,8 +220,7 @@ public final class RegionPathWorklist {
         }
 
         private void planSummary(
-                JsonObject summary, JsonObject activation,
-                ExplorationScope scope, String pathKey,
+                JsonObject summary, ExplorationScope scope, String pathKey,
                 List<SummaryBranchMapping> mappings) {
             JsonArray conditions = array(summary, "pathCondition");
             List<SummaryBranchMapping> candidates = new ArrayList<>();
@@ -263,14 +267,13 @@ public final class RegionPathWorklist {
                                     "regionId"), pathKey, "", -1);
                     return;
                 }
-                emitTask(summary, activation, scope, pathKey, conditions,
+                emitTask(summary, scope, pathKey, conditions,
                         mappings, candidates.get(index));
             }
         }
 
         private void emitTask(
-                JsonObject summary, JsonObject activation,
-                ExplorationScope scope, String pathKey,
+                JsonObject summary, ExplorationScope scope, String pathKey,
                 JsonArray conditions, List<SummaryBranchMapping> mappings,
                 SummaryBranchMapping mapping) {
             int conditionIndex = mapping.summaryPcIndex();
@@ -491,9 +494,8 @@ public final class RegionPathWorklist {
             if (scopes.size() == 1) {
                 ExplorationScope scope = scopes.values().iterator().next();
                 if (scope.contract != null) {
-                    result.addProperty("outputDemandKey", scope.demandKey);
-                    result.addProperty("outputClosureFingerprint",
-                            scope.fingerprint);
+                    result.add(OutputClosureContract.FIELD,
+                            scope.contract.toJson());
                 } else {
                     result.addProperty("captureGoal", scope.goal.kind());
                 }
@@ -596,21 +598,15 @@ public final class RegionPathWorklist {
         private final OutputClosureContract contract;
         private final Set<String> branchSites;
         private final String identity;
-        private final String demandKey;
-        private final String fingerprint;
 
         private ExplorationScope(RegionCaptureGoal goal,
                                  OutputClosureContract contract,
                                  Set<String> branchSites,
-                                 String identity,
-                                 String demandKey,
-                                 String fingerprint) {
+                                 String identity) {
             this.goal = goal;
             this.contract = contract;
             this.branchSites = branchSites;
             this.identity = identity;
-            this.demandKey = demandKey;
-            this.fingerprint = fingerprint;
         }
 
         private static ExplorationScope from(JsonObject summary,
@@ -658,8 +654,7 @@ public final class RegionPathWorklist {
                         string(summary, "rootMethod"));
                 return new ExplorationScope(goal, null, sites,
                         "TARGET_BRANCH_V1\n" + region + "\n" + instance
-                                + "\n" + targetMethod + "\n" + rootMethod,
-                        "", "");
+                                + "\n" + targetMethod + "\n" + rootMethod);
             }
             OutputClosureContract summaryContract = decode(summary);
             OutputClosureContract activationContract =
@@ -683,8 +678,7 @@ public final class RegionPathWorklist {
             String demand = contract.demandKey();
             String fingerprint = contract.closureFingerprint();
             return new ExplorationScope(goal, contract, sites,
-                    "OUTPUT_CLOSURE_V1\n" + demand + "\n" + fingerprint,
-                    demand, fingerprint);
+                    "OUTPUT_CLOSURE_V1\n" + demand + "\n" + fingerprint);
         }
 
         private static OutputClosureContract decode(JsonObject value) {
@@ -937,30 +931,30 @@ public final class RegionPathWorklist {
                     addPort(port);
                 }
             }
-            for (JsonElement element : RegionPathWorklist.array(summary,
+            for (JsonElement element : JsonFields.array(summary,
                     "heapEffects")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject effect = element.getAsJsonObject();
                 addPort(string(effect, "inputPort"));
                 addPort(string(effect, "outputPort"));
             }
-            for (JsonElement element : RegionPathWorklist.array(summary,
+            for (JsonElement element : JsonFields.array(summary,
                     "heapStateInitializers")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject initializer = element.getAsJsonObject();
                 addPort(string(initializer, "statePort"));
                 addPort(string(initializer, "requestedOutputPort"));
             }
-            for (JsonElement element : RegionPathWorklist.array(summary,
+            for (JsonElement element : JsonFields.array(summary,
                     "engineArrayInputBindings")) {
                 if (element.isJsonObject()) {
                     addPort(string(element.getAsJsonObject(), "inputPort"));
                 }
             }
-            for (JsonElement element : RegionPathWorklist.array(summary,
+            for (JsonElement element : JsonFields.array(summary,
                     "dynamicFieldBindings")) {
                 if (!element.isJsonObject()) continue;
-                JsonObject selector = RegionPathWorklist.object(
+                JsonObject selector = object(
                         element.getAsJsonObject(),
                         "mapProjectionSelector");
                 addPort(string(selector, "mapInputPort"));
@@ -1047,20 +1041,6 @@ public final class RegionPathWorklist {
         output.append(safe.length()).append(':').append(safe).append('|');
     }
 
-    private static String sha256(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder();
-            for (byte current : bytes) {
-                result.append(String.format("%02x", current & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException(exception);
-        }
-    }
-
     private static void increment(Map<String, Integer> values, String key) {
         Integer previous = values.get(key);
         values.put(key, previous == null ? 1 : previous + 1);
@@ -1070,62 +1050,4 @@ public final class RegionPathWorklist {
         return values == null ? Collections.<JsonObject>emptyList() : values;
     }
 
-    private static JsonObject object(JsonObject parent, String name) {
-        if (parent == null) return new JsonObject();
-        JsonElement value = parent.get(name);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    private static JsonArray array(JsonObject parent, String name) {
-        if (parent == null) return new JsonArray();
-        JsonElement value = parent.get(name);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
-    }
-
-    private static String string(JsonObject object, String name) {
-        if (object == null) return "";
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? "" : value.getAsString();
-        } catch (RuntimeException ignored) {
-            return "";
-        }
-    }
-
-    private static boolean bool(JsonObject object, String name,
-                                boolean fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static int integer(JsonObject object, String name, int fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.trim().isEmpty()) {
-                    return value.trim();
-                }
-            }
-        }
-        return "";
-    }
 }

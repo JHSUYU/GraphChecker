@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
@@ -16,6 +15,12 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Builds one solver query from all closed concolic paths which reached the
@@ -113,8 +118,7 @@ public final class TargetReachPathQueryBuilder {
                 path.add("unforcedEnvironmentValidationRequirements",
                         placeholderRequirements.deepCopy());
             }
-            path.addProperty("branchWitnessCount",
-                    witnessedCount(mappings));
+            requireUniqueWitnessPositions(mappings);
             JsonObject previous = pathsByKey.put(pathKey, path);
             if (previous != null && !previous.equals(path)) {
                 throw new IOException(
@@ -149,8 +153,8 @@ public final class TargetReachPathQueryBuilder {
         return result;
     }
 
-    private static int witnessedCount(List<SummaryBranchMapping> mappings) {
-        int count = 0;
+    private static void requireUniqueWitnessPositions(
+            List<SummaryBranchMapping> mappings) {
         Set<Integer> positions = new LinkedHashSet<>();
         for (SummaryBranchMapping mapping : mappings) {
             if (!mapping.isWitnessed()) continue;
@@ -158,52 +162,6 @@ public final class TargetReachPathQueryBuilder {
                 throw new IllegalArgumentException(
                         "duplicate witnessed target PC position");
             }
-            count++;
-        }
-        return count;
-    }
-
-    private static JsonObject object(JsonObject parent, String name) {
-        JsonElement value = parent == null ? null : parent.get(name);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    private static JsonArray array(JsonObject parent, String name) {
-        JsonElement value = parent == null ? null : parent.get(name);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
-    }
-
-    private static String string(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        try {
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsString() : "";
-        } catch (RuntimeException malformed) {
-            return "";
-        }
-    }
-
-    private static int integer(JsonObject object, String name,
-                               int fallback) {
-        JsonElement value = object == null ? null : object.get(name);
-        try {
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsInt() : fallback;
-        } catch (RuntimeException malformed) {
-            return fallback;
-        }
-    }
-
-    private static boolean bool(JsonObject object, String name,
-                                boolean fallback) {
-        JsonElement value = object == null ? null : object.get(name);
-        try {
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsBoolean() : fallback;
-        } catch (RuntimeException malformed) {
-            return fallback;
         }
     }
 

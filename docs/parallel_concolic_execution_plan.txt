@@ -690,10 +690,7 @@ SHA-256 manifest。
 16. Importer / Verifier 的后续收敛
 ---------------------------------
 
-不要在第一个并行 commit 中同时删除 replay verifier。先取得 jobs=1 与 jobs=40
-等价。
-
-并行稳定后，执行一次明确的 authority 收敛：
+并行稳定并取得 jobs=1 与 jobs=40 等价后，执行一次明确的 authority 收敛：
 
 当前 importer 已经检查：
 
@@ -704,26 +701,24 @@ SHA-256 manifest。
     requested output capture/output set
     relational completeness
 
-当前 `ConcolicPathReplayVerifier` 和 `ConcolicReplayValidator` 又重复检查其中很多
-事实。应建立一个简短的 invariant mapping：
+旧 `ConcolicPathReplayVerifier` 和 `ConcolicReplayValidator` 曾重复检查其中很多
+事实。最终 invariant mapping 为：
 
     old verifier check
         -> importer 中已有位置
         -> 或迁移到 importer/reducer 的唯一必要位置
 
-如果 mapping 完整：
+1. importer 是 raw replay admission 的唯一调用边界；
+2. shell 只核对 singleton task/activation/raw/summary identity，并从 admitted
+   summary 生成最小 exploration record；
+3. standalone `ConcolicPathReplayVerifier` 已删除；
+4. 重复 branch validation 由 importer 的 `ReplayAdmission` 和小型
+   `BranchReplayObservationValidator` 负责；
+5. Map.Entry 和 array/container 跨执行 fresh-identity rebinding 不是重复校验，
+   必须保留为 importer 内部调用的 model admission。
 
-1. importer 成为 raw replay admission 的唯一 trust boundary；
-2. 一个小 reducer 由 admitted summary 计算 stablePathKey 并生成 exploration
-   record；
-3. 删除 `ConcolicPathReplayVerifier`；
-4. 删除只被它使用且与 importer 重复的 `ConcolicReplayValidator`。
-
-如果发现 verifier 中确有 importer 没有的真实语义不变量，把该不变量迁移到
-importer 后再删。不能为了行数直接丢掉。
-
-该收敛预计可以净删约 1,200-1,800 行生产代码，但它必须是并行功能之后的独立
-milestone/commit。
+这次收敛不能机械地删除整个旧 validator：fixture 是否通过只证明已有样本，不能
+替代 Map/array selector 的跨执行身份不变量。
 
 16.1 实现时的 invariant mapping
 
@@ -743,16 +738,15 @@ milestone/commit。
         -> importer 的 output extraction 与 summary completeness
 
     singleton task/activation/raw/summary artifact identity
-        -> ConcolicPathReplayVerifier，仍是唯一职责
+        -> run.sh 的最小 reducer；不再生成 scratch verification manifest
 
     完整 dynamic selector schema、fresh Map.Entry rebinding、
     container replay rebinding
-        -> ConcolicReplayValidator，仍是唯一职责
+        -> importer 内部 model admission；仍是唯一职责
 
-因此本轮不删除 verifier/validator。直接删除会丢掉 Map/array/container replay
-的唯一语义检查，违反“功能正确性优先于行数”。实现只删除无人调用的 validator
-API、scratch artifact hash，以及 shell 对 verifier 结果的字段级重复判断；
-shell 以 verifier 的进程退出状态为准。
+因此实现删除 standalone verifier，不删除上述唯一动态 selector 证明。Importer
+拒绝后不发布 summary；shell 只消费成功发布的 singleton summary，不重复解释其
+内部语义。
 
 
 17. 不在本任务范围内

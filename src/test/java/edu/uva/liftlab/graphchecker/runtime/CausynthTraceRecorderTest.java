@@ -87,6 +87,14 @@ public class CausynthTraceRecorderTest {
             assertTrue(trace.contains("\"callId\":" + throwingChild));
             assertTrue(trace.contains("\"outcome\":true"));
             assertFalse(trace.contains("\"event\":\"CALL_SITE_INCOMPLETE\""));
+            assertTrue(lines.stream().allMatch(line ->
+                    line.contains("\"schemaVersion\":2")));
+            assertFalse(trace.contains("\"timeNanos\""));
+            assertFalse(trace.contains("\"hasOutcome\""));
+            assertFalse(trace.contains("\"hasSuccessorIndex\""));
+            assertFalse(trace.contains("\"declaredType\""));
+            assertFalse(trace.contains("\"expression\""));
+            assertFalse(trace.contains("\"exceptionType\""));
         } finally {
             resetRecorder();
             if (previousOutput == null) {
@@ -134,7 +142,7 @@ public class CausynthTraceRecorderTest {
                         ready.countDown();
                         try {
                             start.await();
-                            CausynthTraceRecorder.record(
+                            CausynthTraceRecorder.enterMethod(
                                     "<test.Concurrent" + threadIndex
                                             + ": void run()>", new Object());
                         } catch (Throwable failure) {
@@ -200,35 +208,6 @@ public class CausynthTraceRecorderTest {
             restoreProperty("causynth.symbolic.region.edges",
                     previousRegionEdges);
         }
-    }
-
-    private static String methodRow(long seq, String method, String thread,
-                                    long tid, int objectId, long callId) {
-        return "{\"event\":\"METHOD_ENTER\",\"seq\":" + seq
-                + ",\"test\":\"test\",\"process\":\"process\","
-                + "\"threadName\":\"" + thread + "\",\"tid\":" + tid
-                + ",\"method\":\"" + method + "\",\"objectId\":"
-                + objectId + ",\"callId\":" + callId
-                + ",\"parentCallId\":0,\"parentSiteId\":0,"
-                + "\"siteId\":\"" + method + "#entry\","
-                + "\"receiverType\":\"test.State\",\"timeNanos\":"
-                + (seq * 10) + "}";
-    }
-
-    private static String fieldRow(long seq, String kind, String method,
-                                   String thread, long tid, int objectId,
-                                   long callId, String field, int receiverId,
-                                   String primitive) {
-        return "{\"event\":\"" + kind + "\",\"seq\":" + seq
-                + ",\"test\":\"test\",\"process\":\"process\","
-                + "\"threadName\":\"" + thread + "\",\"tid\":" + tid
-                + ",\"method\":\"" + method + "\",\"objectId\":"
-                + objectId + ",\"callId\":" + callId
-                + ",\"siteId\":\"" + method + "#u1\","
-                + "\"unitIndex\":1,\"field\":\"" + field + "\","
-                + "\"fieldReceiverObjectId\":" + receiverId + ","
-                + "\"valueObjectId\":0,\"primitiveValue\":\""
-                + primitive + "\",\"timeNanos\":" + (seq * 10) + "}";
     }
 
     private static final class ExplodingMap

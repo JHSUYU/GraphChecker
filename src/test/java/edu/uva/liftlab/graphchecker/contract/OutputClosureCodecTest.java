@@ -95,7 +95,7 @@ public class OutputClosureCodecTest {
         envelope.add("members", members);
 
         expectFailure(() -> OutputClosureCodec.decodeEnvelope(envelope),
-                "keys mismatch");
+                "cell must be a non-empty string");
     }
 
     @Test

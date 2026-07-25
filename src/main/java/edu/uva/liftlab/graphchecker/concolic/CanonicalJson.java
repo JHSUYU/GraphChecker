@@ -6,9 +6,6 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -72,18 +69,6 @@ public final class CanonicalJson {
     }
 
     public static String sha256(JsonElement value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(render(value).getBytes(
-                    StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder(bytes.length * 2);
-            for (byte item : bytes) {
-                result.append(String.format("%02x", item & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 is unavailable",
-                    impossible);
-        }
+        return ArtifactIO.sha256(render(value));
     }
 }

@@ -3,6 +3,10 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+
 /**
  * Evidence gate shared by graph discovery and SMT preparation.
  *
@@ -173,40 +177,6 @@ public final class AutomaticRegionEdge {
                 && longInteger(evidence, "mutationInvocationId", 0L) > 0L
                 && writerContainer != 0L
                 && writerContainer == readerContainer;
-    }
-
-    private static String string(JsonObject object, String name) {
-        if (object == null) return "";
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? "" : value.getAsString();
-        } catch (RuntimeException ignored) {
-            return "";
-        }
-    }
-
-    private static int integer(JsonObject object, String name, int fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject object, String name,
-                                    long fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
     }
 
 }

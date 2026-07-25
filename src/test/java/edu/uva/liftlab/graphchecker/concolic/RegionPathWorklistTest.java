@@ -138,12 +138,12 @@ public class RegionPathWorklistTest {
                 .rootCallId());
         assertEquals(OutputClosureCodec.decodeEnvelope(
                         task.getAsJsonObject("outputClosure")).demandKey(),
-                result.manifest.get("outputDemandKey").getAsString());
+                OutputClosureCodec.decode(result.manifest).demandKey());
         assertEquals(OutputClosureCodec.decodeEnvelope(
                         task.getAsJsonObject("outputClosure"))
                         .closureFingerprint(),
-                result.manifest.get("outputClosureFingerprint")
-                        .getAsString());
+                OutputClosureCodec.decode(result.manifest)
+                        .closureFingerprint());
         assertFalse(task.has("outputDemandKey"));
         assertFalse(task.has("outputClosureFingerprint"));
 

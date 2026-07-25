@@ -1,22 +1,25 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
-import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+
 /**
- * Admits a solver-generated execution only after ordinary Java branches,
- * without forced outcomes, reproduce the retained prefix and take the
- * requested flipped edge.
+ * Checks replay-model materialization and fresh dynamic selector rebinding.
+ * Branch witness admission belongs to {@link ConcolicSummaryImporter}.
  */
 public final class ConcolicReplayValidator {
     private static final String FRESH_MAP_ENTRY_REBINDING_AUTHORITY =
@@ -25,109 +28,37 @@ public final class ConcolicReplayValidator {
     private static final String CONTAINER_REPLAY_REBINDING_AUTHORITY =
             "EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_LOCAL_"
                     + "IDENTITY_REBIND_V1";
-    private static final Gson GSON = new GsonBuilder()
-            .disableHtmlEscaping().create();
 
     private ConcolicReplayValidator() {
     }
 
     /**
-     * Validates an unforced branch replay and, for an output-closure task,
-     * also validates that the replay actually materialized the exact output
-     * requested by the path work item.
-     *
-     * <p>The imported summary is intentionally part of this admission
-     * boundary.  A branch observation alone cannot prove an output
-     * transformer: execution may take the desired edge and then throw before
-     * the requested output exists (for example, {@code hasNext()==true}
-     * followed by {@code Iterator.next()} throwing).  Such an execution is
-     * useful gap evidence, but is not a mergeable path summary.</p>
+     * Validates only replay-local dynamic selector rebinding. Generic model,
+     * branch and output-closure admission belongs to the importer.
      */
-    public static JsonObject validate(JsonObject task, JsonObject rawResult,
-                                      JsonObject importedSummary) {
-        JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", 1);
-        result.addProperty("kind", "REGION_PATH_REPLAY_VALIDATION");
-        result.addProperty("queryKey", string(task, "queryKey"));
-        result.addProperty("regionId", string(task, "regionId"));
-        JsonArray failures = new JsonArray();
-        BranchReplayContract replayContract = null;
-        JsonElement encodedReplayContract = task == null ? null
-                : task.get("replayContract");
-        if (encodedReplayContract != null
-                && encodedReplayContract.isJsonObject()) {
-            try {
-                replayContract = BranchReplayContract.fromJson(
-                        encodedReplayContract.getAsJsonObject());
-            } catch (RuntimeException malformed) {
-                failures.add("INVALID_BRANCH_REPLAY_CONTRACT");
-            }
-        } else {
-            failures.add("MISSING_BRANCH_REPLAY_CONTRACT");
-        }
-        boolean outputClosure = RegionCaptureGoal.from(task)
-                .isOutputClosure();
-
-        require(failures, "MISSING_REGION_RESULT",
-                "CONCOLIC_REGION_RESULT".equals(string(rawResult, "event")));
-        require(failures, "REGION_ID_MISMATCH", string(task, "regionId")
-                .equals(string(rawResult, "regionId")));
-        String plannedActivationId = string(task, "activationId");
-        // Runtime-local identity evidence must name the replay activation
-        // itself; a task/source activation is never a valid fallback.
+    static List<String> validateDynamicRebindings(
+            JsonObject task, JsonObject rawResult,
+            JsonObject importedSummary) {
+        List<String> failures = new ArrayList<>();
         String appliedActivationId = string(rawResult, "activationId");
         JsonArray plannedRows = array(task, "modelAssignments");
         JsonArray appliedRows = array(rawResult,
                 "modelAssignmentsApplied");
         DynamicAssignmentSet planned = DynamicAssignmentSet.from(
-                plannedRows, "PLANNED",
-                plannedActivationId);
+                plannedRows, "PLANNED", firstNonBlank(string(task,
+                        "sourceActivationId"), string(task,
+                        "activationId")));
         DynamicAssignmentSet applied = DynamicAssignmentSet.from(
                 appliedRows, "APPLIED", appliedActivationId);
-        boolean dynamicPlan = planned.dynamicCount > 0;
         for (String problem : planned.problems) {
             failures.add("INVALID_PLANNED_MODEL_ASSIGNMENT:" + problem);
-            if (problem.contains("DYNAMIC_")
-                    || problem.contains("SELECTOR")
-                    || problem.contains("BINDING_")
-                    || problem.contains("MAP_PROJECTION")) {
-                failures.add("INVALID_PLANNED_DYNAMIC_ASSIGNMENT:"
-                        + problem);
-            }
         }
         for (String problem : applied.problems) {
             failures.add("INVALID_APPLIED_MODEL_ASSIGNMENT:" + problem);
-            if (problem.contains("DYNAMIC_")
-                    || problem.contains("SELECTOR")
-                    || problem.contains("BINDING_")
-                    || problem.contains("MAP_PROJECTION")) {
-                failures.add("INVALID_APPLIED_DYNAMIC_ASSIGNMENT:"
-                        + problem);
-            }
         }
-        Set<String> missing = new LinkedHashSet<>(planned.identities);
-        missing.removeAll(applied.identities);
-        Set<String> extra = new LinkedHashSet<>(applied.identities);
-        extra.removeAll(planned.identities);
-        boolean exactAssignmentSet = planned.problems.isEmpty()
-                && applied.problems.isEmpty()
-                && missing.isEmpty() && extra.isEmpty()
-                && planned.assignmentCount == applied.assignmentCount;
-        require(failures, "MODEL_ASSIGNMENT_SET_MISMATCH",
-                exactAssignmentSet);
-        if (dynamicPlan || applied.dynamicCount > 0) {
-            require(failures, "DYNAMIC_MODEL_ASSIGNMENT_SET_MISMATCH",
-                    exactAssignmentSet
-                            && planned.dynamicCount == applied.dynamicCount);
+        if (planned.dynamicCount != applied.dynamicCount) {
+            failures.add("DYNAMIC_MODEL_ASSIGNMENT_COUNT_MISMATCH");
         }
-        require(failures, "MODEL_ASSIGNMENT_NOT_APPLIED",
-                bool(rawResult, "allModelAssignmentsApplied", false)
-                        && integer(rawResult,
-                        "modelAssignmentAppliedCount", -1)
-                        == appliedRows.size()
-                        && appliedRows.size() == plannedRows.size());
-        result.add("missingModelAssignments", GSON.toJsonTree(missing));
-        result.add("extraModelAssignments", GSON.toJsonTree(extra));
 
         List<String> freshRebindingProblems =
                 validateFreshMapEntryRebindings(plannedRows, appliedRows,
@@ -150,120 +81,12 @@ public final class ConcolicReplayValidator {
         for (String problem : containerRebindingProblems) {
             failures.add("CONTAINER_REPLAY_REBINDING_INVALID:" + problem);
         }
-
-        BranchReplayObservationValidator.Result branchObservation = null;
-        if (replayContract != null) {
-            List<BranchWitness> witnesses = new ArrayList<>();
-            int ordinal = 0;
-            for (JsonElement element : array(rawResult,
-                    "branchMappings")) {
-                if (!element.isJsonObject()) {
-                    ordinal++;
-                    continue;
-                }
-                JsonElement encoded = element.getAsJsonObject().get(
-                        "witness");
-                if (encoded == null) {
-                    ordinal++;
-                    continue;
-                }
-                try {
-                    witnesses.add(BranchWitness.fromJson(
-                            encoded.getAsJsonObject()));
-                } catch (RuntimeException malformed) {
-                    failures.add("MALFORMED_BRANCH_WITNESS_AT_" + ordinal);
-                }
-                ordinal++;
-            }
-            branchObservation = BranchReplayObservationValidator.validate(
-                    replayContract, witnesses);
-            require(failures, "BRANCH_REPLAY_CONTRACT_NOT_SATISFIED",
-                    branchObservation.valid());
-            result.add("branchReplayObservation",
-                    branchObservation.toJson());
-        }
-
-        boolean rawNormalExit = !outputClosure || "NORMAL".equals(
-                string(rawResult, "exitKind"))
-                && string(rawResult, "exceptionType").isEmpty();
-        boolean importedSummaryPresent = importedSummary != null;
-        boolean importedSummaryNormalExit = !outputClosure
-                || importedSummaryPresent
-                && bool(importedSummary, "normalExit", false)
-                && string(importedSummary, "exceptionType").isEmpty();
-        boolean importedSummaryRelationallyComplete = !outputClosure
-                || importedSummaryPresent
-                && bool(importedSummary, "relationallyComplete", false);
-        boolean importedSummaryGoalMatches = !outputClosure
-                || importedSummaryPresent
-                && RegionCaptureGoal.from(importedSummary)
-                .isOutputClosure();
-        boolean importedSummaryRegionMatches = !outputClosure
-                || importedSummaryPresent
-                && string(task, "regionId").equals(string(importedSummary,
-                "regionId"));
-        boolean importedSummaryActivationMatchesRaw = !outputClosure
-                || importedSummaryPresent
-                && !string(rawResult, "activationId").isEmpty()
-                && string(rawResult, "activationId").equals(
-                string(importedSummary, "activationId"));
-        OutputClosureAdmission outputAdmission =
-                outputClosure && importedSummaryPresent
-                        ? OutputClosureAdmission.validate(task,
-                        importedSummary)
-                        : OutputClosureAdmission.invalid();
-        boolean requestedOutputMatches = !outputClosure
-                || importedSummaryPresent
-                && outputAdmission.contractIdentityMatches;
-        boolean requestedOutputExpressionPresent = !outputClosure
-                || importedSummaryPresent
-                && outputAdmission.expressionsMatchDeclaredPorts;
-        if (outputClosure) {
-            require(failures, "OUTPUT_CLOSURE_REPLAY_EXCEPTIONAL_EXIT",
-                    rawNormalExit);
-            require(failures, "MISSING_IMPORTED_OUTPUT_SUMMARY",
-                    importedSummaryPresent);
-            if (importedSummaryPresent) {
-                require(failures,
-                        "IMPORTED_OUTPUT_SUMMARY_NOT_RELATIONALLY_COMPLETE",
-                        importedSummaryRelationallyComplete);
-                require(failures,
-                        "IMPORTED_OUTPUT_SUMMARY_NOT_NORMAL_EXIT",
-                        importedSummaryNormalExit);
-                require(failures,
-                        "IMPORTED_OUTPUT_SUMMARY_WRONG_CAPTURE_GOAL",
-                        importedSummaryGoalMatches);
-                require(failures,
-                        "IMPORTED_OUTPUT_SUMMARY_REGION_ID_MISMATCH",
-                        importedSummaryRegionMatches);
-                require(failures,
-                        "IMPORTED_OUTPUT_SUMMARY_ACTIVATION_ID_MISMATCH",
-                        importedSummaryActivationMatchesRaw);
-                require(failures, "REQUESTED_OUTPUT_MISMATCH",
-                        requestedOutputMatches);
-                require(failures,
-                        "REQUESTED_OUTPUT_EXPRESSION_MISSING",
-                        requestedOutputExpressionPresent);
-            }
-        }
-
-        result.add("failures", failures);
-        result.addProperty("failureCount", failures.size());
-        result.addProperty("captureGoal",
-                RegionCaptureGoal.from(task).kind());
-        result.addProperty("valid", failures.size() == 0);
-        result.addProperty("status", failures.size() == 0
-                ? "VALIDATED_UNFORCED_REPLAY" : "REPLAY_REJECTED");
-        result.addProperty("admissionAuthority", failures.size() == 0
-                ? "SOLVER_MODEL_PLUS_IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1"
-                : "NONE");
-        return result;
+        return failures;
     }
 
     private static final class DynamicAssignmentSet {
         private final Set<String> identities = new LinkedHashSet<>();
         private final List<String> problems = new ArrayList<>();
-        private int assignmentCount;
         private int dynamicCount;
 
         private static DynamicAssignmentSet from(JsonArray assignments,
@@ -276,22 +99,16 @@ public final class ConcolicReplayValidator {
                     new java.util.LinkedHashMap<>();
             for (int index = 0; index < assignments.size(); index++) {
                 JsonElement element = assignments.get(index);
-                result.assignmentCount++;
                 if (!element.isJsonObject()) {
-                    result.problems.add(source + "_" + index
-                            + ":NON_OBJECT_MODEL_ASSIGNMENT");
                     continue;
                 }
                 JsonObject assignment = element.getAsJsonObject();
-                List<String> validation = validateModelAssignment(
-                        assignment, source);
                 boolean dynamic = !string(assignment,
                         "dynamicBindingId").isEmpty();
-                if (dynamic) {
-                    result.dynamicCount++;
-                    validation.addAll(validateDynamicAssignment(
-                            assignment, activationId, source));
-                }
+                if (!dynamic) continue;
+                result.dynamicCount++;
+                List<String> validation = validateDynamicAssignment(
+                        assignment, activationId, source);
                 for (String problem : validation) {
                     result.problems.add(source + "_" + index + ":"
                             + problem);
@@ -330,41 +147,6 @@ public final class ConcolicReplayValidator {
             }
             return result;
         }
-    }
-
-    private static List<String> validateModelAssignment(
-            JsonObject assignment, String source) {
-        List<String> result = new ArrayList<>();
-        if (string(assignment, "engineSymbol").isEmpty()) {
-            result.add("MISSING_ENGINE_SYMBOL");
-        }
-        if (string(assignment, "inputSymbol").isEmpty()) {
-            result.add("MISSING_INPUT_SYMBOL");
-        }
-        if (string(assignment, "valueType").isEmpty()) {
-            result.add("MISSING_MODEL_VALUE_TYPE");
-        }
-        if (!assignment.has("value") || assignment.get("value").isJsonNull()) {
-            result.add("MISSING_MODEL_VALUE");
-        }
-        String authority = string(assignment, "authority");
-        if (!("Z3_PATH_FLIP_MODEL".equals(authority)
-                || "Z3_BOUNDED_COMPOSED_MODEL_PROJECTION".equals(
-                authority))) {
-            result.add("INVALID_TOP_LEVEL_MODEL_AUTHORITY");
-        }
-        if (!bool(assignment, "materializeAtRealDefinition", false)) {
-            result.add("MODEL_NOT_MATERIALIZED_AT_REAL_DEFINITION");
-        }
-        // A planned assignment must retain the exact solver term which
-        // supplied its value. Runtime-applied rows intentionally do not echo
-        // solverSymbol; their engine/input/selector identity below is the
-        // canonical execution-side provenance.
-        if ("PLANNED".equals(source)
-                && string(assignment, "solverSymbol").isEmpty()) {
-            result.add("MISSING_SOLVER_SYMBOL_PROVENANCE");
-        }
-        return result;
     }
 
     private static void validateMapEntrySelector(JsonObject assignment,
@@ -731,7 +513,8 @@ public final class ConcolicReplayValidator {
             long elementToken = longInteger(selector,
                     "elementObjectToken", 0L);
             String scope = string(selector, "objectTokenScope");
-            if (!"DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
+            if (integer(binding, "schemaVersion", -1) != 3
+                    || !"DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
                     string(binding, "kind"))
                     || !"ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_"
                     .concat("IDENTITY_AND_STABLE_FIELD_SITE_OCCURRENCE")
@@ -752,17 +535,7 @@ public final class ConcolicReplayValidator {
                     || !scope.equals(string(binding, "objectTokenScope"))
                     || !"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN"
                     .equals(string(binding, "objectTokenAuthority"))
-                    || !"STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_"
-                    .concat("EXACT_ELEMENT_IDENTITY_TO_DECLARED_FIELD_"
-                            + "HOOK_V1").equals(string(binding,
-                    "materializationSiteBridgeAuthority"))
-                    || !string(selector, "bindingId").equals(string(
-                    binding, "materializationSiteBridgeBindingId"))
-                    || elementToken <= 0L
-                    || elementToken != longInteger(binding,
-                    "materializationSiteBridgeElementObjectToken", 0L)
-                    || !scope.equals(string(binding,
-                    "materializationSiteBridgeObjectTokenScope"))) {
+                    || elementToken <= 0L) {
                 continue;
             }
             result.add(binding);
@@ -1233,146 +1006,4 @@ public final class ConcolicReplayValidator {
         result.append(safe.length()).append(':').append(safe).append('|');
     }
 
-    private static void require(JsonArray failures, String code,
-                                boolean condition) {
-        if (!condition) failures.add(code);
-    }
-
-    private static final class OutputClosureAdmission {
-        private final boolean contractIdentityMatches;
-        private final boolean expressionsMatchDeclaredPorts;
-
-        private OutputClosureAdmission(boolean contractIdentityMatches,
-                                       boolean expressionsMatchDeclaredPorts) {
-            this.contractIdentityMatches = contractIdentityMatches;
-            this.expressionsMatchDeclaredPorts =
-                    expressionsMatchDeclaredPorts;
-        }
-
-        private static OutputClosureAdmission invalid() {
-            return new OutputClosureAdmission(false, false);
-        }
-
-        private static OutputClosureAdmission validate(
-                JsonObject task, JsonObject summary) {
-            try {
-                OutputClosureContract requested =
-                        OutputClosureCodec.decodeEnvelope(task
-                                .getAsJsonObject(
-                                        OutputClosureContract.FIELD));
-                OutputClosureContract imported =
-                        OutputClosureCodec.decode(summary);
-                boolean sameContract = sameProducer(
-                        requested.producer(), imported.producer())
-                        && requested.demandKey().equals(
-                        imported.demandKey())
-                        && requested.closureFingerprint().equals(
-                        imported.closureFingerprint());
-                return new OutputClosureAdmission(sameContract,
-                        sameContract && exactUsableExpressionSet(
-                                summary, requested.outputPorts()));
-            } catch (RuntimeException malformedContract) {
-                return invalid();
-            }
-        }
-
-        private static boolean sameProducer(
-                OutputClosureContract.Producer expected,
-                OutputClosureContract.Producer actual) {
-            return expected.regionId().equals(actual.regionId())
-                    && expected.regionInstanceId().equals(
-                    actual.regionInstanceId())
-                    && expected.rootCallId() == actual.rootCallId();
-        }
-    }
-
-    private static boolean exactUsableExpressionSet(
-            JsonObject summary, Set<String> declaredPorts) {
-        JsonElement encoded = summary == null
-                ? null : summary.get("outputExpressions");
-        if (encoded == null || !encoded.isJsonObject()) return false;
-        JsonObject expressions = encoded.getAsJsonObject();
-        if (!expressions.keySet().equals(declaredPorts)) return false;
-        for (String port : declaredPorts) {
-            if (!usableExpression(expressions.get(port))) return false;
-        }
-        return true;
-    }
-
-    private static boolean usableExpression(JsonElement expression) {
-        if (expression == null || expression.isJsonNull()) return false;
-        if (expression.isJsonObject()) {
-            return expression.getAsJsonObject().size() > 0;
-        }
-        if (expression.isJsonArray()) {
-            return expression.getAsJsonArray().size() > 0;
-        }
-        return true;
-    }
-
-    private static JsonArray array(JsonObject owner, String field) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
-    }
-
-    private static JsonObject object(JsonObject owner, String field) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    private static String string(JsonObject owner, String field) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? "" : value.getAsString();
-        } catch (RuntimeException ignored) {
-            return "";
-        }
-    }
-
-    private static boolean bool(JsonObject owner, String field,
-                                boolean fallback) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static int integer(JsonObject owner, String field,
-                               int fallback) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject owner, String field,
-                                    long fallback) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.trim().isEmpty()) {
-                    return value.trim();
-                }
-            }
-        }
-        return "";
-    }
 }

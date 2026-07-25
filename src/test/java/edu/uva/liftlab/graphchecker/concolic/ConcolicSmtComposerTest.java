@@ -49,7 +49,7 @@ public class ConcolicSmtComposerTest {
 
             assertTrue(candidateReady(result.manifest));
             assertEquals(0, result.manifest.getAsJsonArray(
-                    "incompleteSummaryRegions").size());
+                    "gaps").size());
             assertTrue(result.smtLib.contains("(map_put "));
             assertTrue(result.smtLib.contains("(map_remove "));
             assertTrue(result.smtLib.contains("(map_clear "));
@@ -91,9 +91,7 @@ public class ConcolicSmtComposerTest {
 
             assertTrue(candidateReady(result.manifest));
             assertTrue(result.smtLib.contains(
-                    "region_case_selector_coverage_REGION_P"));
-            assertTrue(result.smtLib.contains(
-                    "region_case_selector_exclusive_REGION_P_0_1"));
+                    "region_case_selector_partition_REGION_P"));
             assertTrue(result.smtLib.contains("(=>"));
             assertTrue(result.smtLib, result.smtLib.contains(
                     ":named container_element_field_BIND_ARRAY_0"));
@@ -186,17 +184,8 @@ public class ConcolicSmtComposerTest {
             JsonArray resolvedEdges = result.manifest.getAsJsonArray(
                     "resolvedEdgeBindings");
             assertEquals(1, resolvedEdges.size());
-            JsonObject recursive = resolvedEdges.get(0).getAsJsonObject();
-            assertEquals("REGION.U.out.0", recursive.get(
-                    "sourceOutput").getAsString());
-            assertEquals("REGION.P.in.0", recursive.get(
-                    "targetInput").getAsString());
-            assertTrue(recursive.get("recursive").getAsBoolean());
-            assertEquals("FIELD_ASSIGNMENT_READ_FROM_V1", recursive
-                    .getAsJsonObject("binding").get(
-                            "evidenceKind").getAsString());
-            assertEquals(0, result.manifest.getAsJsonArray(
-                    "unreachableBoundedUpstreamRegions").size());
+            assertEquals("EDGE.REGION.U.TO.REGION.P",
+                    resolvedEdges.get(0).getAsString());
             assertTrue(result.smtLib.contains(
                     "port__REGION_U_out_0 port__REGION_P_in_0"));
             assertTrue(result.smtLib.contains(
@@ -384,7 +373,7 @@ public class ConcolicSmtComposerTest {
 
             assertFalse(candidateReady(result.manifest));
             assertTrue(result.manifest.getAsJsonArray(
-                    "unsupportedExpressions").toString().contains(
+                    "gaps").toString().contains(
                     "MissingExactProducerSummary:REGION.P"
                             + "[instance=REGION.P@fixture#call1,"
                             + "outputs=[REGION.P.out.3, REGION.P.out.4]]"));
@@ -445,7 +434,7 @@ public class ConcolicSmtComposerTest {
 
             assertFalse(candidateReady(result.manifest));
             assertTrue(result.manifest.getAsJsonArray(
-                    "unsupportedExpressions").toString().contains(
+                    "gaps").toString().contains(
                     "AmbiguousProducerClosureFingerprint:REGION.P"));
         } finally {
             folder.delete();
@@ -767,9 +756,6 @@ public class ConcolicSmtComposerTest {
         for (int caseIndex = 0; caseIndex < operators.length; caseIndex++) {
             JsonObject item = new JsonObject();
             item.addProperty("caseId", "CASE.JOINT." + caseIndex);
-            item.addProperty("pathKey", "PATH.JOINT." + caseIndex);
-            item.addProperty("symbolScope",
-                    "region:REGION.P/case:CASE.JOINT." + caseIndex);
             JsonObject guard = new JsonObject();
             guard.addProperty("kind", "PATH_CONDITION");
             JsonArray conditions = new JsonArray();
@@ -792,15 +778,12 @@ public class ConcolicSmtComposerTest {
             item.add("unforcedEnvironmentValidationRequirements",
                     new JsonArray());
             item.add("heapEffects", new JsonArray());
-            item.addProperty("relationallyComplete", true);
             cases.add(item);
         }
         JsonObject relation = new JsonObject();
         relation.addProperty("schemaVersion", 1);
         relation.addProperty("kind", "GUARDED_PATH_MERGE");
-        relation.addProperty("caseCount", cases.size());
         relation.add("cases", cases);
-        relation.addProperty("complete", true);
         summary.add("regionRelation", relation);
     }
 
@@ -1526,7 +1509,7 @@ public class ConcolicSmtComposerTest {
         String bindingId = "BIND_ARRAY_" + index;
         String method = "<example.Store: void update(example.Keys)>";
         JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", 2);
+        result.addProperty("schemaVersion", 3);
         result.addProperty("kind",
                 "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
         result.addProperty("dynamicBindingId", "DYNAMIC_FIELD:" + dynamic);
@@ -1731,9 +1714,7 @@ public class ConcolicSmtComposerTest {
         result.add("bounds", bounds);
         result.addProperty("observedPathCount", 1);
         result.addProperty("pendingTaskCount", 0);
-        result.addProperty("outputDemandKey", contract.demandKey());
-        result.addProperty("outputClosureFingerprint",
-                contract.closureFingerprint());
+        result.add(OutputClosureContract.FIELD, contract.toJson());
         result.add("gaps", new JsonArray());
         return result;
     }

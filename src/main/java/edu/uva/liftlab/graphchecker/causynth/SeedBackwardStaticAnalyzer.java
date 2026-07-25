@@ -18,10 +18,7 @@ import soot.jimple.Constant;
 import soot.jimple.IdentityStmt;
 import soot.jimple.IfStmt;
 import soot.jimple.InstanceFieldRef;
-import soot.jimple.InstanceInvokeExpr;
 import soot.jimple.IntConstant;
-import soot.jimple.InvokeExpr;
-import soot.jimple.Jimple;
 import soot.jimple.ParameterRef;
 import soot.jimple.ReturnStmt;
 import soot.jimple.Stmt;
@@ -66,7 +63,6 @@ import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.fieldOwn
 final class SeedBackwardStaticAnalyzer {
     private static final Logger LOG = LoggerFactory.getLogger(
             CausynthPipeline.class);
-    private static final int MAX_ROUNDS = 96;
     private static final int DEFAULT_MAX_METHODS = 1000;
     private static final int DEFAULT_MAX_EDGES = 50000;
     private static final String MAX_METHODS_PROPERTY =
@@ -100,7 +96,9 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, Set<String>> relevantFieldEffectsByMethod =
             new LinkedHashMap<>();
     private final Map<String, Set<String>> relevantByMethod = new LinkedHashMap<>();
-    private final Set<String> selectedMethods = new LinkedHashSet<>();
+    private final Deque<String> dirtyMethods = new ArrayDeque<>();
+    private final Set<String> queuedMethods = new LinkedHashSet<>();
+    private final Set<String> selectedMethods = new MethodWorkSet();
     private final Map<String, Map<String, Object>> emittedEdgeRows =
             new LinkedHashMap<>();
     private final Set<String> emittedRpcMappings = new LinkedHashSet<>();
@@ -282,7 +280,7 @@ final class SeedBackwardStaticAnalyzer {
         loadClasses(candidateClasses);
         initializeExceptionSeedAnchors();
         runWorklist();
-        finishSeedDiscovery(result);
+        finishSeedDiscovery();
 
         result.edges.addAll(edges);
         result.traceMethods.addAll(collectTraceMethods());
@@ -311,7 +309,7 @@ final class SeedBackwardStaticAnalyzer {
                 new LinkedHashMap<>(budget));
     }
 
-    private void finishSeedDiscovery(CausynthAnalysisResult result) {
+    private void finishSeedDiscovery() {
         if (discoveredExceptionSeedCount != 1) {
             throw new IllegalStateException("Annotated exception target did "
                     + "not resolve to exactly one Jimple throw: "
@@ -777,29 +775,22 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void runWorklist() {
-        for (int round = 0; round < MAX_ROUNDS && edges.size() < maxEdges; round++) {
-            boolean changed = false;
-            List<String> methodsThisRound = new ArrayList<>(selectedMethods);
-            for (String method : methodsThisRound) {
-                changed |= processMethod(method);
-                changed |= expandCallers(method);
-                changed |= expandRpcCallers(method);
-                changed |= expandDispatchCallers(method);
-                changed |= expandFieldWriters(method);
-                changed |= expandConstructorCallers(method);
-                changed |= expandMethodCallers(method);
-                // maxMethods limits admission of new static candidates;
-                // it must not prevent already admitted methods from
-                // reaching their fixed point.  The previous early break
-                // left the tail of selectedMethods unprocessed whenever
-                // the cap was reached (trace-visible methods could then
-                // have zero data-flow edges).
-                if (edges.size() >= maxEdges) {
-                    break;
+        while (edges.size() < maxEdges) {
+            while (!dirtyMethods.isEmpty() && edges.size() < maxEdges) {
+                String method = dirtyMethods.removeFirst();
+                queuedMethods.remove(method);
+                if (!selectedMethods.contains(method)) {
+                    continue;
                 }
+                processMethod(method);
+                expandCallers(method);
+                expandRpcCallers(method);
+                expandDispatchCallers(method);
+                expandFieldWriters(method);
+                expandConstructorCallers(method);
+                expandMethodCallers(method);
             }
-            changed |= propagateProjectedEdgesFromExistingEdges();
-            if (!changed) {
+            if (!propagateProjectedEdgesFromExistingEdges()) {
                 break;
             }
         }
@@ -876,7 +867,7 @@ final class SeedBackwardStaticAnalyzer {
             }
             changed |= processFieldReads(method, fact, defs, relevant);
             changed |= processFieldWrites(method, facts, fact, relevant);
-            changed |= processInvoke(method, fact, defs, uses, relevant);
+            changed |= processInvoke(method, fact, defs, relevant);
         }
         return changed;
     }
@@ -998,7 +989,6 @@ final class SeedBackwardStaticAnalyzer {
             if (ignoreNode(receiverField)) {
                 continue;
             }
-            String classField = canonical(method, access.field);
             boolean defExactHit = exactIntersects(relevant, defs);
             boolean defProjectionHit = projectionIntersects(relevant, defs);
             boolean defHit = defExactHit || defProjectionHit;
@@ -1848,8 +1838,9 @@ final class SeedBackwardStaticAnalyzer {
         return owner != null && owner.isApplicationClass();
     }
 
-    private boolean processInvoke(String callerMethod, Fact fact, List<String> defs,
-                                  List<String> uses, Set<String> callerRelevant) {
+    private boolean processInvoke(String callerMethod, Fact fact,
+                                  List<String> defs,
+                                  Set<String> callerRelevant) {
         MethodSig callee = parseMethodSig(fact.invoke);
         if (callee == null) {
             return false;
@@ -1876,8 +1867,7 @@ final class SeedBackwardStaticAnalyzer {
             loadMethod(calleeMethod);
         }
         Set<String> calleeRelevant = expandableCallee
-                ? relevantByMethod.computeIfAbsent(callee.raw,
-                ignored -> new LinkedHashSet<>())
+                ? relevant(callee.raw)
                 : Collections.emptySet();
         if (expandableCallee) {
             changed |= processReceiverSideEffectInvoke(callerMethod, fact,
@@ -3744,7 +3734,60 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private Set<String> relevant(String method) {
-        return relevantByMethod.computeIfAbsent(method, ignored -> new LinkedHashSet<>());
+        return relevantByMethod.computeIfAbsent(method, DirtyRelevantSet::new);
+    }
+
+    private void markDirty(String method) {
+        if (method != null && selectedMethods.contains(method)
+                && queuedMethods.add(method)) {
+            dirtyMethods.addLast(method);
+        }
+    }
+
+    private final class MethodWorkSet extends LinkedHashSet<String> {
+        @Override
+        public boolean add(String method) {
+            boolean changed = super.add(method);
+            if (changed) {
+                markDirty(method);
+            }
+            return changed;
+        }
+
+        @Override
+        public boolean addAll(Collection<? extends String> methods) {
+            boolean changed = false;
+            for (String method : methods) {
+                changed |= add(method);
+            }
+            return changed;
+        }
+    }
+
+    private final class DirtyRelevantSet extends LinkedHashSet<String> {
+        private final String method;
+
+        private DirtyRelevantSet(String method) {
+            this.method = method;
+        }
+
+        @Override
+        public boolean add(String cell) {
+            boolean changed = super.add(cell);
+            if (changed) {
+                markDirty(method);
+            }
+            return changed;
+        }
+
+        @Override
+        public boolean addAll(Collection<? extends String> cells) {
+            boolean changed = false;
+            for (String cell : cells) {
+                changed |= add(cell);
+            }
+            return changed;
+        }
     }
 
     private List<String> nonInvokeUses(Fact fact) {
@@ -4643,11 +4686,6 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private String edgeKey(String kind, Object from, Object to,
-                           String method) {
-        return edgeKey(kind, from, to, method, null);
-    }
-
-    private String edgeKey(String kind, Object from, Object to,
                            String method, Fact fact) {
         // A concrete Soot unit is part of a causal edge's identity.  The
         // same value endpoints can occur at multiple bytecode/Jimple sites
@@ -4862,15 +4900,6 @@ final class SeedBackwardStaticAnalyzer {
     private static String stringValue(Object value) {
         return value == null || "null".equals(String.valueOf(value))
                 ? "" : String.valueOf(value);
-    }
-
-    private static List<String> sortedLimited(Set<String> values, int limit) {
-        List<String> sorted = new ArrayList<>(values);
-        Collections.sort(sorted);
-        if (sorted.size() <= limit) {
-            return sorted;
-        }
-        return new ArrayList<>(sorted.subList(0, limit));
     }
 
     private static String firstNonBlank(String... values) {

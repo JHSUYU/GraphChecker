@@ -45,9 +45,7 @@ worklist-task	rootCallId	RegionPathWorklist	none	none	outputClosure producer/sou
 worklist-task	outputDemandKey	RegionPathWorklist	none	none	outputClosure.demandKey	DELETE_TASK_MIRROR	1
 worklist-task	outputClosureFingerprint	RegionPathWorklist	none	none	outputClosure.closureFingerprint	DELETE_TASK_MIRROR	1
 worklist-task	engineArrayInputBindings	RegionPathWorklist	none	none	source summary/activation	DELETE_TASK_COPY	1
-worklist-manifest	outputDemandKey	RegionPathWorklist	RegionSummaryMerger	run.sh,matrix	outputClosure.demandKey	KEEP_UNTIL_PR5	5
-worklist-manifest	outputClosureFingerprint	RegionPathWorklist	RegionSummaryMerger	run.sh,matrix	outputClosure.closureFingerprint	KEEP_UNTIL_PR5	5
-composer-manifest	caseProjectionCatalogComplete	ConcolicSmtComposer	composition readiness	none	not safely derivable before typed CoverageReport	KEEP_REPLACE	5
+composer-internal	caseProjectionCatalogComplete	ConcolicSmtComposer	composition readiness	none	INCOMPLETE_CASE_PROJECTION_CATALOG gap	INTERNAL_TO_GAP_GATE	5
 relationship	status=UNVERIFIED_CANDIDATE	ConcolicSmtComposer	none	none	trustState=CANDIDATE_ONLY	DELETE	1
 region-relation	caseCount	RegionSummaryMerger	ConcolicSmtComposer	matrix	cases.length	DELETE_AND_UPDATE_READERS	1
 region-relation	guardSemantics	RegionSummaryMerger	none	matrix	kind/schema contract	DELETE_AND_UPDATE_SHELL	1
@@ -99,14 +97,75 @@ runtime-edge	fromEndpointSeq/toEndpointSeq	RuntimeRegionPlanner	Scheduler/Compos
 runtime-edge	order/identity authority mirrors	RuntimeRegionPlanner	Scheduler/Composer	none	typed evidence payload	CUTOVER	3
 runtime-edge	path-completeness mirrors	RuntimeRegionPlanner	none	none	exact event evidence	DELETE	3
 runtime-edge	objectIdentityConfirmed	RuntimeRegionPlanner	Scheduler/Composer	none	nonzero receiver/value identity payload	CUTOVER	3
-trace	timeNanos	CausynthTraceRecorder	RuntimeRegionPlanner/tests	none	event order sequence	DELETE_AFTER_INDEX_AUDIT	4
-trace	test	CausynthTraceRecorder	RuntimeRegionPlanner	none	run-level context	CUTOVER	4
+trace	timeNanos	CausynthTraceRecorder	none	none	event sequence	DELETE	4
+trace	test	CausynthTraceRecorder	RuntimeRegionPlanner	none	run-level context	DELETE_FROM_ROWS	4
 trace	process	CausynthTraceRecorder	RuntimeRegionPlanner	none	run-level context	CUTOVER	4
 trace	threadName	CausynthTraceRecorder	RuntimeRegionPlanner	none	thread catalog	CUTOVER	4
 trace	tid	CausynthTraceRecorder	RuntimeRegionPlanner	none	thread catalog	CUTOVER	4
+trace	execution test/process/threadName/tid	CausynthTraceRecorder	none	none	METHOD_ENTER context	DELETE	4
+trace	execution parentCallId/unitIndex/declaredType/expression/exceptionType	CausynthTraceRecorder	none	none	callId/siteId/runtimeType	DELETE	4
+trace	field test/process/threadName/tid	CausynthTraceRecorder	none	none	owning METHOD_ENTER	DELETE	4
 trace	hasOutcome	CausynthTraceRecorder	RuntimeRegionPlanner	none	optional outcome	CUTOVER	4
 trace	hasSuccessorIndex	CausynthTraceRecorder	RuntimeRegionPlanner	none	optional successorIndex	CUTOVER	4
+replay	path replay verification manifest	ConcolicPathReplayVerifier	run.sh	none	importer admission + minimal exploration record	DELETE	4
+replay	dynamic selector/fresh rebinding proof	ConcolicReplayValidator	ConcolicSummaryImporter	none	not derivable	KEEP_AND_INTERNALIZE	4
 artifact-ref	sizeBytes	result builders	matrix/hash validators	none	path+sha256	DELETE_AND_UPDATE_READERS	5
+worklist-manifest	outputDemandKey	RegionPathWorklist	RegionSummaryMerger	run.sh,matrix	outputClosure.demand identity	DELETE_AND_UPDATE_READERS	5
+worklist-manifest	outputClosureFingerprint	RegionPathWorklist	RegionSummaryMerger	run.sh,matrix	outputClosure canonical payload	DELETE_AND_UPDATE_READERS	5
+merged-summary	activationId=MERGED_PATHS	RegionSummaryMerger	none	none	outputClosure producer	DELETE	5
+merged-summary	regionInstanceId/rootCallId	RegionSummaryMerger	Composer	none	outputClosure.producer	DELETE_AND_UPDATE_READERS	5
+merged-summary	sourceRegionInstanceIds	RegionSummaryMerger	none	none	outputClosure.producer	DELETE	5
+region-relation	complete	RegionSummaryMerger	Composer	run.sh,matrix	top-level relationallyComplete	DELETE_AND_UPDATE_READERS	5
+region-case	pathKey	RegionSummaryMerger	none	none	full-hash caseId	DELETE	5
+region-case	symbolScope	RegionSummaryMerger	Composer	none	derive region/case scope	DELETE_AND_UPDATE_READERS	5
+region-case	relationallyComplete	RegionSummaryMerger	Composer	matrix	top-level relationallyComplete	DELETE_AND_UPDATE_READERS	5
+composer-manifest	missingSummaryRegions/incompleteSummaryRegions/unsupportedExpressions/unboundPorts	ConcolicSmtComposer	run.sh,matrix	typed gaps rows	CUTOVER	5
+composer-manifest	resolvedEdgeBindings payload	ConcolicSmtComposer	matrix	edge ID plus canonical activation evidence	DELETE_COPY_KEEP_IDS	5
+boolean-report	rootBooleanInputs/existentialNonBooleanRootInputs	BooleanReachConditionExtractor	run.sh,matrix	roots object	CUTOVER	5
+boolean-report	truthTable/reachesBug/valuationKey/solverStatus	BooleanReachConditionExtractor	run.sh,matrix	valuations assignments+status	CUTOVER	5
+boolean-report	reachCondition clauses/reachConditionSmtLib/reachability	BooleanReachConditionExtractor	run.sh,matrix	reachCondition formula+reachability	CUTOVER	5
+boolean-report	discoveryGaps	BooleanReachConditionExtractor	run.sh,matrix	gaps	CUTOVER	5
+runtime-output-slice	causalEdgeCount	RuntimeRegionPlanner	tests	none	causalEdgeIds.size	DELETE	6
+runtime-output-slice	staticInputPorts/staticMethods/staticCausalEdgeIds	RuntimeRegionPlanner	none	none	canonical retained scope plus staticSites	DELETE	6
+runtime-output-slice	excludedAlternative*/prestateElisions	RuntimeRegionPlanner	tests	none	complete/runtimeRefinementComplete remain the admission evidence	DELETE	6
+heap-coverage	coverage matches/gaps/counters	ConcolicSummaryImporter	none	none	typed HeapEffectIssue plus completeness counters actually read	DELETE	6
+internal-diagnostics	unused private fields/methods/counters	production Java	none	none	zero consumer verified by PMD and call-site search	DELETE	6
+scheduler-result	summary.*	ConcolicScheduler	stdout only	none	scheduled activation/query arrays plus scheduledPrimaryCount	DELETE	6+
+scheduler-internal	global equalityClasses/UnionFind	ConcolicScheduler	summary.equalityClassCount only	none	per-activation witness-bearing contextFor equality closure	DELETE	6+
+solver-result	encoding/count/authority mirrors	ConcolicConstraintSolver	none	none	solver status, unsupported/problems, SMT hash and modelAssignments	DELETE	6+
+solver-internal	uninterpretedFunctions/uncontrolledEnvironmentTerms diagnostic sets	ConcolicConstraintSolver	record-only count/list mirrors	none	actual declarations, assertions and unsupported gate	DELETE	6+
+raw-result	map refreshCount/lastRefreshAuthority/entryExpressionAvailable	ConcolicRegionRuntime	none	none	expressionBindingComplete plus canonical expressions	DELETE	6+
+raw-result	branch operator/switch count/completeness mirrors	ConcolicRegionRuntime	none	none	branch mapping conditions, VM attestation and unresolved gap	DELETE	6+
+raw-result	entry-read count/authority and output field verification booleans	ConcolicRegionRuntime	none	none	canonical IDs, exact verification counts and outputVerificationAuthority	DELETE	6+
+raw-result	model assignment appliedAt/location	ConcolicRegionRuntime	tests only	none	modelAssignmentKey plus exact target/path/value replay comparison	DELETE_AND_UPDATE_TEST	6+
+raw-result	runtime approximation ignoredObjectToken	ConcolicRegionRuntime	none	none	selected identity plus approximation outcome	DELETE	6+
+imported-summary	observation/effect/index/code-position diagnostic mirrors	ConcolicSummaryImporter	none	none	canonical observation/binding/effect IDs and normalized expressions	DELETE	6+
+composer-manifest	fatalActivation	ConcolicSmtComposer	none	none	fatalRegionInstanceId plus exact site/occurrence/outcome	DELETE	6+
+composer-internal	dynamicTermSourceAuthority/heapObservationId/relationshipId mirrors	ConcolicSmtComposer	none	none	canonical observation authority/ID joins and stable in-memory dedupe ID	DELETE	6+
+path-input-proof	output authority/path count/materialization mode mirrors	PathRelationInputClosure	none	none	proof admission inputs plus canonical proof authority	DELETE	6+
+merge-manifest	pathWorklistState	RegionSummaryMerger	none	none	worklist completion enforced before merge plus complete/gaps	DELETE	6+
+replay-result	failureCount	ConcolicReplayValidator	none	none	failures.length	DELETE	6+
+concolic-internal	duplicated forgiving JSON field readers	seven concolic stages	local stage only	none	JsonFields	CONSOLIDATE_AND_DELETE	6+
+concolic-internal	duplicated SHA-256 implementations	six concolic stages	local stage only	none	ArtifactIO.sha256	CONSOLIDATE_AND_DELETE	6+
+concolic-boundary	duplicated permissive JSONL readers	Scheduler/Importer/Composer/Merger	local stage only	none	ArtifactIO strict JSONL reader	CONSOLIDATE_AND_FAIL_CLOSED	6+
+replay-admission	generic model/branch/output-closure revalidation	ConcolicReplayValidator	ConcolicSummaryImporter	none	Importer ReplayAdmission plus canonical summary construction	DELETE_DUPLICATE_KEEP_DYNAMIC_REBINDING	6+
+concolic-internal	remaining duplicated forgiving JSON field readers	eight concolic value/query stages	local stage only	none	JsonFields	CONSOLIDATE_AND_DELETE	6+
+import-result	summary/skippedEventCount	ConcolicSummaryImporter	stdout/tests	none	canonical summary JSONL plus raw/valid/diagnostic counts	DELETE_AND_UPDATE_TEST	6+
+activation	outputCaptureReady	ConcolicScheduler	tests only	none	admission.state	DELETE_AND_UPDATE_TEST	6+
+activation-binding	arrayFieldMaterializationAuthority	ConcolicScheduler	none	none	arrayFieldMaterializationComplete	DELETE	6+
+target-query	branchWitnessCount	TargetReachPathQueryBuilder	run_robustness_matrix.sh	matrix	branchWitnesses size; duplicate-PC-position gate remains internal	DELETE_AND_UPDATE_READER	6+
+raw-result	assignmentIdentityError/modelAssignmentCount	ConcolicRegionRuntime	none	none	unresolvedInputs plus modelAssignmentAppliedCount/allModelAssignmentsApplied	DELETE	6+
+raw-result	engine array internal-validation mirrors	ConcolicRegionRuntime	none	none	complete/problem plus canonical array expression, identity and consumed-leaf evidence	DELETE	6+
+raw-result	field-observation arrayLength/arrayElements	ConcolicRegionRuntime	none	none	canonical array binding/expression evidence	DELETE	6+
+imported-summary	transformer bindingCount/guard observedOccurrenceCount/runtime rawConditionCount	ConcolicSummaryImporter	none	none	canonical IDs/positions and admission results	DELETE	6+
+static-artifact	same-process StaticRegionArtifactSchema copy/edge-reference revalidation	CausynthArtifactWriter	none	none	Planner canonical typed rows plus downstream artifact-boundary decoders	DELETE_OVERVALIDATION	6+
+scheduler	graphless DefinitionIndex fallback	ConcolicScheduler	none	none	required canonical static graph	DELETE_FALLBACK	6+
+instrumentation-selection	bundle/replay/model-assignment duplicate admission checks	ConcolicInstrumentationSelections	none	none	executable admission plus canonical complete output closure and exact heap discharge	DELETE_DUPLICATE_VALIDATION	6+
+output-closure	exact JSON object key sets	OutputClosureCodec	none	none	required semantic fields, canonical ordering, capture ledger and slice completeness	DELETE_OVERVALIDATION	6+
+branch-contract	exact JSON object key sets	branch value codecs	none	none	required semantic fields and typed constructors	DELETE_OVERVALIDATION	6+
+raw-result	engine-array base/location/dynamic mirrors and map projection expected counts	ConcolicRegionRuntime	none	none	canonical binding identity/expression plus unresolved gap	DELETE	6+
+imported-summary	heap effect method/result/normalization/source mirrors and admission-authority list	ConcolicSummaryImporter	none	none	canonical effect/binding IDs, normalized expression and admission outcome	DELETE	6+
+composer-manifest	fatal occurrence/outcome/region-instance and bounded-region reachability mirrors	ConcolicSmtComposer	none	none	fatal site, exact imported reach paths, resolved producers and typed gaps	DELETE	6+
 correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
 correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-
 correctness	transformerObligations	static planner	Runtime/Importer	matrix	not derivable	KEEP	-
