@@ -15,14 +15,11 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 final class PathRelationInputClosure {
     private static final String FIELD_CONSTANT_AUTHORITY =
             "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_PATH_GUARD";
-    static final String PROOF_AUTHORITY =
-            "EXACT_VM_WITNESS_GUARDED_CONSTANT_OUTPUT_PLUS_"
-                    + "UNEXECUTED_LAZY_INPUT_V1";
 
     private PathRelationInputClosure() {
     }
 
-    static JsonObject proveGuardedConstantUnusedInput(
+    static boolean guardedConstantUnusedInput(
             JsonObject activation, String inputPort,
             JsonArray pathCondition, JsonObject outputExpressions,
             boolean outputComplete, String outputAuthority,
@@ -32,37 +29,31 @@ final class PathRelationInputClosure {
                 || pathCondition == null || pathCondition.size() == 0
                 || outputExpressions == null
                 || outputExpressions.size() == 0) {
-            return null;
+            return false;
         }
         for (Map.Entry<String, JsonElement> entry
                 : outputExpressions.entrySet()) {
-            if (!isTypedConstant(entry.getValue())) return null;
+            if (!isTypedConstant(entry.getValue())) return false;
         }
 
         Set<String> relationSymbols = freeSymbols(pathCondition);
         relationSymbols.addAll(freeSymbols(outputExpressions));
         for (String symbol : relationSymbols) {
-            if (containsPortReference(symbol, inputPort)) return null;
+            if (containsPortReference(symbol, inputPort)) return false;
         }
 
         JsonObject uniqueAction = null;
-        int actionCount = 0;
         for (JsonElement element : runtimeActions(activation)) {
             if (!element.isJsonObject()) continue;
             JsonObject action = element.getAsJsonObject();
             if (!inputPort.equals(string(action, "symbol"))) continue;
-            actionCount++;
+            if (uniqueAction != null) return false;
             uniqueAction = action;
         }
-        if (actionCount != 1 || uniqueAction == null
-                || !bool(uniqueAction, "lazy", false)) {
-            return null;
+        if (uniqueAction == null || !bool(uniqueAction, "lazy", false)) {
+            return false;
         }
-
-        JsonObject proof = new JsonObject();
-        proof.addProperty("inputPort", inputPort);
-        proof.addProperty("authority", PROOF_AUTHORITY);
-        return proof;
+        return true;
     }
 
     static Set<String> freeSymbols(JsonElement expression) {

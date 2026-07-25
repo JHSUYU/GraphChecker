@@ -1573,7 +1573,252 @@ fatal/bounded-region reachability镜像。
 
 该批 baseline generic workflow 已完整闭合 target 和两个 producer worklist，Composer
 无 gap，Z3 报告 `REACHABLE`。手写生产 Java 为 76,441 行，相对 81,581 行冻结基线累计
-净减 5,140 行；完整 13-fixture 矩阵结果在本段后续里程碑提交验证后记录。
+净减 5,140 行。对应里程碑 `0233c247` 的隔离干净 worktree 13-fixture 并行真实
+custom-JDK/Z3 矩阵零失败，保持 6 `SAT/REACHABLE`、7
+`UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T083622Z.1899755`。
+
+截至 `1abd8085`，branch replay 的唯一事实载体已经收敛为 typed
+`BranchWitness`：raw result 不再并列输出 outcome、condition index、PC size 和 VM
+authority 镜像，Importer 通过 canonical witness 与 activation-owned raw PC 在
+trust boundary 做一次完整 replay-contract 校验。随后一批继续删除 Runtime 中同一
+contract 的重复验证、只供展示的 replay positions、Composer 的 `MergeStats` 名称
+计数、Runtime Planner 的无人读取 warning/counter，以及静态 region 的 seed-guard
+诊断镜像。缺失或不可读的必需静态 artifact 现在直接报具体路径并终止；合法但不完整的
+output closure 仍通过 canonical issue/gap fail closed。
+
+这一轮首次 clean matrix 暴露的是 robustness shell 仍读取已经退休的
+`allModelAssignmentsApplied`，而对应 container 候选本身已为 `SAT/REACHABLE` 且无
+gap。这是一次性 schema 切换遗漏的旧 shell reader，不是 path exploration 漂移；脚本
+已改为检查 canonical `modelAssignmentsApplied` 唯一 key/value 集合。当前手写生产
+Java 为 76,091 行，相对冻结基线累计净减 5,490 行；57 项快速回归通过。对应里程碑
+`247c5b1c` 的隔离干净 worktree 13-fixture 并行真实 custom-JDK/Z3 矩阵也已零失败，
+保持 6 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T090733Z.2280847`。
+
+下一批把 artifact 中可由 canonical collection/state 直接推导的计数和固定说明继续原子
+删除：path worklist 只保留 `state`、实际 worklist 和 observed paths；target query、
+merged relation、Composer manifest、static coverage、Map projection、transformer
+obligation、VM placeholder 与 fresh-map initializer 均以实际数组、typed identity 或
+constructor signature 为事实源。Java、shell 和测试 reader 已在同一批切换，没有旧字段
+fallback。
+
+同时，包级调用审计确认 output-independence branch 只有 reader 而从无生产 writer，故其
+`PATH_ASSUMPTION` 路径在真实执行中不可达。该伪协议及相关 authority/reason/checked-output
+字段已整体删除；output slice 内的 causal branch 统一维持 `EXPLORE`，branch witness、
+solver path context 和 required successor evidence 不变。十个零调用 helper/API 也一并
+退休，避免保留“看似支持、实际无人调用”的表面积。
+
+手写生产 Java 为 75,769 行，相对 81,581 行冻结基线累计净减 5,812 行。57 项快速
+回归、PMD、generic shell 语法和真实 baseline 均通过。对应里程碑 `2b165d25` 的隔离
+干净 worktree 13-fixture 并行真实 custom-JDK/Z3 矩阵也已零失败，保持 6
+`SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T124250Z.2537011`。
+
+下一批继续删除阶段私有的重复基础设施，而没有增加新的 schema 层。五个 JSONL
+原子替换 writer 和两个 unique-ID index builder 现在分别由 `ArtifactIO.replaceJsonl`
+与 `ArtifactIO.uniqueIndex` 唯一实现；Importer 的最后一组 forgiving field accessor、
+四个 branch value 类型中的 primitive decoder、OutputClosure 的 Java descriptor
+validator，以及 runtime trace 的 JSON string/object serializer 也分别复用
+`JsonFields`、`JavaPrimitiveSmtSemantics` 和 `CausynthJson`。这些是现有 canonical
+语义的唯一实现，不是 wrapper 搬家；原局部实现已删除。
+
+Concolic 插桩此前会为 root、materialization、capture 和 bounded-closure readiness
+分别扫描同一 activation JSONL。现在每次 Soot instrumentation 只构造一次不可变
+`InstrumentationPlan`，四类 selection 从同一组选中 row 派生；malformed/non-object
+row 在这个 artifact boundary 一致拒绝。输出 closure、capture binding、heap discharge、
+executable admission 与 bundle `ALL` 语义保持不变。手写生产 Java 当前为 75,417 行，
+相对 81,581 行冻结基线累计净减 6,164 行；57 项快速回归、PMD 和真实
+custom-JDK/Z3 baseline 均已通过。对应里程碑 `8be93716` 的隔离干净 worktree
+13-fixture 并行真实 custom-JDK/Z3 矩阵也已零失败，保持 6
+`SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T131337Z.2802421`。
+
+Trace aggregation 也切换为 parse-once：offline aggregator 对每条 runtime trace row
+只调用一次 Gson parser，后续 Method/Field/Execution event 共享该 `JsonObject`；
+原来按字段动态编译/缓存正则、重复扫描整行以及手写 JSON unescape 的实现已删除。
+这同时正确处理标准 Unicode escape，避免不同字段 decoder 对同一 row 得出不同结果。
+手写生产 Java 进一步降至 75,330 行；57 项快速回归、PMD 与真实
+custom-JDK/Z3 baseline 通过。对应里程碑 `89fde48a` 的隔离干净 worktree
+13-fixture 并行真实 custom-JDK/Z3 矩阵也已零失败，保持 6
+`SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T132252Z.2990822`。
+
+下一批并行收敛 static、runtime 与 Composer 三条链，但仍只保留一个 canonical
+事实源。静态 region port 现在由 Planner 一次性写入 `javaType`，Composer 与 Boolean
+extractor 删除 `symbol`、`declaredType` 和从 cell 再猜类型的 fallback。Transformer
+contract 的 output port/cell 由外层 output slice 唯一给出，固定 version/applicable/
+authority 也已退休；obligation、target cell、causal edge 和 complete/issues 继续作为
+heap correctness gate。Runtime output slice 只写唯一 `complete` 与实际 issue/obligation/
+capture 集合，不再镜像 structural、truncation 和 refinement 布尔。
+
+Runtime raw result 删除了 CALL_ARGUMENT 上无人消费的 concrete class，以及已在顶层
+canonical observation ledger 中出现的 per-capture Map projection 副本；object identity、
+expression、field-flow 与 fail-closed observation 仍完整保留。Composer manifest 删除零生产
+reader 的 `resolvedProducerKeys`，relationship row 只保留 Boolean discovery 实际读取的
+kind/roles，公式继续由 named SMT assertion 唯一承载。Boolean truth table 已穷举所有
+`2^N` Boolean root valuation，因此删除了随后重复证明同一 DNF 的额外 Z3 process；
+任何 unknown 仍产生 gap 并 fail closed。Manifest 仍以 SHA 绑定 SMT、static regions、
+fatal query、summaries 和 relationship artifact，Boolean report 通过该 trust-root manifest
+引用它们。
+
+该批手写生产 Java 为 74,753 行，相对 81,581 行冻结基线累计净减 6,828 行。
+57 项快速回归、PMD、shell 语法与真实 custom-JDK/Z3 baseline 均通过；baseline 仍为
+`SAT/REACHABLE`，所有 composition/worklist/importer gap 均为空。对应里程碑
+`636d0f85` 的隔离干净 worktree 13-fixture 并行真实 custom-JDK/Z3 矩阵也已零失败，
+保持 6 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T134650Z.3220406`。
+
+下一批把“一个事实多次表示、一个 payload 多层重复验证”继续收敛为唯一语义载体。
+ReplayValidator 从约一千行缩到只负责 activation-local dynamic selector、fresh
+Map.Entry 与 container token rebinding；普通 schema、model assignment、branch 和
+output-closure 验证只在 Importer artifact boundary 做一次。Worklist 不再持久化
+`observedPathCount`，target path 不再持久化重复 `pathKey`，merge manifest 只写 typed
+`gaps`，唯一完成 gate 仍是 relation 的 `relationallyComplete`。
+
+Scheduler/Solver 同时删除了可由 admission、status、value type 和 canonical selector
+推导的 readiness、调用状态、退出码、浮点格式与 nested selector 副本。Runtime Planner
+删除旧 frozen-static-accessor artifact fallback；新 schema 必须提供 canonical static
+port metadata，缺失时直接拒绝，不猜历史产物。runtime alias、field-path 与 map
+projection 中的固定 authority/计数/ready 镜像也已退休，但 event sequence、对象身份、
+field path、selector、causal edge、capture 与所有 admission blocker 均保留。
+
+该批手写生产 Java 为 73,822 行，相对 81,581 行冻结基线累计净减 7,759 行；本批净删
+931 行生产代码。57 项快速回归、PMD、shell 语法与真实 custom-JDK/Z3 baseline 均通过；
+baseline producer worklist 正常闭合，Composer/Importer 无 gap，Z3 仍报告
+`SAT/REACHABLE`。对应里程碑 `e96b618d` 的隔离干净 worktree 13-fixture 并行真实
+custom-JDK/Z3 矩阵也已零失败，保持 6 `SAT/REACHABLE`、7
+`UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T141052Z.3416779`。矩阵只读取里程碑 commit，
+没有读取或覆盖主 worktree 中的用户 fixture 修改。
+
+下一批继续沿 trust boundary 删除“写出后无人读取”和“同一 payload 内重复证明”的
+代码。Runtime Planner 的三个静态 JSON artifact 现在各自只由 Gson 解析一次，原手写
+字段扫描器和 unescape 已删除。Instrumentation selection 由一个 typed
+`InstrumentationPlan` 原子选择唯一 activation，并一次派生 root、materialization 与
+capture；不再跨 activation 合并，也不再为同一 output closure 重复 decode 和扫描。
+静态 symbolic coverage 只保留最终 admission boolean，删除没有执行消费者的 seed-guard、
+accessor、dispatch 和计数诊断对象。
+
+Runtime raw result 的 model assignment 只写 Importer 实际 join 的 canonical key/target/
+value core；dynamic container/Map assignment 另外保留 ReplayValidator 实际 join 的
+activation-local selector/rebinding witness。engine-array 注册、branch mapping base row
+和 exact consumed-field 校验各自合并为一个实现。Importer 删除只在方法内部写后再读的
+Map-state 镜像、未消费的 target
+root/execution metadata，以及 heap effect 的 normalization/authority/output-binding 展示
+字段；raw PC index、site/occurrence、对象身份、表达式、input/output port、capture 与
+transformer obligation 均保留。Composer 只接受 canonical guarded path merge，不再把
+raw single-path、`protocolModel`、`explicitContracts` 或缺失 summary 的自由谓词当成
+可组合语义。Solver 对无法精确编码的 Java IR 直接产生 typed unsupported/gap，不再为
+“可打印 SMT”发明 uninterpreted function 或 diagnostic free variable。
+
+这次一次性退休 target summary 的 `executionKind` 时，真实 baseline gate 发现 Scheduler
+仍有一个遗留 reader，表现为 target seed 已成功 Import、但没有生成 solver query。该
+reader 已删除，并增加一个只锁定 canonical target-summary contract 的聚焦回归；没有恢复
+双写或 fallback。修复后 target 与两个 producer worklist 均闭合，Composer/Importer 无
+gap，真实 Z3 再次报告 `SAT/REACHABLE`。当前手写生产 Java 为 72,113 行，相对
+81,581 行冻结基线累计净减 9,468 行；62 项快速回归通过。这是首次 baseline gate
+通过时的数值；下面的 clean-matrix 修复恢复了少量真实 correctness evidence。
+
+首次 clean matrix 又准确指出两项 field-ledger 分类错误：non-null `String` 的 VM
+symbol 使用 `M_L'RuntimeType'_PORT_owner`，不是 primitive/reference field 的统一前缀；
+fresh Map.Entry/container assignment 的 applied selector 也是 ReplayValidator 的真实
+correctness consumer，并非展示镜像。Solver 现在精确解析这两类合法 VM symbol envelope，
+仍不恢复任意 substring/normalized fuzzy match；Runtime 只恢复 planned static selector
+与当前 activation-local selector/key join 所需字段，不恢复 concrete-class 等诊断字段。
+两个聚焦回归分别锁定 typed String materialization 和 canonical dynamic rebinding。
+Container workflow 随后完整闭合并得到正确 `SAT/REACHABLE`，但 matrix 的最后一个
+shell assertion 仍读取已退休的
+`dynamicFieldBinding.entryValueRefWitnessJoinCertified`。该 assertion 已原子切换到
+Composer 真正消费的 canonical `heapObservation.valueExpressionWitnessCertified`
+及其 activation-local object token/scope，同时继续逐项校验 binding ID、field path 与
+key expression join；没有降低 container 语义门槛。
+
+最终里程碑为 `37075131` 加修复提交 `1b905274`。手写生产 Java 为 72,214 行，相对
+81,581 行冻结基线累计净减 9,367 行；63 项快速回归、PMD 与 shell 语法通过。`1b905274`
+的隔离干净 worktree 13-fixture 并行真实 custom-JDK/Z3 矩阵零失败，保持 6
+`SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T150913Z.3893832`。矩阵只读取提交后的 clean
+worktree，没有读取或覆盖主工作树中的用户 fixture 修改。
+
+下一批继续执行“不过度校验、不过度设计，但不删除不可重建的 correctness evidence”：
+
+- 删除 Runtime Planner 的 mapping-only producer 扩展和旧 accessor-return discovery
+  recovery；新版本只接受 canonical static graph 与真实 `FIELD_READ`。
+- `EngineArrayInputBinding` 一次性切到 schema V2。row 只保留 activation、input
+  port/cell、descriptor、VM array id、activation-local object token 和 finite-array
+  expression；十个固定 authority/`true`/同值别名不再跨层传递。Runtime 仍在唯一能访问
+  live Java array 的位置检查同一对象、reflection length、连续 element、provenance/type
+  以及 concrete primitive literal 的逐元素相等；Importer 保留唯一 input/action/VM-id
+  join，Composer 不再第三次重复整份证明。
+- 静态 field declaration 只保留 `declaredFieldSignature`。owner/type/name 只在
+  static-to-scheduled execution boundary 严格解析一次，供 runtime object/field hook
+  使用，不写回静态 artifact。真实 container gate 暴露过一次遗漏：signature 已在
+  static row 中，但 scheduled container declaration 未派生 execution tuple，造成
+  `0 complete runtime bindings`。修复只补这一派生，不恢复旧静态 tuple 或 fallback；
+  `unreachable-parity` 随后再次完整 CLOSED、merge/compose `gaps=[]`、Z3 `UNSAT`。
+- Replay admission 以 canonical `modelAssignmentKey` 和唯一 `dynamicBindingId` 连接
+  plan/applied/raw/imported row；fresh Map.Entry 的当前 key/observation 和 container 的
+  activation-local token/scope/selector 仍必须逐项存在，不能从 seed identity 推导。
+- Solver 删除宽松的私有 S-expression tree，复用严格 SMT application splitter；任何
+  unsupported 语义都产生 typed gap 和 `(assert false)`，不再发明 diagnostic free
+  constant/UF。Boolean root report 删除无生产消费者的 javaType/sort/case projection
+  镜像，但保留 descriptor、solver term、String nullness term、完整 valuations 与
+  reach condition。
+
+该候选里程碑手写生产 Java 为 70,606 行，相对 81,581 行冻结基线累计净减 10,975 行，
+本批净减 1,608 行。63 项快速回归、PMD report、shell 语法和 `git diff --check` 已通过。
+主工作树矩阵中的 12 个未改 fixture 保持预期；用户正在编辑的 container fixture 的两个
+producer 也都 CLOSED 且 merge/compose `gaps=[]`，但其修改后语义为 `UNSAT`，因此不拿旧
+SAT profile 断言评价该文件。权威 6 SAT/7 UNSAT release gate 仍必须在不含该用户修改的
+clean commit worktree 上通过后，才记录本批为已完成。
+
+提交 `a380e791` 已在独立 clean worktree 以 13 个外层 worker 完成权威矩阵：
+`completed=13 failures=0`，保持 6 SAT/7 UNSAT。日志目录为
+`target/robustness-matrix-logs/20260725T161007Z.147459`。这确认 signature-only field
+declaration、EngineArrayInputBinding V2、replay/solver/boolean/trace 收敛没有改变既有
+deterministic shared-field RPC 语义。
+
+下一里程碑完成第一轮目标，不为行数删除 correctness evidence：
+
+- 删除独立 `ConcolicReplayValidator`。Importer 在唯一 replay admission 中用 canonical
+  `modelAssignmentKey` 和唯一 `dynamicBindingId` 连接 plan/applied/raw row；fresh
+  `Map.Entry` 的当前 key/observation，以及 container 的 activation-local
+  token/scope/selector 仍逐项检查。Branch replay 一次性切到 Contract V2，
+  `BranchReplayPlan` 删除；contract 直接携带 exact code position/site/occurrence/
+  outcome、predicate witness 与 solver path context，observation validator 只做一次
+  event uniqueness/order/outcome/predicate 校验。
+- Scheduler 删除 array materialization 的第二次准入、固定空 admission/schedule 镜像；
+  definition-site、field-path 与 object identity 仍由各自 canonical boundary 检查。
+  Composer 的 producer region 只来自 `outputClosure`，resolved edge 内部只保留已准入
+  binding+summary；event sequence、receiver/value identity、mutation invocation 和
+  fingerprint 仍在 `AutomaticRegionEdge` 唯一准入边界验证。missing/incomplete/unbound
+  四套集合合并成唯一 `COMPOSITION_GAP`，仍直接关闭候选。
+- `MAP_ENTRY_READ`、`FINITE_MAP_ENTRY_SNAPSHOT` 与
+  `MAP_STATE_INPUT_OBSERVATION` 原子升级 V2。canonical `entries` 保存实际 key/value
+  expression 和 object token；删除并行数组、四份 size 镜像、固定 true 的稳定性字段、
+  五个 binding-complete 镜像和 warning。Runtime 对 live Map 的双遍历、顺序/identity、
+  `map.get`/`containsKey` 与 unresolved fail-closed 没有删除。
+- Runtime trace 只保留一种生产路径：workload JVM 流式写 canonical trace 和 CLOSED
+  manifest，host JVM 检查 `complete && !truncated && !writeFailure` 后离线聚合。删除
+  workload JVM 同时保留第二份 Method/Field/Execution DTO 并在 shutdown 内聚合的模式；
+  recorder 与 planner 共享 canonical event carrier。baseline trace 实跑得到 88 rows、
+  CLOSED/complete manifest、5 activations 和 6 runtime edge rows。
+- 静态 MethodFacts/Builder 中间层并入 `StaticGraphIndex`，不再第二次全扫 edge。
+  projected-edge fixed point 删除每轮复制并扫描全部已有 edge 的路径，改成 endpoint
+  index + dirty projected-edge queue；edge-before-demand 与 demand-before-edge 都由同一
+  增量规则覆盖，没有保留旧算法 fallback。小 fixture 的时间差仍在噪声内，因此只声明
+  复杂度收益，不夸大为已证明的 wall-clock 加速。
+- Boolean extractor 不再二次解析 Composer 已 hash 绑定的 case projection catalog；
+  保留 canonical roots、所有 valuations/gaps 和 reach condition。Solver 的 Java type、
+  primitive cast 与 integer literal 统一到现有 typed codec/semantics，并删除无 reader
+  的 solver/model/gap 镜像；unsupported 仍不调用 Z3。
+
+该候选手写生产 Java 为 69,271 行，相对 81,581 行冻结基线累计净减 12,310 行，
+本批净减 1,335 行，进入第一轮“约 61k–69k / 净减 12k–20k”的目标区间。68 项快速回归
+零失败，PMD、CPD、generic workflow shell test、shell syntax 与 `git diff --check`
+通过。最终 13-fixture 6 SAT/7 UNSAT 仍必须从不含用户 container 修改的 clean commit
+worktree 通过后，本里程碑才算完成。
 
 ### 明确不能删除
 

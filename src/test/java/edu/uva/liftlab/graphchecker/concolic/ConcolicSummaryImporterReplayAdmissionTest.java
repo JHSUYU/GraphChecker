@@ -9,14 +9,12 @@ import java.util.List;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-public class ConcolicReplayValidatorTest {
+public class ConcolicSummaryImporterReplayAdmissionTest {
     @Test
     public void acceptsReplayWithoutDynamicSelectors() {
         List<String> failures =
-                ConcolicReplayValidator.validateDynamicRebindings(
-                        task(new JsonArray()),
-                        raw(new JsonArray(), new JsonArray()),
-                        new JsonObject());
+                ConcolicSummaryImporter.dynamicRebindingAdmissionFailures(
+                        raw(new JsonArray(), new JsonArray()));
 
         assertTrue(failures.toString(), failures.isEmpty());
     }
@@ -36,21 +34,59 @@ public class ConcolicReplayValidatorTest {
         JsonObject rawBinding = freshMapBinding(applied,
                 "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
                         + "FIELD_SITE_OCCURRENCE");
-        JsonObject importedBinding = freshMapBinding(applied,
-                "RUNTIME_DYNAMIC_FIELD_INSTANCE_EXACT_EXPRESSION_AND_"
-                        + "ENTRY_VALUE_TOKEN_JOIN");
-        JsonObject summary = new JsonObject();
-        JsonObject observation = new JsonObject();
-        observation.addProperty("kind", "MAP_ENTRY_READ");
-        observation.addProperty("observationId", "MAP.READ.1");
-        observation.addProperty("complete", true);
-        observation.add("entryFieldBindings", array(importedBinding));
-        summary.add("heapObservations", array(observation));
+        List<String> failures =
+                ConcolicSummaryImporter.dynamicRebindingAdmissionFailures(
+                        raw(array(applied), array(rawBinding)));
+
+        assertTrue(failures.toString(), failures.isEmpty());
+    }
+
+    @Test
+    public void rejectsFreshMapReplayWithoutCapturedKey() {
+        JsonObject applied = freshMapAssignment();
+        applied.addProperty("freshEntrySelectorCaptured", false);
+        applied.addProperty("sameSeedEntryClaimed", false);
+        JsonObject binding = freshMapBinding(applied,
+                "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
+                        + "FIELD_SITE_OCCURRENCE");
 
         List<String> failures =
-                ConcolicReplayValidator.validateDynamicRebindings(
-                        task(array(planned)),
-                        raw(array(applied), array(rawBinding)), summary);
+                ConcolicSummaryImporter.dynamicRebindingAdmissionFailures(
+                        raw(array(applied), array(binding)));
+
+        assertTrue(failures.toString(), failures.toString().contains(
+                "SELECTOR_EVIDENCE_MISMATCH"));
+    }
+
+    @Test
+    public void rejectsDuplicateFreshMapRuntimeBinding() {
+        JsonObject applied = freshMapAssignment();
+        applied.addProperty("entryReadObservationId", "MAP.READ.1");
+        applied.add("keyExpression", integerKey(7));
+        applied.addProperty("keyExpressionAuthority",
+                "CONCRETE_IMMUTABLE_ENTRY_KEY_AT_NEXT");
+        applied.addProperty("freshEntrySelectorCaptured", true);
+        applied.addProperty("sameSeedEntryClaimed", false);
+        JsonObject binding = freshMapBinding(applied,
+                "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
+                        + "FIELD_SITE_OCCURRENCE");
+
+        List<String> failures =
+                ConcolicSummaryImporter.dynamicRebindingAdmissionFailures(
+                        raw(array(applied), array(binding, binding.deepCopy())));
+
+        assertTrue(failures.toString(), failures.toString().contains(
+                "RAW_BINDING_NOT_UNIQUE"));
+    }
+
+    @Test
+    public void acceptsContainerReboundInReplayActivation() {
+        JsonObject planned = containerAssignment();
+        JsonObject applied = replayedContainer(planned, "ACT.REPLAY");
+        JsonObject binding = containerBinding(applied);
+        List<String> failures =
+                ConcolicSummaryImporter.dynamicRebindingAdmissionFailures(
+                        raw(array(applied), array(binding)));
 
         assertTrue(failures.toString(), failures.isEmpty());
     }
@@ -58,6 +94,19 @@ public class ConcolicReplayValidatorTest {
     @Test
     public void rejectsContainerTokenOutsideReplayActivation() {
         JsonObject planned = containerAssignment();
+        JsonObject applied = replayedContainer(planned, "ACT.WRONG");
+        JsonObject binding = containerBinding(applied);
+        List<String> failures =
+                ConcolicSummaryImporter.dynamicRebindingAdmissionFailures(
+                        raw(array(applied), array(binding)));
+
+        assertFalse(failures.toString(), failures.isEmpty());
+        assertTrue(failures.toString(), failures.toString().contains(
+                "SELECTOR_EVIDENCE_MISMATCH"));
+    }
+
+    private static JsonObject replayedContainer(
+            JsonObject planned, String tokenScope) {
         JsonObject applied = planned.deepCopy();
         applied.remove("solverSymbol");
         JsonObject selector = applied.getAsJsonObject("containerSelector");
@@ -67,7 +116,7 @@ public class ConcolicReplayValidatorTest {
         selector.addProperty("elementObjectToken", 302L);
         selector.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        selector.addProperty("objectTokenScope", "ACT.WRONG");
+        selector.addProperty("objectTokenScope", tokenScope);
         selector.addProperty("containerObservationLocation",
                 "EXACT_CONSUMED_LEAF_OBSERVATION");
         selector.addProperty("authority",
@@ -76,26 +125,7 @@ public class ConcolicReplayValidatorTest {
         selector.addProperty("complete", true);
         applied.addProperty("sameSourceContainerIdentityClaimed", false);
         applied.addProperty("currentContainerSelectorCaptured", true);
-        JsonObject binding = containerBinding(applied);
-        JsonObject summary = new JsonObject();
-        summary.add("dynamicFieldBindings", array(binding.deepCopy()));
-
-        List<String> failures =
-                ConcolicReplayValidator.validateDynamicRebindings(
-                        task(array(planned)),
-                        raw(array(applied), array(binding)), summary);
-
-        assertFalse(failures.toString(), failures.isEmpty());
-        assertTrue(failures.toString(), failures.toString().contains(
-                "INVALID_CONTAINER_OBJECT_TOKEN_SCOPE"));
-    }
-
-    private static JsonObject task(JsonArray assignments) {
-        JsonObject task = new JsonObject();
-        task.addProperty("activationId", "ACT.REPLAY");
-        task.addProperty("sourceActivationId", "ACT.SOURCE");
-        task.add("modelAssignments", assignments);
-        return task;
+        return applied;
     }
 
     private static JsonObject raw(JsonArray assignments,
@@ -223,9 +253,9 @@ public class ConcolicReplayValidatorTest {
         return result;
     }
 
-    private static JsonArray array(JsonObject value) {
+    private static JsonArray array(JsonObject... values) {
         JsonArray result = new JsonArray();
-        result.add(value);
+        for (JsonObject value : values) result.add(value);
         return result;
     }
 }

@@ -38,35 +38,21 @@ final class ConcolicInstrumentationSelections {
     private ConcolicInstrumentationSelections() {
     }
 
-    static ConcolicMaterializationSelection
-    materializationSelectionFromEnvironment() {
+    static InstrumentationPlan instrumentationPlanFromEnvironment() {
         String planValue = activationPlanValue();
-        if (planValue.isEmpty()) {
-            return new ConcolicMaterializationSelection();
+        String selected = selectedActivationValue();
+        if (planValue.isEmpty() || selected.isEmpty()) {
+            throw new IllegalStateException(
+                    "Concolic instrumentation requires an activation plan "
+                            + "and selected activation id");
         }
+        Path plan = Paths.get(planValue).toAbsolutePath().normalize();
         try {
-            return ConcolicMaterializationSelection.from(
-                    Paths.get(planValue), selectedActivationValue());
+            return InstrumentationPlan.from(plan, selected);
         } catch (IOException exception) {
             throw new IllegalStateException(
-                    "Could not load concolic materializations from "
-                            + planValue, exception);
-        }
-    }
-
-    static ConcolicOutputCaptureSelection
-    outputCaptureSelectionFromEnvironment() {
-        String planValue = activationPlanValue();
-        if (planValue.isEmpty()) {
-            return new ConcolicOutputCaptureSelection();
-        }
-        try {
-            return ConcolicOutputCaptureSelection.from(
-                    Paths.get(planValue), selectedActivationValue());
-        } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Could not load concolic output captures from "
-                            + planValue, exception);
+                    "Could not load concolic instrumentation plan from "
+                            + plan, exception);
         }
     }
 
@@ -82,101 +68,134 @@ final class ConcolicInstrumentationSelections {
                 System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
     }
 
-    static Set<String> readRuntimeSelectedRoots(Path activationPlan,
-                                                String selectedActivation)
-            throws IOException {
-        if (activationPlan == null || !Files.isRegularFile(activationPlan)) {
-            throw new IOException("Activation plan not found: " + activationPlan);
-        }
-        String selected = stringValue(firstNonBlank(selectedActivation));
-        Set<String> roots = new LinkedHashSet<>();
-        try (BufferedReader reader = Files.newBufferedReader(activationPlan,
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) {
-                    continue;
-                }
-                JsonElement parsed = JsonParser.parseString(line);
-                if (!parsed.isJsonObject()) {
-                    continue;
-                }
-                JsonObject row = parsed.getAsJsonObject();
-                String activationId = jsonString(row, "activationId");
-                JsonObject bundle = bundle(row);
-                if (!selected.isEmpty()
-                        && "ALL".equals(jsonString(bundle, "selection"))
-                        && selected.equals(activationId)) {
-                    throw new IOException("Activation " + selected
-                            + " belongs to a reachability bundle that "
-                            + "requires ALL plan rows");
-                }
-                if (!selected.isEmpty() && !selected.equals(activationId)) {
-                    continue;
-                }
-                if (!admissionExecutable(row)) {
-                    continue;
-                }
-                String root = jsonString(rootSelector(row), "method");
-                if (!root.isEmpty()) {
-                    roots.add(root);
-                }
-            }
-        }
-        return roots;
-    }
-
     /**
-     * Returns whether one exact scheduler-selected activation carries all of
-     * the evidence needed to analyze only its bounded requested-output
-     * closure. Discovery plans and branch-target plans continue to require
-     * global symbolic-region coverage.
+     * One immutable view of the scheduler-selected activation rows. The
+     * instrumentation pipeline builds this once and derives every selection
+     * from it instead of reparsing the JSONL for each hook family.
      */
-    static boolean selectedBoundedOutputClosureCoverageReady(
-            Path activationPlan, String selectedActivation)
-            throws IOException {
-        if (activationPlan == null || !Files.isRegularFile(activationPlan)) {
-            return false;
-        }
-        String selected = stringValue(firstNonBlank(selectedActivation));
-        if (selected.isEmpty()) {
-            return false;
+    static final class InstrumentationPlan {
+        private final Set<String> roots;
+        private final ConcolicMaterializationSelection materializations;
+        private final ConcolicOutputCaptureSelection outputCaptures;
+        private final boolean boundedOutputClosureCoverageReady;
+
+        private InstrumentationPlan(
+                JsonObject row, OutputClosureContract closure)
+                throws IOException {
+            this.roots = Collections.singleton(
+                    jsonString(rootSelector(row), "method"));
+            this.materializations =
+                    ConcolicMaterializationSelection.fromRow(row);
+            this.outputCaptures =
+                    ConcolicOutputCaptureSelection.from(closure);
+            this.boundedOutputClosureCoverageReady = closure != null
+                    && boundedOutputClosureRowReady(row, closure);
         }
 
-        JsonObject selectedRow = null;
-        int selectedRowCount = 0;
-        try (BufferedReader reader = Files.newBufferedReader(activationPlan,
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) {
-                    continue;
-                }
-                JsonElement parsed;
-                try {
-                    parsed = JsonParser.parseString(line);
-                } catch (RuntimeException malformed) {
-                    return false;
-                }
-                if (!parsed.isJsonObject()) {
-                    return false;
-                }
-                JsonObject row = parsed.getAsJsonObject();
-                if (!selected.equals(jsonString(row, "activationId"))) {
-                    continue;
-                }
-                selectedRowCount++;
-                selectedRow = row;
+        static InstrumentationPlan from(Path activationPlan,
+                                        String selectedActivation)
+                throws IOException {
+            if (activationPlan == null
+                    || !Files.isRegularFile(activationPlan)) {
+                throw new IOException("Activation plan not found: "
+                        + activationPlan);
             }
+            Path normalized = activationPlan.toAbsolutePath().normalize();
+            String selected = stringValue(firstNonBlank(selectedActivation));
+            if (selected.isEmpty()) {
+                throw new IOException("Selected activation id is required");
+            }
+            JsonObject selectedRow = null;
+            try (BufferedReader reader = Files.newBufferedReader(normalized,
+                    StandardCharsets.UTF_8)) {
+                String line;
+                int lineNumber = 0;
+                while ((line = reader.readLine()) != null) {
+                    lineNumber++;
+                    if (line.trim().isEmpty()) {
+                        continue;
+                    }
+                    final JsonElement parsed;
+                    try {
+                        parsed = JsonParser.parseString(line);
+                    } catch (RuntimeException malformed) {
+                        throw new IOException("Malformed activation plan row "
+                                + lineNumber + " in " + normalized, malformed);
+                    }
+                    if (!parsed.isJsonObject()) {
+                        throw new IOException("Activation plan row "
+                                + lineNumber + " is not a JSON object in "
+                                + normalized);
+                    }
+                    JsonObject row = parsed.getAsJsonObject();
+                    String activationId = jsonString(row, "activationId");
+                    if (!selected.equals(activationId)) {
+                        continue;
+                    }
+                    if ("ALL".equals(jsonString(bundle(row),
+                            "selection"))) {
+                        throw new IOException("Activation " + selected
+                                + " belongs to a reachability bundle that "
+                                + "requires ALL plan rows");
+                    }
+                    if (selectedRow != null) {
+                        throw new IOException("Duplicate activation "
+                                + selected + " in " + normalized);
+                    }
+                    selectedRow = row;
+                }
+            }
+            if (selectedRow == null) {
+                throw new IOException("Activation " + selected
+                        + " not found in " + normalized);
+            }
+            if (!admissionExecutable(selectedRow)) {
+                throw new IOException("Activation " + selected
+                        + " is not executable");
+            }
+            String root = jsonString(rootSelector(selectedRow), "method");
+            if (root.isEmpty()) {
+                throw new IOException("Activation " + selected
+                        + " has no root method");
+            }
+            OutputClosureContract closure = null;
+            if (selectedRow.has(OutputClosureContract.FIELD)) {
+                try {
+                    closure = OutputClosureCodec.decode(selectedRow);
+                } catch (RuntimeException malformed) {
+                    throw new IOException("Malformed output closure for "
+                            + "activation " + selected, malformed);
+                }
+            } else if (selectedRow.has("requestedOutput")
+                    || selectedRow.has("requestedOutputSlice")
+                    || selectedRow.has("requestedOutputCapture")
+                    || selectedRow.has("requestedOutputCaptureRequired")
+                    || selectedRow.has("requestedOutputCaptureComplete")) {
+                throw new IOException("Activation " + selected
+                        + " uses retired singular output fields");
+            }
+            return new InstrumentationPlan(selectedRow, closure);
         }
-        if (selectedRowCount != 1 || selectedRow == null) {
-            return false;
+
+        Set<String> roots() {
+            return roots;
         }
-        return boundedOutputClosureRowReady(selectedRow, selected);
+
+        ConcolicMaterializationSelection materializations() {
+            return materializations;
+        }
+
+        ConcolicOutputCaptureSelection outputCaptures() {
+            return outputCaptures;
+        }
+
+        boolean boundedOutputClosureCoverageReady() {
+            return boundedOutputClosureCoverageReady;
+        }
     }
 
-    private static boolean boundedOutputClosureRowReady(JsonObject row,
-                                                        String selected) {
+    private static boolean boundedOutputClosureRowReady(
+            JsonObject row, OutputClosureContract closure) {
         JsonElement captureGoalElement = row.get("captureGoal");
         if (captureGoalElement == null || !captureGoalElement.isJsonObject()) {
             return false;
@@ -185,18 +204,6 @@ final class ConcolicInstrumentationSelections {
         if (!"OUTPUT_CLOSURE".equals(jsonString(captureGoal, "kind"))
                 || !"BOUNDED_OUTPUT_RELEVANT_PATHS".equals(
                 jsonString(captureGoal, "scope"))) {
-            return false;
-        }
-
-        if (!selected.equals(jsonString(row, "activationId"))
-                || !admissionExecutable(row)) {
-            return false;
-        }
-
-        final OutputClosureContract closure;
-        try {
-            closure = OutputClosureCodec.decode(row);
-        } catch (RuntimeException malformed) {
             return false;
         }
 
@@ -232,18 +239,8 @@ final class ConcolicInstrumentationSelections {
                 || !"HEAP_EFFECT_STATE_TRANSFORMER".equals(jsonString(slice,
                 "captureDischargeAuthority"))
                 || inputPort.isEmpty()
-                || !outputPort.equals(jsonString(slice,
-                "captureDischargeOutputPort"))
-                || !outputCell.equals(jsonString(slice,
-                "captureDischargeOutputCell"))
                 || !jsonBoolean(slice,
-                "requestedStateTransformerContractComplete", false)
-                || intValue(slice.get(
-                "requestedStateTransformerContractVersion"), -1) != 1
-                || !outputPort.equals(jsonString(slice,
-                "requestedStateTransformerContractOutputPort"))
-                || !outputCell.equals(jsonString(slice,
-                "requestedStateTransformerContractOutputCell"))) {
+                "requestedStateTransformerContractComplete", false)) {
             return false;
         }
 
@@ -397,60 +394,32 @@ final class ConcolicInstrumentationSelections {
         private final List<FieldTarget> fields = new ArrayList<>();
         private final Map<String, AccessorCallTarget> accessorCallsBySite =
                 new LinkedHashMap<>();
-        private final List<String> unsupported = new ArrayList<>();
+        private boolean unsupported;
 
-        static ConcolicMaterializationSelection from(
-                Path activationPlan, String selectedActivation)
-                throws IOException {
-            if (activationPlan == null || !Files.isRegularFile(activationPlan)) {
-                throw new IOException("Activation plan not found: "
-                        + activationPlan);
-            }
+        private static ConcolicMaterializationSelection fromRow(
+                JsonObject row) throws IOException {
             ConcolicMaterializationSelection result =
                     new ConcolicMaterializationSelection();
-            String selected = stringValue(firstNonBlank(selectedActivation));
-            try (BufferedReader reader = Files.newBufferedReader(activationPlan,
-                    StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.trim().isEmpty()) {
-                        continue;
-                    }
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) {
-                        continue;
-                    }
-                    JsonObject row = parsed.getAsJsonObject();
-                    if (!selected.isEmpty()
-                            && !selected.equals(jsonString(row,
-                            "activationId"))) {
-                        continue;
-                    }
-                    if (!admissionExecutable(row)) {
-                        continue;
-                    }
-                    String activationId = jsonString(row, "activationId");
-                    JsonElement actions = row.get("materializations");
-                    if (actions == null || !actions.isJsonArray()) {
-                        throw new IOException("Replayable activation "
-                                + activationId + " requires materializations "
-                                + "to be a JSON array");
-                    }
-                    int actionIndex = 0;
-                    for (JsonElement element : actions.getAsJsonArray()) {
-                        if (!element.isJsonObject()) {
-                            throw new IOException("Replayable activation "
-                                    + activationId + " materializations["
-                                    + actionIndex + "] must be a JSON object");
-                        }
-                        result.add(element.getAsJsonObject());
-                        actionIndex++;
-                    }
-                }
+            String activationId = jsonString(row, "activationId");
+            JsonElement actions = row.get("materializations");
+            if (actions == null || !actions.isJsonArray()) {
+                throw new IOException("Replayable activation "
+                        + activationId + " requires materializations "
+                        + "to be a JSON array");
             }
-            if (!result.unsupported.isEmpty()) {
-                throw new IOException("Unsupported concolic materialization: "
-                        + result.unsupported);
+            int actionIndex = 0;
+            for (JsonElement element : actions.getAsJsonArray()) {
+                if (!element.isJsonObject()) {
+                    throw new IOException("Replayable activation "
+                            + activationId + " materializations["
+                            + actionIndex + "] must be a JSON object");
+                }
+                result.add(element.getAsJsonObject());
+                actionIndex++;
+            }
+            if (result.unsupported) {
+                throw new IOException(
+                        "Unsupported concolic materialization");
             }
             return result;
         }
@@ -505,16 +474,12 @@ final class ConcolicInstrumentationSelections {
                         action, "mapStateInputCell"))
                         || !jsonString(action, "cell").equals(jsonString(
                         action, "mapStateRequestedOutputCell"))) {
-                    unsupported.add("MAP_STATE_INPUT_OBSERVATION_REQUIRES_"
-                            + "EXACT_BOUNDED_MAP_AUTHORITY:"
-                            + jsonString(action, "symbol"));
+                    unsupported = true;
                     return;
                 }
                 String[] target = resolveConcolicFieldTarget(action);
                 if (target[0].isEmpty() || target[1].isEmpty()) {
-                    unsupported.add("MAP_STATE_INPUT_OBSERVATION_REQUIRES_"
-                            + "EXACT_DECLARED_FIELD:"
-                            + jsonString(action, "symbol"));
+                    unsupported = true;
                     return;
                 }
                 // Keep the ordinary getfield split.  Runtime consumes the
@@ -529,16 +494,12 @@ final class ConcolicInstrumentationSelections {
                         jsonString(action,
                                 "containerObservationAuthority"))
                         || !declaresArrayValue(action)) {
-                    unsupported.add("CONTAINER_INPUT_OBSERVATION_REQUIRES_"
-                            + "EXPLICIT_ARRAY_AUTHORITY:"
-                            + jsonString(action, "symbol"));
+                    unsupported = true;
                     return;
                 }
                 String[] target = resolveConcolicFieldTarget(action);
                 if (target[0].isEmpty() || target[1].isEmpty()) {
-                    unsupported.add("CONTAINER_INPUT_OBSERVATION_REQUIRES_"
-                            + "EXACT_DECLARED_FIELD:"
-                            + jsonString(action, "symbol"));
+                    unsupported = true;
                     return;
                 }
                 // Observation-only arrays deliberately use the declaration
@@ -601,9 +562,7 @@ final class ConcolicInstrumentationSelections {
                     || implementation.isEmpty()
                     || !ACCESSOR_IMPLEMENTATION_AUTHORITY.equals(
                     implementationAuthority)) {
-                unsupported.add("ACCESSOR_CALL_CONTEXT_REQUIRES_EXACT_"
-                        + "CALLSITE_METADATA:" + jsonString(action,
-                        "symbol"));
+                unsupported = true;
                 return;
             }
 
@@ -625,32 +584,27 @@ final class ConcolicInstrumentationSelections {
                     && !fieldType.equals(declaredField.group(2))
                     || !EXACT_ACCESS_FIELD_AUTHORITIES.contains(
                     fieldAuthority)) {
-                unsupported.add("ACCESSOR_CALL_CONTEXT_REQUIRES_EXACT_"
-                        + "DECLARED_FIELD_METADATA:" + jsonString(action,
-                        "symbol"));
+                unsupported = true;
                 return;
             }
             AccessorCallTarget target = new AccessorCallTarget(caller,
                     unitIndex, site, callee, implementation, fieldSignature,
-                    fieldOwner, fieldName, fieldAuthority);
+                    fieldName);
             AccessorCallTarget previous = accessorCallsBySite.get(
-                    target.siteIdentity());
+                    target.callSiteId);
             if (previous != null && !previous.sameMaterialization(target)) {
-                unsupported.add("ACCESSOR_CALL_CONTEXT_AMBIGUOUS_EXACT_"
-                        + "MATERIALIZATION_METADATA:" + site);
+                unsupported = true;
                 return;
             }
             if (previous == null) {
-                accessorCallsBySite.put(target.siteIdentity(), target);
+                accessorCallsBySite.put(target.callSiteId, target);
             }
         }
 
         void addExactArrayLeafTarget(JsonObject action) {
             FieldTarget leaf = exactArrayLeafTarget(action);
             if (leaf == null) {
-                unsupported.add("ARRAY_VALUE_FIELD_REQUIRES_EXACT_LEAF_"
-                        + "DECLARATION_AND_CONSUMED_SITE:"
-                        + jsonString(action, "symbol"));
+                unsupported = true;
             } else {
                 fields.add(leaf);
             }
@@ -961,87 +915,39 @@ final class ConcolicInstrumentationSelections {
 
     /** Exact activation-selected outbound argument sites. */
     static final class ConcolicOutputCaptureSelection {
-        private final Map<String, OutputCaptureTarget> targetsByIdentity =
-                new LinkedHashMap<>();
-        private final Map<String, String> identitiesByBindingId =
+        private final Map<String, OutputCaptureTarget> targetsByBindingId =
                 new LinkedHashMap<>();
 
-        static ConcolicOutputCaptureSelection from(
-                Path activationPlan, String selectedActivation)
-                throws IOException {
-            if (activationPlan == null || !Files.isRegularFile(
-                    activationPlan)) {
-                throw new IOException("Activation plan not found: "
-                        + activationPlan);
-            }
+        private static ConcolicOutputCaptureSelection from(
+                OutputClosureContract closure) throws IOException {
             ConcolicOutputCaptureSelection result =
                     new ConcolicOutputCaptureSelection();
-            String selected = stringValue(firstNonBlank(selectedActivation));
-            try (BufferedReader reader = Files.newBufferedReader(
-                    activationPlan, StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.trim().isEmpty()) continue;
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) continue;
-                    JsonObject row = parsed.getAsJsonObject();
-                    if (!selected.isEmpty() && !selected.equals(jsonString(
-                            row, "activationId"))) continue;
-                    if (!admissionExecutable(row)) continue;
-                    if (!row.has(OutputClosureContract.FIELD)) {
-                        continue;
-                    }
-                    final OutputClosureContract closure;
-                    try {
-                        closure = OutputClosureCodec.decode(row);
-                    } catch (RuntimeException malformed) {
-                        throw new IOException("Malformed output closure for "
-                                + "activation " + jsonString(row,
-                                "activationId"), malformed);
-                    }
-                    for (JsonElement element
-                            : OutputClosureCodec.captures(closure)) {
-                        if (!element.isJsonObject()) {
-                            throw new IOException("Malformed output capture "
-                                    + "for activation " + jsonString(row,
-                                    "activationId"));
-                        }
-                        OutputCaptureTarget target = new OutputCaptureTarget(
-                                element.getAsJsonObject());
-                        if (!target.valid()) {
-                            throw new IOException("Invalid output capture "
-                                    + target.captureBindingId
-                                    + " for activation " + jsonString(row,
-                                    "activationId"));
-                        }
-                        String identity = target.identity();
-                        String previousIdentity =
-                                result.identitiesByBindingId.putIfAbsent(
-                                        target.captureBindingId, identity);
-                        if (previousIdentity != null
-                                && !previousIdentity.equals(identity)) {
-                            throw new IOException("Conflicting output capture "
-                                    + target.captureBindingId
-                                    + " for activation " + jsonString(row,
-                                    "activationId"));
-                        }
-                        result.targetsByIdentity.putIfAbsent(identity, target);
-                    }
+            if (closure == null) {
+                return result;
+            }
+            for (JsonElement element : OutputClosureCodec.captures(closure)) {
+                OutputCaptureTarget target = new OutputCaptureTarget(
+                        element.getAsJsonObject());
+                if (target.occurrence <= 0) {
+                    throw new IOException("Output capture occurrence must "
+                            + "be positive: " + target.captureBindingId);
                 }
+                result.targetsByBindingId.put(
+                        target.captureBindingId, target);
             }
             return result;
         }
 
         Set<String> methods() {
             Set<String> result = new LinkedHashSet<>();
-            for (OutputCaptureTarget target : targetsByIdentity.values()) {
+            for (OutputCaptureTarget target : targetsByBindingId.values()) {
                 result.add(target.instrumentedMethod());
             }
             return result;
         }
 
         Collection<OutputCaptureTarget> targets() {
-            return targetsByIdentity.values();
+            return targetsByBindingId.values();
         }
     }
 
@@ -1064,47 +970,21 @@ final class ConcolicInstrumentationSelections {
         final int occurrence;
 
         OutputCaptureTarget(JsonObject json) {
-            this.captureKind = firstNonBlank(
-                    jsonString(json, "captureKind"), CALL_ARGUMENT);
+            this.captureKind = jsonString(json, "captureKind");
             this.captureBindingId = jsonString(json, "captureBindingId");
             this.outputPort = jsonString(json, "outputPort");
             this.outputCell = jsonString(json, "outputCell");
             this.callerMethod = jsonString(json, "callerMethod");
-            this.method = stringValue(firstNonBlank(
-                    jsonString(json, "method"), this.callerMethod));
+            this.method = jsonString(json, "method");
             this.unitIndex = ConcolicMaterializationSelection.intJson(json,
                     "unitIndex", -1);
             this.siteId = jsonString(json, "siteId");
             this.calleeMethod = jsonString(json, "calleeMethod");
             this.argumentIndex = ConcolicMaterializationSelection.intJson(
                     json, "argumentIndex", -1);
-            this.fieldSignature = stringValue(firstNonBlank(
-                    jsonString(json, "fieldSignature"),
-                    jsonString(json, "field")));
+            this.fieldSignature = jsonString(json, "fieldSignature");
             this.occurrence = ConcolicMaterializationSelection.intJson(json,
                     "occurrence", 0);
-        }
-
-        boolean valid() {
-            if (captureBindingId.isEmpty() || outputPort.isEmpty()
-                    || outputCell.isEmpty() || unitIndex < 0
-                    || siteId.isEmpty() || occurrence <= 0) {
-                return false;
-            }
-            if (FIELD_ASSIGNMENT_RHS.equals(captureKind)) {
-                return !method.isEmpty() && !fieldSignature.isEmpty();
-            }
-            return CALL_ARGUMENT.equals(captureKind)
-                    && !callerMethod.isEmpty() && !calleeMethod.isEmpty()
-                    && argumentIndex >= 0;
-        }
-
-        String identity() {
-            return captureKind + "\n" + instrumentedMethod() + "\n"
-                    + unitIndex + "\n" + siteId + "\n" + calleeMethod
-                    + "\n" + argumentIndex + "\n" + fieldSignature + "\n"
-                    + outputPort + "\n" + outputCell + "\n"
-                    + captureBindingId + "\n" + occurrence;
         }
 
         boolean isFieldAssignmentRhs() {
@@ -1123,30 +1003,21 @@ final class ConcolicInstrumentationSelections {
         final String declaredCallee;
         final String implementationMethod;
         final String fieldSignature;
-        final String fieldOwner;
         final String fieldName;
-        final String fieldAuthority;
 
         AccessorCallTarget(String callerMethod, int callUnitIndex,
                                    String callSiteId,
                                    String declaredCallee,
                                    String implementationMethod,
                                    String fieldSignature,
-                                   String fieldOwner, String fieldName,
-                                   String fieldAuthority) {
+                                   String fieldName) {
             this.callerMethod = callerMethod;
             this.callUnitIndex = callUnitIndex;
             this.callSiteId = callSiteId;
             this.declaredCallee = declaredCallee;
             this.implementationMethod = implementationMethod;
             this.fieldSignature = fieldSignature;
-            this.fieldOwner = fieldOwner;
             this.fieldName = fieldName;
-            this.fieldAuthority = fieldAuthority;
-        }
-
-        String siteIdentity() {
-            return callerMethod + "#u" + callUnitIndex;
         }
 
         boolean sameMaterialization(AccessorCallTarget other) {
@@ -1155,9 +1026,7 @@ final class ConcolicInstrumentationSelections {
                     && implementationMethod.equals(
                     other.implementationMethod)
                     && fieldSignature.equals(other.fieldSignature)
-                    && fieldOwner.equals(other.fieldOwner)
-                    && fieldName.equals(other.fieldName)
-                    && fieldAuthority.equals(other.fieldAuthority);
+                    && fieldName.equals(other.fieldName);
         }
     }
 
@@ -1232,12 +1101,12 @@ final class ConcolicInstrumentationSelections {
         }
     }
 
-    private static String stringValue(Object value) {
+    static String stringValue(Object value) {
         return value == null || "null".equals(String.valueOf(value))
                 ? "" : String.valueOf(value);
     }
 
-    private static int intValue(Object value, int fallback) {
+    static int intValue(Object value, int fallback) {
         if (value instanceof Number) {
             return ((Number) value).intValue();
         }
@@ -1248,7 +1117,7 @@ final class ConcolicInstrumentationSelections {
         }
     }
 
-    private static String firstNonBlank(String... values) {
+    static String firstNonBlank(String... values) {
         for (String value : values) {
             if (value != null && !value.trim().isEmpty()) {
                 return value.trim();

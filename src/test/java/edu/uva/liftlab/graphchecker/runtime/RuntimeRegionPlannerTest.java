@@ -119,7 +119,7 @@ public class RuntimeRegionPlannerTest {
         return new RuntimeRegionPlanner.FieldAccessEvent(seq,
                 "FIELD_READ", method, callId, unitIndex,
                 method + "#u" + unitIndex, field, receiverObjectId,
-                valueObjectId, "", "fp", true, 1, "");
+                valueObjectId, "", "fp", true);
     }
 
     @Test
@@ -145,10 +145,12 @@ public class RuntimeRegionPlannerTest {
                     + "\"symbolicInputs\":[{"
                     + "\"portId\":\"REGION.W.in.0\","
                     + "\"cell\":\"" + field + "\","
+                    + "\"javaType\":\"java.util.Map\","
                     + "\"sourceKind\":\"SHARED_HEAP\","
                     + "\"projection\":\"field:entries\"}],"
                     + "\"outputs\":[{\"portId\":\"REGION.W.out.0\","
                     + "\"cell\":\"" + field + "\","
+                    + "\"javaType\":\"java.util.Map\","
                     + "\"kind\":\"HEAP_STATE\"}],"
                     + "\"outputSlices\":[{"
                     + "\"outputPort\":\"REGION.W.out.0\","
@@ -180,8 +182,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"guardSiteId\":\"" + updater + "#u6\","
                     + "\"guardedMutationSiteId\":\"" + updater + "#u15\","
                     + "\"requiredOutcome\":false,"
-                    + "\"guardedMutationCount\":1,"
-                    + "\"guardedMutationsAuthority\":\"STATIC_CONTROL_DEPENDENCE_PER_MUTATION_SITE\","
                     + "\"guardedMutations\":[{"
                     + "\"guardSiteId\":\"" + updater + "#u6\","
                     + "\"guardedMutationSiteId\":\"" + updater + "#u15\","
@@ -196,12 +196,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"transferKind\":\"HEAP_WRITE\","
                     + "\"kind\":\"field_mutation\","
                     + "\"invoke\":\"<java.util.Iterator: void remove()>\"}],"
-                    + "\"requestedStateTransformerContractVersion\":1,"
-                    + "\"requestedStateTransformerContractApplicable\":true,"
-                    + "\"requestedStateTransformerContractOutputPort\":"
-                    + "\"REGION.W.out.0\","
-                    + "\"requestedStateTransformerContractOutputCell\":"
-                    + "\"" + field + "\","
                     + "\"requestedStateTransformerObligations\":[{"
                     + "\"siteId\":\"" + updater + "#u15\","
                     + "\"method\":\"" + updater + "\","
@@ -210,16 +204,12 @@ public class RuntimeRegionPlannerTest {
                     + "\"kind\":\"field_mutation\","
                     + "\"causalEdgeIds\":[\"DF.WRITE\"],"
                     + "\"authority\":\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL\"}],"
-                    + "\"requestedStateTransformerObligationCount\":1,"
                     + "\"requestedStateTransformerContractIssues\":[],"
                     + "\"requestedStateTransformerContractComplete\":true,"
-                    + "\"requestedStateTransformerContractAuthority\":"
-                    + "\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1\","
                     + "\"heapInitializers\":[{"
                     + "\"initializerId\":\"STATIC_INIT.REGION.W.0\","
                     + "\"kind\":\"FRESH_DEFAULT_CONSTRUCTED_OBJECT\","
                     + "\"allocatedType\":\"java.util.HashMap\","
-                    + "\"constructorArgumentCount\":0,"
                     + "\"outputPort\":\"REGION.W.out.0\","
                     + "\"outputCell\":\"" + field + "\","
                     + "\"proofEdgeIds\":[\"DF.1\"],"
@@ -252,6 +242,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"bindingKind\":\"field_write\","
                     + "\"bindingAuthority\":\"STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_RHS\","
                     + "\"occurrence\":0}],"
+                    + "\"structuralComplete\":true,"
                     + "\"complete\":true,"
                     + "\"selection\":"
                     + "\"REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE\"}],"
@@ -264,6 +255,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"symbolicInputs\":[{"
                     + "\"portId\":\"REGION.R.in.0\","
                     + "\"cell\":\"" + field + "\","
+                    + "\"javaType\":\"java.util.Map\","
                     + "\"sourceKind\":\"SHARED_HEAP\","
                     + "\"projection\":\"field:entries\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
@@ -370,12 +362,10 @@ public class RuntimeRegionPlannerTest {
                     .contains("FRESH_DEFAULT_CONSTRUCTED_OBJECT"));
             assertEquals(2, ((List<?>) retainedSlice.get(
                     "causalEdgeIds")).size());
-            assertEquals(1, retainedSlice.get(
+            assertFalse(retainedSlice.containsKey(
                     "requestedStateTransformerContractVersion"));
             assertEquals(true, retainedSlice.get(
                     "requestedStateTransformerContractComplete"));
-            assertEquals(1, retainedSlice.get(
-                    "requestedStateTransformerObligationCount"));
             assertTrue(String.valueOf(retainedSlice.get(
                     "requestedStateTransformerObligations")).contains(
                     updater + "#u15"));
@@ -385,8 +375,6 @@ public class RuntimeRegionPlannerTest {
             assertTrue(String.valueOf(retainedSlice.get("inputBindings"))
                     .contains("requestedStateTransformerGuardSites=["
                             + updater + "#u14]"));
-            assertTrue(String.valueOf(retainedSlice.get("causalEdges"))
-                    .contains("STATIC_CONTROL_DEPENDENCE_PER_MUTATION_SITE"));
             assertTrue(String.valueOf(retainedSlice.get("causalEdges"))
                     .contains("guardedMutationSiteId=" + updater + "#u15"));
             assertTrue(String.valueOf(retainedSlice.get("causalEdges"))
@@ -426,10 +414,8 @@ public class RuntimeRegionPlannerTest {
             assertFalse(missingEdge.activations.get(2).containsKey(
                     "outputClosure"));
             assertTrue(String.valueOf(missingEdge.activations.get(2).get(
-                    "outputClosureIssues")).contains(
+                    "admission")).contains(
                     "OUTPUT_MEMBER_INCOMPLETE"));
-            assertTrue(String.valueOf(missingEdge.warnings).contains(
-                    "STATIC_CAUSAL_EDGE_ID_UNRESOLVED:DF.WRITE"));
         } finally {
             folder.delete();
         }
@@ -492,7 +478,7 @@ public class RuntimeRegionPlannerTest {
         assertFalse(rejected.containsKey("outputClosure"));
         assertFalse(rejected.containsKey("requestedOutput"));
         assertFalse(rejected.containsKey("requestedOutputSlice"));
-        assertTrue(String.valueOf(rejected.get("outputClosureIssues"))
+        assertTrue(String.valueOf(rejected.get("admission"))
                 .contains("OUTPUT_MEMBER_INCOMPLETE:REGION.P.out.y"));
         assertEquals(3, ((List<?>) rejected.get("edgeBindings")).size());
 
@@ -602,7 +588,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"causalEdgeIds\":[\"DF.U\"],"
                     + "\"authority\":\"STATIC_EXACT_REQUESTED_"
                     + "OUTPUT_TARGET_CELL\"}],"
-                    + "\"requestedStateTransformerObligationCount\":2,"
                     + "\"requestedStateTransformerContractIssues\":[],"
                     + "\"requestedStateTransformerContractComplete\":true,"
                     + "\"requestedStateTransformerContractAuthority\":"
@@ -706,11 +691,9 @@ public class RuntimeRegionPlannerTest {
             assertEquals(1, ((java.util.List<?>) output.get(
                     "heapStateBindings")).size());
             assertEquals(true, slice.get("complete"));
-            assertEquals(true, slice.get("structuralComplete"));
-            assertEquals(true, slice.get("runtimeRefinementComplete"));
-            assertEquals("OBSERVED_REGION_CALL_TREE_AND_STATIC_DEPENDENCY_"
-                            + "METHOD_PROVENANCE",
-                    slice.get("runtimeRefinementAuthority"));
+            assertFalse(slice.containsKey("structuralComplete"));
+            assertFalse(slice.containsKey("runtimeRefinementComplete"));
+            assertFalse(slice.containsKey("runtimeRefinementAuthority"));
             assertEquals(Arrays.asList("REGION.W.in.0", "REGION.W.in.1"),
                     slice.get("inputPorts"));
             assertTrue(String.valueOf(slice.get("sites")).contains(
@@ -731,8 +714,6 @@ public class RuntimeRegionPlannerTest {
                     "captureDischargeAuthority"));
             assertEquals(Boolean.TRUE, slice.get(
                     "requestedStateTransformerContractComplete"));
-            assertEquals(1, slice.get(
-                    "requestedStateTransformerObligationCount"));
             assertTrue(((java.util.List<?>) slice.get("captureBindings"))
                     .isEmpty());
             assertTrue(((List<?>) slice.get("unresolvedInputs")).isEmpty());
@@ -833,13 +814,11 @@ public class RuntimeRegionPlannerTest {
             RuntimeRegionPlanner.FieldAccessEvent readA =
                     new RuntimeRegionPlanner.FieldAccessEvent(5,
                             "FIELD_READ", getA, 3, 8, getA + "#u8",
-                            fieldA, 77, 0, "-1", "", false, 0,
-                            "TEST_NO_FINGERPRINT");
+                            fieldA, 77, 0, "-1", "", false);
             RuntimeRegionPlanner.FieldAccessEvent readB =
                     new RuntimeRegionPlanner.FieldAccessEvent(6,
                             "FIELD_READ", getB, 4, 8, getB + "#u8",
-                            fieldB, 77, 0, "10", "", false, 0,
-                            "TEST_NO_FINGERPRINT");
+                            fieldB, 77, 0, "10", "", false);
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), null, graph.toFile(), methods,
                     Collections.singletonList(branch),
@@ -982,20 +961,17 @@ public class RuntimeRegionPlannerTest {
                         newWriteInsideClosure ? 1 : 2, 4,
                         (newWriteInsideClosure ? root : externalWriter)
                                 + "#u4",
-                        field, newWriteReceiver, 0, "2", "", false,
-                        0, "TEST_NO_FINGERPRINT"));
+                        field, newWriteReceiver, 0, "2", "", false));
             }
             if (includeOldWrite) {
                 fields.add(new RuntimeRegionPlanner.FieldAccessEvent(4,
                         "FIELD_WRITE", root, 1, 2, root + "#u2",
-                        field, 77, 0, "1", "", false, 0,
-                        "TEST_NO_FINGERPRINT"));
+                        field, 77, 0, "1", "", false));
             }
             fields.add(new RuntimeRegionPlanner.FieldAccessEvent(6,
                     "FIELD_READ", root, 1, 5, root + "#u5", field,
                     77, 0, includeNewWrite && newWriteReceiver == 77
-                    ? "2" : includeOldWrite ? "1" : "0", "", false,
-                    0, "TEST_NO_FINGERPRINT"));
+                    ? "2" : includeOldWrite ? "1" : "0", "", false));
 
             List<RuntimeRegionPlanner.MethodEvent> methods =
                     new ArrayList<>();
@@ -1461,7 +1437,7 @@ public class RuntimeRegionPlannerTest {
                             interveningWrite ? 4 : 3,
                             "FIELD_READ", writer, 11, 6, writer + "#u6",
                             exact, differentReceiver ? 801 : 800, 0, "3",
-                            "", false, 0, "");
+                            "", false);
             RuntimeRegionPlanner.FieldAccessEvent write =
                     new RuntimeRegionPlanner.FieldAccessEvent(
                             interveningWrite ? 5 : 4,
@@ -1572,7 +1548,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"causalEdgeIds\":[\"DF.U\"],"
                     + "\"authority\":"
                     + "\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL\"}],"
-                    + "\"requestedStateTransformerObligationCount\":2,"
                     + "\"requestedStateTransformerContractIssues\":"
                     + contractIssues + ","
                     + "\"requestedStateTransformerContractComplete\":"
@@ -2385,7 +2360,7 @@ public class RuntimeRegionPlannerTest {
         return new RuntimeRegionPlanner.RuntimeEvent(seq, "METHOD_ARGUMENT",
                 SASL_CLIENT, callId, 0, 0, SASL_CLIENT + "#entry", "",
                 3, "java.lang.String", 101, "", false, false,
-                fingerprint, true, 1, "COMPLETE");
+                fingerprint, true);
     }
 
     private static RuntimeRegionPlanner.RuntimeEvent methodArgument(
@@ -2394,7 +2369,7 @@ public class RuntimeRegionPlannerTest {
         return new RuntimeRegionPlanner.RuntimeEvent(seq, "METHOD_ARGUMENT",
                 method, callId, 0, 0, method + "#entry", "",
                 argumentIndex, runtimeType, (int) (seq + 100), "", false,
-                false, "", false, 0, "TEST_NO_FINGERPRINT");
+                false, "", false);
     }
 
     private static RuntimeRegionPlanner.RuntimeEvent saslCallbackReturn(
@@ -2402,7 +2377,7 @@ public class RuntimeRegionPlannerTest {
         return new RuntimeRegionPlanner.RuntimeEvent(seq, "CALL_SITE_RETURN",
                 SASL_SERVER, callId, 9, 0, SASL_SERVER + "#u4",
                 NAME_CALLBACK_DEFAULT, -1, "java.lang.String", 102, "",
-                false, false, fingerprint, true, 1, "COMPLETE");
+                false, false, fingerprint, true);
     }
 
     private static RuntimeRegionPlanner.MethodEvent method(long seq, String method,

@@ -12,7 +12,7 @@ import java.util.Locale;
  * explicit Java types (or from operations whose operands already carry such
  * widths).</p>
  */
-final class JavaPrimitiveSmtSemantics {
+public final class JavaPrimitiveSmtSemantics {
     static final String INT_WRAP_DEFINITION =
             "(define-fun java_int_wrap ((i Int)) Int"
                     + " (- (mod (+ i 2147483648) 4294967296)"
@@ -60,7 +60,7 @@ final class JavaPrimitiveSmtSemantics {
     }
 
     /** Normalizes a source type or VM name to one JVM descriptor. */
-    static String javaTypeDescriptor(String javaType) {
+    public static String javaTypeDescriptor(String javaType) {
         String value = javaType == null ? ""
                 : javaType.trim().replace('.', '/');
         if (value.isEmpty() || value.startsWith("[")) return value;
@@ -90,6 +90,41 @@ final class JavaPrimitiveSmtSemantics {
                 + descriptor.length());
         for (int index = 0; index < dimensions; index++) result.append('[');
         return result.append(descriptor).toString();
+    }
+
+    public static boolean validFieldDescriptor(String value) {
+        if (value == null || value.isEmpty() || value.length() > 1024) {
+            return false;
+        }
+        int cursor = 0;
+        int dimensions = 0;
+        while (cursor < value.length() && value.charAt(cursor) == '[') {
+            if (++dimensions > 255) return false;
+            cursor++;
+        }
+        if (cursor >= value.length()) return false;
+        char type = value.charAt(cursor++);
+        if ("ZBCSIJFD".indexOf(type) >= 0) {
+            return cursor == value.length();
+        }
+        if (type != 'L') return false;
+        boolean component = false;
+        for (; cursor < value.length(); cursor++) {
+            char valueChar = value.charAt(cursor);
+            if (valueChar == ';') {
+                return component && cursor + 1 == value.length();
+            }
+            if (valueChar == '/') {
+                if (!component) return false;
+                component = false;
+            } else if (valueChar <= ' ' || valueChar == '.'
+                    || valueChar == '[') {
+                return false;
+            } else {
+                component = true;
+            }
+        }
+        return false;
     }
 
     static IntegralWidth widthOfJavaType(String javaType) {
@@ -279,17 +314,7 @@ final class JavaPrimitiveSmtSemantics {
     static String primitiveDescriptor(String javaType) {
         String type = javaType == null ? ""
                 : javaType.trim().replace('.', '/');
-        if ("boolean".equals(type)) return "Z";
-        if ("byte".equals(type)) return "B";
-        if ("char".equals(type)) return "C";
-        if ("short".equals(type)) return "S";
-        if ("int".equals(type)) return "I";
-        if ("long".equals(type)) return "J";
-        if ("float".equals(type)) return "F";
-        if ("double".equals(type)) return "D";
-        // Do not rewrite reference descriptors: diagnostics and legacy
-        // readers rely on their exact L...; spelling.
-        return type;
+        return "L".equals(type) ? type : javaTypeDescriptor(type);
     }
 
     /**
@@ -441,16 +466,7 @@ final class JavaPrimitiveSmtSemantics {
     }
 
     private static String normalize(String javaType) {
-        String type = javaType == null ? ""
-                : javaType.trim().replace('.', '/');
-        if ("boolean".equals(type)) return "Z";
-        if ("byte".equals(type)) return "B";
-        if ("char".equals(type)) return "C";
-        if ("short".equals(type)) return "S";
-        if ("int".equals(type)) return "I";
-        if ("long".equals(type)) return "J";
-        if ("float".equals(type)) return "F";
-        if ("double".equals(type)) return "D";
+        String type = primitiveDescriptor(javaType);
         if (type.startsWith("L") && type.endsWith(";")
                 && type.length() > 2) {
             return type.substring(1, type.length() - 1);

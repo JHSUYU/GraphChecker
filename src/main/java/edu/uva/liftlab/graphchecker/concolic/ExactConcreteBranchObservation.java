@@ -3,6 +3,10 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.textString;
+
 /**
  * Immutable VM-attested binary branch event that added no symbolic path
  * predicate.
@@ -49,21 +53,23 @@ public final class ExactConcreteBranchObservation {
     }
 
     public static ExactConcreteBranchObservation fromJson(JsonObject json) {
-        if (integer(json, "schemaVersion", -1) != SCHEMA_VERSION
-                || !KIND.equals(string(json, "kind"))) {
+        if (exactInteger(json, "schemaVersion", -1) != SCHEMA_VERSION
+                || !KIND.equals(textString(json, "kind"))) {
             throw new IllegalArgumentException(
                     "unsupported exact concrete branch observation schema");
         }
-        JsonObject site = object(json, "site");
+        JsonObject site = requiredObject(json, "site");
         JsonElement outcome = json.get("sourceTakenOutcome");
         if (outcome == null || !outcome.isJsonPrimitive()
                 || !outcome.getAsJsonPrimitive().isBoolean()) {
             throw new IllegalArgumentException(
                     "sourceTakenOutcome must be Boolean");
         }
-        return new ExactConcreteBranchObservation(string(site, "siteId"),
-                string(site, "method"), integer(site, "unitIndex", -1),
-                integer(site, "occurrence", -1), outcome.getAsBoolean());
+        return new ExactConcreteBranchObservation(
+                textString(site, "siteId"), textString(site, "method"),
+                exactInteger(site, "unitIndex", -1),
+                exactInteger(site, "occurrence", -1),
+                outcome.getAsBoolean());
     }
 
     public JsonObject toJson() {
@@ -98,34 +104,6 @@ public final class ExactConcreteBranchObservation {
 
     public boolean sourceTakenOutcome() {
         return sourceTakenOutcome;
-    }
-
-    private static JsonObject object(JsonObject parent, String name) {
-        JsonElement value = parent == null ? null : parent.get(name);
-        if (value == null || !value.isJsonObject()) {
-            throw new IllegalArgumentException(name + " must be an object");
-        }
-        return value.getAsJsonObject();
-    }
-
-    private static int integer(JsonObject object, String name,
-                               int fallback) {
-        JsonElement value = object == null ? null : object.get(name);
-        try {
-            return value == null || !value.isJsonPrimitive()
-                    || !value.getAsJsonPrimitive().isNumber()
-                    ? fallback : new java.math.BigDecimal(
-                    value.getAsString()).intValueExact();
-        } catch (RuntimeException malformed) {
-            return fallback;
-        }
-    }
-
-    private static String string(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value == null || !value.isJsonPrimitive()
-                || !value.getAsJsonPrimitive().isString()
-                ? "" : value.getAsString();
     }
 
     private static String requireText(String value, String name) {

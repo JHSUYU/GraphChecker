@@ -54,6 +54,9 @@ public class RegionSummaryMergerTest {
                 "sourceRegionInstanceIds"));
         assertFalse(result.summaries.get(0).has("regionInstanceId"));
         assertFalse(result.summaries.get(0).has("rootCallId"));
+        assertTrue(result.manifest.getAsJsonArray("gaps").isEmpty());
+        assertFalse(result.manifest.has("diagnostics"));
+        assertFalse(result.manifest.has("complete"));
     }
 
     @Test
@@ -110,7 +113,7 @@ public class RegionSummaryMergerTest {
         assertFalse(missingResult.summaries.get(0).get(
                 "relationallyComplete").getAsBoolean());
         assertTrue(missingResult.manifest.getAsJsonArray(
-                "diagnostics").toString()
+                "gaps").toString()
                 .contains("JOINT_OUTPUT_EXPRESSION_SET_MISMATCH"));
 
         JsonObject wrongManifest = jointSummary("MANIFEST", ">");
@@ -126,7 +129,7 @@ public class RegionSummaryMergerTest {
         assertFalse(manifestResult.summaries.get(0).get(
                 "relationallyComplete").getAsBoolean());
         assertTrue(manifestResult.manifest.getAsJsonArray(
-                "diagnostics").toString()
+                "gaps").toString()
                 .contains("PATH_WORKLIST_OUTPUT_CLOSURE"));
 
         JsonObject first = jointSummary("DUP.A", ">");
@@ -147,7 +150,7 @@ public class RegionSummaryMergerTest {
         assertFalse(duplicateResult.summaries.get(0).get(
                 "relationallyComplete").getAsBoolean());
         assertTrue(duplicateResult.manifest.getAsJsonArray(
-                "diagnostics").toString()
+                "gaps").toString()
                 .contains("CONFLICTING_DUPLICATE_PATH_PAYLOAD"));
     }
 
@@ -316,8 +319,8 @@ public class RegionSummaryMergerTest {
 
     private static JsonArray engineArrayBinding(String id, long token) {
         JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 1);
-        binding.addProperty("kind", "ENGINE_ARRAY_TO_INPUT_PORT");
+        binding.addProperty("schemaVersion", 2);
+        binding.addProperty("kind", "ENGINE_ARRAY_INPUT_BINDING");
         binding.addProperty("inputPort", "REGION.4.in.1");
         binding.addProperty("engineArrayId", id);
         binding.addProperty("arrayObjectToken", token);
@@ -342,9 +345,6 @@ public class RegionSummaryMergerTest {
         bounds.addProperty("maxTasks", 256);
         bounds.addProperty("maxWallClockMillis", 30_000L);
         manifest.add("bounds", bounds);
-        manifest.addProperty("observedPathCount", 1);
-        manifest.addProperty("pendingTaskCount",
-                state == RegionPathWorklist.State.PENDING ? 1 : 0);
         manifest.add("gaps", new JsonArray());
         return manifest;
     }

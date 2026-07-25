@@ -51,11 +51,20 @@ public class RegionPathWorklistTest {
         assertEquals(2, replay.requiredPathPredicates().size());
         assertEquals(">=", replay.requiredSatisfiedPredicate()
                 .getAsJsonObject().get("_op").getAsString());
-        assertEquals(BranchReplayContract.DROP_SOURCE_SUFFIX,
+        assertEquals(BranchReplayContract.SCHEMA_VERSION,
                 latest.getAsJsonObject("replayContract")
-                        .get("suffixPolicy").getAsString());
+                        .get("schemaVersion").getAsInt());
         assertEquals(RegionPathWorklist.State.PENDING.name(),
                 result.manifest.get("state").getAsString());
+        assertFalse(result.manifest.has("observedPathCount"));
+
+        RegionPathWorklist.Result bounded = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(activation),
+                Collections.<JsonObject>emptyList(),
+                new RegionPathWorklist.Bounds(2, 32, 256));
+        assertEquals(1, bounded.tasks.size());
+        assertTrue(bounded.manifest.getAsJsonArray("gaps").isEmpty());
 
         JsonArray targetBranches = new JsonArray();
         for (String site : Arrays.asList("SITE#u0", "SITE#u1")) {

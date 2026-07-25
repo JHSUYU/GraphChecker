@@ -8,8 +8,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
-import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
-import edu.uva.liftlab.graphchecker.concolic.BranchReplayObservationValidator;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
@@ -48,6 +46,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Runtime bridge injected at symbolic-region roots for the second (concolic)
@@ -621,7 +628,7 @@ public final class ConcolicRegionRuntime {
                             + assignment.valueType + "=" + assignment.value);
                     return null;
                 }
-                active.recordModelAssignment(assignment, null, modeled);
+                active.recordModelAssignment(assignment, null);
                 return modeled;
             }
             if ("ARGUMENT_FIELD_PATH".equals(action.location)) {
@@ -640,8 +647,7 @@ public final class ConcolicRegionRuntime {
                     Object modeled = assignment.referenceValue(
                             boxedOrReference);
                     if (modeled != UnsupportedReplayValue.INSTANCE) {
-                        active.recordModelAssignment(assignment,
-                                null, modeled);
+                        active.recordModelAssignment(assignment, null);
                         active.observeContainerActionValue(action, modeled,
                                 "ROOT_ARGUMENT");
                         return modeled;
@@ -700,8 +706,7 @@ public final class ConcolicRegionRuntime {
                             + assignment.valueType + "=" + assignment.value);
                 } else {
                     materialized = modeled;
-                    active.recordModelAssignment(assignment,
-                            null, modeled);
+                    active.recordModelAssignment(assignment, null);
                 }
             }
             if (active.engineBacked && (materialized != null
@@ -887,12 +892,12 @@ public final class ConcolicRegionRuntime {
         Object expected = prepared.value;
         long expectedToken = active.objectToken(expected);
         for (ModelAssignment assignment : applied) {
-            active.recordModelAssignment(assignment, logicalPath, expected);
+            active.recordModelAssignment(assignment, logicalPath);
         }
         active.pendingArrayFieldMaterialization =
                 new PendingArrayFieldMaterialization(method, unitIndex,
                         action, leafOwner, leafFieldSignature,
-                        leafFieldName, logicalPath, expected, expectedToken,
+                        leafFieldName, expected, expectedToken,
                         declaredType);
         active.preparedArrayInputPorts.add(action.symbol);
     }
@@ -978,12 +983,6 @@ public final class ConcolicRegionRuntime {
         active.captureEngineArrayInputBinding(action, consumedValue,
                 consumedValue, consumedToken, pending.declaredType,
                 api);
-        EngineArrayInputBinding captured = active.engineArrayInputByPort.get(
-                action.symbol);
-        if (captured != null) {
-            captured.markConsumedLeaf(active, leafOwner,
-                    leafFieldSignature, pending.logicalFieldPath);
-        }
         if (liveArray) {
             refreshEntryReadsForFieldOwner(active, leafOwner,
                     action.symbol, null);
@@ -1113,8 +1112,7 @@ public final class ConcolicRegionRuntime {
                         assignmentFailed = true;
                         continue;
                     }
-                    active.recordModelAssignment(assignment, path,
-                            readField(modeledOwner, modeledField));
+                    active.recordModelAssignment(assignment, path);
                 }
                 if (assignmentFailed) {
                     continue;
@@ -1208,8 +1206,7 @@ public final class ConcolicRegionRuntime {
                     return;
                 }
                 active.recordDynamicContainerModelAssignment(assignment,
-                        action.fieldPath, binding,
-                        readField(leafOwner, action.leafField));
+                        action.fieldPath, binding);
             }
 
             active.fieldTargets.put(binding.dynamicBindingId,
@@ -1290,8 +1287,7 @@ public final class ConcolicRegionRuntime {
                     return;
                 }
                 active.recordDynamicMapModelAssignment(assignment,
-                        action.fieldPath, binding,
-                        readField(leafOwner, action.leafField));
+                        action.fieldPath, binding);
             }
 
             active.fieldTargets.put(binding.dynamicBindingId,
@@ -1479,10 +1475,6 @@ public final class ConcolicRegionRuntime {
             Object[] before = map.entrySet().toArray();
             if (before.length != sizeBefore) return;
 
-            JsonArray keys = new JsonArray();
-            JsonArray keyTokens = new JsonArray();
-            JsonArray valueTokens = new JsonArray();
-            JsonArray values = new JsonArray();
             JsonArray entries = new JsonArray();
             String[] selectors = new String[sizeBefore];
             Object[] concreteValues = new Object[sizeBefore];
@@ -1508,17 +1500,12 @@ public final class ConcolicRegionRuntime {
                         : activationLocalValueRefWitnessExpression(
                         active.activation.activationId, valueToken);
 
-                keys.add(copyJsonTree(keyExpression));
-                keyTokens.add(new JsonPrimitive(Long.valueOf(keyToken)));
-                valueTokens.add(new JsonPrimitive(Long.valueOf(valueToken)));
-                values.add(copyJsonTree(valueExpression));
                 JsonObject row = new JsonObject();
                 row.addProperty("index", index);
                 row.add("keyExpression", copyJsonTree(keyExpression));
                 row.addProperty("keyObjectToken", keyToken);
                 row.add("valueExpression", copyJsonTree(valueExpression));
                 row.addProperty("valueObjectToken", valueToken);
-                row.addProperty("valueWasNull", value == null);
                 row.addProperty("valueExpressionAuthority", value == null
                         ? EXACT_RUNTIME_NULL_AUTHORITY
                         : VALUE_REF_WITNESS_AUTHORITY);
@@ -1555,12 +1542,12 @@ public final class ConcolicRegionRuntime {
             }
 
             long mapToken = active.objectToken(map);
-            String dedupe = mapToken + "|" + distinct + "|" + valueTokens;
+            String dedupe = mapToken + "|" + entries;
             if (!active.finiteMapSnapshotIdentities.add(dedupe)) return;
             String site = siteId(method, unitIndex);
             int occurrence = active.nextFiniteMapSnapshotOccurrence(site);
             JsonObject observation = new JsonObject();
-            observation.addProperty("schemaVersion", 1);
+            observation.addProperty("schemaVersion", 2);
             observation.addProperty("kind", "FINITE_MAP_ENTRY_SNAPSHOT");
             observation.addProperty("operation", "java.util.Map.entrySet");
             observation.addProperty("observationId",
@@ -1581,7 +1568,6 @@ public final class ConcolicRegionRuntime {
                     map.getClass().getName());
             observation.addProperty("mapImplementationAuthority",
                     MAP_PROJECTION_IMPLEMENTATION_AUTHORITY);
-            observation.addProperty("mapObjectToken", mapToken);
             observation.addProperty("backingMapObjectToken", mapToken);
             observation.addProperty("objectTokenAuthority",
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
@@ -1595,28 +1581,12 @@ public final class ConcolicRegionRuntime {
                             + "ENTRY_SET_NEXT"
                             : "CONCRETE_REPLAY_RUNTIME_VALUE_AT_FIRST_"
                             + "ENTRY_SET_NEXT");
-            observation.addProperty("entryCount", sizeBefore);
-            observation.addProperty("finiteEntryBound",
-                    MAX_MAP_PROJECTION_ELEMENTS);
-            observation.addProperty("sizeBefore", sizeBefore);
-            observation.addProperty("entrySetSizeBefore",
-                    entrySetSizeBefore);
-            observation.addProperty("sizeAfter", sizeAfter);
-            observation.addProperty("entrySetSizeAfter", entrySetSizeAfter);
-            observation.add("keyExpressions", keys);
-            observation.add("keyObjectTokens", keyTokens);
             observation.addProperty("keyExpressionAuthority",
                     "CONCRETE_IMMUTABLE_MAP_ENTRY_KEYS_AT_SAME_EXECUTION_"
                             + "ENTRY_SET_SNAPSHOT");
-            observation.add("valueObjectTokens", valueTokens);
-            observation.add("valueExpressions", values);
             observation.addProperty("valueExpressionAuthority",
                     FINITE_MAP_VALUE_EXPRESSION_AUTHORITY);
             observation.add("entries", entries);
-            observation.addProperty("keysDistinct", true);
-            observation.addProperty("firstIteratorEntryMatched", true);
-            observation.addProperty("sizeStable", true);
-            observation.addProperty("entrySetStable", true);
             observation.addProperty("authority",
                     FINITE_MAP_SNAPSHOT_AUTHORITY);
             observation.addProperty("complete", true);
@@ -1642,7 +1612,7 @@ public final class ConcolicRegionRuntime {
             MapStateInputBinding binding) {
         JsonObject observation = fieldObservation(active, action.symbol,
                 accessOwner, action.fieldPath, "AT_MAP_STATE_INPUT");
-        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("schemaVersion", 2);
         observation.addProperty("kind", "MAP_STATE_INPUT_OBSERVATION");
         observation.addProperty("observationId", binding.observationId);
         observation.addProperty("eventSequence",
@@ -1666,24 +1636,15 @@ public final class ConcolicRegionRuntime {
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         observation.addProperty("objectTokenScope",
                 active.activation.activationId);
-        observation.addProperty("identityBindingComplete", true);
-
         boolean snapshotComplete = false;
-        String snapshotProblem = "";
-        JsonArray keys = new JsonArray();
-        JsonArray valueTokens = new JsonArray();
         JsonArray entries = new JsonArray();
         try {
             int sizeBefore = map.size();
             Object[] before = map.entrySet().toArray();
-            if (!supportedMapProjectionImplementation(map)) {
-                snapshotProblem = "unsupported exact Map implementation";
-            } else if (sizeBefore < 0
-                    || sizeBefore > MAX_MAP_PROJECTION_ELEMENTS
-                    || before.length != sizeBefore) {
-                snapshotProblem = "Map entry snapshot exceeds bound or size "
-                        + "changed before capture";
-            } else {
+            if (supportedMapProjectionImplementation(map)
+                    && sizeBefore >= 0
+                    && sizeBefore <= MAX_MAP_PROJECTION_ELEMENTS
+                    && before.length == sizeBefore) {
                 String[] selectors = new String[before.length];
                 Object[] values = new Object[before.length];
                 Set<String> distinct = new LinkedHashSet<>();
@@ -1691,8 +1652,6 @@ public final class ConcolicRegionRuntime {
                 for (int index = 0; index < before.length; index++) {
                     if (!(before[index] instanceof Map.Entry<?, ?>)) {
                         valid = false;
-                        snapshotProblem = "entrySet snapshot contains a "
-                                + "non-entry value";
                         break;
                     }
                     Map.Entry<?, ?> entry = (Map.Entry<?, ?>) before[index];
@@ -1702,24 +1661,18 @@ public final class ConcolicRegionRuntime {
                     if (key == null || selector.isEmpty()
                             || !distinct.add(selector)) {
                         valid = false;
-                        snapshotProblem = "entry key lacks one exact stable "
-                                + "immutable selector";
                         break;
                     }
                     Object value = entry.getValue();
                     selectors[index] = selector;
                     values[index] = value;
                     long valueToken = active.objectToken(value);
-                    keys.add(copyJsonTree(key));
-                    valueTokens.add(new JsonPrimitive(
-                            Long.valueOf(valueToken)));
                     JsonObject row = new JsonObject();
                     row.addProperty("index", index);
                     row.add("keyExpression", copyJsonTree(key));
                     row.addProperty("keyObjectToken",
                             active.objectToken(entry.getKey()));
                     row.addProperty("valueObjectToken", valueToken);
-                    row.addProperty("valueWasNull", value == null);
                     entries.add(row);
                 }
                 Object[] after = valid ? map.entrySet().toArray()
@@ -1727,14 +1680,10 @@ public final class ConcolicRegionRuntime {
                 if (valid && (map.size() != sizeBefore
                         || after.length != before.length)) {
                     valid = false;
-                    snapshotProblem = "Map size changed during input "
-                            + "snapshot";
                 }
                 for (int index = 0; valid && index < after.length; index++) {
                     if (!(after[index] instanceof Map.Entry<?, ?>)) {
                         valid = false;
-                        snapshotProblem = "Map entry shape changed during "
-                                + "input snapshot";
                         break;
                     }
                     Map.Entry<?, ?> entry = (Map.Entry<?, ?>) after[index];
@@ -1744,32 +1693,17 @@ public final class ConcolicRegionRuntime {
                                             entry.getKey())))
                             || entry.getValue() != values[index]) {
                         valid = false;
-                        snapshotProblem = "Map entry order or value identity "
-                                + "changed during input snapshot";
                     }
                 }
                 snapshotComplete = valid;
             }
-            observation.addProperty("entryCount", sizeBefore);
-        } catch (Throwable throwable) {
-            snapshotProblem = "Map input snapshot failed: "
-                    + rootCause(throwable);
+        } catch (Throwable ignored) {
+            // Optional finite-domain expansion is unavailable.
         }
-        observation.addProperty("finiteEntryBound",
-                MAX_MAP_PROJECTION_ELEMENTS);
-        observation.add("keyExpressions", keys);
-        observation.add("valueObjectTokens", valueTokens);
         observation.add("entries", entries);
-        observation.addProperty("snapshotComplete", snapshotComplete);
         observation.addProperty("snapshotAuthority",
                 "SAME_FIELD_HOOK_STABLE_BOUNDED_ENTRY_SET_SNAPSHOT_V1");
-        if (!snapshotComplete) {
-            observation.addProperty("snapshotProblem", snapshotProblem);
-        }
-        // The binding itself is exact even if the optional finite-domain
-        // expansion is unavailable.  Consumers must inspect snapshotComplete
-        // before deriving cardinality or individual entries.
-        observation.addProperty("complete", true);
+        observation.addProperty("complete", snapshotComplete);
         annotateMapStateInputBinding(observation, active, map);
         return observation;
     }
@@ -1787,7 +1721,6 @@ public final class ConcolicRegionRuntime {
                 binding.mapObjectToken);
         target.addProperty("mapStateInputBindingAuthority",
                 binding.action.containerObservationAuthority);
-        target.addProperty("mapStateInputBindingComplete", true);
     }
 
     private static JsonObject nullReferenceExpression() {
@@ -1819,7 +1752,7 @@ public final class ConcolicRegionRuntime {
                 + occurrence;
 
         JsonObject observation = new JsonObject();
-        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("schemaVersion", 2);
         observation.addProperty("kind", "MAP_ENTRY_READ");
         observation.addProperty("operation", "java.util.Iterator.next");
         observation.addProperty("observationId", observationId);
@@ -1856,19 +1789,6 @@ public final class ConcolicRegionRuntime {
                 cursor.keyExpressionAuthority);
         observation.addProperty("valueExpressionAuthority",
                 cursor.valueExpressionAuthority);
-        if (!cursor.entryExpressionWarning.isEmpty()) {
-            observation.addProperty("entryExpressionWarning",
-                    cursor.entryExpressionWarning);
-        }
-        if (!cursor.valueExpressionWarning.isEmpty()) {
-            observation.addProperty("initialValueExpressionWarning",
-                    cursor.valueExpressionWarning);
-        }
-        if (!cursor.mapExpressionWarning.isEmpty()) {
-            observation.addProperty("initialMapExpressionWarning",
-                    cursor.mapExpressionWarning);
-        }
-
         Object map = cursor.binding.map;
         long backingMapObjectToken = active.objectToken(map);
         long entryObjectToken = active.objectToken(cursor.element);
@@ -1907,10 +1827,6 @@ public final class ConcolicRegionRuntime {
         if (cursor.valueExpression != null) {
             observation.add("valueExpression", cursor.valueExpression);
         }
-        if (cursor.entryExpression != null) {
-            observation.add("entryExpression", cursor.entryExpression);
-        }
-
         annotateMapStateInputBinding(observation, active, map);
         active.runtimeHeapObservations.add(observation);
         cursor.entryObservationId = observationId;
@@ -1926,7 +1842,7 @@ public final class ConcolicRegionRuntime {
 
     static boolean completeMapEntryReadPayload(
             JsonElement mapExpression, JsonElement keyExpression,
-            JsonElement valueExpression, JsonElement optionalEntryExpression,
+            JsonElement valueExpression,
             long backingMapObjectToken, long keyObjectToken,
             long valueObjectToken, long entryObjectToken) {
         // The custom JDK does not promise a symbolic reference for the
@@ -1971,9 +1887,6 @@ public final class ConcolicRegionRuntime {
         }
         if (completeRuntimeExpression(cursor.valueExpression)) {
             observation.add("valueExpression", cursor.valueExpression);
-        }
-        if (completeRuntimeExpression(cursor.entryExpression)) {
-            observation.add("entryExpression", cursor.entryExpression);
         }
         observation.addProperty("keyExpressionAuthority",
                 cursor.keyExpressionAuthority);
@@ -2020,7 +1933,7 @@ public final class ConcolicRegionRuntime {
         }
         boolean payloadComplete = completeMapEntryReadPayload(
                 cursor.mapExpression, cursor.keyExpression,
-                cursor.valueExpression, cursor.entryExpression,
+                cursor.valueExpression,
                 backingMapObjectToken, keyObjectToken, valueObjectToken,
                 entryObjectToken);
         boolean keyAuthorityComplete =
@@ -2063,20 +1976,6 @@ public final class ConcolicRegionRuntime {
                 && cursor.hasCurrent && entryKnown
                 && cursor.keyKnown && cursor.valueKnown
                 && payloadComplete && bindingAuthorityComplete;
-        observation.addProperty("entryBindingComplete",
-                cursor.hasCurrent && entryKnown
-                        && cursor.keyKnown && cursor.valueKnown);
-        observation.addProperty("expressionBindingComplete",
-                missingExpressions.isEmpty());
-        observation.addProperty("objectTokenBindingComplete",
-                backingMapObjectToken > 0L
-                        && (keyObjectToken > 0L
-                        || cursor.keyKnown && cursor.key == null
-                        && nullEntryKeyExpression(cursor.keyExpression))
-                        && valueObjectToken > 0L && entryObjectToken > 0L);
-        observation.addProperty("bindingAuthorityComplete",
-                bindingAuthorityComplete);
-        observation.addProperty("runtimeProvenanceComplete", complete);
         observation.addProperty("complete", complete);
 
         if (!cursor.entryObservationUnresolved.isEmpty()) {
@@ -2111,12 +2010,9 @@ public final class ConcolicRegionRuntime {
                     clearValueRefWitness(cursor.entryObservation);
                     cursor.entryObservation.addProperty(
                             "valueExpressionAuthority", refreshAuthority);
-                    cursor.entryObservation.addProperty(
-                            "valueExpressionResolvedAfterRefresh", true);
                 }
-            } catch (Throwable throwable) {
-                cursor.entryObservation.addProperty("valueExpressionWarning",
-                        rootCause(throwable));
+            } catch (Throwable ignored) {
+                // The activation-local value witness remains available.
             }
         }
         ensureActivationLocalValueRefWitness(active, cursor);
@@ -2314,7 +2210,6 @@ public final class ConcolicRegionRuntime {
             cursor.mapExpression = concreteExpression(cursor.binding.map);
             cursor.mapExpressionAuthority =
                     "CONCRETE_REPLAY_RUNTIME_VALUE_AT_ITERATOR_NEXT";
-            cursor.entryExpression = concreteExpression(cursor.element);
             cursor.keyExpressionAuthority =
                     "CONCRETE_REPLAY_RUNTIME_VALUE_AT_ITERATOR_NEXT";
             if (cursor.keyKnown) {
@@ -2336,21 +2231,10 @@ public final class ConcolicRegionRuntime {
                 cursor.mapExpressionAuthority =
                         "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT";
             }
-        } catch (Throwable throwable) {
-            cursor.mapExpressionWarning = "map expression unavailable: "
-                    + rootCause(throwable);
+        } catch (Throwable ignored) {
+            // The activation-local map witness is installed below.
         }
         ensureActivationLocalMapRefWitness(active, cursor);
-        try {
-            cursor.entryExpression = canonicalEngineExpression(
-                    api.expression(cursor.element));
-        } catch (Throwable throwable) {
-            // HashMap.Node/Map.Entry is a concrete provenance wrapper.  The
-            // custom JDK does not guarantee that it has a symbolic reference;
-            // its activation-local object token remains authoritative.
-            cursor.entryExpressionWarning = "entry expression unavailable: "
-                    + rootCause(throwable);
-        }
         if (cursor.keyKnown) {
             Throwable keyExpressionFailure = null;
             try {
@@ -2383,11 +2267,9 @@ public final class ConcolicRegionRuntime {
                     cursor.valueExpressionAuthority =
                             "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT";
                 }
-            } catch (Throwable throwable) {
+            } catch (Throwable ignored) {
                 // A subsequent field-symbolization hook gets one or more
                 // chances to refresh this expression.
-                cursor.valueExpressionWarning = "value expression unavailable: "
-                        + rootCause(throwable);
             }
         }
         try {
@@ -2479,12 +2361,12 @@ public final class ConcolicRegionRuntime {
             JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return "";
         JsonObject object = expression.getAsJsonObject();
-        if (!"ConstExpr".equals(jsonString(object, "_type"))) return "";
-        String encoded = jsonString(object, "_exp");
+        if (!"ConstExpr".equals(string(object, "_type"))) return "";
+        String encoded = string(object, "_exp");
         if (!encoded.startsWith("Y_") || encoded.length() < 4
                 || encoded.charAt(3) != '_') return "";
         char kind = encoded.charAt(2);
-        String type = jsonString(object, "_java_type").replace('.', '/');
+        String type = string(object, "_java_type").replace('.', '/');
         char declared;
         if ("java/lang/Boolean".equals(type)) declared = 'Z';
         else if ("java/lang/Byte".equals(type)) declared = 'B';
@@ -2548,22 +2430,22 @@ public final class ConcolicRegionRuntime {
             return "";
         }
         JsonObject object = expression.getAsJsonObject();
-        if ("ConstExpr".equals(jsonString(object, "_type"))) {
-            String encoded = jsonString(object, "_exp");
+        if ("ConstExpr".equals(string(object, "_type"))) {
+            String encoded = string(object, "_exp");
             if (encoded.length() < 4 || !encoded.startsWith("Y_")
                     || encoded.charAt(3) != '_') {
                 return "";
             }
             char kind = encoded.charAt(2);
-            char declared = immutableKeyKind(jsonString(object,
+            char declared = immutableKeyKind(string(object,
                     "_java_type"));
             if (declared == 0 || declared != kind) return "";
             return canonicalImmutableKey(kind, encoded.substring(4));
         }
-        if (!"CONCRETE_RUNTIME_VALUE".equals(jsonString(object, "kind"))) {
+        if (!"CONCRETE_RUNTIME_VALUE".equals(string(object, "kind"))) {
             return "";
         }
-        char kind = immutableKeyKind(jsonString(object, "valueType"));
+        char kind = immutableKeyKind(string(object, "valueType"));
         JsonElement value = object.get("value");
         if (kind == 0 || value == null || value.isJsonNull()
                 || !value.isJsonPrimitive()) {
@@ -2651,31 +2533,19 @@ public final class ConcolicRegionRuntime {
     private static EngineExpressionCapture engineExpressionCapture(
             String serialized) {
         JsonElement parsed = parseJson(serialized);
-        if (parsed.isJsonObject()) {
-            JsonObject envelope = parsed.getAsJsonObject();
-            // A VM envelope can legitimately omit expression (for example
-            // CONCOLIC_DISABLED and NULL).  Recognize the envelope from its
-            // schema fields so it can never be mistaken for a legacy bare
-            // expression tree.
-            if (envelope.has("expression")
-                    || envelope.has("schemaVersion")
-                    && envelope.has("kind")
-                    && envelope.has("active")
-                    && envelope.has("symbolic")) {
-                JsonElement expression = envelope.has("expression")
-                        ? envelope.get("expression") : null;
-                return new EngineExpressionCapture(expression == null
-                        || expression.isJsonNull() ? null : expression,
-                        integer(envelope, "schemaVersion", -1),
-                        bool(envelope, "active", false),
-                        jsonString(envelope, "kind"),
-                        bool(envelope, "symbolic", false),
-                        jsonString(envelope, "expressionAuthority"),
-                        jsonString(envelope, "javaTypeDescriptor"));
-            }
+        if (!parsed.isJsonObject()) {
+            return EngineExpressionCapture.invalid();
         }
-        return new EngineExpressionCapture(parsed, -1, false, "", false,
-                "", "");
+        JsonObject envelope = parsed.getAsJsonObject();
+        JsonElement expression = envelope.get("expression");
+        return new EngineExpressionCapture(expression == null
+                || expression.isJsonNull() ? null : expression,
+                integer(envelope, "schemaVersion", -1),
+                bool(envelope, "active", false),
+                string(envelope, "kind"),
+                bool(envelope, "symbolic", false),
+                string(envelope, "expressionAuthority"),
+                string(envelope, "javaTypeDescriptor"));
     }
 
     private static final class EngineExpressionCapture {
@@ -2699,6 +2569,11 @@ public final class ConcolicRegionRuntime {
             this.symbolic = symbolic;
             this.authority = safe(authority);
             this.javaTypeDescriptor = safe(javaTypeDescriptor);
+        }
+
+        private static EngineExpressionCapture invalid() {
+            return new EngineExpressionCapture(null, -1, false, "",
+                    false, "", "");
         }
 
         private void addEvidence(JsonObject row) {
@@ -2831,8 +2706,6 @@ public final class ConcolicRegionRuntime {
         row.addProperty("occurrence", occurrence);
         row.addProperty("captureAuthority",
                 "ACTIVE_TOKEN_EXACT_ORIGINAL_CALL_ARGUMENT");
-        row.addProperty("concreteValueClass", value == null
-                ? "null" : value.getClass().getName());
         row.addProperty("concretePrimitiveValue", safe(primitiveValue));
         EngineApi api = engine();
         boolean paused = false;
@@ -2845,19 +2718,14 @@ public final class ConcolicRegionRuntime {
             if (expression == null || expression.isJsonNull()) {
                 throw new IllegalStateException("custom VM returned no "
                         + "expression for captured output value "
-                        + row.get("concreteValueClass").getAsString());
+                        + (value == null
+                        ? "null" : value.getClass().getName()));
             }
             row.add("expression", expression);
             captured.addEvidence(row);
             row.addProperty("expressionCaptured", true);
-            JsonArray projectionVerifications =
-                    active.verifyMapProjectionOutput(outputPort, outputCell,
-                            value,
-                            "ACTIVE_TOKEN_EXACT_ORIGINAL_CALL_ARGUMENT");
-            if (projectionVerifications.size() > 0) {
-                row.add("mapValueElementProjectionVerifications",
-                        projectionVerifications);
-            }
+            active.verifyMapProjectionOutput(outputPort, outputCell, value,
+                    "ACTIVE_TOKEN_EXACT_ORIGINAL_CALL_ARGUMENT");
         } catch (Throwable throwable) {
             row.addProperty("expressionCaptured", false);
             row.addProperty("expressionError", rootCause(throwable));
@@ -2926,14 +2794,9 @@ public final class ConcolicRegionRuntime {
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             row.addProperty("objectTokenScope",
                     active.activation.activationId);
-            JsonArray projectionVerifications =
-                    active.verifyMapProjectionOutput(outputPort, outputCell,
-                            assignedValue,
-                            "ACTIVE_TOKEN_EXACT_POST_INSTANCE_FIELD_ASSIGNMENT");
-            if (projectionVerifications.size() > 0) {
-                row.add("mapValueElementProjectionVerifications",
-                        projectionVerifications);
-            }
+            active.verifyMapProjectionOutput(outputPort, outputCell,
+                    assignedValue,
+                    "ACTIVE_TOKEN_EXACT_POST_INSTANCE_FIELD_ASSIGNMENT");
             ExactFieldObservation observation = observeExactField(
                     fieldOwner, request.fieldSignature);
             row.addProperty("declaredFieldOwnerVerified",
@@ -3196,24 +3059,17 @@ public final class ConcolicRegionRuntime {
             String expression, SwitchExpectation expected) {
         String siteId = safe(method) + "#u" + unitIndex;
         int occurrence = active.nextBranchOccurrence(siteId);
-        JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", siteId);
-        mapping.addProperty("method", safe(method));
-        mapping.addProperty("unitIndex", unitIndex);
-        mapping.addProperty("expression", safe(expression));
-        mapping.addProperty("occurrence", occurrence);
+        JsonObject mapping = branchMapping(method, unitIndex, expression,
+                occurrence);
         mapping.addProperty("branchKind", expected.branchKind);
         mapping.add("switchCaseKeys", GSON.toJsonTree(expected.caseKeys));
         mapping.addProperty("defaultSuccessorIndex",
                 expected.defaultSuccessorIndex());
         mapping.addProperty("observedSuccessorIndex",
                 expected.observedSuccessorIndex);
-        mapping.addProperty("outcome", expected.caseArm());
         mapping.addProperty("observedOutcome", expected.caseArm());
-        mapping.addProperty("conditionIndex", -1);
+        mapping.addProperty("rawConditionIndex", -1);
         mapping.add("conditionIndices", new JsonArray());
-        mapping.addProperty("mappingPolicy",
-                "CONCRETE_SWITCH_OBSERVATION_WITHOUT_SYMBOLIC_PC");
         active.branchMappings.add(mapping);
     }
 
@@ -3229,27 +3085,12 @@ public final class ConcolicRegionRuntime {
     private static void recordConcreteBranch(
             ActiveRegion active, String method, int unitIndex,
             String expression, boolean observedOutcome, int occurrence) {
-        String siteId = safe(method) + "#u" + unitIndex;
-        JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", siteId);
-        mapping.addProperty("method", safe(method));
-        mapping.addProperty("unitIndex", unitIndex);
-        mapping.addProperty("expression", safe(expression));
-        mapping.addProperty("occurrence", occurrence);
-        mapping.addProperty("outcome", observedOutcome);
+        JsonObject mapping = branchMapping(method, unitIndex, expression,
+                occurrence);
         mapping.addProperty("observedOutcome", observedOutcome);
-        mapping.addProperty("pathConditionSize", 0);
         mapping.addProperty("rawPathConditionSize", 0);
-        mapping.addProperty("pathConditionBaseline", 0);
         mapping.addProperty("rawPathConditionBaseline", 0);
-        mapping.addProperty("pathConditionsAdded", 0);
-        mapping.addProperty("rawPathConditionsAdded", 0);
-        mapping.addProperty("targetMethodConditionsAdded", 0);
-        mapping.addProperty("branchConditionCandidateCount", 0);
-        mapping.addProperty("conditionIndex", -1);
         mapping.addProperty("rawConditionIndex", -1);
-        mapping.addProperty("mappingPolicy",
-                "CONCRETE_OBSERVATION_WITHOUT_SYMBOLIC_PC");
         active.branchMappings.add(mapping);
     }
 
@@ -3262,61 +3103,18 @@ public final class ConcolicRegionRuntime {
         JsonArray conditions = parsed.isJsonArray()
                 ? parsed.getAsJsonArray() : new JsonArray();
         int baseline = active.lastPathConditionSize;
-        int added = Math.max(0, conditions.size() - baseline);
         VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
                 active, siteId, expression, observedOutcome, vmEventId,
                 occurrence, conditions, baseline);
-        int conditionCandidates = vmAttestation.valid
-                ? vmAttestation.conditionIndices.size() : 0;
         int conditionIndex = vmAttestation.valid
                 && vmAttestation.conditionIndices.size() == 1
                 ? vmAttestation.conditionIndices.get(0) : -1;
-        int targetMethodConditions = conditionCandidates;
-        JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", siteId);
-        mapping.addProperty("method", safe(method));
-        mapping.addProperty("unitIndex", unitIndex);
-        mapping.addProperty("expression", safe(expression));
-        mapping.addProperty("occurrence", occurrence);
-        mapping.addProperty("outcome", observedOutcome);
+        JsonObject mapping = branchMapping(method, unitIndex, expression,
+                occurrence);
         mapping.addProperty("observedOutcome", observedOutcome);
-        mapping.addProperty("pathConditionSize", conditions.size());
         mapping.addProperty("rawPathConditionSize", conditions.size());
-        mapping.addProperty("pathConditionBaseline", baseline);
         mapping.addProperty("rawPathConditionBaseline", baseline);
-        mapping.addProperty("pathConditionsAdded", added);
-        mapping.addProperty("rawPathConditionsAdded", added);
-        mapping.addProperty("targetMethodConditionsAdded",
-                targetMethodConditions);
-        mapping.addProperty("branchConditionCandidateCount",
-                conditionCandidates);
-        mapping.addProperty("conditionIndex", conditionIndex);
         mapping.addProperty("rawConditionIndex", conditionIndex);
-        mapping.addProperty("engineConditionIndex", conditionIndex);
-        mapping.addProperty("mappingPolicy",
-                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX");
-        mapping.addProperty("vmBranchEventExpected", true);
-        mapping.addProperty("vmBranchEventId", vmEventId);
-        mapping.addProperty("vmOccurrence", occurrence);
-        mapping.addProperty("vmBranchEventValidated", vmAttestation.valid);
-        mapping.addProperty("vmBranchEventAuthority",
-                vmAttestation.authority);
-        if (vmAttestation.event != null) {
-            mapping.addProperty("vmThreadContextId",
-                    longInteger(vmAttestation.event, "contextId", 0L));
-            mapping.addProperty("vmOwnerJavaThreadId",
-                    longInteger(vmAttestation.event,
-                            "ownerJavaThreadId", 0L));
-            mapping.addProperty("vmOwnerOsThreadId",
-                    longInteger(vmAttestation.event,
-                            "ownerOsThreadId", 0L));
-            mapping.addProperty("vmOpcode",
-                    integer(vmAttestation.event, "opcode", -1));
-            mapping.addProperty("vmCodePosition",
-                    string(vmAttestation.event, "codePosition"));
-            mapping.add("vmConditionIndices",
-                    array(vmAttestation.event, "conditionIndices"));
-        }
         if (conditionIndex >= 0) {
             // Gson 2.2.x exposes its native tree-copy method only at package
             // scope.
@@ -3337,26 +3135,19 @@ public final class ConcolicRegionRuntime {
                         "JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE");
             }
             if (vmAttestation.valid) {
-                mapping.addProperty("conditionAuthority",
-                        "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX");
                 BranchWitness witness = BranchWitness.vmPc(siteId,
                         safe(method), unitIndex, occurrence,
                         observedOutcome, semanticCondition, conditionIndex,
                         branchPredicateMetadata(rawOperator,
                                 semanticOperator));
                 mapping.add("witness", witness.toJson());
-                active.branchWitnesses.add(witness);
             }
-        } else if (vmAttestation.valid && conditionCandidates == 0) {
-            mapping.addProperty("conditionAuthority",
-                    "VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT");
+        } else if (vmAttestation.valid
+                && vmAttestation.conditionIndices.isEmpty()) {
             mapping.add("concreteObservation",
                     ExactConcreteBranchObservation.attested(siteId,
                             safe(method), unitIndex, occurrence,
                             observedOutcome).toJson());
-        } else if (vmAttestation.valid) {
-            mapping.addProperty("conditionAuthority",
-                    "UNRESOLVED_VM_EXACT_BRANCH_EVENT_PC_INDEX");
         }
         boolean pathConditionShrank = conditions.size() < baseline;
         if (pathConditionShrank) {
@@ -3366,8 +3157,6 @@ public final class ConcolicRegionRuntime {
             mapping.addProperty("mappingWarning",
                     "VM exact branch event rejected: "
                             + vmAttestation.error);
-            mapping.addProperty("conditionAuthority",
-                    "UNRESOLVED_VM_EXACT_BRANCH_EVENT");
         } else if (conditionIndex < 0) {
             mapping.addProperty("mappingWarning",
                     "no newly added target-method condition matches selected branch");
@@ -3401,35 +3190,17 @@ public final class ConcolicRegionRuntime {
         List<Integer> conditionIndices = attestation.valid
                 ? attestation.conditionIndices
                 : Collections.<Integer>emptyList();
-        JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", siteId);
-        mapping.addProperty("method", safe(method));
-        mapping.addProperty("unitIndex", unitIndex);
-        mapping.addProperty("expression", safe(expression));
-        mapping.addProperty("occurrence", occurrence);
+        JsonObject mapping = branchMapping(method, unitIndex, expression,
+                occurrence);
         mapping.addProperty("branchKind", expected.branchKind);
         mapping.add("switchCaseKeys", GSON.toJsonTree(expected.caseKeys));
         mapping.addProperty("defaultSuccessorIndex",
                 expected.defaultSuccessorIndex());
         mapping.addProperty("observedSuccessorIndex",
                 expected.observedSuccessorIndex);
-        mapping.addProperty("outcome", expected.caseArm());
         mapping.addProperty("observedOutcome", expected.caseArm());
-        mapping.addProperty("pathConditionSize", conditions.size());
         mapping.addProperty("rawPathConditionSize", conditions.size());
-        mapping.addProperty("pathConditionBaseline", baseline);
         mapping.addProperty("rawPathConditionBaseline", baseline);
-        mapping.addProperty("pathConditionsAdded",
-                Math.max(0, conditions.size() - baseline));
-        mapping.addProperty("rawPathConditionsAdded",
-                Math.max(0, conditions.size() - baseline));
-        mapping.addProperty("targetMethodConditionsAdded",
-                conditionIndices.size());
-        mapping.addProperty("branchConditionCandidateCount",
-                conditionIndices.size());
-        mapping.addProperty("conditionIndex",
-                conditionIndices.size() == 1
-                        ? conditionIndices.get(0) : -1);
         mapping.addProperty("rawConditionIndex",
                 conditionIndices.size() == 1
                         ? conditionIndices.get(0) : -1);
@@ -3439,42 +3210,20 @@ public final class ConcolicRegionRuntime {
             ownedConditions.add(conditions.get(conditionIndex));
         }
         mapping.add("conditions", ownedConditions);
-        mapping.addProperty("mappingPolicy",
-                "VM_THREAD_CONTEXT_EXACT_SWITCH_EVENT_ID_AND_PC_INDICES");
-        mapping.addProperty("vmBranchEventExpected", true);
-        mapping.addProperty("vmBranchEventId", vmEventId);
-        mapping.addProperty("vmBranchEventValidated", attestation.valid);
-        mapping.addProperty("vmBranchEventAuthority",
-                attestation.authority);
-        if (attestation.event != null) {
-            mapping.add("vmConditionIndices",
-                    array(attestation.event, "conditionIndices"));
-            mapping.addProperty("vmOpcode",
-                    integer(attestation.event, "opcode", -1));
-            mapping.addProperty("vmCodePosition",
-                    string(attestation.event, "codePosition"));
-        }
         if (!attestation.valid) {
             mapping.addProperty("mappingWarning",
                     "VM exact switch event rejected: "
                             + attestation.error);
-            mapping.addProperty("conditionAuthority",
-                    "UNRESOLVED_VM_EXACT_SWITCH_EVENT");
             active.addUnresolvedOnce(siteId
                     + ": exact switch event attestation failed: "
                     + attestation.error);
         } else if (conditionIndices.isEmpty()) {
-            mapping.addProperty("conditionAuthority",
-                    "VM_THREAD_CONTEXT_EXACT_CONCRETE_SWITCH_EVENT");
             mapping.addProperty("mappingWarning",
                     "switch selector was concrete; no symbolic arm guard "
                             + "is available for path closure");
             active.addUnresolvedOnce(siteId
                     + ": exact switch event has no symbolic selector "
                     + "conditions");
-        } else {
-            mapping.addProperty("conditionAuthority",
-                    "VM_THREAD_CONTEXT_EXACT_SWITCH_EVENT_PC_INDICES");
         }
         if ("EXPLORE".equals(active.activation.policy(siteId))) {
             active.addUnresolvedOnce(siteId
@@ -3483,6 +3232,17 @@ public final class ConcolicRegionRuntime {
         }
         active.lastPathConditionSize = conditions.size();
         active.branchMappings.add(mapping);
+    }
+
+    private static JsonObject branchMapping(
+            String method, int unitIndex, String expression, int occurrence) {
+        JsonObject mapping = new JsonObject();
+        mapping.addProperty("siteId", siteId(method, unitIndex));
+        mapping.addProperty("method", safe(method));
+        mapping.addProperty("unitIndex", unitIndex);
+        mapping.addProperty("expression", safe(expression));
+        mapping.addProperty("occurrence", occurrence);
+        return mapping;
     }
 
     private static VmBranchEventAttestation attestVmBranchEvent(
@@ -3500,18 +3260,18 @@ public final class ConcolicRegionRuntime {
             int occurrence, JsonArray conditions, int baseline,
             SwitchExpectation switchExpectation) {
         if (eventId <= 0L) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "marker returned a non-positive event id");
         }
         final JsonElement parsed;
         try {
             parsed = parseJson(api.branchEvents());
         } catch (Throwable throwable) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "event stream is not readable: " + rootCause(throwable));
         }
         if (!parsed.isJsonObject()) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "event stream is not a JSON object");
         }
         JsonObject envelope = parsed.getAsJsonObject();
@@ -3519,7 +3279,7 @@ public final class ConcolicRegionRuntime {
                 || !"CONCOLIC_THREAD_BRANCH_EVENTS".equals(
                 string(envelope, "kind"))
                 || !bool(envelope, "active", false)) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "unexpected or inactive event stream");
         }
         long envelopeContext = longInteger(envelope, "contextId", 0L);
@@ -3528,11 +3288,11 @@ public final class ConcolicRegionRuntime {
         long envelopeOsOwner = longInteger(envelope,
                 "ownerOsThreadId", 0L);
         if (envelopeContext <= 0L) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "missing positive VM thread context id");
         }
         if (envelopeOwner != active.thread.getId()) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "event stream belongs to Java thread " + envelopeOwner
                             + " instead of " + active.thread.getId());
         }
@@ -3540,7 +3300,7 @@ public final class ConcolicRegionRuntime {
                 string(envelope, "regionId"))
                 || !safe(active.activation.activationId).equals(
                 string(envelope, "activationId"))) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "event stream region/activation does not match owner");
         }
 
@@ -3555,13 +3315,13 @@ public final class ConcolicRegionRuntime {
             }
         }
         if (matches != 1 || selected == null) {
-            return VmBranchEventAttestation.invalid(selected, "",
+            return VmBranchEventAttestation.invalid(
                     "event id " + eventId + " matched " + matches
                             + " records");
         }
         String authority = string(selected, "authority");
         if (!"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(authority)) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "unsupported event authority " + authority);
         }
         if (longInteger(selected, "contextId", 0L) != envelopeContext
@@ -3569,37 +3329,37 @@ public final class ConcolicRegionRuntime {
                 != envelopeOwner
                 || longInteger(selected, "ownerOsThreadId", 0L)
                 != envelopeOsOwner) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "event owner/context differs from its thread envelope");
         }
         if (!safe(active.activation.regionId).equals(
                 string(selected, "regionId"))
                 || !safe(active.activation.activationId).equals(
                 string(selected, "activationId"))) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "event region/activation differs from its owner");
         }
         if (!safe(siteId).equals(string(selected, "siteId"))
                 || integer(selected, "occurrence", -1) != occurrence) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "event site/occurrence does not match prepared branch");
         }
         if (bool(selected, "outcome", !observedOutcome)
                 != observedOutcome) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "event outcome differs from observed branch");
         }
         JsonArray indices = array(selected, "conditionIndices");
         if (integer(selected, "conditionCount", -1) != indices.size()) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "event condition count differs from its index vector");
         }
         if (switchExpectation != null) {
-            return attestVmSwitchConditions(selected, authority,
+            return attestVmSwitchConditions(selected,
                     switchExpectation, indices, conditions, baseline);
         }
         if (indices.size() > 1) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "instrumented IfStmt emitted multiple condition indices");
         }
         int conditionIndex = -1;
@@ -3607,41 +3367,41 @@ public final class ConcolicRegionRuntime {
             try {
                 conditionIndex = indices.get(0).getAsInt();
             } catch (RuntimeException exception) {
-                return VmBranchEventAttestation.invalid(selected, authority,
+                return VmBranchEventAttestation.invalid(
                         "condition index is not an integer");
             }
             if (conditionIndex < baseline
                     || conditionIndex >= conditions.size()) {
-                return VmBranchEventAttestation.invalid(selected, authority,
+                return VmBranchEventAttestation.invalid(
                         "condition index " + conditionIndex
                                 + " is outside new path-condition suffix ["
                                 + baseline + "," + conditions.size() + ")");
             }
             if (!branchConditionMatches(expression, observedOutcome,
                     conditions.get(conditionIndex))) {
-                return VmBranchEventAttestation.invalid(selected, authority,
+                return VmBranchEventAttestation.invalid(
                         "selected VM condition does not match the original "
                                 + "branch predicate");
             }
         }
-        return VmBranchEventAttestation.valid(selected, authority,
+        return VmBranchEventAttestation.valid(
                 conditionIndex < 0
                         ? Collections.<Integer>emptyList()
                         : Collections.singletonList(conditionIndex));
     }
 
     private static VmBranchEventAttestation attestVmSwitchConditions(
-            JsonObject event, String authority, SwitchExpectation expected,
+            JsonObject event, SwitchExpectation expected,
             JsonArray rawIndices, JsonArray conditions, int baseline) {
         int expectedOpcode = "TABLE_SWITCH".equals(expected.branchKind)
                 ? 170 : 171;
         if (integer(event, "opcode", -1) != expectedOpcode) {
-            return VmBranchEventAttestation.invalid(event, authority,
+            return VmBranchEventAttestation.invalid(
                     "event opcode does not match static "
                             + expected.branchKind);
         }
         if (string(event, "codePosition").isEmpty()) {
-            return VmBranchEventAttestation.invalid(event, authority,
+            return VmBranchEventAttestation.invalid(
                     "switch event has no bytecode position");
         }
 
@@ -3652,21 +3412,21 @@ public final class ConcolicRegionRuntime {
         // no condition that a path worklist may negate or redirect.
         if (rawIndices.size() == 0) {
             if (conditions.size() != baseline) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "conditionless switch event does not own an empty "
                                 + "path-condition suffix");
             }
-            return VmBranchEventAttestation.valid(event, authority,
+            return VmBranchEventAttestation.valid(
                     Collections.<Integer>emptyList());
         }
         if (rawIndices.size() != completeSymbolicCount) {
-            return VmBranchEventAttestation.invalid(event, authority,
+            return VmBranchEventAttestation.invalid(
                     "switch arm owns " + rawIndices.size()
                             + " conditions; exact arm requires "
                             + completeSymbolicCount);
         }
         if (conditions.size() != baseline + completeSymbolicCount) {
-            return VmBranchEventAttestation.invalid(event, authority,
+            return VmBranchEventAttestation.invalid(
                     "switch conditions do not form the complete new "
                             + "path-condition suffix");
         }
@@ -3679,11 +3439,11 @@ public final class ConcolicRegionRuntime {
             try {
                 conditionIndex = rawIndices.get(offset).getAsInt();
             } catch (RuntimeException malformed) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "switch condition index is not an integer");
             }
             if (conditionIndex != baseline + offset) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "switch condition indices are not the exact ordered "
                                 + "new path-condition suffix");
             }
@@ -3696,7 +3456,7 @@ public final class ConcolicRegionRuntime {
             String matchedSelector = switchSelectorIfMatches(condition,
                     operator, key);
             if (matchedSelector.isEmpty()) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "switch condition " + offset
                                 + " is not selector " + operator + " "
                                 + key);
@@ -3704,19 +3464,19 @@ public final class ConcolicRegionRuntime {
             if (selector.isEmpty()) {
                 selector = matchedSelector;
             } else if (!selector.equals(matchedSelector)) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "switch conditions do not share one selector");
             }
             String conditionPosition = conditionCodePosition(condition);
             if (!conditionPosition.isEmpty()
                     && !expectedPosition.equals(conditionPosition)) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "switch condition bytecode position differs from "
                                 + "its exact event");
             }
             indices.add(conditionIndex);
         }
-        return VmBranchEventAttestation.valid(event, authority, indices);
+        return VmBranchEventAttestation.valid(indices);
     }
 
     private static String switchSelectorIfMatches(
@@ -3774,8 +3534,7 @@ public final class ConcolicRegionRuntime {
             // can reuse a symbolic value and manufacture a false condition.
             api.pausePathCondition();
             populateCompletedResult(result, active, "SYMBOLIC_CONCOLIC",
-                    "GRAPH_CHECKER_RUNTIME_HOOKS_PAUSED_V1", exitKind,
-                    exceptionType, output, true);
+                    exitKind, exceptionType, output, true);
             try {
                 String expression = api.expression(output);
                 result.add("rootOutputExpression", parseJson(expression));
@@ -3800,37 +3559,19 @@ public final class ConcolicRegionRuntime {
         // If isolation failed before metadata construction, add the minimum
         // identity only after cleanup has removed the symbolic VM context.
         if (!result.has("event")) {
-            result.addProperty("event", "CONCOLIC_REGION_RESULT");
-            result.addProperty("schemaVersion", 1);
-            result.addProperty("activationId", active.activation.activationId);
-            result.addProperty("regionId", active.activation.regionId);
-            result.addProperty("rootMethod", active.activation.rootMethod);
-            result.addProperty("exitKind", exitKind);
-            result.addProperty("exceptionType", safe(exceptionType));
-            addActivationReplayEvidence(result, active.activation);
+            addResultIdentity(result, active, "SYMBOLIC_CONCOLIC",
+                    exitKind, exceptionType);
         }
-        if (!result.has("runtimeHeapObservations")) {
-            result.add("runtimeHeapObservations",
-                    active.runtimeHeapObservationsJson());
-        }
-        appendResult(result);
+        appendCompletedResult(result, active);
     }
 
     private static void populateCompletedResult(
             JsonObject result, ActiveRegion active, String executionMode,
-            String isolationPolicy, String exitKind, String exceptionType,
-            Object output, boolean symbolicInputs) {
+            String exitKind, String exceptionType, Object output,
+            boolean symbolicInputs) {
         active.verifyRootMapProjectionOutputs(output, exitKind);
-        result.addProperty("event", "CONCOLIC_REGION_RESULT");
-        result.addProperty("schemaVersion", 1);
-        result.addProperty("executionMode", executionMode);
-        result.addProperty("pathConditionIsolationPolicy", isolationPolicy);
-        result.addProperty("activationId", active.activation.activationId);
-        result.addProperty("regionId", active.activation.regionId);
-        result.addProperty("rootMethod", active.activation.rootMethod);
-        addActivationReplayEvidence(result, active.activation);
-        result.addProperty("exitKind", exitKind);
-        result.addProperty("exceptionType", safe(exceptionType));
+        addResultIdentity(result, active, executionMode, exitKind,
+                exceptionType);
         if (output instanceof Throwable) {
             result.add("exceptionChain", exceptionChain((Throwable) output));
         }
@@ -3841,7 +3582,6 @@ public final class ConcolicRegionRuntime {
             active.pendingArrayFieldMaterialization = null;
         }
         active.validateContainerElementFieldCoverage();
-        active.validateBranchReplayContract();
         result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
         result.add("symbolizedInputs", symbolicInputs
                 ? GSON.toJsonTree(active.symbolized) : new JsonArray());
@@ -3868,11 +3608,6 @@ public final class ConcolicRegionRuntime {
                     target.binding));
         }
         result.add("finalFieldObservations", finalFields);
-        result.addProperty("modelAssignmentAppliedCount",
-                active.modelAssignmentsApplied.size());
-        result.addProperty("allModelAssignmentsApplied",
-                active.activation.modelAssignments.size()
-                        == active.modelAssignmentsApplied.size());
     }
 
     private static void finishConcreteReplay(
@@ -3881,8 +3616,7 @@ public final class ConcolicRegionRuntime {
         JsonObject result = new JsonObject();
         try {
             populateCompletedResult(result, active, "CONCRETE_REPLAY_ONLY",
-                    "CONCRETE_REPLAY_NO_SYMBOLIC_ENGINE_V1", exitKind,
-                    exceptionType, output, false);
+                    exitKind, exceptionType, output, false);
             JsonObject summary = new JsonObject();
             summary.addProperty("schemaVersion", 1);
             summary.addProperty("engine", "CONCRETE_REPLAY_ONLY");
@@ -3904,22 +3638,23 @@ public final class ConcolicRegionRuntime {
             releaseConcreteReplay();
         }
         if (!result.has("event")) {
-            result.addProperty("event", "CONCOLIC_REGION_RESULT");
-            result.addProperty("schemaVersion", 1);
-            result.addProperty("executionMode", "CONCRETE_REPLAY_ONLY");
-            result.addProperty("activationId",
-                    active.activation.activationId);
-            result.addProperty("regionId", active.activation.regionId);
-            result.addProperty("rootMethod", active.activation.rootMethod);
-            result.addProperty("exitKind", exitKind);
-            result.addProperty("exceptionType", safe(exceptionType));
-            addActivationReplayEvidence(result, active.activation);
+            addResultIdentity(result, active, "CONCRETE_REPLAY_ONLY",
+                    exitKind, exceptionType);
         }
-        if (!result.has("runtimeHeapObservations")) {
-            result.add("runtimeHeapObservations",
-                    active.runtimeHeapObservationsJson());
-        }
-        appendResult(result);
+        appendCompletedResult(result, active);
+    }
+
+    private static void addResultIdentity(
+            JsonObject result, ActiveRegion active, String executionMode,
+            String exitKind, String exceptionType) {
+        result.addProperty("event", "CONCOLIC_REGION_RESULT");
+        result.addProperty("schemaVersion", 1);
+        result.addProperty("executionMode", executionMode);
+        result.addProperty("activationId", active.activation.activationId);
+        result.addProperty("regionId", active.activation.regionId);
+        result.addProperty("exitKind", exitKind);
+        result.addProperty("exceptionType", safe(exceptionType));
+        addActivationReplayEvidence(result, active.activation);
     }
 
     private static void addActivationReplayEvidence(
@@ -3928,6 +3663,15 @@ public final class ConcolicRegionRuntime {
         if (!activation.pathQueryKey.isEmpty()) {
             result.addProperty("pathQueryKey", activation.pathQueryKey);
         }
+    }
+
+    private static void appendCompletedResult(
+            JsonObject result, ActiveRegion active) {
+        if (!result.has("runtimeHeapObservations")) {
+            result.add("runtimeHeapObservations",
+                    active.runtimeHeapObservationsJson());
+        }
+        appendResult(result);
     }
 
     private static void symbolizeReceiverFields(ActiveRegion active, EngineApi api) {
@@ -4051,8 +3795,7 @@ public final class ConcolicRegionRuntime {
                     + ": solver model could not be written to real field");
             return;
         }
-        active.recordModelAssignment(assignment, path,
-                readField(owner, field));
+        active.recordModelAssignment(assignment, path);
     }
 
     private static Object materializePrimitiveValue(
@@ -4070,7 +3813,7 @@ public final class ConcolicRegionRuntime {
                         + assignment.valueType + "=" + assignment.value);
                 modeled = concrete;
             } else {
-                active.recordModelAssignment(assignment, path, modeled);
+                active.recordModelAssignment(assignment, path);
             }
         }
         Object fresh = freshPrimitiveBox(modeled);
@@ -4474,42 +4217,6 @@ public final class ConcolicRegionRuntime {
         return safe(type).trim().replace('/', '.');
     }
 
-    private static String javaTypeDescriptor(String javaType) {
-        String value = safe(javaType).trim();
-        if (value.isEmpty()) return "";
-        if (value.startsWith("[")) {
-            return value.replace('.', '/');
-        }
-        int dimensions = 0;
-        while (value.endsWith("[]")) {
-            dimensions++;
-            value = value.substring(0, value.length() - 2).trim();
-        }
-        String base;
-        if (value.length() == 1 && "ZBCSIJFDV".contains(value)) {
-            base = value;
-        } else if ("boolean".equals(value)) base = "Z";
-        else if ("byte".equals(value)) base = "B";
-        else if ("char".equals(value)) base = "C";
-        else if ("short".equals(value)) base = "S";
-        else if ("int".equals(value)) base = "I";
-        else if ("long".equals(value)) base = "J";
-        else if ("float".equals(value)) base = "F";
-        else if ("double".equals(value)) base = "D";
-        else if ("void".equals(value)) base = "V";
-        else if (value.startsWith("L") && value.endsWith(";")) {
-            base = "L" + value.substring(1, value.length() - 1)
-                    .replace('.', '/') + ";";
-        } else {
-            base = "L" + value.replace('.', '/') + ";";
-        }
-        StringBuilder descriptor = new StringBuilder();
-        for (int index = 0; index < dimensions; index++) {
-            descriptor.append('[');
-        }
-        return descriptor.append(base).toString();
-    }
-
     private static String reflectionDescriptor(Class<?> type) {
         if (type == null) return "";
         if (type.isArray()) return type.getName().replace('.', '/');
@@ -4784,7 +4491,7 @@ public final class ConcolicRegionRuntime {
         if (condition == null || !condition.isJsonObject()) {
             return "";
         }
-        return jsonString(condition.getAsJsonObject(), "_code_position");
+        return string(condition.getAsJsonObject(), "_code_position");
     }
 
     static boolean branchConditionMatches(String expression, boolean outcome,
@@ -4793,7 +4500,7 @@ public final class ConcolicRegionRuntime {
             return false;
         }
         JsonObject object = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(jsonString(object, "_type"))) {
+        if (!"BinaryExpression".equals(string(object, "_type"))) {
             Boolean requiredValue = booleanValueRequiredByZeroBranch(
                     expression, outcome);
             Boolean representedValue = representedBooleanValue(object);
@@ -4807,7 +4514,7 @@ public final class ConcolicRegionRuntime {
         String declared = matcher.group(1);
         String expected = outcome ? declared
                 : BranchPredicateAlgebra.complementOperator(declared);
-        String observed = jsonString(object, "_op");
+        String observed = string(object, "_op");
         if (!observedOperatorImpliesBranch(expected, observed,
                 safe(expression).matches(".*\\bnull\\b.*"))) {
             return false;
@@ -4854,10 +4561,10 @@ public final class ConcolicRegionRuntime {
      * the exact String predicate lowering in both SMT encoders.
      */
     private static Boolean representedBooleanValue(JsonObject condition) {
-        if (!"OpStrExpression".equals(jsonString(condition, "_type"))) {
+        if (!"OpStrExpression".equals(string(condition, "_type"))) {
             return null;
         }
-        String operation = jsonString(condition, "_name");
+        String operation = string(condition, "_name");
         int expectedArity;
         if ("isEmpty".equals(operation)) {
             expectedArity = 1;
@@ -4905,7 +4612,7 @@ public final class ConcolicRegionRuntime {
             return condition;
         }
         JsonObject original = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(jsonString(original, "_type"))) {
+        if (!"BinaryExpression".equals(string(original, "_type"))) {
             return condition;
         }
         Matcher matcher = BRANCH_OPERATOR.matcher(safe(expression));
@@ -4915,7 +4622,7 @@ public final class ConcolicRegionRuntime {
         String expected = outcome ? matcher.group(1)
                 : BranchPredicateAlgebra.complementOperator(
                 matcher.group(1));
-        String observed = jsonString(original, "_op");
+        String observed = string(original, "_op");
         if (!observedOperatorImpliesBranch(expected, observed,
                 safe(expression).matches(".*\\bnull\\b.*"))
                 || expected.equals(observed)) {
@@ -4928,7 +4635,7 @@ public final class ConcolicRegionRuntime {
 
     private static String binaryOperator(JsonElement condition) {
         return condition != null && condition.isJsonObject()
-                ? jsonString(condition.getAsJsonObject(), "_op") : "";
+                ? string(condition.getAsJsonObject(), "_op") : "";
     }
 
     private static boolean symbolicNull(JsonElement element) {
@@ -4936,20 +4643,8 @@ public final class ConcolicRegionRuntime {
             return false;
         }
         JsonObject object = element.getAsJsonObject();
-        return "SymbolExpression".equals(jsonString(object, "_type"))
-                && "N".equals(jsonString(object, "_exp"));
-    }
-
-    private static String jsonString(JsonObject object, String member) {
-        JsonElement value = object == null ? null : object.get(member);
-        return value == null || value.isJsonNull()
-                ? "" : value.getAsString();
-    }
-
-    private static JsonObject jsonObject(JsonObject object, String member) {
-        JsonElement value = object == null ? null : object.get(member);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
+        return "SymbolExpression".equals(string(object, "_type"))
+                && "N".equals(string(object, "_exp"));
     }
 
     private static Configuration configuration() {
@@ -5085,17 +4780,6 @@ public final class ConcolicRegionRuntime {
         return result;
     }
 
-    private static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.trim().isEmpty()) {
-                    return value.trim();
-                }
-            }
-        }
-        return "";
-    }
-
     private static String safe(String value) {
         return value == null ? "" : value;
     }
@@ -5153,13 +4837,9 @@ public final class ConcolicRegionRuntime {
         private JsonElement mapExpression;
         private JsonElement keyExpression;
         private JsonElement valueExpression;
-        private JsonElement entryExpression;
         private String mapExpressionAuthority = "";
         private String keyExpressionAuthority = "";
         private String valueExpressionAuthority = "";
-        private String mapExpressionWarning = "";
-        private String entryExpressionWarning = "";
-        private String valueExpressionWarning = "";
         private String entryObservationId = "";
         private long entryObservationSequence;
         private boolean entryObservationComplete;
@@ -5185,13 +4865,9 @@ public final class ConcolicRegionRuntime {
             mapExpression = null;
             keyExpression = null;
             valueExpression = null;
-            entryExpression = null;
             mapExpressionAuthority = "";
             keyExpressionAuthority = "";
             valueExpressionAuthority = "";
-            mapExpressionWarning = "";
-            entryExpressionWarning = "";
-            valueExpressionWarning = "";
             entryObservationId = "";
             entryObservationSequence = 0L;
             entryObservationComplete = false;
@@ -5314,51 +4990,22 @@ public final class ConcolicRegionRuntime {
      * selector across executions.
      */
     private static final class EngineArrayInputBinding {
-        private static final String KIND = "ENGINE_ARRAY_TO_INPUT_PORT";
-        private static final String ENGINE_ID_AUTHORITY =
-                "VM_ACTIVE_SYM_ARRAY_ID_V1";
-        private static final String TOKEN_AUTHORITY =
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN";
-        private static final String CAPTURE_AUTHORITY =
-                "SAME_LIVE_ARRAY_AFTER_EXACT_INPUT_ACTION_SYMBOLIZATION";
+        private static final String KIND = "ENGINE_ARRAY_INPUT_BINDING";
 
-        private final int schemaVersion = 1;
+        private final int schemaVersion = 2;
         private final String kind = KIND;
         private final String sourceActivationId;
         private final String inputPort;
         private final String inputCell;
         private final String dynamicBindingId;
-        private final String inputJavaType;
         private final String inputJavaTypeDescriptor;
         private final long arrayObjectToken;
-        private final long symbolizationArrayObjectToken;
-        private final String symbolizationPrefix;
-        private final String symbolizationMode =
-                "DIRECT_ARRAY_VALUE_WITH_CANONICAL_INPUT_PREFIX";
-        private final String symbolizationIdentityAuthority =
-                "SAME_JAVA_REFERENCE_PASSED_TO_SYMBOLIZE_AND_"
-                        + "EXPRESSION_CAPTURE";
-        private final String objectTokenAuthority = TOKEN_AUTHORITY;
-        private final String objectTokenScope;
-        private final String captureAuthority = CAPTURE_AUTHORITY;
         private String engineArrayId = "";
-        private String engineArrayIdAuthority = "";
-        private String vmArrayValueAuthority = "";
-        private String vmArrayJavaTypeDescriptor = "";
-        private String vmComponentJavaTypeDescriptor = "";
         private JsonObject arrayValueExpression = new JsonObject();
         private int reflectedArrayLength = -1;
-        private int vmConcreteLength = -1;
         private boolean sameArrayObjectTokenVerified;
-        private boolean fieldPrePostReferenceVerified;
-        private boolean vmActive;
-        private boolean vmSymbolic;
         private boolean complete;
         private String problem = "";
-        private long consumedLeafOwnerObjectToken;
-        private String consumedLeafFieldSignature = "";
-        private final List<String> consumedLogicalFieldPath =
-                new ArrayList<>();
 
         private EngineArrayInputBinding(ActiveRegion active,
                                         Object array,
@@ -5372,13 +5019,9 @@ public final class ConcolicRegionRuntime {
             this.inputCell = safe(canonicalInputCell);
             this.dynamicBindingId = dynamicBinding == null ? ""
                     : dynamicBinding.dynamicBindingId;
-            this.inputJavaType = safe(declaredType.javaType);
             this.inputJavaTypeDescriptor = reflectionDescriptor(
                     array == null ? null : array.getClass());
             this.arrayObjectToken = active.objectToken(array);
-            this.symbolizationArrayObjectToken = expectedToken;
-            this.symbolizationPrefix = this.inputPort;
-            this.objectTokenScope = active.activation.activationId;
         }
 
         private static EngineArrayInputBinding capture(
@@ -5420,8 +5063,7 @@ public final class ConcolicRegionRuntime {
                 binding.fail("symbolized live input is not a non-null array");
                 return binding;
             }
-            binding.fieldPrePostReferenceVerified = postReadArray == array;
-            if (!binding.fieldPrePostReferenceVerified) {
+            if (postReadArray != array) {
                 binding.fail("field value reference changed between direct "
                         + "array symbolization and post-symbolization read");
             }
@@ -5460,11 +5102,9 @@ public final class ConcolicRegionRuntime {
                     return binding;
                 }
                 JsonObject envelope = parsed.getAsJsonObject();
-                binding.vmActive = bool(envelope, "active", false);
-                binding.vmSymbolic = bool(envelope, "symbolic", false);
                 if (integer(envelope, "schemaVersion", -1) != 1
-                        || !binding.vmActive
-                        || !binding.vmSymbolic
+                        || !bool(envelope, "active", false)
+                        || !bool(envelope, "symbolic", false)
                         || !"ARRAY_VALUE".equals(string(envelope,
                         "kind"))) {
                     binding.fail("VM envelope is not one active symbolic "
@@ -5484,54 +5124,34 @@ public final class ConcolicRegionRuntime {
                     binding.fail("VM finite-array expression schema is "
                             + "unsupported");
                 }
-                binding.vmArrayValueAuthority = string(expression,
-                        "_authority");
-                if (!"VM_EXACT_FINITE_ARRAY_VALUE_V1".equals(
-                        binding.vmArrayValueAuthority)) {
-                    binding.fail("VM finite-array value authority is invalid");
-                }
-                binding.vmArrayJavaTypeDescriptor = string(expression,
+                String expressionDescriptor = string(expression,
                         "_java_type").replace('.', '/');
-                binding.vmComponentJavaTypeDescriptor = string(expression,
-                        "_component_java_type").replace('.', '/');
                 if (!binding.inputJavaTypeDescriptor.equals(
-                        binding.vmArrayJavaTypeDescriptor)) {
+                        expressionDescriptor)) {
                     binding.fail("VM array descriptor differs from the same "
                             + "live input array");
                 }
                 String expectedComponent = binding.inputJavaTypeDescriptor
                         .startsWith("[")
                         ? binding.inputJavaTypeDescriptor.substring(1) : "";
-                if (!expectedComponent.equals(
-                        binding.vmComponentJavaTypeDescriptor)) {
+                if (!expectedComponent.equals(string(expression,
+                        "_component_java_type").replace('.', '/'))) {
                     binding.fail("VM component descriptor differs from the "
                             + "live input array component");
-                }
-                binding.vmConcreteLength = integer(expression,
-                        "_concrete_length", -1);
-                if (binding.vmConcreteLength
-                        != binding.reflectedArrayLength) {
-                    binding.fail("VM array length differs from reflection: "
-                            + binding.vmConcreteLength + " != "
-                            + binding.reflectedArrayLength);
                 }
                 binding.validateFiniteElements(expression,
                         expectedComponent, array);
                 binding.engineArrayId = string(expression,
                         "_engine_array_id");
-                binding.engineArrayIdAuthority = string(expression,
-                        "_engine_array_id_authority");
                 char expectedIdType = expectedComponent.isEmpty()
                         ? '\0' : expectedComponent.charAt(0);
                 if (binding.engineArrayId.isEmpty()
                         || !binding.engineArrayId.matches("A._[0-9]+")
                         || binding.engineArrayId.length() < 4
                         || binding.engineArrayId.charAt(1)
-                        != expectedIdType
-                        || !ENGINE_ID_AUTHORITY.equals(
-                        binding.engineArrayIdAuthority)) {
-                    binding.fail("VM active symbolic-array id/authority is "
-                            + "missing, malformed, or disagrees with the "
+                        != expectedIdType) {
+                    binding.fail("VM active symbolic-array id is missing, "
+                            + "malformed, or disagrees with the "
                             + "component descriptor");
                 }
             } catch (Throwable throwable) {
@@ -5560,88 +5180,73 @@ public final class ConcolicRegionRuntime {
         private void validateFiniteElements(JsonObject expression,
                                             String componentDescriptor,
                                             Object concreteArray) {
-            JsonElement lengthValue = expression.get("_length_exp");
-            if (lengthValue == null || !lengthValue.isJsonObject()) {
-                fail("VM finite-array length expression is missing");
-            } else {
-                JsonObject length = lengthValue.getAsJsonObject();
-                if (!"ConstExpr".equals(string(length, "_type"))
-                        || !"I".equals(string(length, "_java_type"))
-                        || !("Y_I_" + reflectedArrayLength).equals(
-                        string(length, "_exp"))) {
-                    fail("VM finite-array length expression is not the "
-                            + "exact reflected length constant");
-                }
-            }
-            if (!bool(expression, "_elements_complete", false)) {
-                fail("VM finite-array element snapshot is incomplete");
-            }
-            JsonElement elementsValue = expression.get("_elements");
-            if (elementsValue == null || !elementsValue.isJsonArray()) {
-                fail("VM finite-array elements are missing");
+            int length = integer(expression, "_concrete_length", -1);
+            JsonArray elements = array(expression, "_elements");
+            if (length != reflectedArrayLength
+                    || !bool(expression, "_elements_complete", false)
+                    || elements.size() != reflectedArrayLength) {
+                fail("VM finite-array length/elements differ from the "
+                        + "reflected array");
                 return;
             }
-            JsonArray elements = elementsValue.getAsJsonArray();
-            if (elements.size() != reflectedArrayLength) {
-                fail("VM finite-array element count differs from reflected "
-                        + "length");
-            }
-            Set<Integer> indices = new LinkedHashSet<>();
-            for (int ordinal = 0; ordinal < elements.size(); ordinal++) {
-                JsonElement elementValue = elements.get(ordinal);
-                if (!elementValue.isJsonObject()) {
-                    fail("VM finite-array element " + ordinal
-                            + " is malformed");
+            for (int index = 0; index < elements.size(); index++) {
+                JsonElement encoded = elements.get(index);
+                if (!encoded.isJsonObject()) {
+                    fail("VM finite-array element is malformed at " + index);
                     continue;
                 }
-                JsonObject element = elementValue.getAsJsonObject();
-                int index = integer(element, "index", -1);
-                if (index != ordinal || index < 0
-                        || index >= reflectedArrayLength
-                        || !indices.add(index)) {
-                    fail("VM finite-array element index is not one exact "
-                            + "contiguous ordinal at " + ordinal);
-                }
+                JsonObject element = encoded.getAsJsonObject();
                 JsonElement value = element.get("expression");
-                if (value == null || !value.isJsonObject()) {
-                    fail("VM finite-array element expression is missing at "
-                            + ordinal);
-                    continue;
-                }
                 String provenance = string(element, "provenance");
-                if (!validElementProvenance(provenance, value,
-                        componentDescriptor)) {
-                    fail("VM finite-array element provenance is invalid at "
-                            + ordinal);
-                }
-                if (!elementTypeCompatible(value,
-                        componentDescriptor)) {
-                    fail("VM finite-array element type differs from its "
-                            + "component descriptor at " + ordinal);
-                }
-                if ("CONCRETE_PRIMITIVE".equals(provenance)
+                if (integer(element, "index", -1) != index
+                        || value == null || !value.isJsonObject()
+                        || !validElement(provenance, value,
+                        componentDescriptor)
+                        || "CONCRETE_PRIMITIVE".equals(provenance)
                         && !exactPrimitiveLiteral(value.getAsJsonObject(),
-                        componentDescriptor, concreteArray, ordinal)) {
-                    fail("VM concrete primitive literal differs from the "
-                            + "reflected array element at " + ordinal);
+                        componentDescriptor, concreteArray, index)) {
+                    fail("VM finite-array element does not match the live "
+                            + "array at " + index);
                 }
             }
         }
 
-        private static boolean exactPrimitiveLiteral(
-                JsonObject expression, String componentDescriptor,
-                Object concreteArray, int index) {
-            if (concreteArray == null || !concreteArray.getClass().isArray()
-                    || componentDescriptor.length() != 1) {
-                return false;
+        private static boolean validElement(
+                String provenance, JsonElement expression,
+                String componentDescriptor) {
+            JsonObject value = expression.getAsJsonObject();
+            String encodedType = string(value, "_type");
+            String encodedValue = string(value, "_exp");
+            boolean typeCompatible = "N".equals(encodedValue)
+                    ? componentDescriptor.startsWith("L")
+                    || componentDescriptor.startsWith("[")
+                    : componentDescriptor.equals(javaTypeDescriptor(
+                    string(value, "_java_type")));
+            if (!typeCompatible) return false;
+            if ("CONCRETE_NULL".equals(provenance)) {
+                return "SymbolExpression".equals(encodedType)
+                        && "N".equals(encodedValue);
             }
-            char type = componentDescriptor.charAt(0);
+            if ("CONCRETE_PRIMITIVE".equals(provenance)) {
+                return componentDescriptor.length() == 1
+                        && "ZBCSIJFD".contains(componentDescriptor)
+                        && "ConstExpr".equals(encodedType);
+            }
+            return "ARRAY_SHADOW".equals(provenance)
+                    || "SYMBOLIC_ELEMENT".equals(provenance);
+        }
+
+        private static boolean exactPrimitiveLiteral(
+                JsonObject expression, String descriptor,
+                Object array, int index) {
+            if (descriptor.length() != 1) return false;
+            char type = descriptor.charAt(0);
             String prefix = "Y_" + type + "_";
             String encoded = string(expression, "_exp");
             if (!encoded.startsWith(prefix)) return false;
             String literal = encoded.substring(prefix.length());
             try {
-                Object concrete = Array.get(concreteArray, index);
+                Object concrete = Array.get(array, index);
                 switch (type) {
                     case 'Z':
                         return (Boolean.TRUE.equals(concrete) ? "1" : "0")
@@ -5651,8 +5256,7 @@ public final class ConcolicRegionRuntime {
                                 == ((Number) concrete).byteValue();
                     case 'C':
                         return concrete instanceof Character
-                                && literal.equals(String.valueOf(
-                                ((Character) concrete).charValue()));
+                                && literal.equals(String.valueOf(concrete));
                     case 'S':
                         return Short.parseShort(literal)
                                 == ((Number) concrete).shortValue();
@@ -5674,53 +5278,14 @@ public final class ConcolicRegionRuntime {
                     default:
                         return false;
                 }
-            } catch (Throwable ignored) {
+            } catch (RuntimeException malformed) {
                 return false;
             }
-        }
-
-        private static boolean validElementProvenance(
-                String provenance, JsonElement expression,
-                String componentDescriptor) {
-            JsonObject value = expression.getAsJsonObject();
-            if ("CONCRETE_NULL".equals(provenance)) {
-                return (componentDescriptor.startsWith("L")
-                        || componentDescriptor.startsWith("["))
-                        && "SymbolExpression".equals(string(value,
-                        "_type")) && "N".equals(string(value, "_exp"));
-            }
-            if ("CONCRETE_PRIMITIVE".equals(provenance)) {
-                return componentDescriptor.length() == 1
-                        && "ZBCSIJFD".contains(componentDescriptor)
-                        && "ConstExpr".equals(string(value, "_type"));
-            }
-            return "ARRAY_SHADOW".equals(provenance)
-                    || "SYMBOLIC_ELEMENT".equals(provenance);
-        }
-
-        private static boolean elementTypeCompatible(
-                JsonElement expression, String componentDescriptor) {
-            JsonObject value = expression.getAsJsonObject();
-            if ("N".equals(string(value, "_exp"))) {
-                return componentDescriptor.startsWith("L")
-                        || componentDescriptor.startsWith("[");
-            }
-            return componentDescriptor.equals(javaTypeDescriptor(
-                    string(value, "_java_type")));
         }
 
         private void fail(String detail) {
             complete = false;
             problem = appendReason(problem, detail);
-        }
-
-        private void markConsumedLeaf(ActiveRegion active, Object leafOwner,
-                                      String leafFieldSignature,
-                                      List<String> logicalFieldPath) {
-            this.consumedLeafOwnerObjectToken = active.objectToken(leafOwner);
-            this.consumedLeafFieldSignature = safe(leafFieldSignature);
-            this.consumedLogicalFieldPath.clear();
-            this.consumedLogicalFieldPath.addAll(logicalFieldPath);
         }
 
         private JsonObject toJson() {
@@ -5730,42 +5295,12 @@ public final class ConcolicRegionRuntime {
             result.addProperty("sourceActivationId", sourceActivationId);
             result.addProperty("inputPort", inputPort);
             result.addProperty("inputCell", inputCell);
-            if (!dynamicBindingId.isEmpty()) {
-                result.addProperty("dynamicBindingId", dynamicBindingId);
-            }
-            result.addProperty("inputJavaType", inputJavaType);
             result.addProperty("inputJavaTypeDescriptor",
                     inputJavaTypeDescriptor);
-            result.addProperty("symbolizationPrefix",
-                    symbolizationPrefix);
-            result.addProperty("symbolizationMode", symbolizationMode);
-            result.addProperty("symbolizationArrayObjectToken",
-                    symbolizationArrayObjectToken);
-            result.addProperty("symbolizationIdentityAuthority",
-                    symbolizationIdentityAuthority);
             result.addProperty("engineArrayId", engineArrayId);
-            result.addProperty("engineArrayIdAuthority",
-                    engineArrayIdAuthority);
             result.addProperty("arrayObjectToken", arrayObjectToken);
-            result.addProperty("objectTokenAuthority",
-                    objectTokenAuthority);
-            result.addProperty("objectTokenScope", objectTokenScope);
-            result.addProperty("crossExecutionOrdinalAuthority", "NONE");
-            result.addProperty("captureAuthority", captureAuthority);
             result.add("arrayValueExpression",
                     copyJsonTree(arrayValueExpression));
-            result.addProperty("sameArrayObjectTokenVerified",
-                    sameArrayObjectTokenVerified);
-            result.addProperty("consumedLeafOwnerObjectToken",
-                    consumedLeafOwnerObjectToken);
-            if (!consumedLeafFieldSignature.isEmpty()) {
-                result.addProperty("consumedLeafFieldSignature",
-                        consumedLeafFieldSignature);
-                result.add("consumedLogicalFieldPath",
-                        GSON.toJsonTree(consumedLogicalFieldPath));
-            }
-            result.addProperty("complete", complete);
-            if (!problem.isEmpty()) result.addProperty("problem", problem);
             return result;
         }
     }
@@ -6006,8 +5541,7 @@ public final class ConcolicRegionRuntime {
                             return snapshot;
                         }
                         active.recordModelAssignment(assignment,
-                                spec.fieldPath, observeExactField(element,
-                                spec.declaredFieldSignature).value);
+                                spec.fieldPath);
                     }
                     ExactFieldObservation entryField = observeExactField(
                             element, spec.declaredFieldSignature);
@@ -6142,7 +5676,6 @@ public final class ConcolicRegionRuntime {
 
         private JsonObject entryObservation() {
             JsonObject row = baseObservation("ENTRY_SNAPSHOT");
-            row.addProperty("snapshotElementCount", elements.length);
             JsonArray tokens = new JsonArray();
             for (long token : elementObjectTokens) {
                 tokens.add(new JsonPrimitive(Long.valueOf(token)));
@@ -6246,9 +5779,6 @@ public final class ConcolicRegionRuntime {
                     outputArrayObjectToken);
             row.addProperty("outputVerificationAuthority",
                     outputVerificationAuthority);
-            row.addProperty("projectedFieldBindingCount", bindings.size());
-            row.addProperty("outputFieldValueVerifiedCount",
-                    outputFieldValueVerifiedCount);
             row.addProperty("outputFieldValueFlowVerified",
                     complete && outputFieldValueVerifiedCount
                     == bindings.size() && !bindings.isEmpty());
@@ -6502,7 +6032,6 @@ public final class ConcolicRegionRuntime {
         private final Object leafOwner;
         private final String leafFieldSignature;
         private final String leafFieldName;
-        private final List<String> logicalFieldPath;
         private final Object expectedReference;
         private final long expectedObjectToken;
         private final DeclaredArrayInputType declaredType;
@@ -6510,8 +6039,7 @@ public final class ConcolicRegionRuntime {
         private PendingArrayFieldMaterialization(
                 String method, int unitIndex, SymbolizeAction action,
                 Object leafOwner, String leafFieldSignature,
-                String leafFieldName, List<String> logicalFieldPath,
-                Object expectedReference,
+                String leafFieldName, Object expectedReference,
                 long expectedObjectToken,
                 DeclaredArrayInputType declaredType) {
             this.method = safe(method);
@@ -6521,7 +6049,6 @@ public final class ConcolicRegionRuntime {
             this.leafOwner = leafOwner;
             this.leafFieldSignature = safe(leafFieldSignature);
             this.leafFieldName = safe(leafFieldName);
-            this.logicalFieldPath = new ArrayList<>(logicalFieldPath);
             this.expectedReference = expectedReference;
             this.expectedObjectToken = expectedObjectToken;
             this.declaredType = declaredType;
@@ -6655,18 +6182,13 @@ public final class ConcolicRegionRuntime {
     }
 
     private static final class VmBranchEventAttestation {
-        private final JsonObject event;
-        private final String authority;
         private final List<Integer> conditionIndices;
         private final boolean valid;
         private final String error;
 
-        private VmBranchEventAttestation(JsonObject event, String authority,
-                                         List<Integer> conditionIndices,
+        private VmBranchEventAttestation(List<Integer> conditionIndices,
                                          boolean valid,
                                          String error) {
-            this.event = event;
-            this.authority = safe(authority);
             this.conditionIndices = Collections.unmodifiableList(
                     new ArrayList<>(conditionIndices));
             this.valid = valid;
@@ -6674,15 +6196,12 @@ public final class ConcolicRegionRuntime {
         }
 
         private static VmBranchEventAttestation valid(
-                JsonObject event, String authority,
                 List<Integer> conditionIndices) {
-            return new VmBranchEventAttestation(event, authority,
-                    conditionIndices, true, "");
+            return new VmBranchEventAttestation(conditionIndices, true, "");
         }
 
-        private static VmBranchEventAttestation invalid(
-                JsonObject event, String authority, String error) {
-            return new VmBranchEventAttestation(event, authority,
+        private static VmBranchEventAttestation invalid(String error) {
+            return new VmBranchEventAttestation(
                     Collections.<Integer>emptyList(), false, error);
         }
     }
@@ -6722,7 +6241,6 @@ public final class ConcolicRegionRuntime {
         private final List<String> unresolved = new ArrayList<>();
         private final Set<String> unresolvedUnique = new LinkedHashSet<>();
         private final List<JsonObject> branchMappings = new ArrayList<>();
-        private final List<BranchWitness> branchWitnesses = new ArrayList<>();
         private final List<JsonObject> runtimeHeapObservations =
                 new ArrayList<>();
         private final List<JsonObject> finiteMapSnapshots =
@@ -6980,49 +6498,7 @@ public final class ConcolicRegionRuntime {
                     EngineArrayInputBinding.capture(this, action,
                             symbolizedValue, postReadValue,
                             symbolizationToken, declaredType, api);
-            EngineArrayInputBinding samePort = engineArrayInputByPort.get(
-                    candidate.inputPort);
-            if (samePort != null) {
-                if (samePort.arrayObjectToken
-                        != candidate.arrayObjectToken
-                        || !samePort.engineArrayId.equals(
-                        candidate.engineArrayId)) {
-                    samePort.fail("one input port was observed with more "
-                            + "than one live array token or VM array id");
-                    addUnresolvedOnce(candidate.inputPort
-                            + ": engine-array input binding is ambiguous: "
-                            + samePort.problem);
-                }
-                return;
-            }
-
-            if (!candidate.engineArrayId.isEmpty()) {
-                EngineArrayInputBinding sameId =
-                        engineArrayInputByEngineId.get(
-                                candidate.engineArrayId);
-                if (sameId != null && (!sameId.inputPort.equals(
-                        candidate.inputPort) || sameId.arrayObjectToken
-                        != candidate.arrayObjectToken)) {
-                    sameId.fail("one VM engine array id resolved to a "
-                            + "different input port or activation-local "
-                            + "object token");
-                    candidate.fail("one VM engine array id resolved to a "
-                            + "different input port or activation-local "
-                            + "object token");
-                    addUnresolvedOnce(candidate.engineArrayId
-                            + ": VM array id aliases distinct live arrays");
-                } else if (sameId == null) {
-                    engineArrayInputByEngineId.put(candidate.engineArrayId,
-                            candidate);
-                }
-            }
-            engineArrayInputByPort.put(candidate.inputPort, candidate);
-            engineArrayInputBindings.add(candidate);
-            if (!candidate.complete) {
-                addUnresolvedOnce(candidate.inputPort
-                        + ": engine-array input binding failed closed: "
-                        + candidate.problem);
-            }
+            retainEngineArrayInputBinding(candidate);
         }
 
         private void captureDynamicEngineArrayInputBinding(
@@ -7038,6 +6514,11 @@ public final class ConcolicRegionRuntime {
                             symbolizationToken, declaredType,
                             dynamicBinding.dynamicFieldSymbol, action.cell,
                             dynamicBinding, api);
+            retainEngineArrayInputBinding(candidate);
+        }
+
+        private void retainEngineArrayInputBinding(
+                EngineArrayInputBinding candidate) {
             EngineArrayInputBinding samePort = engineArrayInputByPort.get(
                     candidate.inputPort);
             if (samePort != null) {
@@ -7045,7 +6526,7 @@ public final class ConcolicRegionRuntime {
                         != candidate.arrayObjectToken
                         || !samePort.engineArrayId.equals(
                         candidate.engineArrayId)) {
-                    samePort.fail("one dynamic input port was observed with "
+                    samePort.fail("one input port was observed with "
                             + "more than one live array token or VM array id");
                     addUnresolvedOnce(candidate.inputPort
                             + ": engine-array input binding is ambiguous: "
@@ -7061,9 +6542,9 @@ public final class ConcolicRegionRuntime {
                         candidate.inputPort) || sameId.arrayObjectToken
                         != candidate.arrayObjectToken)) {
                     sameId.fail("one VM engine array id resolved to a "
-                            + "different dynamic input or object token");
+                            + "different input or object token");
                     candidate.fail("one VM engine array id resolved to a "
-                            + "different dynamic input or object token");
+                            + "different input or object token");
                     addUnresolvedOnce(candidate.engineArrayId
                             + ": VM array id aliases distinct live arrays");
                 } else if (sameId == null) {
@@ -7160,10 +6641,9 @@ public final class ConcolicRegionRuntime {
             }
         }
 
-        private JsonArray verifyMapProjectionOutput(
+        private void verifyMapProjectionOutput(
                 String outputPort, String outputCell, Object candidate,
                 String authority) {
-            JsonArray rows = new JsonArray();
             for (MapProjectionSnapshot snapshot
                     : mapProjectionSnapshots.values()) {
                 if (snapshot.specs.isEmpty()) continue;
@@ -7174,7 +6654,6 @@ public final class ConcolicRegionRuntime {
                 }
                 JsonObject row = snapshot.verifyOutput(this, candidate,
                         authority, true);
-                rows.add(row);
                 mapProjectionObservations.add(row);
                 if (!snapshot.complete
                         || !snapshot.outputIdentityVerified) {
@@ -7183,7 +6662,6 @@ public final class ConcolicRegionRuntime {
                             "output identity validation incomplete"));
                 }
             }
-            return rows;
         }
 
         private void verifyRootMapProjectionOutputs(Object rootOutput,
@@ -7727,39 +7205,6 @@ public final class ConcolicRegionRuntime {
             return selected;
         }
 
-        private int exactAppliedNullRows(ModelAssignment assignment) {
-            if (assignment == null || !assignment.explicitNullModel()) {
-                return 0;
-            }
-            int matches = 0;
-            for (JsonObject row : modelAssignmentsApplied) {
-                Boolean modelIsNull = strictBoolean(row, "modelIsNull");
-                Boolean realDefinition = strictBoolean(row,
-                        "materializeAtRealDefinition");
-                if (assignment.key.equals(strictString(row,
-                        "modelAssignmentKey"))
-                        && assignment.engineSymbol.equals(strictString(row,
-                        "engineSymbol"))
-                        && assignment.inputSymbol.equals(strictString(row,
-                        "inputSymbol"))
-                        && assignment.targetActionSha256.equals(
-                        strictString(row, "targetActionSha256"))
-                        && "NULL".equals(strictString(row, "valueType"))
-                        && "null".equals(strictString(row, "value"))
-                        && "Z3_PATH_FLIP_MODEL".equals(strictString(row,
-                        "authority"))
-                        && Boolean.TRUE.equals(modelIsNull)
-                        && Boolean.TRUE.equals(realDefinition)
-                        && "null".equals(strictString(row,
-                        "concreteValueClass"))
-                        && assignment.target.toString().equals(
-                        jsonObject(row, "target").toString())) {
-                    matches++;
-                }
-            }
-            return matches;
-        }
-
         private boolean hasAppliedExactNullReferenceAssignment(
                 SymbolizeAction action) {
             if (action == null || !action.declaresReferenceInput()
@@ -7771,7 +7216,7 @@ public final class ConcolicRegionRuntime {
                     : activation.modelAssignments) {
                 if (assignment.matches(action, null)
                         && assignment.exactNullReferenceModel(action)
-                        && exactAppliedNullRows(assignment) == 1) {
+                        && appliedModelAssignments.contains(assignment.key)) {
                     matches++;
                 }
             }
@@ -7880,20 +7325,6 @@ public final class ConcolicRegionRuntime {
             return result;
         }
 
-        /** Validates the one immutable VM-PC branch replay contract. */
-        private BranchReplayObservationValidator.Result
-        validateBranchReplayContract() {
-            BranchReplayObservationValidator.Result result =
-                    BranchReplayObservationValidator.validate(
-                            activation.replayContract, branchWitnesses);
-            if (!result.valid()) {
-                for (String failure : result.failures()) {
-                    addUnresolvedOnce("branch replay contract: " + failure);
-                }
-            }
-            return result;
-        }
-
         private void validateContainerElementFieldCoverage() {
             Set<String> declarations = new LinkedHashSet<>();
             for (ContainerElementFieldBindingSpec spec
@@ -7931,17 +7362,14 @@ public final class ConcolicRegionRuntime {
         }
 
         private void recordModelAssignment(ModelAssignment assignment,
-                                           List<String> path,
-                                           Object concreteValue) {
-            recordModelAssignment(assignment, assignment.toJson(), path,
-                    concreteValue);
+                                           List<String> path) {
+            recordModelAssignment(assignment, assignment.appliedJson(), path);
         }
 
         private void recordDynamicContainerModelAssignment(
                 ModelAssignment assignment, List<String> path,
-                DynamicFieldBinding binding,
-                Object concreteValue) {
-            JsonObject row = assignment.toJson();
+                DynamicFieldBinding binding) {
+            JsonObject row = assignment.appliedJson();
             boolean captured = binding != null && binding.complete
                     && binding.containerSelector != null
                     && binding.containerSelector.complete;
@@ -7951,20 +7379,13 @@ public final class ConcolicRegionRuntime {
             }
             row.addProperty("sameSourceContainerIdentityClaimed", false);
             row.addProperty("currentContainerSelectorCaptured", captured);
-            recordModelAssignment(assignment, row, path, concreteValue);
+            recordModelAssignment(assignment, row, path);
         }
 
-        /**
-         * Records a map-entry assignment using only the selector observed in
-         * this execution.  A solver plan may select the exact static
-         * base/site/occurrence, but it never authorizes reuse of the seed
-         * execution's entry key or object identity.
-         */
         private void recordDynamicMapModelAssignment(
                 ModelAssignment assignment, List<String> path,
-                DynamicFieldBinding binding,
-                Object concreteValue) {
-            JsonObject row = assignment.toJson();
+                DynamicFieldBinding binding) {
+            JsonObject row = assignment.appliedJson();
             if (assignment.usesFreshMapEntryRebinding()) {
                 row.remove("expectedEntryKey");
                 row.remove("expectedEntryKeyAuthority");
@@ -7990,17 +7411,14 @@ public final class ConcolicRegionRuntime {
                     }
                 }
             }
-            recordModelAssignment(assignment, row, path, concreteValue);
+            recordModelAssignment(assignment, row, path);
         }
 
         private void recordModelAssignment(ModelAssignment assignment,
                                            JsonObject row,
-                                           List<String> path,
-                                           Object concreteValue) {
+                                           List<String> path) {
             appliedModelAssignments.add(assignment.key);
             row.addProperty("modelAssignmentKey", assignment.key);
-            row.addProperty("concreteValueClass", concreteValue == null
-                    ? "null" : concreteValue.getClass().getName());
             if (path != null && !path.isEmpty()) {
                 row.add("materializationPath", GSON.toJsonTree(path));
             }
@@ -8621,30 +8039,7 @@ public final class ConcolicRegionRuntime {
                         "consumed getfield has no exact declared leaf "
                                 + "signature/owner join");
             }
-            boolean declaredByAction = false;
-            Set<String> candidates = new LinkedHashSet<>(
-                    leafFieldSignaturesByPath.values());
-            candidates.add(accessFieldSignature);
-            candidates.add(field);
-            candidates.add(cell);
-            if (!leafOwnerClass.isEmpty() && !leafField.isEmpty()
-                    && !javaType.isEmpty()) {
-                candidates.add("<" + leafOwnerClass + ": " + javaType
-                        + " " + leafField + ">");
-            }
-            for (String candidate : candidates) {
-                String[] declaration = declaredField(candidate);
-                if (safe(candidate).equals(safe(actualSignature))
-                        && declaration != null
-                        && declaration[0].equals(actual[0])
-                        && declaration[2].equals(actual[2])
-                        && javaTypeDescriptor(declaration[1]).equals(
-                        javaTypeDescriptor(actual[1]))) {
-                    declaredByAction = true;
-                    break;
-                }
-            }
-            if (!declaredByAction) {
+            if (!declaresConsumedLeaf(actualSignature, actual)) {
                 return DeclaredArrayInputType.incomplete(
                         "actual consumed leaf declaration is absent from "
                                 + "the symbolize action");
@@ -8686,6 +8081,11 @@ public final class ConcolicRegionRuntime {
                     || !instanceOfName(leafOwner.getClass(), actual[0])) {
                 return false;
             }
+            return declaresConsumedLeaf(actualSignature, actual);
+        }
+
+        private boolean declaresConsumedLeaf(String actualSignature,
+                                             String[] actual) {
             Set<String> candidates = new LinkedHashSet<>(
                     leafFieldSignaturesByPath.values());
             candidates.add(accessFieldSignature);
@@ -9625,7 +9025,7 @@ public final class ConcolicRegionRuntime {
                     "nullableStringEncodingAuthority");
             this.referenceNullnessEncodingAuthority = string(json,
                     "referenceNullnessEncodingAuthority");
-            this.target = copyJsonTree(jsonObject(json, "target"));
+            this.target = copyJsonTree(object(json, "target"));
             this.targetActionSha256 = sha256Json(this.target);
             for (JsonElement element : array(json,
                     "materializationPath")) {
@@ -9664,11 +9064,6 @@ public final class ConcolicRegionRuntime {
                     nullableStringEncodingAuthority)
                     : REFERENCE_NULLNESS_ENCODING_AUTHORITY.equals(
                     referenceNullnessEncodingAuthority);
-        }
-
-        private boolean explicitNullModel() {
-            return "NULL".equalsIgnoreCase(valueType)
-                    && "null".equalsIgnoreCase(value);
         }
 
         private boolean matches(SymbolizeAction action,
@@ -10061,7 +9456,7 @@ public final class ConcolicRegionRuntime {
             return UnsupportedReplayValue.INSTANCE;
         }
 
-        private JsonObject toJson() {
+        private JsonObject appliedJson() {
             JsonObject result = new JsonObject();
             result.addProperty("modelAssignmentKey", key);
             result.addProperty("engineSymbol", engineSymbol);
@@ -10094,9 +9489,6 @@ public final class ConcolicRegionRuntime {
             if (!referenceNullnessEncodingAuthority.isEmpty()) {
                 result.addProperty("referenceNullnessEncodingAuthority",
                         referenceNullnessEncodingAuthority);
-            }
-            if (!modelOperation.isEmpty()) {
-                result.addProperty("modelOperation", modelOperation);
             }
             if (!dynamicBindingId.isEmpty()) {
                 result.addProperty("dynamicBindingId", dynamicBindingId);
@@ -10139,75 +9531,6 @@ public final class ConcolicRegionRuntime {
                         containerReplayRebindingAuthority);
                 result.addProperty("sourceContainerObjectTokensRetained",
                         sourceContainerObjectTokensRetained);
-            }
-            if (hasMapProjectionSelectorMetadata()) {
-                JsonObject selector = new JsonObject();
-                selector.addProperty("kind", "MAP_OUTPUT_ARRAY_INDEX");
-                selector.addProperty("bindingId",
-                        mapProjectionBindingId);
-                selector.addProperty("mapInputPort",
-                        mapProjectionInputPort);
-                selector.addProperty("mapInputCell",
-                        mapProjectionInputCell);
-                selector.addProperty("outputPort",
-                        mapProjectionOutputPort);
-                selector.addProperty("outputCell",
-                        mapProjectionOutputCell);
-                selector.addProperty("mapProjectionOperation",
-                        mapProjectionOperation);
-                selector.addProperty("outputIndex",
-                        mapProjectionOutputIndex);
-                selector.addProperty("elementOccurrence",
-                        mapProjectionElementOccurrence);
-                selector.addProperty("authority",
-                        mapProjectionSelectorAuthority);
-                selector.addProperty("objectTokenAuthority",
-                        mapProjectionObjectTokenAuthority);
-                selector.addProperty("objectTokenScope",
-                        mapProjectionObjectTokenScope);
-                selector.addProperty("crossExecutionOrdinalAuthority",
-                        mapProjectionCrossExecutionOrdinalAuthority);
-                selector.addProperty("declaredFieldOwnerClass",
-                        mapProjectionDeclaredFieldOwnerClass);
-                selector.addProperty("declaredFieldType",
-                        mapProjectionDeclaredFieldType);
-                selector.addProperty("declaredFieldSignature",
-                        mapProjectionDeclaredFieldSignature);
-                selector.addProperty("mapObjectToken",
-                        mapProjectionMapObjectToken);
-                selector.addProperty("elementObjectToken",
-                        mapProjectionElementObjectToken);
-                selector.addProperty("outputArrayObjectToken",
-                        mapProjectionOutputArrayObjectToken);
-                selector.addProperty("outputIdentityVerified",
-                        mapProjectionOutputIdentityVerified);
-                selector.addProperty("outputVerificationAuthority",
-                        mapProjectionOutputVerificationAuthority);
-                if (mapProjectionExpectedMapKey != null) {
-                    selector.add("expectedMapKey",
-                            copyJsonTree(mapProjectionExpectedMapKey));
-                }
-                selector.addProperty("expectedMapKeyAuthority",
-                        mapProjectionExpectedMapKeyAuthority);
-                selector.addProperty("sourceOutputIndexAuthority",
-                        mapProjectionSourceOutputIndexAuthority);
-                selector.addProperty("replaySelectionAuthority",
-                        mapProjectionReplaySelectionAuthority);
-                selector.addProperty("sourceObjectTokenScope",
-                        mapProjectionSourceObjectTokenScope);
-                selector.addProperty("replayScopeRebindingAuthority",
-                        mapProjectionReplayScopeRebindingAuthority);
-                selector.addProperty("complete",
-                        mapProjectionSelectorCompleteFlag);
-                result.add("mapProjectionSelector", selector);
-            }
-            if (expectedEntryKey != null) {
-                result.add("expectedEntryKey",
-                        copyJsonTree(expectedEntryKey));
-            }
-            if (!expectedEntryKeyAuthority.isEmpty()) {
-                result.addProperty("expectedEntryKeyAuthority",
-                        expectedEntryKeyAuthority);
             }
             if (!dynamicReplayRebindingAuthority.isEmpty()) {
                 result.addProperty("dynamicReplayRebindingAuthority",
@@ -10617,11 +9940,10 @@ public final class ConcolicRegionRuntime {
         private final List<MapValueElementProjectionSpec>
                 mapValueElementFieldProjections;
         private final List<OutputCaptureRequest> outputCaptures;
-        private final BranchReplayContract replayContract;
         private boolean modelAssignmentKeysUnique = true;
 
         private Activation(JsonObject json) {
-            JsonObject rootSelector = jsonObject(json, "rootSelector");
+            JsonObject rootSelector = object(json, "rootSelector");
             this.activationId = string(json, "activationId");
             this.regionId = string(json, "regionId");
             this.test = string(json, "test");
@@ -10633,7 +9955,7 @@ public final class ConcolicRegionRuntime {
                     rootSelector);
             this.replayable = admissionExecutable(json);
             this.requiresAllSelection = "ALL".equals(string(
-                    jsonObject(json, "bundle"), "selection"));
+                    object(json, "bundle"), "selection"));
             this.concreteReplayOnly = bool(json, "concreteReplayOnly", false);
             this.observationOnlyReplay = bool(json,
                     "observationOnlyReplay", false);
@@ -10644,18 +9966,6 @@ public final class ConcolicRegionRuntime {
             this.containerElementFieldBindings = new ArrayList<>();
             this.mapValueElementFieldProjections = new ArrayList<>();
             this.outputCaptures = new ArrayList<>();
-            String executionPhase = string(json, "executionPhase");
-            boolean branchReplay = "REPLAY_OUTPUT_PATH_FLIP".equals(
-                    executionPhase);
-            JsonElement encodedReplayContract = json.get("replayContract");
-            if (branchReplay && encodedReplayContract == null) {
-                throw new IllegalArgumentException(
-                        executionPhase + " requires replayContract");
-            }
-            this.replayContract = encodedReplayContract == null ? null
-                    : BranchReplayContract.fromJson(
-                    requireObject(encodedReplayContract,
-                            "replayContract"));
             JsonArray materializations = executableMaterializations(json,
                     replayable, activationId);
             JsonArray declaredActions = array(json, "symbolize");
@@ -10736,15 +10046,6 @@ public final class ConcolicRegionRuntime {
                     outputCaptures.add(request);
                 }
             }
-        }
-
-        private static JsonObject requireObject(JsonElement value,
-                                                String label) {
-            if (value == null || !value.isJsonObject()) {
-                throw new IllegalArgumentException(label
-                        + " must be a JSON object");
-            }
-            return copyJsonTree(value.getAsJsonObject());
         }
 
         private static JsonArray executableMaterializations(
@@ -11165,9 +10466,12 @@ public final class ConcolicRegionRuntime {
         private boolean available() {
             return startRegion != null
                     && symbolizeWithPrefix != null
+                    && getExpression != null
                     && finishRegion != null
+                    && getPathCondition != null
                     && pausePathCondition != null
-                    && resumePathCondition != null;
+                    && resumePathCondition != null
+                    && cleanupEnd != null;
         }
 
         private void start(String regionId, String activationId) throws Exception {
@@ -11194,9 +10498,6 @@ public final class ConcolicRegionRuntime {
         }
 
         private String expression(Object value) throws Exception {
-            if (getExpression == null) {
-                return "{\"kind\":\"UNAVAILABLE\",\"symbolic\":false}";
-            }
             return String.valueOf(getExpression.invoke(null, value));
         }
 
@@ -11205,25 +10506,14 @@ public final class ConcolicRegionRuntime {
         }
 
         private String pathCondition() throws Exception {
-            if (getPathCondition == null) {
-                return "[]";
-            }
             return String.valueOf(getPathCondition.invoke(null));
         }
 
         private void pausePathCondition() throws Exception {
-            if (pausePathCondition == null) {
-                throw new UnsupportedOperationException(
-                        "custom concolic path-condition pause API is unavailable");
-            }
             pausePathCondition.invoke(null);
         }
 
         private void resumePathCondition() throws Exception {
-            if (resumePathCondition == null) {
-                throw new UnsupportedOperationException(
-                        "custom concolic path-condition resume API is unavailable");
-            }
             resumePathCondition.invoke(null);
         }
 
@@ -11232,10 +10522,6 @@ public final class ConcolicRegionRuntime {
         }
 
         private String branchEvents() throws Exception {
-            if (getBranchEvents == null) {
-                return "{\"schemaVersion\":1,\"active\":false,"
-                        + "\"events\":[]}";
-            }
             return String.valueOf(getBranchEvents.invoke(null));
         }
 
@@ -11282,49 +10568,6 @@ public final class ConcolicRegionRuntime {
         return value != null && value.isJsonObject()
                 && "EXECUTABLE".equals(string(value.getAsJsonObject(),
                 "state"));
-    }
-
-    private static String string(JsonObject object, String field) {
-        JsonElement value = object.get(field);
-        return value == null || value.isJsonNull() ? "" : value.getAsString();
-    }
-
-    private static int integer(JsonObject object, String field, int fallback) {
-        JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject object, String field,
-                                    long fallback) {
-        JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static boolean bool(JsonObject object, String field,
-                                boolean fallback) {
-        JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static JsonArray array(JsonObject object, String field) {
-        JsonElement value = object.get(field);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
     }
 
     private static String strictString(JsonObject object, String field) {

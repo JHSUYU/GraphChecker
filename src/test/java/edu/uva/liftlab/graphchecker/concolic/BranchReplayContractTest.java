@@ -7,6 +7,7 @@ import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -32,8 +33,8 @@ public class BranchReplayContractTest {
                 .siteId());
 
         JsonObject encoded = contract.toJson();
-        assertTrue(contract.sameContent(
-                BranchReplayContract.fromJson(encoded)));
+        assertEquals(encoded, BranchReplayContract.fromJson(encoded)
+                .toJson());
     }
 
     @Test
@@ -63,17 +64,17 @@ public class BranchReplayContractTest {
         BranchWitness replayedTarget = witness("ROOT#u7", 7, 1, false,
                 "<");
 
-        BranchReplayObservationValidator.Result valid =
+        List<String> valid =
                 BranchReplayObservationValidator.validate(contract,
                         Arrays.asList(replayedPrefix, replayedTarget));
-        assertTrue(valid.toJson().toString(), valid.valid());
+        assertTrue(valid.toString(), valid.isEmpty());
 
-        BranchReplayObservationValidator.Result wrong =
+        List<String> wrong =
                 BranchReplayObservationValidator.validate(contract,
                         Arrays.asList(replayedTarget, replayedPrefix));
-        assertFalse(wrong.valid());
-        assertTrue(wrong.failures().toString(), wrong.failures().toString()
-                .contains("TARGET_BEFORE_PREFIX"));
+        assertFalse(wrong.isEmpty());
+        assertTrue(wrong.toString(), wrong.toString().contains(
+                "TARGET_BEFORE_PREFIX"));
     }
 
     private static BranchWitness witness(String site, int unit,

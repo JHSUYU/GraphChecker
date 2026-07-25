@@ -11,13 +11,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Schema-free file operations shared by concolic command boundaries.
@@ -106,11 +108,31 @@ final class ArtifactIO {
         }
     }
 
-    static void writeNew(Path path, String value) throws IOException {
-        Path parent = path.toAbsolutePath().getParent();
-        if (parent != null) Files.createDirectories(parent);
-        Files.write(path, utf8(value), StandardOpenOption.CREATE_NEW,
-                StandardOpenOption.WRITE);
+    static void replaceJsonl(Path path, Iterable<JsonObject> rows)
+            throws IOException {
+        StringBuilder content = new StringBuilder();
+        if (rows != null) {
+            for (JsonObject row : rows) {
+                content.append(row).append('\n');
+            }
+        }
+        replace(path, content.toString());
+    }
+
+    static Map<String, JsonObject> uniqueIndex(
+            Iterable<JsonObject> rows, String field) throws IOException {
+        Map<String, JsonObject> result = new LinkedHashMap<>();
+        if (rows == null) return result;
+        for (JsonObject row : rows) {
+            String key = JsonFields.string(row, field);
+            if (key.isEmpty()) continue;
+            JsonObject previous = result.put(key, row);
+            if (previous != null && !previous.equals(row)) {
+                throw new IOException("Conflicting duplicate " + field
+                        + ": " + key);
+            }
+        }
+        return result;
     }
 
     static String sha256(Path path) throws IOException {
@@ -131,6 +153,26 @@ final class ArtifactIO {
 
     static String sha256(byte[] value) {
         return hex(digest().digest(value == null ? new byte[0] : value));
+    }
+
+    static JsonObject artifact(Path path) throws IOException {
+        if (path == null || !Files.isRegularFile(path)) {
+            throw new IOException("Artifact input not found: " + path);
+        }
+        return artifact(path, Files.readAllBytes(path));
+    }
+
+    static JsonObject artifact(Path path, byte[] bytes) {
+        JsonObject result = new JsonObject();
+        result.addProperty("path", path.toAbsolutePath().normalize()
+                .toString());
+        result.addProperty("sha256", sha256(bytes));
+        return result;
+    }
+
+    static Path sibling(Path path, String name) {
+        Path parent = path.toAbsolutePath().getParent();
+        return parent == null ? Paths.get(name) : parent.resolve(name);
     }
 
     private static byte[] utf8(String value) {

@@ -1,6 +1,13 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.artifact;
+import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -8,10 +15,12 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -23,7 +32,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -41,39 +49,25 @@ import java.util.regex.Pattern;
 public final class BooleanReachConditionExtractor {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
-    private static final Pattern FIELD_CELL = Pattern.compile(
-            "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$");
-    private static final Pattern RETURN_CELL = Pattern.compile(
-            "^<[^:]+:\\s+([^<>\\s]+)\\s+[^<>\\s(]+\\([^>]*\\)>"
-                    + "\\.return(?:#.*)?$");
-    private static final Pattern PARAMETER_CELL = Pattern.compile(
-            ">\\.param[0-9]+:([^#]+)(?:#.*)?$");
-    private static final Pattern SAFE_SMT_ATOM = Pattern.compile(
-            "[A-Za-z_~!@$%^&*+=<>.?/][A-Za-z0-9_~!@$%^&*+\\-=<>.?/]*");
     private BooleanReachConditionExtractor() {
     }
 
     public static void main(String[] argv) throws Exception {
         Arguments arguments = Arguments.parse(argv);
-        JsonObject manifest = readJson(arguments.manifest);
+        JsonObject manifest = ArtifactIO.readObject(arguments.manifest);
         Path relationshipsPath = arguments.relationships;
         String smt = ArtifactIO.readText(arguments.smt);
-        JsonObject relationships = readJson(relationshipsPath);
-        List<JsonObject> regions = readJsonl(arguments.regions);
+        JsonObject relationships = ArtifactIO.readObject(relationshipsPath);
+        List<JsonObject> regions = ArtifactIO.readJsonl(arguments.regions);
         validateArtifactBindings(arguments.smt, arguments.regions,
                 relationshipsPath, manifest);
         Z3Solver solver = new Z3Solver(arguments.z3,
                 arguments.timeoutMillis);
-        Extraction extraction = extract(smt, manifest, regions,
+        JsonObject report = extract(smt, manifest, regions,
                 relationships, solver,
                 arguments.maxInputs, arguments.maxValuations);
-        JsonObject report = extraction.report;
-        report.add("composedSmtArtifact", artifact(arguments.smt));
         report.add("compositionManifestArtifact",
                 artifact(arguments.manifest));
-        report.add("staticRegionsArtifact", artifact(arguments.regions));
-        report.add("relationshipCandidatesArtifact",
-                artifact(relationshipsPath));
         report.add("solverArtifact", solver.artifact());
         ArtifactIO.replace(arguments.output, GSON.toJson(report)
                 + System.lineSeparator());
@@ -83,7 +77,7 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    static Extraction extract(String composedSmt, JsonObject manifest,
+    static JsonObject extract(String composedSmt, JsonObject manifest,
                               List<JsonObject> regions,
                               JsonObject relationships, Solver solver,
                               int maxInputs, int maxValuations)
@@ -99,13 +93,12 @@ public final class BooleanReachConditionExtractor {
             gaps.add("COMPOSED_SMT_EMPTY");
         }
 
-        PortCatalog ports = PortCatalog.from(regions, gaps);
-        Discovery discovery = discover(composedSmt, manifest,
-                relationships, ports, gaps);
-        List<BooleanInput> inputs = discovery.rootInputs;
+        PortCatalog ports = PortCatalog.from(regions);
+        Discovery discovery = discover(composedSmt, relationships, ports);
+        List<RootInput> inputs = discovery.rootInputs;
         JsonObject roots = new JsonObject();
         roots.add("booleanInputs", inputCatalog(inputs));
-        roots.add("existentialInputs", scalarInputCatalog(
+        roots.add("existentialInputs", inputCatalog(
                 discovery.existentialNonBooleanRootInputs));
         report.add("roots", roots);
 
@@ -130,7 +123,6 @@ public final class BooleanReachConditionExtractor {
         List<Valuation> valuations = new ArrayList<>();
         JsonArray valuationRows = new JsonArray();
         int satisfying = 0;
-        int unsatisfying = 0;
         int solverErrors = 0;
         int count = (int) valuationCount;
         for (int ordinal = 0; ordinal < count; ordinal++) {
@@ -142,37 +134,24 @@ public final class BooleanReachConditionExtractor {
             JsonObject row = valuation.toJson(inputs);
             if ("sat".equals(result.status)) {
                 satisfying++;
-            } else if ("unsat".equals(result.status)) {
-                unsatisfying++;
-            } else {
+            } else if (!"unsat".equals(result.status)) {
                 row.addProperty("solverOutput", result.output);
                 solverErrors++;
             }
             valuationRows.add(row);
         }
 
-        Dnf dnf = Dnf.from(inputs, valuations);
         report.add("valuations", valuationRows);
 
-        String implicationStatus = "not_checked";
-        String implicationOutput = "";
-        if (solverErrors == 0) {
-            SolverResult proof = solver.check(domainBase
-                    + "(assert (not " + dnf.formula + "))"
-                    + System.lineSeparator() + "(check-sat)"
-                    + System.lineSeparator());
-            implicationStatus = proof.status;
-            implicationOutput = proof.output;
-        }
-        boolean complete = solverErrors == 0
-                && "unsat".equals(implicationStatus)
-                && satisfying + unsatisfying == valuationCount;
-        boolean truthTableDecided = solverErrors == 0
-                && satisfying + unsatisfying == valuationCount;
-        String reachability = !truthTableDecided
+        // Every Boolean assignment was queried above; the DNF is built from
+        // exactly the SAT rows.  A second "base implies DNF" solver call only
+        // rechecks that exhaustive table and adds no admission evidence.
+        boolean complete = solverErrors == 0;
+        String reachability = !complete
                 ? "UNKNOWN" : satisfying > 0
                 ? "REACHABLE" : "UNREACHABLE";
-        JsonObject reachCondition = dnf.toJson();
+        JsonObject reachCondition = new JsonObject();
+        reachCondition.addProperty("formula", dnf(inputs, valuations));
         reachCondition.addProperty("reachability", reachability);
         report.add("reachCondition", reachCondition);
         JsonArray resultGaps = new JsonArray();
@@ -180,15 +159,10 @@ public final class BooleanReachConditionExtractor {
             resultGaps.add("UNDECIDED_SOLVER_VALUATIONS:"
                     + solverErrors);
         }
-        if (!"unsat".equals(implicationStatus)) {
-            resultGaps.add("BASE_DOES_NOT_PROVE_DNF:"
-                    + implicationStatus + ":"
-                    + firstNonBlank(implicationOutput));
-        }
         report.add("gaps", resultGaps);
         report.addProperty("state", complete
                 ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
-        return new Extraction(report);
+        return report;
     }
 
     private static void validateCompositionAuthority(
@@ -214,63 +188,13 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    private static Discovery discover(String smt, JsonObject manifest,
+    private static Discovery discover(String smt,
                                       JsonObject relationships,
-                                      PortCatalog ports,
-                                      List<String> gaps) {
-        Map<String, List<JsonObject>> mappingsByPort =
-                new LinkedHashMap<>();
-        JsonArray cases = array(manifest, "caseProjectionCatalog");
-        Set<String> caseIds = new LinkedHashSet<>();
-        for (int caseIndex = 0; caseIndex < cases.size(); caseIndex++) {
-            JsonElement caseElement = cases.get(caseIndex);
-            if (!caseElement.isJsonObject()) {
-                gaps.add("NON_OBJECT_CASE_PROJECTION:" + caseIndex);
-                continue;
-            }
-            JsonObject pathCase = caseElement.getAsJsonObject();
-            String caseId = string(pathCase, "caseId");
-            String selector = string(pathCase, "selectorTerm");
-            JsonElement bindingsElement = pathCase.get("bindings");
-            if (caseId.isEmpty() || !caseIds.add(caseId)
-                    || !safeSmtAtom(selector)
-                    || bindingsElement == null
-                    || !bindingsElement.isJsonArray()) {
-                gaps.add("INCOMPLETE_CASE_PROJECTION:" + caseIndex);
-                continue;
-            }
-            Set<String> casePorts = new LinkedHashSet<>();
-            for (JsonElement mappingElement
-                    : bindingsElement.getAsJsonArray()) {
-                if (!mappingElement.isJsonObject()) {
-                    gaps.add("NON_OBJECT_CASE_BINDING:" + caseId);
-                    continue;
-                }
-                JsonObject mapping = mappingElement.getAsJsonObject();
-                String port = string(mapping, "portId");
-                if (port.isEmpty() || !casePorts.add(port)
-                        || !safeSmtAtom(string(mapping, "term"))) {
-                    gaps.add("INVALID_CASE_BINDING:" + caseId + ":"
-                            + port);
-                    continue;
-                }
-                List<JsonObject> values = mappingsByPort.get(port);
-                if (values == null) {
-                    values = new ArrayList<>();
-                    mappingsByPort.put(port, values);
-                }
-                JsonObject evidence = mapping.deepCopy();
-                evidence.addProperty("caseId", caseId);
-                evidence.addProperty("selectorTerm", selector);
-                values.add(evidence);
-            }
-        }
-
-        Set<String> upstreamSupplied = suppliedInputs(relationships, ports,
-                gaps);
-        List<BooleanInput> roots = new ArrayList<>();
-        List<BooleanInput> domainInputs = new ArrayList<>();
-        List<ScalarInput> scalarRoots = new ArrayList<>();
+                                      PortCatalog ports) {
+        Set<String> upstreamSupplied = suppliedInputs(relationships, ports);
+        List<RootInput> roots = new ArrayList<>();
+        List<RootInput> domainInputs = new ArrayList<>();
+        List<RootInput> scalarRoots = new ArrayList<>();
         for (PortInfo port : ports.sortedInputs()) {
             ScalarEncoding encoding = ScalarEncoding.of(port.descriptor);
             if (!port.javaBoolean && encoding == null) continue;
@@ -279,61 +203,14 @@ public final class BooleanReachConditionExtractor {
             }
             String solverTerm = encoding.solverTerm(port.id);
             String portTerm = "port__" + smtName(port.id);
-            List<JsonObject> evidence = scalarEvidence(
-                    mappingsByPort.get(port.id), port.id);
             String nullnessSolverTerm = encoding == ScalarEncoding.STRING
-                    ? exactCanonicalStringNullnessTerm(evidence, port,
-                    gaps) : "";
+                    ? "sym__port__" + smtName(port.id)
+                    + "__string_is_null" : "";
             boolean declared = canonicalScalarBindingDeclared(smt, portTerm,
                     solverTerm, nullnessSolverTerm, encoding);
-            if (!declared && (evidence == null || evidence.isEmpty())) {
-                continue;
-            }
-            if (!declared) {
-                gaps.add((port.javaBoolean
-                        ? "BOOLEAN_PORT_WITHOUT_CANONICAL_SMT_BINDING:"
-                        : "NON_BOOLEAN_SCALAR_PORT_WITHOUT_CANONICAL_"
-                        + "SMT_BINDING:") + port.id);
-                continue;
-            }
-            if (!atMostOneMappingPerUsedCase(evidence)) {
-                gaps.add((port.javaBoolean
-                        ? "BOOLEAN_CASE_MAPPING_AMBIGUOUS:"
-                        : "NON_BOOLEAN_SCALAR_CASE_MAPPING_AMBIGUOUS:")
-                        + port.id);
-            }
-            if (evidence != null) {
-                for (JsonObject mapping : evidence) {
-                    boolean direct = solverTerm.equals(string(mapping,
-                            "term"));
-                    boolean bridged = !direct
-                            && exactDynamicCanonicalBridge(smt, mapping,
-                            port.id, solverTerm, nullnessSolverTerm,
-                            encoding);
-                    boolean stringNullnessMatches = encoding
-                            != ScalarEncoding.STRING
-                            || direct && nullnessSolverTerm.equals(string(
-                            mapping, "nullnessTerm"))
-                            || !direct && safeSmtAtom(string(mapping,
-                            "nullnessTerm"));
-                    if ((!direct && !bridged)
-                            || direct && mapping.has(
-                            "bridgeAssertionName")
-                            || !stringNullnessMatches
-                            || encoding == ScalarEncoding.STRING
-                            && !safeSmtAtom(string(mapping,
-                            "nullnessTerm"))) {
-                        gaps.add((port.javaBoolean
-                                ? "BOOLEAN_CASE_TERM_MISMATCH:"
-                                : "NON_BOOLEAN_SCALAR_CASE_TERM_MISMATCH:")
-                                + port.id);
-                        break;
-                    }
-                }
-            }
+            if (!declared) continue;
             if (port.javaBoolean) {
-                BooleanInput input = new BooleanInput(port, solverTerm,
-                        encoding.solverSort, evidence);
+                RootInput input = new RootInput(port, solverTerm, "");
                 domainInputs.add(input);
                 if (upstreamSupplied.contains(port.id)) {
                     continue;
@@ -342,8 +219,8 @@ public final class BooleanReachConditionExtractor {
             } else if (upstreamSupplied.contains(port.id)) {
                 continue;
             } else {
-                scalarRoots.add(new ScalarInput(port, solverTerm,
-                        nullnessSolverTerm, encoding, evidence));
+                scalarRoots.add(new RootInput(port, solverTerm,
+                        nullnessSolverTerm));
             }
         }
         Collections.sort(roots, Comparator.comparing(value -> value.port.id));
@@ -352,18 +229,6 @@ public final class BooleanReachConditionExtractor {
         Collections.sort(scalarRoots, Comparator.comparing(
                 value -> value.port.id));
         return new Discovery(roots, domainInputs, scalarRoots);
-    }
-
-    private static String exactCanonicalStringNullnessTerm(
-            List<JsonObject> evidence, PortInfo port, List<String> gaps) {
-        if (evidence == null || evidence.isEmpty()) return "";
-        for (JsonObject mapping : evidence) {
-            if (!safeSmtAtom(string(mapping, "nullnessTerm"))) {
-                gaps.add("STRING_CASE_NULLNESS_TERM_MISSING:" + port.id);
-                return "";
-            }
-        }
-        return "sym__port__" + smtName(port.id) + "__string_is_null";
     }
 
     private static boolean canonicalScalarBindingDeclared(
@@ -375,8 +240,7 @@ public final class BooleanReachConditionExtractor {
             return false;
         }
         if (encoding == ScalarEncoding.STRING) {
-            if (!safeSmtAtom(nullnessSolverTerm)
-                    || !smt.contains("(declare-const " + nullnessSolverTerm
+            if (!smt.contains("(declare-const " + nullnessSolverTerm
                     + " Bool)")) {
                 return false;
             }
@@ -391,123 +255,20 @@ public final class BooleanReachConditionExtractor {
                 + solverTerm + ") " + portTerm + ")");
     }
 
-    private static List<JsonObject> scalarEvidence(
-            List<JsonObject> evidence, String port) {
-        if (evidence == null || evidence.isEmpty()) {
-            return Collections.emptyList();
-        }
-        // A nullable short-circuit can expose only the same port's auxiliary
-        // reference view; it is not evidence for the scalar term.
-        String referenceTerm = "sym__port__" + smtName(port) + "__ref";
-        List<JsonObject> result = new ArrayList<>();
-        for (JsonObject mapping : evidence) {
-            String term = string(mapping, "term");
-            if (!referenceTerm.equals(term)
-                    || safeSmtAtom(string(mapping, "bridgeAssertionName"))) {
-                result.add(mapping);
-            }
-        }
-        return result;
-    }
-
-    /**
-     * A short-circuit case need not read every root.  Evidence is authoritative
-     * where the input is used; requiring it to be redundantly repeated in
-     * every case rejects valid null and early-return paths.  Multiple
-     * projections for one used case remain ambiguous and fail closed.
-     */
-    private static boolean atMostOneMappingPerUsedCase(
-            List<JsonObject> evidence) {
-        Set<String> cases = new LinkedHashSet<>();
-        for (JsonObject mapping : evidence) {
-            String caseId = string(mapping, "caseId");
-            if (caseId.isEmpty() || !cases.add(caseId)) return false;
-        }
-        return true;
-    }
-
-    /**
-     * Attests the composer's explicit dynamic-leaf/canonical-port bridge.
-     * Every identity is reconstructed from the catalog and the exact named
-     * assertion must occur as one complete SMT line; no symbol-prefix or
-     * formula-shape inference is accepted here.
-     */
-    private static boolean exactDynamicCanonicalBridge(
-            String smt, JsonObject mapping, String port,
-            String canonicalSolverTerm,
-            String canonicalNullnessSolverTerm,
-            ScalarEncoding encoding) {
-        String actual = string(mapping, "term");
-        String actualNullness = string(mapping, "nullnessTerm");
-        String guard = string(mapping, "selectorTerm");
-        String expression = encoding == ScalarEncoding.STRING
-                ? "(and (= " + actual + " " + canonicalSolverTerm
-                + ") (= " + actualNullness + " "
-                + canonicalNullnessSolverTerm + "))"
-                : "(= " + actual + " " + canonicalSolverTerm + ")";
-        String formula = "(=> " + guard + " " + expression + ")";
-        String assertionName = string(mapping,
-                "bridgeAssertionName");
-        String assertion = "(assert (! " + formula + " :named "
-                + assertionName + "))";
-        return port.equals(string(mapping, "portId"))
-                && !actual.isEmpty() && !actual.equals(canonicalSolverTerm)
-                && safeSmtAtom(actual)
-                && safeSmtAtom(canonicalSolverTerm)
-                && safeSmtAtom(guard)
-                && (encoding != ScalarEncoding.STRING
-                || safeSmtAtom(actualNullness)
-                && safeSmtAtom(canonicalNullnessSolverTerm))
-                && canonicalSolverTerm.equals("sym__port__"
-                + smtName(port) + "__" + encoding.suffix)
-                && safeSmtAtom(assertionName)
-                && exactSmtLine(smt, assertion)
-                && uniqueNamedAssertion(smt, assertionName);
-    }
-
-    private static boolean safeSmtAtom(String value) {
-        return value != null && SAFE_SMT_ATOM.matcher(value).matches();
-    }
-
-    private static boolean exactSmtLine(String smt, String expected) {
-        if (smt == null || expected == null || expected.isEmpty()) {
-            return false;
-        }
-        int matches = 0;
-        for (String line : smt.split("\\R", -1)) {
-            if (expected.equals(line)) matches++;
-        }
-        return matches == 1;
-    }
-
-    private static boolean uniqueNamedAssertion(String smt, String name) {
-        if (smt == null || !safeSmtAtom(name)) return false;
-        int matches = 0;
-        String marker = " :named " + name + "))";
-        for (String line : smt.split("\\R", -1)) {
-            if (line.contains(marker)) matches++;
-        }
-        return matches == 1;
-    }
-
     private static Set<String> suppliedInputs(JsonObject relationships,
-                                              PortCatalog ports,
-                                              List<String> gaps) {
+                                              PortCatalog ports) {
         Set<String> result = new LinkedHashSet<>();
-        JsonArray rows = array(relationships, "relationships");
-        for (int index = 0; index < rows.size(); index++) {
-            JsonElement element = rows.get(index);
-            if (!element.isJsonObject()) {
-                gaps.add("NON_OBJECT_RELATIONSHIP_CANDIDATE:" + index);
-                continue;
-            }
+        for (JsonElement element : array(relationships, "relationships")) {
+            if (!element.isJsonObject()) continue;
             JsonObject roles = object(element.getAsJsonObject(), "roles");
             String left = string(roles, "left");
             String right = string(roles, "right");
-            if (ports.isInput(left) && ports.isOutput(right)) {
+            if (ports.inputs.containsKey(left)
+                    && ports.outputs.contains(right)) {
                 result.add(left);
             }
-            if (ports.isInput(right) && ports.isOutput(left)) {
+            if (ports.inputs.containsKey(right)
+                    && ports.outputs.contains(left)) {
                 result.add(right);
             }
         }
@@ -515,7 +276,7 @@ public final class BooleanReachConditionExtractor {
     }
 
     private static String valuationQuery(String base,
-                                         List<BooleanInput> inputs,
+                                         List<RootInput> inputs,
                                          boolean[] values) {
         StringBuilder query = new StringBuilder(base);
         for (int index = 0; index < inputs.size(); index++) {
@@ -528,9 +289,9 @@ public final class BooleanReachConditionExtractor {
     }
 
     private static String appendBooleanDomain(String base,
-                                              List<BooleanInput> inputs) {
+                                              List<RootInput> inputs) {
         StringBuilder result = new StringBuilder(base);
-        for (BooleanInput input : inputs) {
+        for (RootInput input : inputs) {
             result.append("(assert ").append(input.domainFormula())
                     .append(")").append(System.lineSeparator());
         }
@@ -546,44 +307,15 @@ public final class BooleanReachConditionExtractor {
         return result;
     }
 
-    private static JsonArray inputCatalog(List<BooleanInput> inputs) {
+    private static JsonArray inputCatalog(List<RootInput> inputs) {
         JsonArray result = new JsonArray();
-        for (BooleanInput input : inputs) {
+        for (RootInput input : inputs) {
             result.add(input.toJson());
         }
         return result;
     }
 
-    private static JsonArray scalarInputCatalog(List<ScalarInput> inputs) {
-        JsonArray result = new JsonArray();
-        for (ScalarInput input : inputs) {
-            result.add(input.toJson());
-        }
-        return result;
-    }
-
-    private static JsonArray caseProjectionEvidence(
-            List<JsonObject> evidenceRows) {
-        JsonArray cases = new JsonArray();
-        Set<String> seen = new LinkedHashSet<>();
-        for (JsonObject evidence : evidenceRows) {
-            String key = string(evidence, "caseId");
-            if (!seen.add(key)) continue;
-            JsonObject row = new JsonObject();
-            row.addProperty("caseId", string(evidence, "caseId"));
-            row.addProperty("selectorTerm", string(evidence,
-                    "selectorTerm"));
-            for (String member : new String[]{"term", "nullnessTerm",
-                    "bridgeAssertionName"}) {
-                JsonElement value = evidence.get(member);
-                if (value != null) row.add(member, value.deepCopy());
-            }
-            cases.add(row);
-        }
-        return cases;
-    }
-
-    private static Extraction incomplete(JsonObject report,
+    private static JsonObject incomplete(JsonObject report,
                                          List<String> gaps) {
         report.add("valuations", new JsonArray());
         JsonObject reachCondition = new JsonObject();
@@ -592,7 +324,7 @@ public final class BooleanReachConditionExtractor {
         report.add("reachCondition", reachCondition);
         report.add("gaps", GSON.toJsonTree(gaps));
         report.addProperty("state", "CANDIDATE_WITH_GAPS");
-        return new Extraction(report);
+        return report;
     }
 
     interface Solver {
@@ -613,7 +345,6 @@ public final class BooleanReachConditionExtractor {
     static final class Z3Solver implements Solver {
         private final Path executable;
         private final long timeoutMillis;
-        private final String version;
         private final JsonObject artifact;
 
         Z3Solver(String executable, long timeoutMillis)
@@ -621,11 +352,9 @@ public final class BooleanReachConditionExtractor {
             this.timeoutMillis = Math.max(1L, timeoutMillis);
             this.executable = resolveExecutable(firstNonBlank(executable,
                     "z3"));
-            this.version = validateVersion(this.executable,
-                    this.timeoutMillis);
-            this.artifact = BooleanReachConditionExtractor.artifact(
-                    this.executable);
-            this.artifact.addProperty("version", version);
+            this.artifact = ArtifactIO.artifact(this.executable);
+            this.artifact.addProperty("version", validateVersion(
+                    this.executable, this.timeoutMillis));
         }
 
         JsonObject artifact() {
@@ -635,37 +364,19 @@ public final class BooleanReachConditionExtractor {
         @Override
         public SolverResult check(String smt) throws IOException,
                 InterruptedException {
-            Path directory = Files.createTempDirectory(
-                    "graphchecker-reach-z3-");
-            Path query = directory.resolve("query.smt2");
-            Path stdout = directory.resolve("stdout.txt");
-            Path stderr = directory.resolve("stderr.txt");
-            try {
-                Files.write(query, smt.getBytes(StandardCharsets.UTF_8));
-                Process process = new ProcessBuilder(executable.toString(),
-                        "-smt2", query.toString())
-                        .redirectOutput(stdout.toFile())
-                        .redirectError(stderr.toFile()).start();
-                boolean finished = process.waitFor(timeoutMillis,
-                        TimeUnit.MILLISECONDS);
-                if (!finished) {
-                    process.destroyForcibly();
-                    process.waitFor();
-                    return new SolverResult("timeout", "solver timeout");
-                }
-                String out = Files.isRegularFile(stdout)
-                        ? ArtifactIO.readText(stdout) : "";
-                String err = Files.isRegularFile(stderr)
-                        ? ArtifactIO.readText(stderr) : "";
-                String status = process.exitValue() == 0
-                        ? solverStatus(out) : "error";
-                return new SolverResult(status, combinedOutput(out, err));
-            } finally {
-                Files.deleteIfExists(query);
-                Files.deleteIfExists(stdout);
-                Files.deleteIfExists(stderr);
-                Files.deleteIfExists(directory);
+            Process process = new ProcessBuilder(executable.toString(),
+                    "-in", "-smt2").redirectErrorStream(true).start();
+            try (OutputStream input = process.getOutputStream()) {
+                input.write(smt.getBytes(StandardCharsets.UTF_8));
             }
+            if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly();
+                process.waitFor();
+                return new SolverResult("timeout", "solver timeout");
+            }
+            String output = readAll(process.getInputStream());
+            return new SolverResult(process.exitValue() == 0
+                    ? solverStatus(output) : "error", output);
         }
 
         private static Path resolveExecutable(String requested)
@@ -680,8 +391,8 @@ public final class BooleanReachConditionExtractor {
                 Path directory = entry.isEmpty()
                         ? Paths.get("").toAbsolutePath() : Paths.get(entry);
                 Path candidate = directory.resolve(requested);
-                if (Files.isRegularFile(candidate)
-                        && Files.isExecutable(candidate)) {
+                if (candidate.toFile().isFile()
+                        && candidate.toFile().canExecute()) {
                     return candidate.toRealPath();
                 }
             }
@@ -693,8 +404,8 @@ public final class BooleanReachConditionExtractor {
                 throws IOException {
             Path resolved = candidate.toAbsolutePath().normalize()
                     .toRealPath();
-            if (!Files.isRegularFile(resolved)
-                    || !Files.isExecutable(resolved)) {
+            if (!resolved.toFile().isFile()
+                    || !resolved.toFile().canExecute()) {
                 throw new IOException("Z3 executable is not an executable "
                         + "regular file: " + resolved);
             }
@@ -704,68 +415,50 @@ public final class BooleanReachConditionExtractor {
         private static String validateVersion(Path executable,
                                               long timeoutMillis)
                 throws IOException, InterruptedException {
-            Path directory = Files.createTempDirectory(
-                    "graphchecker-reach-z3-version-");
-            Path output = directory.resolve("version.txt");
-            try {
-                Process process = new ProcessBuilder(executable.toString(),
-                        "-version").redirectErrorStream(true)
-                        .redirectOutput(output.toFile()).start();
-                boolean finished = process.waitFor(timeoutMillis,
-                        TimeUnit.MILLISECONDS);
-                if (!finished) {
-                    process.destroyForcibly();
-                    process.waitFor();
-                    throw new IOException("Z3 -version timed out");
-                }
-                String text = Files.isRegularFile(output)
-                        ? ArtifactIO.readText(output).trim() : "";
-                if (process.exitValue() != 0 || !text.contains("Z3")) {
-                    throw new IOException("Invalid Z3 executable identity: "
-                            + text);
-                }
-                return text;
-            } finally {
-                Files.deleteIfExists(output);
-                Files.deleteIfExists(directory);
+            Process process = new ProcessBuilder(executable.toString(),
+                    "-version").redirectErrorStream(true).start();
+            if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly();
+                process.waitFor();
+                throw new IOException("Z3 -version timed out");
             }
+            String output = readAll(process.getInputStream()).trim();
+            if (process.exitValue() != 0 || !output.contains("Z3")) {
+                throw new IOException("Invalid Z3 executable identity: "
+                        + output);
+            }
+            return output;
         }
 
-        private static String combinedOutput(String stdout, String stderr) {
-            String out = firstNonBlank(stdout);
-            String err = firstNonBlank(stderr);
-            if (out.isEmpty()) return err;
-            if (err.isEmpty()) return out;
-            return out + System.lineSeparator() + err;
+        private static String readAll(InputStream input) throws IOException {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int count;
+            while ((count = input.read(buffer)) >= 0) {
+                output.write(buffer, 0, count);
+            }
+            return new String(output.toByteArray(),
+                    StandardCharsets.UTF_8);
         }
     }
 
     static String solverStatus(String output) {
-        for (String line : firstNonBlank(output).split("\\r?\\n")) {
-            String value = line.trim();
-            if (value.isEmpty()) continue;
-            return "sat".equals(value) || "unsat".equals(value)
-                    || "unknown".equals(value) ? value : "unknown";
-        }
-        return "unknown";
-    }
-
-    static final class Extraction {
-        final JsonObject report;
-
-        Extraction(JsonObject report) {
-            this.report = report;
-        }
+        String normalized = firstNonBlank(output);
+        int newline = normalized.indexOf('\n');
+        String value = (newline < 0
+                ? normalized : normalized.substring(0, newline)).trim();
+        return "sat".equals(value) || "unsat".equals(value)
+                || "unknown".equals(value) ? value : "unknown";
     }
 
     private static final class Discovery {
-        private final List<BooleanInput> rootInputs;
-        private final List<BooleanInput> booleanDomainInputs;
-        private final List<ScalarInput> existentialNonBooleanRootInputs;
+        private final List<RootInput> rootInputs;
+        private final List<RootInput> booleanDomainInputs;
+        private final List<RootInput> existentialNonBooleanRootInputs;
 
-        private Discovery(List<BooleanInput> rootInputs,
-                          List<BooleanInput> booleanDomainInputs,
-                          List<ScalarInput> existentialNonBooleanRootInputs) {
+        private Discovery(List<RootInput> rootInputs,
+                          List<RootInput> booleanDomainInputs,
+                          List<RootInput> existentialNonBooleanRootInputs) {
             this.rootInputs = rootInputs;
             this.booleanDomainInputs = booleanDomainInputs;
             this.existentialNonBooleanRootInputs =
@@ -773,32 +466,23 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    private static final class BooleanInput {
+    private static final class RootInput {
         private final PortInfo port;
         private final String solverTerm;
-        private final String solverSort;
-        private final List<JsonObject> caseEvidence;
+        private final String nullnessSolverTerm;
 
-        private BooleanInput(PortInfo port, String solverTerm,
-                             String solverSort,
-                             List<JsonObject> caseEvidence) {
+        private RootInput(PortInfo port, String solverTerm,
+                          String nullnessSolverTerm) {
             this.port = port;
             this.solverTerm = solverTerm;
-            this.solverSort = solverSort;
-            this.caseEvidence = caseEvidence == null
-                    ? Collections.<JsonObject>emptyList()
-                    : new ArrayList<>(caseEvidence);
+            this.nullnessSolverTerm = firstNonBlank(nullnessSolverTerm);
         }
 
         private String literal(boolean value) {
-            if ("Bool".equals(solverSort)) {
-                return value ? solverTerm : "(not " + solverTerm + ")";
-            }
             return "(= " + solverTerm + " " + (value ? "1" : "0") + ")";
         }
 
         private String domainFormula() {
-            if ("Bool".equals(solverSort)) return "true";
             return "(or (= " + solverTerm + " 0) (= " + solverTerm
                     + " 1))";
         }
@@ -808,52 +492,12 @@ public final class BooleanReachConditionExtractor {
             result.addProperty("portId", port.id);
             result.addProperty("regionId", port.regionId);
             result.addProperty("cell", port.cell);
-            result.addProperty("javaType", port.javaType);
             result.addProperty("javaTypeDescriptor", port.descriptor);
             result.addProperty("solverTerm", solverTerm);
-            result.addProperty("solverSort", solverSort);
-            result.add("caseProjectionEvidence",
-                    caseProjectionEvidence(caseEvidence));
-            return result;
-        }
-    }
-
-    private static final class ScalarInput {
-        private final PortInfo port;
-        private final String solverTerm;
-        private final String nullnessSolverTerm;
-        private final ScalarEncoding encoding;
-        private final List<JsonObject> caseEvidence;
-
-        private ScalarInput(PortInfo port, String solverTerm,
-                            String nullnessSolverTerm,
-                            ScalarEncoding encoding,
-                            List<JsonObject> caseEvidence) {
-            this.port = port;
-            this.solverTerm = solverTerm;
-            this.nullnessSolverTerm = firstNonBlank(nullnessSolverTerm);
-            this.encoding = encoding;
-            this.caseEvidence = caseEvidence == null
-                    ? Collections.<JsonObject>emptyList()
-                    : new ArrayList<>(caseEvidence);
-        }
-
-        private JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("portId", port.id);
-            result.addProperty("regionId", port.regionId);
-            result.addProperty("cell", port.cell);
-            result.addProperty("javaType", port.javaType);
-            result.addProperty("javaTypeDescriptor", port.descriptor);
-            result.addProperty("solverTerm", solverTerm);
-            result.addProperty("solverSort", encoding.solverSort);
-            if (encoding == ScalarEncoding.STRING) {
+            if (!nullnessSolverTerm.isEmpty()) {
                 result.addProperty("nullnessSolverTerm",
                         nullnessSolverTerm);
-                result.addProperty("nullnessSolverSort", "Bool");
             }
-            result.add("caseProjectionEvidence",
-                    caseProjectionEvidence(caseEvidence));
             return result;
         }
     }
@@ -909,7 +553,7 @@ public final class BooleanReachConditionExtractor {
             this.status = firstNonBlank(status, "unknown");
         }
 
-        private JsonObject toJson(List<BooleanInput> inputs) {
+        private JsonObject toJson(List<RootInput> inputs) {
             JsonObject result = new JsonObject();
             JsonArray assignments = new JsonArray();
             for (int index = 0; index < inputs.size(); index++) {
@@ -924,43 +568,21 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    private static final class Dnf {
-        private final String formula;
-
-        private Dnf(String formula) {
-            this.formula = formula;
-        }
-
-        private static Dnf from(List<BooleanInput> inputs,
-                                List<Valuation> valuations) {
-            List<String> terms = new ArrayList<>();
-            for (Valuation valuation : valuations) {
-                if (!"sat".equals(valuation.status)) continue;
-                List<String> literals = new ArrayList<>();
-                for (int index = 0; index < inputs.size(); index++) {
-                    String literal = inputs.get(index).literal(
-                            valuation.values[index]);
-                    literals.add(literal);
-                }
-                String conjunction = join("and", literals, "true");
-                terms.add(conjunction);
+    private static String dnf(List<RootInput> inputs,
+                              List<Valuation> valuations) {
+        List<String> terms = new ArrayList<>();
+        for (Valuation valuation : valuations) {
+            if (!"sat".equals(valuation.status)) continue;
+            List<String> literals = new ArrayList<>();
+            for (int index = 0; index < inputs.size(); index++) {
+                literals.add(inputs.get(index).literal(
+                        valuation.values[index]));
             }
-            String formula;
-            if (terms.isEmpty()) {
-                formula = "false";
-            } else if (terms.size() == valuations.size()) {
-                formula = "true";
-            } else {
-                formula = join("or", terms, "false");
-            }
-            return new Dnf(formula);
+            terms.add(join("and", literals, "true"));
         }
-
-        private JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("formula", formula);
-            return result;
-        }
+        if (terms.isEmpty()) return "false";
+        return terms.size() == valuations.size()
+                ? "true" : join("or", terms, "false");
     }
 
     private static String join(String operator, List<String> terms,
@@ -974,56 +596,32 @@ public final class BooleanReachConditionExtractor {
 
     private static final class PortCatalog {
         private final Map<String, PortInfo> inputs = new LinkedHashMap<>();
-        private final Map<String, PortInfo> outputs = new LinkedHashMap<>();
+        private final Set<String> outputs = new LinkedHashSet<>();
 
-        private static PortCatalog from(List<JsonObject> regions,
-                                        List<String> gaps) {
+        private static PortCatalog from(List<JsonObject> regions) {
             PortCatalog result = new PortCatalog();
-            for (JsonObject region : safe(regions)) {
+            for (JsonObject region : regions) {
                 String regionId = string(region, "regionId");
                 for (JsonElement element : array(region,
                         "symbolicInputs")) {
-                    if (element.isJsonObject()) result.add(regionId,
-                            element.getAsJsonObject(), true, gaps);
+                    if (!element.isJsonObject()) continue;
+                    JsonObject row = element.getAsJsonObject();
+                    String id = string(row, "portId");
+                    if (!id.isEmpty()) {
+                        result.inputs.put(id, new PortInfo(id, regionId,
+                                string(row, "cell"),
+                                string(row, "javaType")));
+                    }
                 }
                 for (JsonElement element : array(region, "outputs")) {
-                    if (element.isJsonObject()) result.add(regionId,
-                            element.getAsJsonObject(), false, gaps);
+                    if (element.isJsonObject()) {
+                        String id = string(element.getAsJsonObject(),
+                                "portId");
+                        if (!id.isEmpty()) result.outputs.add(id);
+                    }
                 }
             }
             return result;
-        }
-
-        private void add(String regionId, JsonObject row, boolean input,
-                         List<String> gaps) {
-            String id = firstNonBlank(string(row, "portId"),
-                    string(row, "symbol"));
-            if (id.isEmpty()) {
-                gaps.add("STATIC_PORT_WITHOUT_ID:" + regionId);
-                return;
-            }
-            String cell = string(row, "cell");
-            String javaType = firstNonBlank(string(row, "javaType"),
-                    string(row, "declaredType"), cellJavaType(cell));
-            PortInfo value = new PortInfo(id, regionId, cell, javaType,
-                    input);
-            Map<String, PortInfo> own = input ? inputs : outputs;
-            Map<String, PortInfo> other = input ? outputs : inputs;
-            PortInfo previous = own.put(id, value);
-            if (previous != null && !previous.sameSchema(value)) {
-                gaps.add("STATIC_PORT_SCHEMA_CONFLICT:" + id);
-            }
-            if (other.containsKey(id)) {
-                gaps.add("STATIC_PORT_DIRECTION_CONFLICT:" + id);
-            }
-        }
-
-        private boolean isInput(String port) {
-            return inputs.containsKey(port);
-        }
-
-        private boolean isOutput(String port) {
-            return outputs.containsKey(port);
         }
 
         private List<PortInfo> sortedInputs() {
@@ -1037,29 +635,17 @@ public final class BooleanReachConditionExtractor {
         private final String id;
         private final String regionId;
         private final String cell;
-        private final String javaType;
         private final String descriptor;
-        private final boolean input;
         private final boolean javaBoolean;
 
         private PortInfo(String id, String regionId, String cell,
-                         String javaType, boolean input) {
+                         String javaType) {
             this.id = firstNonBlank(id);
             this.regionId = firstNonBlank(regionId);
             this.cell = firstNonBlank(cell);
-            this.javaType = firstNonBlank(javaType);
             this.descriptor = javaTypeDescriptor(javaType);
-            this.input = input;
             this.javaBoolean = "Z".equals(descriptor)
                     || "Ljava/lang/Boolean;".equals(descriptor);
-        }
-
-        private boolean sameSchema(PortInfo other) {
-            return other != null && id.equals(other.id)
-                    && regionId.equals(other.regionId)
-                    && cell.equals(other.cell)
-                    && descriptor.equals(other.descriptor)
-                    && input == other.input;
         }
     }
 
@@ -1130,15 +716,6 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    static JsonObject artifact(Path path) throws IOException {
-        byte[] bytes = Files.readAllBytes(path);
-        JsonObject result = new JsonObject();
-        result.addProperty("path", path.toAbsolutePath().normalize()
-                .toString());
-        result.addProperty("sha256", ArtifactIO.sha256(bytes));
-        return result;
-    }
-
     /**
      * Rejects cross-wired CLI artifacts before any solver process starts.
      * The composer manifest is the trust root: it fingerprints the exact SMT,
@@ -1177,24 +754,6 @@ public final class BooleanReachConditionExtractor {
         return Paths.get(value).toAbsolutePath().normalize().toString();
     }
 
-    private static JsonObject readJson(Path path) throws IOException {
-        return ArtifactIO.readObject(path);
-    }
-
-    private static List<JsonObject> readJsonl(Path path) throws IOException {
-        return ArtifactIO.readJsonl(path);
-    }
-
-    private static String cellJavaType(String cell) {
-        String value = firstNonBlank(cell).trim();
-        Matcher parameter = PARAMETER_CELL.matcher(value);
-        if (parameter.find()) return parameter.group(1).trim();
-        Matcher field = FIELD_CELL.matcher(value);
-        if (field.matches()) return field.group(1).trim();
-        Matcher returned = RETURN_CELL.matcher(value);
-        return returned.matches() ? returned.group(1).trim() : "";
-    }
-
     private static String smtName(String value) {
         String normalized = firstNonBlank(value, "anonymous")
                 .replaceAll("[^A-Za-z0-9_]", "_");
@@ -1223,52 +782,4 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    private static Path sibling(Path path, String name) {
-        Path parent = path.toAbsolutePath().getParent();
-        return parent == null ? Paths.get(name) : parent.resolve(name);
-    }
-
-    private static JsonArray array(JsonObject object, String key) {
-        JsonElement value = object == null ? null : object.get(key);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
-    }
-
-    private static JsonObject object(JsonObject object, String key) {
-        JsonElement value = object == null ? null : object.get(key);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    private static String string(JsonObject object, String key) {
-        JsonElement value = object == null ? null : object.get(key);
-        return value != null && value.isJsonPrimitive()
-                ? value.getAsString() : "";
-    }
-
-    private static int integer(JsonObject object, String key,
-                               int fallback) {
-        try {
-            JsonElement value = object == null ? null : object.get(key);
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsInt() : fallback;
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.trim().isEmpty()) {
-                    return value.trim();
-                }
-            }
-        }
-        return "";
-    }
-
-    private static <T> List<T> safe(List<T> values) {
-        return values == null ? Collections.<T>emptyList() : values;
-    }
 }

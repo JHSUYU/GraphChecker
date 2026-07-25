@@ -137,8 +137,7 @@ public class ConcolicSummaryImporterTest {
             assertTrue(summary.contains("InvalidToken"));
             JsonObject importedSummary = JsonParser.parseString(
                     summary.trim()).getAsJsonObject();
-            assertEquals("UNFORCED_SEED",
-                    importedSummary.get("executionKind").getAsString());
+            assertFalse(importedSummary.has("executionKind"));
             assertEquals(0, importedSummary.getAsJsonArray(
                     "symbolicInputs").size());
         } finally {
@@ -1222,7 +1221,7 @@ public class ConcolicSummaryImporterTest {
             int occurrence, long eventSequence) {
         String siteId = originMethod + "#u" + originUnitIndex;
         JsonObject observation = new JsonObject();
-        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("schemaVersion", 2);
         observation.addProperty("kind", "MAP_ENTRY_READ");
         observation.addProperty("operation", "java.util.Iterator.next");
         observation.addProperty("observationId",
@@ -1269,11 +1268,6 @@ public class ConcolicSummaryImporterTest {
         observation.add("keyExpression", keyExpression.deepCopy());
         observation.add("valueExpression",
                 symbol("expiredValue", "example/Value"));
-        observation.addProperty("entryBindingComplete", true);
-        observation.addProperty("expressionBindingComplete", true);
-        observation.addProperty("objectTokenBindingComplete", true);
-        observation.addProperty("bindingAuthorityComplete", true);
-        observation.addProperty("runtimeProvenanceComplete", true);
         observation.addProperty("complete", true);
         return observation;
     }
@@ -1294,12 +1288,11 @@ public class ConcolicSummaryImporterTest {
         entry.addProperty("keyObjectToken", 102L);
         entry.add("valueExpression", valueExpression.deepCopy());
         entry.addProperty("valueObjectToken", 103L);
-        entry.addProperty("valueWasNull", false);
         entry.addProperty("valueExpressionAuthority",
                 "ACTIVATION_LOCAL_OBJECT_TOKEN_REF_WITNESS_V1");
 
         JsonObject snapshot = new JsonObject();
-        snapshot.addProperty("schemaVersion", 1);
+        snapshot.addProperty("schemaVersion", 2);
         snapshot.addProperty("kind", "FINITE_MAP_ENTRY_SNAPSHOT");
         snapshot.addProperty("operation", "java.util.Map.entrySet");
         snapshot.addProperty("observationId",
@@ -1326,37 +1319,15 @@ public class ConcolicSummaryImporterTest {
         snapshot.add("mapExpression", mapExpression.deepCopy());
         snapshot.addProperty("mapExpressionAuthority",
                 "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_FIRST_ENTRY_SET_NEXT");
-        snapshot.addProperty("entryCount", 1);
-        snapshot.addProperty("finiteEntryBound", 4096);
-        snapshot.addProperty("sizeBefore", 1);
-        snapshot.addProperty("entrySetSizeBefore", 1);
-        snapshot.addProperty("sizeAfter", 1);
-        snapshot.addProperty("entrySetSizeAfter", 1);
-        JsonArray keys = new JsonArray();
-        keys.add(keyExpression.deepCopy());
-        snapshot.add("keyExpressions", keys);
-        JsonArray keyTokens = new JsonArray();
-        keyTokens.add(102L);
-        snapshot.add("keyObjectTokens", keyTokens);
         snapshot.addProperty("keyExpressionAuthority",
                 "CONCRETE_IMMUTABLE_MAP_ENTRY_KEYS_AT_SAME_EXECUTION_"
                         + "ENTRY_SET_SNAPSHOT");
-        JsonArray valueTokens = new JsonArray();
-        valueTokens.add(103L);
-        snapshot.add("valueObjectTokens", valueTokens);
-        JsonArray values = new JsonArray();
-        values.add(valueExpression.deepCopy());
-        snapshot.add("valueExpressions", values);
         snapshot.addProperty("valueExpressionAuthority",
                 "PER_ENTRY_EXACT_RUNTIME_NULL_OR_ACTIVATION_LOCAL_OBJECT_"
                         + "TOKEN_REF_WITNESS_V1");
         JsonArray entries = new JsonArray();
         entries.add(entry);
         snapshot.add("entries", entries);
-        snapshot.addProperty("keysDistinct", true);
-        snapshot.addProperty("firstIteratorEntryMatched", true);
-        snapshot.addProperty("sizeStable", true);
-        snapshot.addProperty("entrySetStable", true);
         snapshot.addProperty("authority",
                 "FIRST_BOUND_ENTRY_SET_ITERATOR_NEXT_EXACT_HASHMAP_OR_"
                         + "LINKEDHASHMAP_SAME_EXECUTION_AT_ITERATOR_NEXT_"
@@ -1924,7 +1895,7 @@ public class ConcolicSummaryImporterTest {
         String symbol = action.get("symbol").getAsString();
         String cell = action.get("cell").getAsString();
         int marker = site.lastIndexOf("#u");
-        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("schemaVersion", 2);
         observation.addProperty("kind", "MAP_STATE_INPUT_OBSERVATION");
         observation.addProperty("symbol", symbol);
         observation.addProperty("phase", "AT_MAP_STATE_INPUT");
@@ -1959,24 +1930,17 @@ public class ConcolicSummaryImporterTest {
         observation.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         observation.addProperty("objectTokenScope", "ACT.P");
-        observation.addProperty("identityBindingComplete",
-                identityComplete);
-        observation.addProperty("entryCount", 0);
-        observation.addProperty("finiteEntryBound", 4096);
-        observation.add("keyExpressions", new JsonArray());
-        observation.add("valueObjectTokens", new JsonArray());
         observation.add("entries", new JsonArray());
-        observation.addProperty("snapshotComplete", snapshotComplete);
         observation.addProperty("snapshotAuthority",
                 "SAME_FIELD_HOOK_STABLE_BOUNDED_ENTRY_SET_SNAPSHOT_V1");
-        observation.addProperty("complete", true);
+        observation.addProperty("complete",
+                identityComplete && snapshotComplete);
         observation.addProperty("mapStateInputSymbol", symbol);
         observation.addProperty("mapStateInputCell", cell);
         observation.addProperty("mapStateInputObservationId",
                 observation.get("observationId").getAsString());
         observation.addProperty("mapStateInputObjectToken", 2);
         observation.addProperty("mapStateInputBindingAuthority", authority);
-        observation.addProperty("mapStateInputBindingComplete", true);
         return observation;
     }
 
@@ -2000,7 +1964,7 @@ public class ConcolicSummaryImporterTest {
     private static JsonObject incompleteMapEntryObservation(String siteId) {
         int marker = siteId.lastIndexOf("#u");
         JsonObject observation = new JsonObject();
-        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("schemaVersion", 2);
         observation.addProperty("kind", "MAP_ENTRY_READ");
         observation.addProperty("operation", "java.util.Iterator.next");
         observation.addProperty("originMethod", siteId.substring(0, marker));
@@ -2067,8 +2031,6 @@ public class ConcolicSummaryImporterTest {
                 "requestedStateTransformerContractOutputCell", outputCell);
         metadata.add("requestedStateTransformerObligations",
                 obligations.deepCopy());
-        metadata.addProperty("requestedStateTransformerObligationCount",
-                obligations.size());
         metadata.add("requestedStateTransformerContractIssues",
                 new JsonArray());
         metadata.addProperty(
@@ -2403,33 +2365,16 @@ public class ConcolicSummaryImporterTest {
         arrayValue.addProperty("_engine_array_id_authority",
                 "VM_ACTIVE_SYM_ARRAY_ID_V1");
         JsonObject engineArray = new JsonObject();
-        engineArray.addProperty("schemaVersion", 1);
-        engineArray.addProperty("kind", "ENGINE_ARRAY_TO_INPUT_PORT");
+        engineArray.addProperty("schemaVersion", 2);
+        engineArray.addProperty("kind", "ENGINE_ARRAY_INPUT_BINDING");
         engineArray.addProperty("sourceActivationId", "ACT.P");
         engineArray.addProperty("inputPort", containerPort);
         engineArray.addProperty("inputCell", containerCell);
-        engineArray.addProperty("inputJavaType", "example.Value[]");
         engineArray.addProperty("inputJavaTypeDescriptor",
                 "[Lexample/Value;");
-        engineArray.addProperty("symbolizationPrefix", containerPort);
-        engineArray.addProperty("symbolizationMode",
-                "DIRECT_ARRAY_VALUE_WITH_CANONICAL_INPUT_PREFIX");
         engineArray.addProperty("engineArrayId", engineArrayId);
-        engineArray.addProperty("engineArrayIdAuthority",
-                "VM_ACTIVE_SYM_ARRAY_ID_V1");
         engineArray.addProperty("arrayObjectToken", arrayToken);
-        engineArray.addProperty("symbolizationArrayObjectToken", arrayToken);
-        engineArray.addProperty("symbolizationIdentityAuthority",
-                "SAME_JAVA_REFERENCE_PASSED_TO_SYMBOLIZE_AND_"
-                        + "EXPRESSION_CAPTURE");
-        engineArray.addProperty("sameArrayObjectTokenVerified", true);
-        engineArray.addProperty("objectTokenAuthority",
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        engineArray.addProperty("objectTokenScope", "ACT.P");
-        engineArray.addProperty("captureAuthority",
-                "SAME_LIVE_ARRAY_AFTER_EXACT_INPUT_ACTION_SYMBOLIZATION");
         engineArray.add("arrayValueExpression", arrayValue);
-        engineArray.addProperty("complete", true);
 
         return importMapFixture(root, path, true, new JsonArray(),
                 singletonString(method), causalEdges, null, actions,
@@ -2538,9 +2483,6 @@ public class ConcolicSummaryImporterTest {
                 method + "#u" + guardUnitIndex, "GUARD",
                 "heap_mutation_path_guard");
         edge.addProperty("guardSiteId", method + "#u" + guardUnitIndex);
-        edge.addProperty("guardedMutationCount", 1);
-        edge.addProperty("guardedMutationsAuthority",
-                "STATIC_CONTROL_DEPENDENCE_PER_MUTATION_SITE");
         JsonObject mutation = new JsonObject();
         mutation.addProperty("guardSiteId",
                 method + "#u" + guardUnitIndex);
@@ -2685,7 +2627,6 @@ public class ConcolicSummaryImporterTest {
         initializer.addProperty("allocationSiteId", "SITE.ALLOC.0");
         initializer.addProperty("constructor",
                 "<java.util.HashMap: void <init>()>");
-        initializer.addProperty("constructorArgumentCount", 0);
         initializer.addProperty("outputPort", "REGION.P.out.0");
         JsonArray proof = new JsonArray();
         proof.add("EDGE.ALLOC.0");
@@ -3663,8 +3604,6 @@ public class ConcolicSummaryImporterTest {
                         + "OUTPUT_INDEX_IDENTITY");
         declaration.add("projectionProofCausalEdgeIds",
                 singletonString("EDGE.MAP.TO.ARRAY"));
-        declaration.addProperty("recursiveElementProjectionComposable",
-                true);
         declaration.addProperty("complete", true);
 
         JsonObject activation = new JsonObject();
@@ -3716,7 +3655,6 @@ public class ConcolicSummaryImporterTest {
         snapshotKeys.add(constant("Y_I_22", "java/lang/Integer"));
         JsonObject entry = mapProjectionObservation("ENTRY_SNAPSHOT",
                 operation, mapPort, outputPort, outputCell, 501L);
-        entry.addProperty("snapshotElementCount", 2);
         entry.add("snapshotElementObjectTokens", snapshotTokens.deepCopy());
         entry.add("snapshotEntryKeyExpressions", snapshotKeys.deepCopy());
         entry.addProperty("entryKeyExpressionAuthority",
@@ -3729,8 +3667,6 @@ public class ConcolicSummaryImporterTest {
         outputObservation.addProperty("outputArrayObjectToken", 701L);
         outputObservation.addProperty("outputVerificationAuthority",
                 "ACTIVE_REGION_ROOT_RETURN_EXACT_PROJECTED_FIELD");
-        outputObservation.addProperty("projectedFieldBindingCount", 2);
-        outputObservation.addProperty("outputFieldValueVerifiedCount", 2);
         outputObservation.addProperty("outputFieldValueFlowVerified", true);
         outputObservation.addProperty("fieldValueFlowAuthority",
                 "SAME_EXECUTION_BOUNDED_OBSERVED_SCHEDULE_EXACT_"
@@ -3817,7 +3753,7 @@ public class ConcolicSummaryImporterTest {
             JsonElement first = bindings.remove(0);
             bindings.add(first);
         } else if ("LENGTH".equals(fault)) {
-            entry.addProperty("snapshotElementCount", 3);
+            entry.getAsJsonArray("snapshotElementObjectTokens").add(603L);
         } else if ("IDENTITY".equals(fault)) {
             outputObservation.addProperty("outputIdentityVerified", false);
         } else if ("TYPE".equals(fault)) {
@@ -4016,33 +3952,16 @@ public class ConcolicSummaryImporterTest {
         expression.addProperty("_engine_array_id_authority",
                 "VM_ACTIVE_SYM_ARRAY_ID_V1");
         JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", 1);
-        result.addProperty("kind", "ENGINE_ARRAY_TO_INPUT_PORT");
+        result.addProperty("schemaVersion", 2);
+        result.addProperty("kind", "ENGINE_ARRAY_INPUT_BINDING");
         result.addProperty("sourceActivationId", "ACT.ARRAY");
         result.addProperty("inputPort", port);
         result.addProperty("inputCell", cell);
-        result.addProperty("inputJavaType", "java.lang.Object[]");
         result.addProperty("inputJavaTypeDescriptor",
                 "[Ljava/lang/Object;");
-        result.addProperty("symbolizationPrefix", port);
-        result.addProperty("symbolizationMode",
-                "DIRECT_ARRAY_VALUE_WITH_CANONICAL_INPUT_PREFIX");
         result.addProperty("engineArrayId", engineArrayId);
-        result.addProperty("engineArrayIdAuthority",
-                "VM_ACTIVE_SYM_ARRAY_ID_V1");
         result.addProperty("arrayObjectToken", objectToken);
-        result.addProperty("symbolizationArrayObjectToken", objectToken);
-        result.addProperty("symbolizationIdentityAuthority",
-                "SAME_JAVA_REFERENCE_PASSED_TO_SYMBOLIZE_AND_"
-                        + "EXPRESSION_CAPTURE");
-        result.addProperty("sameArrayObjectTokenVerified", true);
-        result.addProperty("objectTokenAuthority",
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        result.addProperty("objectTokenScope", "ACT.ARRAY");
-        result.addProperty("captureAuthority",
-                "SAME_LIVE_ARRAY_AFTER_EXACT_INPUT_ACTION_SYMBOLIZATION");
         result.add("arrayValueExpression", expression);
-        result.addProperty("complete", true);
         return result;
     }
 
@@ -4324,10 +4243,6 @@ public class ConcolicSummaryImporterTest {
         }
         if (!result.has("executionMode")) {
             result.addProperty("executionMode", "SYMBOLIC_CONCOLIC");
-        }
-        if (!result.has("pathConditionIsolationPolicy")) {
-            result.addProperty("pathConditionIsolationPolicy",
-                    ConcolicSummaryImporter.PATH_CONDITION_ISOLATION_POLICY);
         }
         for (String field : new String[]{"runtimeHeapObservations",
                 "dynamicFieldBindings"}) {

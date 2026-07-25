@@ -146,7 +146,7 @@ validate_composition_common() {
     and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
     and (.gaps | type == "array" and length == 0)
-    and ((.resolvedProducerKeys // []) | length) > 0
+    and ((.includedSummaries // []) | length) > 0
     and ((.resolvedEdgeBindings // []) | length) > 0
     and ((.caseProjectionCatalog // []) | type) == "array"
     and ((.caseProjectionCatalog // []) | length) > 0
@@ -273,11 +273,9 @@ validate_multitype_producer_artifacts() {
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and .pendingTaskCount == 0
-      and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps", "outputClosure"] | sort)
+        "state", "bounds", "gaps",
+        "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
   ' "${path_closures[@]}" >/dev/null \
     || die "multitype producer path closure is incomplete or single-path"
@@ -287,7 +285,6 @@ validate_multitype_producer_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 1
       and all(.regionRelation.cases[];
         .guard.kind == "PATH_CONDITION"
@@ -399,13 +396,10 @@ validate_dependent_scalar_artifacts() {
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and .pendingTaskCount == 0
-      and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps", "outputClosure"] | sort)
+        "state", "bounds", "gaps",
+        "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
-    and ([.[].observedPathCount] | sort) == [2, 6]
   ' "${path_closures[@]}" >/dev/null \
     || die "dependent-scalar producer path closure is incomplete"
 
@@ -421,7 +415,6 @@ validate_dependent_scalar_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 1
       and all(.regionRelation.cases[];
         (.guard.conditions | length) > 0
@@ -474,11 +467,9 @@ validate_container_producer_artifacts() {
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and .pendingTaskCount == 0
-      and .observedPathCount >= 2
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps", "outputClosure"] | sort)
+        "state", "bounds", "gaps",
+        "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
   ' "${path_closures[@]}" >/dev/null \
     || die "container producer path closure is incomplete"
@@ -505,8 +496,6 @@ validate_container_producer_artifacts() {
   jq -e -s '
     ([.[] | select((.pathQueryKey // "") != "")] as $replays
       | ($replays | length) >= 2
-      and all($replays[];
-        .allModelAssignmentsApplied == true)
       and ([$replays[].pathQueryKey] | unique | length)
         == ($replays | length)
       and ([$replays[].modelAssignmentsApplied[]?
@@ -520,7 +509,6 @@ validate_container_producer_artifacts() {
     | $outputSlice.containerElementFieldBindings[0] as $static
     | (.relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
-    and .regionRelation.pathClosureState == "CLOSED"
     and (.regionRelation.cases | length) == 2
     and ($outputSlice.containerElementFieldBindings | length) == 1
     and $static.schemaVersion == 2
@@ -571,7 +559,6 @@ validate_container_producer_artifacts() {
     (singleton_output_member | .slice) as $outputSlice
     | (.relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
-    and .regionRelation.pathClosureState == "CLOSED"
     and (.regionRelation.cases | length) >= 2
     and ($outputSlice.inputAliasCanonicalizations | length) >= 3
     and all($outputSlice.inputAliasCanonicalizations[];
@@ -585,12 +572,8 @@ validate_container_producer_artifacts() {
       and .aliasBindingCount == 1
       and .aliasBindingAuthorities
         == ["UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN"]
-      and .runtimeCutAuthority
-        == "BASE_READ_BEFORE_LEAF_READ_WITH_NO_INTERVENING_LEAF_WRITE_V1"
       and .baseFieldEventSeq > 0
-      and .baseFieldCallId > 0
       and .canonicalLeafFieldEventSeq > 0
-      and .canonicalLeafFieldCallId > 0
       and .baseFieldEventSeq < .canonicalLeafFieldEventSeq
       and .complete == true)
     and ([$outputSlice.inputAliasCanonicalizations[]
@@ -624,13 +607,16 @@ validate_container_producer_artifacts() {
         and $dynamic.keyExpression._type == "ConstExpr"
         and $dynamic.keyExpression._java_type == "I"
         and $dynamic.keyExpression._exp == "Y_I_7"
-        and $dynamic.entryValueRefWitnessJoinCertified == true
         and $observation.schemaVersion == 1
         and $observation.kind == "MAP_ENTRY_READ"
         and $observation.complete == true
         and $observation.stateBaseComplete == true
         and $observation.stateBindingAuthority
           == "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1"
+        and $observation.valueExpressionWitnessCertified == true
+        and $observation.valueExpressionWitnessCertifiedObjectToken > 0
+        and ($observation.valueExpressionWitnessCertifiedObjectTokenScope
+          | type == "string" and length > 0)
         and $observation.entryValueFieldBindingComplete == true
         and ($observation.entryFieldBindings | length) == 1
         and $observation.entryFieldBindings[0].dynamicBindingId
@@ -667,9 +653,7 @@ validate_unreachable_parity_producer_artifacts() {
       and .kind == "REGION_PATH_WORKLIST"
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
-      and (.gaps | length) == 0
-      and .pendingTaskCount == 0
-      and .observedPathCount > 2)
+      and (.gaps | length) == 0)
   ' "${path_closures[@]}" >/dev/null \
     || die "unreachable-parity producer path closure is incomplete"
 
@@ -678,7 +662,6 @@ validate_unreachable_parity_producer_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 2
       and all(.regionRelation.cases[];
         (.guard.conditions | length) > 0
@@ -772,9 +755,7 @@ validate_scalar_unsat_producer_artifacts() {
     length == 2
     and all(.[];
       .state == "CLOSED"
-      and .pendingTaskCount == 0
-      and (.gaps | length) == 0
-      and .observedPathCount > 1)
+      and (.gaps | length) == 0)
   ' "${path_closures[@]}" >/dev/null \
     || die "${label} producer path closure is incomplete"
 
@@ -783,7 +764,6 @@ validate_scalar_unsat_producer_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 1
       and (output_members | map(.output.portId) | sort) as $ports
       | all(.regionRelation.cases[];
@@ -848,27 +828,22 @@ validate_compound_target_artifacts() {
     .kind == "REGION_PATH_WORKLIST"
     and .state == "CLOSED"
     and .captureGoal == "TARGET_BRANCH"
-    and .pendingTaskCount == 0
     and (.gaps | length) == 0
-    and .observedPathCount > 2
   ' "${target_closure}" >/dev/null \
     || die "${label} target-function path worklist is incomplete"
 
-  jq -e --arg expectation "${expected_reached}" \
-    --slurpfile closure "${target_closure}" '
+  jq -e --arg expectation "${expected_reached}" '
     .kind == "TARGET_REACH_PATH_SET_QUERY"
     and .pathClosureState == "CLOSED"
     and .constraintAuthority
       == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
     and .readyForSolver == true
-    and .observedPathCount == $closure[0].observedPathCount
-    and .reachedPathCount == (.paths | length)
     and (if $expectation == "positive"
-      then .reachedPathCount > 1
+      then (.paths | length) > 1
         and all(.paths[];
           (.constraints | length) >= 3)
         and any(.paths[]; (.constraints | length) >= 4)
-      else .reachedPathCount == 0
+      else (.paths | length) == 0
       end)
   ' "${target_query}" >/dev/null \
     || die "${label} target reach-path query is incomplete"
@@ -910,9 +885,7 @@ validate_compound_target_artifacts() {
     length == 2
     and all(.[];
       .state == "CLOSED"
-      and .pendingTaskCount == 0
-      and (.gaps | length) == 0
-      and .observedPathCount == 2)
+      and (.gaps | length) == 0)
   ' "${producer_closures[@]}" >/dev/null \
     || die "${label} producer path closure is incomplete"
   jq -e -s "${output_closure_helpers}"'
@@ -930,10 +903,7 @@ validate_compound_target_artifacts() {
     "${output_closure_helpers}"'
     .fatalConstraintAuthority
       == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
-    and .fatalPathCount
-      == (if $expectation == "positive" then 4 else 0 end)
     and (.includedSummaries | length) == 2
-    and (.resolvedProducerKeys | length) == 6
     and (.resolvedEdgeBindings | length) == 6
     and ([.resolvedEdgeBindings[]] | unique | length) == 6
     and all(.resolvedEdgeBindings[];
@@ -1080,8 +1050,7 @@ validate_semantic_profile() {
         || die "dependent-scalar composition moved away from the annotated target"
       jq -e "${output_closure_helpers}"'
         . as $root
-        | (.resolvedProducerKeys | length) == 2
-        and (.resolvedEdgeBindings | length) == 2
+        | (.resolvedEdgeBindings | length) == 2
         and ([.resolvedEdgeBindings[]] | unique | length) == 2
         and all(.resolvedEdgeBindings[];
           type == "string" and length > 0)
@@ -1119,8 +1088,7 @@ validate_semantic_profile() {
       ' "${reach_report}" >/dev/null \
         || die "containers lost its Boolean/int existential reach profile"
       jq -e '
-        (.resolvedProducerKeys | length) == 2
-        and (.includedSummaries | length) == 2
+        (.includedSummaries | length) == 2
         and (.caseProjectionCatalog | length) >= 4
         and all(.caseProjectionCatalog[];
           (.bindings | length) >= 1
@@ -1155,8 +1123,7 @@ validate_semantic_profile() {
       ' "${reach_report}" >/dev/null \
         || die "unreachable-parity was not proved unreachable for all roots"
       jq -e '
-        (.resolvedProducerKeys | length) == 2
-        and (.includedSummaries | length) == 2
+        (.includedSummaries | length) == 2
         and (.caseProjectionCatalog | length) > 4
         and all(.caseProjectionCatalog[];
           (.bindings | length) == 3

@@ -2,21 +2,15 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import org.junit.Assume;
 import org.junit.Test;
 
-import java.io.ByteArrayOutputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 public class ConcolicConstraintSolverTest {
     @Test
@@ -128,8 +122,63 @@ public class ConcolicConstraintSolverTest {
                         Paths.get("z3"), 10_000L);
         assertEquals(satisfiable.record.toString(), "SAT_MODEL_READY",
                 satisfiable.record.get("status").getAsString());
-        assertEquals("D", satisfiable.modelAssignments.get(0)
-                .getAsJsonObject().get("floatingPointFormat").getAsString());
+        JsonObject assignment = satisfiable.modelAssignments.get(0)
+                .getAsJsonObject();
+        assertEquals("REAL", assignment.get("valueType").getAsString());
+        for (String retired : new String[]{"floatingPointFormat",
+                "modelNaNSymbol", "modelIsNaN", "nanReplayAuthority",
+                "modelBitSymbol", "modelIeeeBits"}) {
+            assertFalse(retired, assignment.has(retired));
+        }
+    }
+
+    @Test
+    public void unsupportedExpressionNeverInventsDiagnosticSmtMeaning()
+            throws Exception {
+        JsonObject division = binaryExpression(
+                intSymbol("M_I_field_REGION.3.in.0_example/Input"),
+                "/", intConstant(2));
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(binaryExpression(division, ">", intConstant(0))),
+                activation(), Paths.get("/does/not/exist/z3"), 10_000L);
+
+        assertEquals("UNSUPPORTED",
+                result.record.get("status").getAsString());
+        assertTrue(result.record.getAsJsonArray("unsupported").size() > 0);
+        assertFalse(result.smtLib.contains("unsupported_division"));
+        assertFalse(result.smtLib.contains("declare-fun uf__"));
+    }
+
+    @Test
+    public void runtimeTypedStringSymbolMapsToExactRegionInput()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject input = new JsonObject();
+        input.addProperty("_type", "SymbolExpression");
+        input.addProperty("_java_type", "java/lang/String");
+        input.addProperty("_exp",
+                "M_L'String'_REGION.3.in.0_example/Input");
+        JsonObject needle = new JsonObject();
+        needle.addProperty("_type", "ConStringSymbolExp");
+        needle.addProperty("_java_type", "java/lang/String");
+        needle.addProperty("_exp", "Y_L'String'_needle");
+        JsonArray parameters = new JsonArray();
+        parameters.add(input);
+        parameters.add(needle);
+        JsonObject contains = new JsonObject();
+        contains.addProperty("_type", "OpStrExpression");
+        contains.addProperty("_name", "contains");
+        contains.add("_param_list", parameters);
+        JsonObject condition = binaryExpression(contains, "==",
+                numericConstant("Z", "0"));
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(condition), activation(), Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals("REGION.3.in.0", result.modelAssignments.get(0)
+                .getAsJsonObject().get("inputSymbol").getAsString());
     }
 
     private static JsonObject activation() {
@@ -147,17 +196,6 @@ public class ConcolicConstraintSolverTest {
         action.addProperty("bindingMode", "ROOT_ENTRY");
         action.addProperty("index", index);
         return action;
-    }
-
-    private static JsonObject containerActivation() {
-        JsonObject activation = activation();
-        JsonObject container = new JsonObject();
-        container.addProperty("symbol", "REGION.3.in.array");
-        container.addProperty("cell", "<example.Keys: example.Key[] keys>");
-        container.addProperty("location", "HEAP_OBJECT_FIELD");
-        container.addProperty("bindingMode", "FIELD_ACCESS");
-        activation.getAsJsonArray("materializations").add(container);
-        return activation;
     }
 
     /** Adapts expression-focused unit fixtures to the production protocol. */
@@ -231,45 +269,8 @@ public class ConcolicConstraintSolverTest {
         return expression;
     }
 
-    private static JsonObject stringContains(String raw, String needle,
-                                             boolean negated) {
-        return stringOperation("contains", negated, stringSymbol(raw),
-                stringConstant(needle));
-    }
-
-    private static JsonObject stringOperation(String operation,
-                                              boolean negated,
-                                              JsonElement... parameters) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "OpStrExpression");
-        expression.addProperty("_name", operation);
-        expression.addProperty("_is_not", negated);
-        JsonArray arguments = new JsonArray();
-        for (JsonElement parameter : parameters) {
-            arguments.add(parameter);
-        }
-        expression.add("_param_list", arguments);
-        return expression;
-    }
-
-    private static JsonObject stringSymbol(String raw) {
-        JsonObject receiver = new JsonObject();
-        receiver.addProperty("_type", "SymbolExpression");
-        receiver.addProperty("_java_type", "java/lang/String");
-        receiver.addProperty("_exp", raw);
-        return receiver;
-    }
-
     private static JsonObject intSymbol(String raw) {
         return numericSymbol(raw, "I");
-    }
-
-    private static JsonObject referenceSymbol(String raw, String javaType) {
-        JsonObject result = new JsonObject();
-        result.addProperty("_type", "SymbolExpression");
-        result.addProperty("_java_type", javaType);
-        result.addProperty("_exp", raw);
-        return result;
     }
 
     private static JsonObject numericSymbol(String raw, String javaType) {
@@ -278,14 +279,6 @@ public class ConcolicConstraintSolverTest {
         result.addProperty("_java_type", javaType);
         result.addProperty("_exp", raw);
         return result;
-    }
-
-    private static JsonObject stringConstant(String value) {
-        JsonObject argument = new JsonObject();
-        argument.addProperty("_type", "ConStringSymbolExp");
-        argument.addProperty("_java_type", "java/lang/String");
-        argument.addProperty("_exp", "Y_L'String'_" + value);
-        return argument;
     }
 
     private static JsonObject intConstant(int value) {
@@ -301,47 +294,6 @@ public class ConcolicConstraintSolverTest {
         result.addProperty("_type", "ConSymbolExp");
         result.addProperty("_java_type", javaType);
         result.addProperty("_exp", "Y_" + javaType + "_" + value);
-        return result;
-    }
-
-    private static JsonObject cast(JsonElement source, String javaType) {
-        JsonObject result = new JsonObject();
-        result.addProperty("_type", "TypeCastExpression");
-        result.addProperty("_java_type", javaType);
-        result.add("_exp", source);
-        return result;
-    }
-
-    private static JsonObject explicitCast(JsonElement source,
-                                           String sourceJavaType,
-                                           String targetJavaType) {
-        JsonObject result = cast(source, targetJavaType);
-        result.addProperty("sourceJavaType", sourceJavaType);
-        result.addProperty("targetJavaType", targetJavaType);
-        return result;
-    }
-
-    private static JsonObject unaryNegation(JsonElement operand) {
-        return binaryExpression(JsonNull.INSTANCE, "-", operand);
-    }
-
-    private static JsonObject method(String name, JsonElement resultValue,
-                                     JsonElement... parameters) {
-        JsonObject result = new JsonObject();
-        result.addProperty("_type", "MethodExpression");
-        result.addProperty("_name", name);
-        JsonArray arguments = new JsonArray();
-        for (JsonElement parameter : parameters) arguments.add(parameter);
-        result.add("_param_list", arguments);
-        result.add("_res_exp", resultValue);
-        return result;
-    }
-
-    private static JsonObject nullReference() {
-        JsonObject result = new JsonObject();
-        result.addProperty("_type", "SymbolExpression");
-        result.addProperty("_java_type", "Ljava/lang/Object;");
-        result.addProperty("_exp", "N");
         return result;
     }
 
@@ -375,109 +327,6 @@ public class ConcolicConstraintSolverTest {
         return expression;
     }
 
-    private static JsonObject currentTimePlaceholder(int count) {
-        JsonObject result = new JsonObject();
-        result.addProperty("_type", "PlaceholderExpression");
-        result.addProperty("_place_holder_func", "currentTimeMills");
-        result.addProperty("_count", count);
-        return result;
-    }
-
-    private static JsonObject dynamicBinding(String base, String site,
-                                             int occurrence, String key)
-            throws Exception {
-        String dynamic = base + ".field." + sha256(site).substring(0, 12)
-                + ".occ." + occurrence;
-        JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 1);
-        binding.addProperty("kind", "DYNAMIC_MAP_ENTRY_FIELD_BINDING");
-        binding.addProperty("authority",
-                "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
-                        + "FIELD_SITE_OCCURRENCE");
-        binding.addProperty("dynamicBindingId", "DYNAMIC_FIELD:" + dynamic);
-        binding.addProperty("baseInputSymbol", base);
-        binding.addProperty("dynamicFieldSymbol", dynamic);
-        binding.addProperty("materializationSiteId", site);
-        binding.addProperty("materializationOccurrence", occurrence);
-        binding.addProperty("fieldSignature", "<Key: long expiry>");
-        JsonArray fieldPath = new JsonArray();
-        fieldPath.add("expiry");
-        binding.add("fieldPath", fieldPath);
-        binding.addProperty("leafOwnerObjectToken", "OBJECT.old-run");
-        binding.addProperty("entryReadObservationId", "ENTRY.READ."
-                + occurrence);
-        JsonObject keyExpression = new JsonObject();
-        keyExpression.addProperty("_type", "ConstExpr");
-        keyExpression.addProperty("_java_type", "Ljava/lang/String;");
-        keyExpression.addProperty("_exp", key);
-        binding.add("keyExpression", keyExpression);
-        binding.addProperty("keyExpressionAuthority",
-                "RUNTIME_MAP_ENTRY_READ_KEY_EXPRESSION");
-        binding.addProperty("complete", true);
-        return binding;
-    }
-
-    private static JsonObject containerBinding(String base, String site,
-                                               int index, int occurrence)
-            throws Exception {
-        String dynamic = base + ".field." + sha256(site).substring(0, 12)
-                + ".occ." + occurrence;
-        JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 3);
-        binding.addProperty("kind",
-                "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
-        binding.addProperty("authority",
-                "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_IDENTITY_AND_"
-                        + "STABLE_FIELD_SITE_OCCURRENCE");
-        binding.addProperty("dynamicBindingId", "DYNAMIC_FIELD:" + dynamic);
-        binding.addProperty("baseInputSymbol", base);
-        binding.addProperty("dynamicFieldSymbol", dynamic);
-        binding.addProperty("materializationSiteId", site);
-        binding.addProperty("materializationOccurrence", occurrence);
-        binding.addProperty("fieldSignature", "<example.Key: int id>");
-        JsonArray path = new JsonArray();
-        path.add("id");
-        binding.add("fieldPath", path);
-        JsonObject selector = new JsonObject();
-        selector.addProperty("kind", "ARRAY_INDEX");
-        selector.addProperty("bindingId", "BIND.ARRAY.1");
-        selector.addProperty("containerInputPort", "REGION.3.in.array");
-        selector.addProperty("containerInputCell",
-                "<example.Keys: example.Key[] keys>");
-        selector.addProperty("selectorAuthority", "EXACT_ARRAY_INDEX");
-        selector.addProperty("resolvedFromSelectorAuthority",
-                "EXACT_ARRAY_INDEX");
-        selector.addProperty("elementIndex", index);
-        selector.addProperty("elementOccurrence", occurrence);
-        selector.addProperty("declaredFieldOwnerClass", "example.Key");
-        selector.addProperty("declaredFieldType", "int");
-        selector.addProperty("containerObjectToken", 301L);
-        selector.addProperty("elementObjectToken", 302L);
-        selector.addProperty("objectTokenAuthority",
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        selector.addProperty("objectTokenScope", "ACT.SOURCE");
-        selector.addProperty("authority",
-                "EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_ACTIVATION_"
-                        + "LOCAL_ELEMENT_IDENTITY");
-        selector.addProperty("complete", true);
-        binding.add("containerSelector", selector);
-        binding.addProperty("objectTokenAuthority",
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        binding.addProperty("objectTokenScope", "ACT.SOURCE");
-        binding.addProperty("complete", true);
-        return binding;
-    }
-
-    private static String sha256(String value) throws Exception {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
-        StringBuilder result = new StringBuilder();
-        for (byte current : bytes) {
-            result.append(String.format("%02x", current & 0xff));
-        }
-        return result.toString();
-    }
-
     private static boolean z3Available() {
         try {
             Process process = new ProcessBuilder("z3", "-version").start();
@@ -487,22 +336,4 @@ public class ConcolicConstraintSolverTest {
         }
     }
 
-    private static void assertZ3Parses(String smt) throws Exception {
-        Process process = new ProcessBuilder("z3", "-in")
-                .redirectErrorStream(true).start();
-        try (OutputStream input = process.getOutputStream()) {
-            input.write(smt.getBytes(StandardCharsets.UTF_8));
-        }
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        byte[] buffer = new byte[4096];
-        int count;
-        while ((count = process.getInputStream().read(buffer)) >= 0) {
-            output.write(buffer, 0, count);
-        }
-        int exit = process.waitFor();
-        String text = new String(output.toByteArray(),
-                StandardCharsets.UTF_8);
-        assertEquals(text, 0, exit);
-        assertFalse(text, text.contains("(error"));
-    }
 }

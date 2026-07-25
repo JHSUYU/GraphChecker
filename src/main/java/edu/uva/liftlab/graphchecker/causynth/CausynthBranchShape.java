@@ -81,15 +81,6 @@ final class CausynthBranchShape {
         return successors.size();
     }
 
-    int caseKey(int successorIndex) {
-        if (successorIndex < 0 || successorIndex >= caseKeys.size()) {
-            throw new IllegalArgumentException(
-                    "successor does not identify a switch case: "
-                            + successorIndex);
-        }
-        return caseKeys.get(successorIndex);
-    }
-
     String encodedCaseKeys() {
         StringBuilder result = new StringBuilder();
         for (Integer key : caseKeys) {
@@ -102,14 +93,9 @@ final class CausynthBranchShape {
     void annotate(Map<String, Object> target) {
         if (target == null) return;
         target.put("branchKind", kind);
-        target.put("successorCount", successorCount());
-        target.put("successorIndexAuthority",
-                "STATIC_BRANCH_CASE_ORDER_THEN_DEFAULT_V1");
         if (isSwitch()) {
             target.put("switchCaseKeys", new ArrayList<>(caseKeys));
             target.put("defaultSuccessorIndex", defaultSuccessorIndex);
-            target.put("switchArmIdentityAuthority",
-                    "STATIC_EXACT_CASE_KEY_EDGE_IDENTITY_V1");
         }
     }
 

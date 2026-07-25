@@ -3,6 +3,10 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveString;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
+
 /**
  * Immutable authority for one observed binary branch.
  *
@@ -73,7 +77,7 @@ public final class BranchWitness {
             throw new IllegalArgumentException(
                     "predicateMetadata is required");
         }
-        String normalization = string(predicateMetadata,
+        String normalization = primitiveString(predicateMetadata,
                 "predicateNormalization");
         if (normalization.isEmpty()) normalization = IDENTITY_NORMALIZATION;
         return new BranchWitness(siteId, method, unitIndex, occurrence,
@@ -82,12 +86,12 @@ public final class BranchWitness {
     }
 
     public static BranchWitness fromJson(JsonObject json) {
-        if (integer(json, "schemaVersion", -1) != SCHEMA_VERSION
-                || !KIND.equals(string(json, "kind"))) {
+        if (primitiveInteger(json, "schemaVersion", -1) != SCHEMA_VERSION
+                || !KIND.equals(primitiveString(json, "kind"))) {
             throw new IllegalArgumentException(
                     "unsupported binary branch witness schema");
         }
-        JsonObject site = object(json, "site");
+        JsonObject site = requiredObject(json, "site");
         JsonElement outcome = json.get("sourceTakenOutcome");
         if (outcome == null || !outcome.isJsonPrimitive()
                 || !outcome.getAsJsonPrimitive().isBoolean()) {
@@ -95,15 +99,13 @@ public final class BranchWitness {
                     "sourceTakenOutcome must be Boolean");
         }
         JsonElement predicate = json.get("sourceSatisfiedPredicate");
-        return new BranchWitness(string(site, "siteId"),
-                string(site, "method"), integer(site, "unitIndex", -1),
-                integer(site, "occurrence", -1), outcome.getAsBoolean(),
-                predicate, integer(json, "vmPcIndex", -1),
-                string(json, "predicateNormalization"));
-    }
-
-    public static BranchWitness fromMapping(JsonObject mapping) {
-        return fromJson(object(mapping, "witness"));
+        return new BranchWitness(primitiveString(site, "siteId"),
+                primitiveString(site, "method"),
+                primitiveInteger(site, "unitIndex", -1),
+                primitiveInteger(site, "occurrence", -1),
+                outcome.getAsBoolean(), predicate,
+                primitiveInteger(json, "vmPcIndex", -1),
+                primitiveString(json, "predicateNormalization"));
     }
 
     public JsonObject toJson() {
@@ -142,11 +144,6 @@ public final class BranchWitness {
         return predicateNormalization;
     }
 
-    public boolean sameBranchEvent(BranchWitness other) {
-        return other != null && siteId.equals(other.siteId)
-                && occurrence == other.occurrence;
-    }
-
     public boolean sameContent(BranchWitness other) {
         return other != null
                 && siteId.equals(other.siteId)
@@ -179,31 +176,6 @@ public final class BranchWitness {
         result.addProperty("predicateNormalization",
                 predicateNormalization);
         return (JsonObject) CanonicalJson.copy(result);
-    }
-
-    private static JsonObject object(JsonObject parent, String name) {
-        JsonElement value = parent == null ? null : parent.get(name);
-        if (value == null || !value.isJsonObject()) {
-            throw new IllegalArgumentException(name + " must be an object");
-        }
-        return value.getAsJsonObject();
-    }
-
-    private static int integer(JsonObject object, String name,
-                               int fallback) {
-        JsonElement value = object == null ? null : object.get(name);
-        try {
-            return value == null || !value.isJsonPrimitive()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException malformed) {
-            return fallback;
-        }
-    }
-
-    private static String string(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value == null || !value.isJsonPrimitive()
-                ? "" : value.getAsString();
     }
 
     private static String requireText(String value, String name) {

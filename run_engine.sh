@@ -54,7 +54,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|relationship_candidates|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|static_regions|static_graph|runtime_activation_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|relationship_candidates|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -85,6 +85,7 @@ reset_config() {
   z3_bin=""
   workload_work_dir=""
   workload_command=""
+  trace_test=""
   static_regions=""
   static_graph=""
   runtime_activation_plan=""
@@ -166,6 +167,7 @@ apply_environment_overrides() {
   apply_env_override z3_bin CAUSYNTH_Z3
   apply_env_override workload_work_dir CAUSYNTH_WORKLOAD_WORK_DIR
   apply_env_override workload_command CAUSYNTH_WORKLOAD_COMMAND
+  apply_env_override trace_test CAUSYNTH_TRACE_TEST
   apply_env_override static_regions CAUSYNTH_STATIC_REGIONS
   apply_env_override static_graph CAUSYNTH_STATIC_GRAPH
   apply_env_override runtime_activation_plan CAUSYNTH_ACTIVATION_PLAN
@@ -408,7 +410,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest relationship_candidates reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command trace_test static_regions static_graph runtime_activation_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest relationship_candidates reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -416,7 +418,7 @@ print_normalized_config() {
 validate_config() {
   local key
   local missing=0
-  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_target_spec custom_jdk_home z3_bin workload_command; do
+  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_target_spec custom_jdk_home z3_bin workload_command trace_test; do
     if [[ -z "${!key}" ]]; then
       echo "Missing workflow config value: ${key}" >&2
       missing=1
@@ -584,6 +586,14 @@ do_workload() {
       CAUSYNTH_CUSTOM_JDK_HOME="${custom_jdk_home}" \
       bash -lc "${workload_command}")
   fi
+  local trace_dir
+  trace_dir=$(dirname "${runtime_activation_plan}")
+  run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
+    --trace-dir "${trace_dir}" \
+    --static-graph "${static_graph}" \
+    --regions "${static_regions}" \
+    --region-edges "$(dirname "${static_regions}")/symbolic_region_edges.jsonl" \
+    --test "${trace_test}"
 }
 
 debug_log() {

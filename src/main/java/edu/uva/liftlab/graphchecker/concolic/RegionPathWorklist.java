@@ -214,7 +214,17 @@ public final class RegionPathWorklist {
                 if (tasks.size() >= bounds.maxTasks) break;
             }
 
-            JsonObject manifest = manifest(seenPaths.size(),
+            int remainingPathSlots = bounds.maxPathsPerRegion
+                    - seenPaths.size();
+            if (!tasks.isEmpty() && remainingPathSlots <= 0) {
+                gap("BOUND_REACHED", "MAX_PATHS_PER_REGION",
+                        manifestRegionId(observedRegions),
+                        "", "", -1);
+            } else if (tasks.size() > remainingPathSlots) {
+                tasks.subList(remainingPathSlots, tasks.size()).clear();
+            }
+
+            JsonObject manifest = manifest(!seenPaths.isEmpty(),
                     observedRegions, observedScopes);
             return new Result(tasks, manifest);
         }
@@ -277,9 +287,9 @@ public final class RegionPathWorklist {
                 JsonArray conditions, List<SummaryBranchMapping> mappings,
                 SummaryBranchMapping mapping) {
             int conditionIndex = mapping.summaryPcIndex();
-            BranchReplayPlan replay;
+            BranchReplayContract replay;
             try {
-                replay = BranchReplayPlan.fromSummary(summary, mappings,
+                replay = BranchReplayContract.fromSummary(summary, mappings,
                         mapping);
             } catch (IllegalArgumentException incompleteWitness) {
                 gap("INVALID_BRANCH_WITNESS_PREFIX",
@@ -293,11 +303,10 @@ public final class RegionPathWorklist {
             for (int index = 0; index < conditionIndex; index++) {
                 prefix.add(conditions.get(index).deepCopy());
             }
-            BranchReplayContract replayContract = replay.replayContract();
-            boolean desired = replayContract.requiredTakenOutcome();
+            boolean desired = replay.requiredTakenOutcome();
             String region = string(summary, "regionId");
-            String site = replayContract.source().siteId();
-            int occurrence = replayContract.source().occurrence();
+            String site = replay.source().siteId();
+            int occurrence = replay.source().occurrence();
             AlphaNormalizer alpha = new AlphaNormalizer(summary);
             String key = stableFlipKey(region, scope.identity, site,
                     occurrence, desired, alphaCanonical(prefix, alpha),
@@ -335,9 +344,7 @@ public final class RegionPathWorklist {
                 task.add(OutputClosureContract.FIELD,
                         scope.contract.toJson());
             }
-            task.add("replayContract", replayContract.toJson());
-            task.add("solverPathContext",
-                    replay.solverPathContext().toJson());
+            replay.addTo(task);
             task.add("dynamicFieldBindings", array(summary,
                     "dynamicFieldBindings").deepCopy());
             tasks.add(task);
@@ -448,7 +455,7 @@ public final class RegionPathWorklist {
             }
         }
 
-        private JsonObject manifest(int observedPathCount,
+        private JsonObject manifest(boolean hasObservedPath,
                                     Set<String> observedRegions,
                                     Map<String, ExplorationScope> scopes) {
             String regionId = manifestRegionId(observedRegions);
@@ -457,7 +464,7 @@ public final class RegionPathWorklist {
                         "REGION_PATH_WORKLIST_REQUIRES_ONE_REGION",
                         "", "", "", -1);
             }
-            if (observedPathCount == 0) {
+            if (!hasObservedPath) {
                 gap("NO_OBSERVED_PATH_SEED",
                         "REGION_PATH_SEED_REQUIRED",
                         regionId, "", "", -1);
@@ -478,7 +485,7 @@ public final class RegionPathWorklist {
                 }
             }
 
-            State state = observedPathCount == 0
+            State state = !hasObservedPath
                     ? State.NOT_STARTED
                     : !gaps.isEmpty()
                     ? State.GAPPED
@@ -489,8 +496,6 @@ public final class RegionPathWorklist {
             result.addProperty("regionId", regionId);
             result.addProperty("state", state.name());
             result.add("bounds", bounds.toJson());
-            result.addProperty("observedPathCount", observedPathCount);
-            result.addProperty("pendingTaskCount", tasks.size());
             if (scopes.size() == 1) {
                 ExplorationScope scope = scopes.values().iterator().next();
                 if (scope.contract != null) {
@@ -649,12 +654,9 @@ public final class RegionPathWorklist {
                 String instance = firstNonBlank(string(source,
                         "regionInstanceId"), string(summary,
                         "regionInstanceId"));
-                String rootMethod = firstNonBlank(string(object(source,
-                                "rootSelector"), "method"),
-                        string(summary, "rootMethod"));
                 return new ExplorationScope(goal, null, sites,
-                        "TARGET_BRANCH_V1\n" + region + "\n" + instance
-                                + "\n" + targetMethod + "\n" + rootMethod);
+                        "TARGET_BRANCH_V2\n" + region + "\n" + instance
+                                + "\n" + targetMethod);
             }
             OutputClosureContract summaryContract = decode(summary);
             OutputClosureContract activationContract =
@@ -746,8 +748,6 @@ public final class RegionPathWorklist {
             copyStable(source, stable, "keyExpression");
             copyStable(source, stable, "keyExpressionAuthority");
             copyStable(source, stable, "mapProjectionSelector");
-            copyStable(source, stable, "entrySnapshotElementCount");
-            copyStable(source, stable, "outputElementCount");
             copyStable(source, stable, "runtimeSymbolizationAuthority");
             copyStable(source, stable, "projectionEvidenceAuthority");
             copyStable(source, stable, "outputValidationMode");
@@ -805,27 +805,10 @@ public final class RegionPathWorklist {
             stable.addProperty("kind", string(source, "kind"));
             stable.addProperty("inputPort", string(source, "inputPort"));
             stable.addProperty("inputCell", string(source, "inputCell"));
-            stable.addProperty("inputJavaType", string(source,
-                    "inputJavaType"));
             stable.addProperty("inputJavaTypeDescriptor", string(source,
                     "inputJavaTypeDescriptor"));
-            stable.addProperty("symbolizationPrefix", string(source,
-                    "symbolizationPrefix"));
-            stable.addProperty("symbolizationMode", string(source,
-                    "symbolizationMode"));
             stable.addProperty("engineArrayId", alpha.array(string(source,
                     "engineArrayId")));
-            stable.addProperty("engineArrayIdAuthority", string(source,
-                    "engineArrayIdAuthority"));
-            stable.addProperty("objectTokenAuthority", string(source,
-                    "objectTokenAuthority"));
-            stable.addProperty("symbolizationIdentityAuthority",
-                    string(source, "symbolizationIdentityAuthority"));
-            stable.addProperty("sameArrayObjectTokenVerified", bool(source,
-                    "sameArrayObjectTokenVerified", false));
-            stable.addProperty("captureAuthority", string(source,
-                    "captureAuthority"));
-            stable.addProperty("complete", bool(source, "complete", false));
             bindings.add(alphaCanonical(stable, alpha));
         }
         Collections.sort(bindings);
@@ -977,7 +960,6 @@ public final class RegionPathWorklist {
             if (value == null || !value.isJsonObject()) return;
             JsonObject object = value.getAsJsonObject();
             addPort(string(object, "portId"));
-            addPort(string(object, "symbol"));
             addPort(string(object, "inputPort"));
             addPort(string(object, "outputPort"));
         }

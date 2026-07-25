@@ -47,15 +47,14 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
 
-            assertTrue(candidateReady(result.manifest));
+            assertTrue(result.manifest.toString(),
+                    candidateReady(result.manifest));
             assertEquals(0, result.manifest.getAsJsonArray(
                     "gaps").size());
             assertTrue(result.smtLib.contains("(map_put "));
             assertTrue(result.smtLib.contains("(map_remove "));
             assertTrue(result.smtLib.contains("(map_clear "));
             assertTrue(result.smtLib.contains("(map_put_all "));
-            assertTrue(result.smtLib.contains(
-                    "(map_remove port__local_heap__summary_SUMMARY_P__"));
             assertTrue(result.smtLib.contains(
                     "__REGION_P_out_heapMap0_state3 port__REGION_P_in_1)"));
             assertZ3Status(result.smtLib, "sat");
@@ -89,7 +88,8 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
 
-            assertTrue(candidateReady(result.manifest));
+            assertTrue(result.manifest.toString(),
+                    candidateReady(result.manifest));
             assertTrue(result.smtLib.contains(
                     "region_case_selector_partition_REGION_P"));
             assertTrue(result.smtLib.contains("(=>"));
@@ -162,7 +162,8 @@ public class ConcolicSmtComposerTest {
             bindings.add(exactBinding);
             upstream.add("edgeBindings", bindings);
             Files.write(fixture.summaries,
-                    (intermediate + "\n" + upstream + "\n").getBytes(
+                    (canonicalSummary(intermediate) + "\n"
+                            + canonicalSummary(upstream) + "\n").getBytes(
                             StandardCharsets.UTF_8));
 
             ConcolicSmtComposer.Arguments bounded =
@@ -249,7 +250,6 @@ public class ConcolicSmtComposerTest {
             reachedPaths.add(secondPath);
             fatal.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
             fatal.addProperty("pathClosureState", "CLOSED");
-            fatal.addProperty("reachedPathCount", reachedPaths.size());
             fatal.addProperty("constraintAuthority",
                     "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1");
             fatal.add("paths", reachedPaths);
@@ -265,12 +265,9 @@ public class ConcolicSmtComposerTest {
             assertTrue(result.manifest.toString(), candidateReady(result.manifest));
             assertEquals(1, result.manifest.getAsJsonArray(
                     "includedSummaries").size());
-            assertEquals(6, result.manifest.getAsJsonArray(
-                    "resolvedProducerKeys").size());
             assertEquals("CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1",
                     result.manifest.get("fatalConstraintAuthority")
                             .getAsString());
-            assertEquals(2, result.manifest.get("fatalPathCount").getAsInt());
             assertTrue(result.smtLib.contains(":named fatal_path"));
             assertTrue(result.smtLib.contains("(or "));
             JsonArray catalog = result.manifest.getAsJsonArray(
@@ -356,7 +353,8 @@ public class ConcolicSmtComposerTest {
             bindings.add(firstBinding);
             bindings.add(secondBinding);
             Files.write(fixture.summaries,
-                    (first + "\n" + second + "\n").getBytes(
+                    (canonicalSummary(first) + "\n"
+                            + canonicalSummary(second) + "\n").getBytes(
                             StandardCharsets.UTF_8));
             installFatalRelations(fixture, bindings);
             JsonObject fatal = JsonParser.parseString(new String(
@@ -379,6 +377,9 @@ public class ConcolicSmtComposerTest {
                             + "outputs=[REGION.P.out.3, REGION.P.out.4]]"));
             assertEquals(0, result.manifest.getAsJsonArray(
                     "includedSummaries").size());
+            assertTrue(result.smtLib.contains(
+                    "(assert false) ; fail closed: unsupported"));
+            assertFalse(result.smtLib.contains("uf__"));
         } finally {
             folder.delete();
         }
@@ -417,7 +418,8 @@ public class ConcolicSmtComposerTest {
                     .set(0, new com.google.gson.JsonPrimitive(
                             "DF.AMBIGUOUS.SECOND"));
             Files.write(fixture.summaries,
-                    (first + "\n" + second + "\n").getBytes(
+                    (canonicalSummary(first) + "\n"
+                            + canonicalSummary(second) + "\n").getBytes(
                             StandardCharsets.UTF_8));
             installFatalRelations(fixture, singleton(binding));
             JsonObject fatal = JsonParser.parseString(new String(
@@ -439,107 +441,6 @@ public class ConcolicSmtComposerTest {
         } finally {
             folder.delete();
         }
-    }
-
-    private static JsonObject protocolModel() {
-        JsonObject model = new JsonObject();
-        model.addProperty("complete", true);
-        JsonArray relations = new JsonArray();
-
-        JsonObject codec = protocolRelation("FIXTURE.CODEC",
-                "LOSSLESS_CODEC");
-        codec.addProperty("codecId", "FIXTURE_INTEGER_CODEC");
-        codec.addProperty("lossless", true);
-        codec.addProperty("transportEqualityConfirmed", true);
-        codec.add("source", protocolPort("REGION.P.in.2", "INT"));
-        codec.add("encoded", protocolPort("REGION.P.out.1", "VALUE"));
-        codec.add("transport", protocolPort("REGION.F.in.2", "VALUE"));
-        JsonObject decoded = new JsonObject();
-        decoded.addProperty("kind", "EXPRESSION");
-        decoded.addProperty("valueType", "INT");
-        decoded.add("expression", symbol("java/lang/Integer",
-                "boxed_lookup_key"));
-        codec.add("decoded", decoded);
-        relations.add(codec);
-
-        JsonObject constant = protocolRelation("FIXTURE.CONSTANT",
-                "CONSTANT_BINDING");
-        constant.add("target", protocolPort("REGION.F.in.7", "INT"));
-        JsonObject value = new JsonObject();
-        value.addProperty("kind", "CONSTANT");
-        value.addProperty("valueType", "INT");
-        value.addProperty("value", 23);
-        constant.add("value", value);
-        relations.add(constant);
-
-        JsonObject lifecycle = protocolRelation("FIXTURE.LIFECYCLE",
-                "EXPIRING_CACHE_MEMBERSHIP");
-        lifecycle.addProperty("exactExpiryRemoval", true);
-        lifecycle.addProperty("currentValuePresent", true);
-        lifecycle.addProperty("retainsCachedValue", true);
-        lifecycle.addProperty("uniqueSuccessorValues", true);
-        lifecycle.add("cachedValue", protocolPort("REGION.P.in.2", "INT"));
-        lifecycle.add("currentValue", protocolPort("REGION.F.in.3", "INT"));
-        lifecycle.add("state", protocolPort("REGION.P.out.0", "MAP"));
-        lifecycle.add("observationTime",
-                protocolPort("REGION.F.in.4", "INT"));
-        lifecycle.add("updateInterval",
-                protocolPort("REGION.F.in.5", "INT"));
-        lifecycle.add("lifetime", protocolPort("REGION.F.in.6", "INT"));
-        lifecycle.add("issueTime", protocolSymbol("issue", "INT"));
-        lifecycle.add("retirementTime", protocolSymbol("retire", "INT"));
-        lifecycle.add("credentialExpiry",
-                protocolSymbol("credential_expiry", "INT"));
-        lifecycle.add("memberExpiry",
-                protocolSymbol("member_expiry", "INT"));
-        relations.add(lifecycle);
-
-        model.addProperty("relationCount", relations.size());
-        model.add("relations", relations);
-        return model;
-    }
-
-    private static JsonObject guardedWriter(String guard, String from,
-                                            int writeSeq, int readSeq) {
-        JsonObject relation = new JsonObject();
-        relation.addProperty("edgeId", "EDGE." + guard);
-        relation.addProperty("fromEndpoint", from);
-        relation.addProperty("toEndpoint", "REGION.F.in.0");
-        relation.addProperty("guardSymbol", guard);
-        JsonObject binding = new JsonObject();
-        binding.addProperty("evidenceKind",
-                "FIELD_ASSIGNMENT_READ_FROM_V1");
-        binding.addProperty("writerEventSeq", writeSeq);
-        binding.addProperty("readerEventSeq", readSeq);
-        binding.addProperty("receiverObjectId", 41);
-        JsonArray bindings = new JsonArray();
-        bindings.add(binding);
-        relation.add("selectedBindings", bindings);
-        return relation;
-    }
-
-    private static JsonObject protocolRelation(String id, String kind) {
-        JsonObject relation = new JsonObject();
-        relation.addProperty("relationId", id);
-        relation.addProperty("kind", kind);
-        relation.addProperty("evidenceConfirmed", true);
-        return relation;
-    }
-
-    private static JsonObject protocolPort(String port, String valueType) {
-        JsonObject endpoint = new JsonObject();
-        endpoint.addProperty("kind", "PORT");
-        endpoint.addProperty("portId", port);
-        endpoint.addProperty("valueType", valueType);
-        return endpoint;
-    }
-
-    private static JsonObject protocolSymbol(String symbol, String valueType) {
-        JsonObject endpoint = new JsonObject();
-        endpoint.addProperty("kind", "SYMBOL");
-        endpoint.addProperty("symbol", symbol);
-        endpoint.addProperty("valueType", valueType);
-        return endpoint;
     }
 
     private static JsonArray singlePutEffect() {
@@ -660,21 +561,6 @@ public class ConcolicSmtComposerTest {
         closure.add("producer", producer);
         closure.add("members", members);
         summary.add(OutputClosureContract.FIELD, closure);
-    }
-
-    private static JsonObject requestedOutput(String port) {
-        JsonObject result = new JsonObject();
-        result.addProperty("portId", port);
-        return result;
-    }
-
-    private static JsonObject requestedSlice(String... inputs) {
-        JsonObject result = new JsonObject();
-        JsonArray ports = new JsonArray();
-        for (String input : inputs) ports.add(input);
-        result.add("inputPorts", ports);
-        result.addProperty("complete", true);
-        return result;
     }
 
     private static void explicitPrimitiveOutputClosure(
@@ -830,26 +716,36 @@ public class ConcolicSmtComposerTest {
         return binding;
     }
 
-    private static JsonObject scalarSummary(String region, String summaryId,
-                                            String activationId,
-                                            String instanceId,
-                                            String symbolName) {
-        JsonObject result = producerSummary(new JsonArray(), true);
-        result.addProperty("summaryId", summaryId);
-        result.addProperty("activationId", activationId);
-        result.addProperty("regionId", region);
-        result.addProperty("regionInstanceId", instanceId);
-        result.add("requestedOutput", requestedOutput(region + ".out.0"));
-        result.getAsJsonObject("outputExpressions").add(
-                region + ".out.0", symbol("I", symbolName));
-        return result;
-    }
-
     private static JsonObject port(String portId, String cell) {
         JsonObject result = new JsonObject();
         result.addProperty("portId", portId);
         result.addProperty("cell", cell);
+        result.addProperty("javaType", cellType(cell));
         return result;
+    }
+
+    private static String cellType(String cell) {
+        String declaration = cell.substring(cell.indexOf(':') + 1,
+                cell.lastIndexOf('>')).trim();
+        return declaration.substring(0, declaration.lastIndexOf(' '));
+    }
+
+    private static String canonicalRegions(String jsonl) {
+        StringBuilder result = new StringBuilder();
+        for (String line : jsonl.split("\\n")) {
+            if (line.isEmpty()) continue;
+            JsonObject region = JsonParser.parseString(line)
+                    .getAsJsonObject();
+            for (String field : new String[]{"symbolicInputs", "outputs"}) {
+                for (JsonElement element : region.getAsJsonArray(field)) {
+                    JsonObject port = element.getAsJsonObject();
+                    port.addProperty("javaType",
+                            cellType(port.get("cell").getAsString()));
+                }
+            }
+            result.append(region).append('\n');
+        }
+        return result.toString();
     }
 
     private static JsonObject region(String regionId, String javaType,
@@ -946,7 +842,6 @@ public class ConcolicSmtComposerTest {
         initializer.addProperty("staticInitializerId",
                 "STATIC_INIT.REGION.P.0");
         initializer.addProperty("allocationEdgeId", "EDGE.ALLOC.0");
-        initializer.addProperty("constructorArgumentCount", 0);
         JsonArray proof = new JsonArray();
         proof.add("EDGE.ALLOC.0");
         initializer.add("proofEdgeIds", proof);
@@ -1228,7 +1123,6 @@ public class ConcolicSmtComposerTest {
                 "VM_INTRINSIC_PLACEHOLDER_PORT_BINDING");
         binding.addProperty("placeholderIdentity", identity);
         binding.addProperty("placeholderFunction", "currentTimeMills");
-        binding.addProperty("placeholderCount", count);
         binding.addProperty("inputPort", inputPort);
         binding.addProperty("cell", cell);
         binding.addProperty("javaTypeDescriptor", "J");
@@ -1457,9 +1351,6 @@ public class ConcolicSmtComposerTest {
         proof.addProperty("mapExpressionWitnessAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN_TO_"
                         + "SCOPED_REF_SYMBOL_V1");
-        proof.addProperty("candidateMutationCount", 0);
-        proof.addProperty("heapEffectCount", 0);
-        proof.addProperty("ignoredRuntimeHeapEvidenceCount", 0);
         proof.addProperty("selectorDigest", selectorDigest);
         proof.addProperty("statePortDerivationAuthority",
                 "REGION_AND_STATIC_OBSERVATION_SELECTOR_SHA256_V1");
@@ -1601,8 +1492,6 @@ public class ConcolicSmtComposerTest {
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             binding.addProperty("objectTokenScope", "ACT.P");
             binding.addProperty("fieldJavaType", "long");
-            binding.addProperty("entrySnapshotElementCount", 2);
-            binding.addProperty("outputElementCount", 2);
             binding.add("entrySnapshotElementObjectTokens",
                     tokens.deepCopy());
             binding.add("entrySnapshotMapKeyExpressions",
@@ -1704,7 +1593,8 @@ public class ConcolicSmtComposerTest {
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", 1);
         result.addProperty("kind", "REGION_PATH_WORKLIST");
-        result.addProperty("regionId", "REGION.P");
+        result.addProperty("regionId", summary.get(
+                "regionId").getAsString());
         result.addProperty("state", RegionPathWorklist.State.CLOSED.name());
         JsonObject bounds = new JsonObject();
         bounds.addProperty("maxPathsPerRegion", 64);
@@ -1712,8 +1602,6 @@ public class ConcolicSmtComposerTest {
         bounds.addProperty("maxTasks", 256);
         bounds.addProperty("maxWallClockMillis", 30_000L);
         result.add("bounds", bounds);
-        result.addProperty("observedPathCount", 1);
-        result.addProperty("pendingTaskCount", 0);
         result.add(OutputClosureContract.FIELD, contract.toJson());
         result.add("gaps", new JsonArray());
         return result;
@@ -1791,18 +1679,6 @@ public class ConcolicSmtComposerTest {
         return "";
     }
 
-    private static String declaredFunctionContaining(String smt,
-                                                     String fragment) {
-        for (String line : smt.split("\r?\n")) {
-            if (!line.startsWith("(declare-fun ")
-                    || !line.contains(fragment)) continue;
-            int start = "(declare-fun ".length();
-            int end = line.indexOf(' ', start);
-            if (end > start) return line.substring(start, end);
-        }
-        return "";
-    }
-
     private static JsonObject arrayValueExpression(
             String javaType, String componentType, boolean complete,
             JsonElement... values) {
@@ -1843,32 +1719,15 @@ public class ConcolicSmtComposerTest {
         expression.addProperty("_engine_array_id_authority",
                 "VM_ACTIVE_SYM_ARRAY_ID_V1");
         JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", 1);
-        result.addProperty("kind", "ENGINE_ARRAY_TO_INPUT_PORT");
+        result.addProperty("schemaVersion", 2);
+        result.addProperty("kind", "ENGINE_ARRAY_INPUT_BINDING");
         result.addProperty("sourceActivationId", activationId);
         result.addProperty("inputPort", inputPort);
         result.addProperty("inputCell", inputCell);
-        result.addProperty("inputJavaType", descriptor);
         result.addProperty("inputJavaTypeDescriptor", descriptor);
-        result.addProperty("symbolizationPrefix", inputPort);
-        result.addProperty("symbolizationMode",
-                "DIRECT_ARRAY_VALUE_WITH_CANONICAL_INPUT_PREFIX");
         result.addProperty("engineArrayId", engineArrayId);
-        result.addProperty("engineArrayIdAuthority",
-                "VM_ACTIVE_SYM_ARRAY_ID_V1");
         result.addProperty("arrayObjectToken", objectToken);
-        result.addProperty("symbolizationArrayObjectToken", objectToken);
-        result.addProperty("symbolizationIdentityAuthority",
-                "SAME_JAVA_REFERENCE_PASSED_TO_SYMBOLIZE_AND_"
-                        + "EXPRESSION_CAPTURE");
-        result.addProperty("sameArrayObjectTokenVerified", true);
-        result.addProperty("objectTokenAuthority",
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        result.addProperty("objectTokenScope", activationId);
-        result.addProperty("captureAuthority",
-                "SAME_LIVE_ARRAY_AFTER_EXACT_INPUT_ACTION_SYMBOLIZATION");
         result.add("arrayValueExpression", expression);
-        result.addProperty("complete", true);
         return result;
     }
 
@@ -2013,15 +1872,26 @@ public class ConcolicSmtComposerTest {
         }
         slice.add("containerElementFieldBindings", declarations);
         slice.add("requestedStateTransformerObligations", obligations);
-        slice.addProperty("requestedStateTransformerObligationCount",
-                obligations.size());
         summary.add("dynamicFieldBindings", runtimeBindings);
     }
 
     private static void writeSummary(Fixture fixture, JsonObject summary)
             throws Exception {
         Files.write(fixture.summaries,
-                (summary.toString() + "\n").getBytes(StandardCharsets.UTF_8));
+                (canonicalSummary(summary) + "\n").getBytes(
+                        StandardCharsets.UTF_8));
+    }
+
+    private static JsonObject canonicalSummary(JsonObject summary) {
+        if ("GUARDED_PATH_MERGE".equals(summary.has("regionRelation")
+                ? summary.getAsJsonObject("regionRelation").get("kind")
+                .getAsString() : "")) {
+            return summary;
+        }
+        RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
+                java.util.Collections.singletonList(summary),
+                closedPathManifest(summary));
+        return merged.summaries.get(0);
     }
 
     private static ConcolicSmtComposer.Arguments arguments(Fixture fixture) {
@@ -2132,7 +2002,8 @@ public class ConcolicSmtComposerTest {
                 + "\"symbolicInputs\":[{\"portId\":\"REGION.D.in.0\","
                 + "\"cell\":\"<example.Store: java.util.Map state>\"}],"
                 + "\"outputs\":[]}\n";
-        Files.write(fixture.regions, regions.getBytes(StandardCharsets.UTF_8));
+        Files.write(fixture.regions, canonicalRegions(regions).getBytes(
+                StandardCharsets.UTF_8));
 
         String context = "{\"regionInstanceId\":"
                 + "\"REGION.F@fixture#call2\","

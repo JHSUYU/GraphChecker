@@ -10,6 +10,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveString;
+
 /**
  * Immutable solver-only context for path constraints that are not branches.
  *
@@ -85,9 +88,9 @@ public final class SolverPathContext {
     }
 
     public static SolverPathContext fromJson(JsonObject json) {
-        if (integer(json, "schemaVersion", -1) != SCHEMA_VERSION
-                || !KIND.equals(string(json, "kind"))
-                || !AUTHORITY.equals(string(json, "authority"))) {
+        if (primitiveInteger(json, "schemaVersion", -1) != SCHEMA_VERSION
+                || !KIND.equals(primitiveString(json, "kind"))
+                || !AUTHORITY.equals(primitiveString(json, "authority"))) {
             throw new IllegalArgumentException(
                     "unsupported non-branch solver context schema");
         }
@@ -103,7 +106,7 @@ public final class SolverPathContext {
                         "positioned solver constraint must be an object");
             }
             JsonObject row = element.getAsJsonObject();
-            int position = integer(row, "summaryPcIndex", -1);
+            int position = primitiveInteger(row, "summaryPcIndex", -1);
             JsonElement expression = row.get("expression");
             constraints.add(new PositionedConstraint(position,
                     expression));
@@ -151,30 +154,13 @@ public final class SolverPathContext {
                     "non-branch solver constraint must be an object");
         }
         JsonObject object = expression.getAsJsonObject();
-        String type = string(object, "_type");
+        String type = primitiveString(object, "_type");
         if (!"_array_expr".equals(type)
                 && !"MethodExpression".equals(type)) {
             throw new IllegalArgumentException(
                     "unwitnessed path predicate is not an admitted "
                             + "non-branch constraint: " + type);
         }
-    }
-
-    private static int integer(JsonObject object, String name,
-                               int fallback) {
-        JsonElement value = object == null ? null : object.get(name);
-        try {
-            return value == null || !value.isJsonPrimitive()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException malformed) {
-            return fallback;
-        }
-    }
-
-    private static String string(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value == null || !value.isJsonPrimitive()
-                ? "" : value.getAsString();
     }
 
     private static final class PositionedConstraint {

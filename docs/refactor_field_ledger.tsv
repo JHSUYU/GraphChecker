@@ -154,7 +154,7 @@ import-result	summary/skippedEventCount	ConcolicSummaryImporter	stdout/tests	non
 activation	outputCaptureReady	ConcolicScheduler	tests only	none	admission.state	DELETE_AND_UPDATE_TEST	6+
 activation-binding	arrayFieldMaterializationAuthority	ConcolicScheduler	none	none	arrayFieldMaterializationComplete	DELETE	6+
 target-query	branchWitnessCount	TargetReachPathQueryBuilder	run_robustness_matrix.sh	matrix	branchWitnesses size; duplicate-PC-position gate remains internal	DELETE_AND_UPDATE_READER	6+
-raw-result	assignmentIdentityError/modelAssignmentCount	ConcolicRegionRuntime	none	none	unresolvedInputs plus modelAssignmentAppliedCount/allModelAssignmentsApplied	DELETE	6+
+raw-result	assignmentIdentityError/modelAssignmentCount/allModelAssignmentsApplied	ConcolicRegionRuntime	run_robustness_matrix.sh	matrix	modelAssignmentsApplied exact key/value rows plus Importer uniqueness/completeness admission	DELETE_AND_UPDATE_READER	6+
 raw-result	engine array internal-validation mirrors	ConcolicRegionRuntime	none	none	complete/problem plus canonical array expression, identity and consumed-leaf evidence	DELETE	6+
 raw-result	field-observation arrayLength/arrayElements	ConcolicRegionRuntime	none	none	canonical array binding/expression evidence	DELETE	6+
 imported-summary	transformer bindingCount/guard observedOccurrenceCount/runtime rawConditionCount	ConcolicSummaryImporter	none	none	canonical IDs/positions and admission results	DELETE	6+
@@ -166,6 +166,12 @@ branch-contract	exact JSON object key sets	branch value codecs	none	none	require
 raw-result	engine-array base/location/dynamic mirrors and map projection expected counts	ConcolicRegionRuntime	none	none	canonical binding identity/expression plus unresolved gap	DELETE	6+
 imported-summary	heap effect method/result/normalization/source mirrors and admission-authority list	ConcolicSummaryImporter	none	none	canonical effect/binding IDs, normalized expression and admission outcome	DELETE	6+
 composer-manifest	fatal occurrence/outcome/region-instance and bounded-region reachability mirrors	ConcolicSmtComposer	none	none	fatal site, exact imported reach paths, resolved producers and typed gaps	DELETE	6+
+raw-result	branch flat outcome/index/PC-size/VM-attestation mirrors	ConcolicRegionRuntime	ConcolicSummaryImporter	none	typed BranchWitness/ExactConcreteBranchObservation plus canonical raw PC boundary	DELETE_AND_UPDATE_READER	6+
+raw-result	rootMethod/model-assignment count/isolation-policy claims	ConcolicRegionRuntime	ConcolicSummaryImporter	none	activation identity, exact assignment arrays and runtime implementation	DELETE	6+
+static-region	seed-guard derivation/broad-input diagnostic mirrors	SymbolicRegionPlanner	none	none	mandatory guard inputs, unresolved inputs and inputSelectionComplete	DELETE	6+
+runtime-planner	ignored Result.warnings and index counters	RuntimeRegionPlanner	tests only	none	canonical activation admission/outputClosureIssues plus thrown I/O errors	DELETE_AND_UPDATE_TEST	6+
+branch-replay	runtime duplicate replay-contract validation/observation positions	ConcolicRegionRuntime	none	none	Importer BranchReplayObservationValidator result validity/failures	DELETE_DUPLICATE_VALIDATION	6+
+composer	MergeStats assertion-name counters	ConcolicSmtComposer	none	none	assertNamed deterministic collision handling	DELETE	6+
 correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
 correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-
 correctness	transformerObligations	static planner	Runtime/Importer	matrix	not derivable	KEEP	-
@@ -178,3 +184,87 @@ correctness	objectIdentity/fingerprint	RuntimeRegionPlanner	Scheduler/Composer	m
 correctness	failClosedGaps	all stages	next stage/run.sh	run.sh,matrix	not derivable	KEEP_AND_UNIFY	5
 correctness	CANDIDATE_ONLY	Composer/result builder	final consumers	matrix	not derivable	KEEP	-
 correctness	artifactSha256	result builder	final consumers	matrix	not derivable	KEEP	-
+path-worklist	pendingTaskCount	RegionPathWorklist	run.sh,matrix	run.sh,matrix	state plus persisted worklist entries	DELETE_AND_UPDATE_READERS	6+
+target-query	reachedPathCount	TargetReachPathQueryBuilder	run.sh,matrix	run.sh,matrix	paths.length	DELETE_AND_UPDATE_READERS	6+
+merged-relation	pathClosureState	RegionSummaryMerger	matrix	matrix	successful merge requires CLOSED worklist admission	DELETE_AND_UPDATE_READER	6+
+composer-manifest	fatalPathCount	ConcolicSmtComposer	matrix	matrix	fatal paths.length	DELETE_AND_UPDATE_READER	6+
+static-edge	branch successor/authority mirrors	CausynthBranchShape	RuntimeRegionPlanner/tests	none	switchCaseKeys/defaultSuccessorIndex and CFG successors	DELETE_AND_UPDATE_READERS	6+
+static-edge	control-dependence count/authority mirrors	ControlDependenceEdgeSupport	RuntimeRegionPlanner/tests	none	controlledDefinitions/guardedMutations/guardedEffects arrays	DELETE_AND_UPDATE_READERS	6+
+static-coverage	method/edge count mirrors	SymbolicRegionPlanner	none	none	canonical methods/edges plus uncovered arrays and complete gate	DELETE	6+
+raw-result	map projection count mirrors	ConcolicRegionRuntime	ConcolicSummaryImporter/tests	none	snapshot token/key/binding arrays and verified boolean	DELETE_AND_UPDATE_READERS	6+
+activation	transformer obligation count	RuntimeRegionPlanner	RuntimeRegionPlanner/tests	none	requestedStateTransformerObligations.length	DELETE_AND_UPDATE_READERS	6+
+summary	map entry/output element count mirrors	ConcolicSummaryImporter	ConcolicSmtComposer/tests	none	canonical token/key arrays	DELETE_AND_UPDATE_READERS	6+
+summary	nonmutating candidate/effect zero counts	ConcolicSummaryImporter	ConcolicSmtComposer/tests	none	proof kind plus absence of mutation/effect evidence	DELETE_AND_UPDATE_READERS	6+
+activation	vm placeholderCount	RuntimeRegionPlanner	ConcolicSmtComposer/tests	none	canonical currentTimeMills#N identity	DELETE_AND_UPDATE_READERS	6+
+static-output	fresh-map constructorArgumentCount	SymbolicRegionPlanner	Importer/Composer/tests	none	exact default-constructor signature	DELETE_AND_UPDATE_READERS	6+
+static-edge	output-independence pseudo-proof	none	SymbolicRegionPlanner	none	no production writer; branch always EXPLORE	DELETE_UNREACHABLE_PROTOCOL	6+
+production-api	ten zero-call helper methods	multiple packages	none	none	no production/test callers	DELETE	6+
+concolic-internal	five duplicated atomic JSONL replacement writers	Scheduler/PathFlipPlanner/PathFlipSolver/Importer/Merger	local stage only	none	ArtifactIO.replaceJsonl	CONSOLIDATE_AND_DELETE	6+
+concolic-internal	duplicated unique-ID index construction	PathFlipPlanner/PathFlipSolver	local stage only	none	ArtifactIO.uniqueIndex	CONSOLIDATE_AND_DELETE	6+
+concolic-internal	remaining Importer forgiving JSON accessors	ConcolicSummaryImporter	local stage only	none	JsonFields	CONSOLIDATE_AND_DELETE	6+
+branch-contract	duplicated primitive/string/integer decoder blocks	BranchReplayContract/BranchWitness/SolverPathContext/ExactConcreteBranchObservation	local stage only	none	JsonFields typed primitive readers	CONSOLIDATE_AND_DELETE	6+
+type-contract	duplicated Java field descriptor validation	OutputClosureCodec	local stage only	none	JavaPrimitiveSmtSemantics	CONSOLIDATE_AND_DELETE	6+
+trace-internal	duplicated JSON object/string serialization	CausynthTraceRecorder	local stage only	none	CausynthJson	CONSOLIDATE_AND_DELETE	6+
+instrumentation-selection	four activation-plan JSONL scans	CausynthPipeline	local stage only	none	single immutable InstrumentationPlan parse	CONSOLIDATE_AND_DELETE	6+
+production-api	orphan output member factory and unused planner constant	OutputClosureContract/RuntimeRegionPlanner	none	none	no production/test callers	DELETE	6+
+runtime-trace	repeated regex extraction of every field	CausynthTraceRecorder offline aggregator	local stage only	none	single Gson JsonObject parse per row	CONSOLIDATE_AND_DELETE	6+
+static-coverage	staticAnalysisBudget	SeedBackwardStaticAnalyzer	none	none	actual bounded worklist gates and canonical collections	DELETE	6+
+analysis-result	traceMethods row id/map	SeedBackwardStaticAnalyzer	CausynthPipeline	none	ordered method signature list	CONSOLIDATE_AND_DELETE	6+
+static-output-slice	requestedStateTransformerContractVersion/applicable/outputPort/outputCell/authority	SymbolicRegionPlanner	RuntimeRegionPlanner/Importer/InstrumentationSelections	none	outer slice output identity plus obligations/issues/complete	DELETE_AND_UPDATE_READERS	6+
+runtime-output-slice	captureDischargeOutputPort/captureDischargeOutputCell	RuntimeRegionPlanner	ConcolicSummaryImporter	none	requested output member identity	DELETE_AND_UPDATE_READER	6+
+runtime-output-slice	structural/truncation/refinement completion mirrors	RuntimeRegionPlanner	ConcolicSummaryImporter/tests	none	complete plus actual issues/truncationReasons/staticSites	DELETE_AND_UPDATE_READERS	6+
+static-port	missing canonical javaType	SymbolicRegionPlanner	Composer/Boolean extractor	none	writer-derived javaType	WRITE_CANONICAL_AND_DELETE_READER_FALLBACK	6+
+raw-result	outputCaptures.callArgument.concreteValueClass	ConcolicRegionRuntime	none	none	expression error carries runtime class when needed	DELETE	6+
+raw-result	outputCaptures.mapValueElementProjectionVerifications	ConcolicRegionRuntime	none	none	top-level mapValueElementProjectionObservations	DELETE_DUPLICATE	6+
+composer-manifest	resolvedProducerKeys	ConcolicSmtComposer	none	run_robustness_matrix.sh	includedSummaries plus resolvedEdgeBindings	DELETE_AND_UPDATE_READER	6+
+relationship-candidate	formula/required=false/fixed provenance	ConcolicSmtComposer	none	none	named SMT assertion plus kind/roles	DELETE_DUPLICATE	6+
+boolean-report	composedSmt/staticRegions/relationship artifact refs	BooleanReachConditionExtractor	none	none	compositionManifestArtifact trust root	DELETE_DUPLICATE_KEEP_TRANSITIVE_SHA	6+
+boolean-solver	redundant base-implies-exhaustive-DNF query	BooleanReachConditionExtractor	none	none	all 2^N decided valuation rows	DELETE_DUPLICATE_QUERY	6+
+runtime-dispatch	unread row/rejected counts and blocked-site mirrors	RuntimeDispatchEvidence/SeedBackwardStaticAnalyzer	none	none	canonical callsite-to-callee set and fail-closed selection	DELETE	6+
+concolic-internal	duplicated runtime JSON accessors/type descriptor/result append	ConcolicRegionRuntime	local stage only	none	JsonFields/JavaPrimitiveSmtSemantics/single append helper	CONSOLIDATE_AND_DELETE	6+
+static-worklist	boolean changed return plumbing	SeedBackwardStaticAnalyzer	caller dirty-set bookkeeping	none	expansion methods already mutate the canonical dirty set and budgets	DELETE_REDUNDANT_RETURN	6+
+scheduler-internal	operationalActivation/Candidate.outputClosure readiness mirrors	ConcolicScheduler	quota/filter logic	none	canonical activation admission and outputClosure object	DELETE	6+
+solver-result	solverInvoked/solverExitCode/solverTimedOut/flipConditionSymbols	ConcolicConstraintSolver	tests only	none	status/reason/stderr, SMT hash and modelAssignments	DELETE_AND_UPDATE_TEST	6+
+solver-result	floating-point replay format/NaN/bit mirrors	ConcolicConstraintSolver	none	none	valueType/value plus canonical target Java type	DELETE	6+
+solver-result	dynamicSelector nested copy	ConcolicConstraintSolver	ConcolicRegionRuntime	none	canonical top-level selector fields	DELETE_DUPLICATE	6+
+path-worklist	observedPathCount	RegionPathWorklist	run.sh/matrix	none	observedPaths.length and CLOSED state	DELETE_AND_UPDATE_READERS	6+
+target-query	pathKey/observedPathCount	TargetReachPathQueryBuilder	RegionPathWorklist/run.sh/matrix	none	full canonical path hash remains internal; paths.length is canonical	DELETE_AND_UPDATE_READERS	6+
+merge-manifest	diagnostics/complete	RegionSummaryMerger	run.sh/matrix	none	typed gaps plus relation.relationallyComplete	DELETE_AND_UPDATE_READERS	6+
+runtime-output-slice	outputClosureIssues	RuntimeRegionPlanner	Scheduler/tests	none	admission.blockers and outputClosure.complete	DELETE_DUPLICATE	6+
+runtime-alias-proof	runtimeCutAuthority/baseCallId/canonicalBaseCallId	RuntimeRegionPlanner	Scheduler/matrix	none	typed evidence plus writerEventSeq/readerEventSeq and object identity	DELETE_AND_UPDATE_READERS	6+
+activation-binding	containerInputAliasSourcePort/containerInputAliasAuthority	RuntimeRegionPlanner	none	none	canonical source input binding and dynamicFieldBindings	DELETE	6+
+activation-binding	fieldPathSourceCells/fieldPathBindingAuthority/javaTypeAuthority	RuntimeRegionPlanner	none	none	canonical fieldPath, source bindings and javaType	DELETE	6+
+map-projection	capture-ready/issues/recursive-composable mirrors	RuntimeRegionPlanner	ConcolicSummaryImporter/tests	none	complete, causal IDs, selector/field/output evidence and admission blockers	DELETE_AND_UPDATE_READERS	6+
+runtime-planner	frozen static accessor input fallback	RuntimeRegionPlanner	none	none	current static port metadata is mandatory and canonical	DELETE_FALLBACK	6+
+replay-admission	generic schema/model/map/closure projection validation	ConcolicReplayValidator	ConcolicSummaryImporter	none	Importer validates canonical raw row once; ReplayValidator keeps only dynamic rebinding joins	DELETE_DUPLICATE_KEEP_DYNAMIC_REBINDING	6+
+runtime-planner	repeated static artifact parser/manual unescape	RuntimeRegionPlanner	local planner only	none	one Gson parse and typed row decoder per artifact	CONSOLIDATE_AND_DELETE	6+
+instrumentation-selection	cross-activation merge/repeated closure scans/instrumentation counters	ConcolicInstrumentationSelections,CausynthPipeline	none	none	one typed InstrumentationPlan and root coverage gate	CONSOLIDATE_AND_DELETE	6+
+static-analysis	symbolic coverage/seed-guard/accessor/dispatch diagnostic maps	SymbolicRegionPlanner,SeedBackwardStaticAnalyzer,CausynthPipeline	final boolean admission only	none	canonical selected inputs/sites/methods and incomplete gate	DELETE	6+
+composer	raw single-path/protocolModel/explicitContracts producer fallback	ConcolicSmtComposer	none	none	canonical relationallyComplete GUARDED_PATH_MERGE	DELETE_FALLBACK	6+
+composer	missing-summary uninterpreted predicate	ConcolicSmtComposer	none	none	typed missing/incomplete-summary gap	DELETE_UNSOUND_FALLBACK	6+
+solver	diagnostic uninterpreted functions/free variables	ConcolicConstraintSolver	none	none	typed unsupported expression and solver-not-invoked status	DELETE_UNSOUND_DIAGNOSTIC_SEMANTICS	6+
+solver-result	materialization/deferred/counter mirrors	ConcolicConstraintSolver,ConcolicScheduler	none	none	canonical symbol plus concreteFallbackReason or typed gap	DELETE	6+
+raw-result	model assignment concrete-class and non-join mirrors	ConcolicRegionRuntime	none	none	canonical assignment core plus separate dynamic binding evidence	DELETE	6+
+raw-result	engine-array consumed-leaf and branch-base mirrors	ConcolicRegionRuntime	none	none	canonical array expression/object scope and typed branch witness	DELETE	6+
+trace	field method-receiver objectId	CausynthTraceRecorder	none	none	field receiver/value identity plus owning call remain canonical	DELETE	6+
+imported-summary	target rootMethod/rootCallId/executionKind	ConcolicSummaryImporter	ConcolicScheduler	run.sh	captureGoal plus exact activation/region/regionInstance identity	DELETE_AND_UPDATE_READERS	6+
+imported-summary	runtime Map-state temporary binding mirrors	ConcolicSummaryImporter	same importer method only	none	typed effect-ID set passed directly to coverage admission	DELETE_INTERNAL_SERIALIZATION	6+
+heap-effect	normalizedConditionIndex/normalizationStatus/fixed provenanceAuthority/outputBinding	ConcolicSummaryImporter	none	none	rawConditionIndex, site/occurrence, state/input/output ports and expressions	DELETE	6+
+correctness	applied fresh-entry/container selector rebinding	ConcolicRegionRuntime	ConcolicReplayValidator	none	created by current replay activation and not derivable from seed/plan	KEEP	-
+dynamic-binding	entryValueRefWitnessJoinCertified mirrors	ConcolicSummaryImporter	none	run_robustness_matrix.sh	heapObservation.valueExpressionWitnessCertified plus token/scope and exact binding join	DELETE_AND_UPDATE_READER	6+
+engine-array-input	inputJavaType/symbolizationPrefix/symbolizationMode/engineArrayIdAuthority/symbolizationArrayObjectToken/symbolizationIdentityAuthority/sameArrayObjectTokenVerified/objectTokenAuthority/objectTokenScope/captureAuthority/complete	ConcolicRegionRuntime	ConcolicSummaryImporter/RegionPathWorklist/ConcolicSmtComposer	none	inputJavaTypeDescriptor,inputPort,engineArrayId,arrayObjectToken and the canonical finite array expression; same-live-object and primitive element equality remain runtime checks	DELETE_AND_UPDATE_READERS_SCHEMA_V2	6+
+static-field-declaration	declaredFieldOwnerClass/declaredFieldType/declaredFieldName/declaredFieldAuthority/accessorImplementationAuthority	SymbolicRegionPlanner	RuntimeRegionPlanner/ConcolicScheduler/ConcolicRegionRuntime	none	exact declaredFieldSignature; execution rows derive the tuple once at the static-to-runtime boundary	DELETE_STATIC_DERIVE_DYNAMIC	6+
+runtime-planner	mapping-only producer expansion and accessor-return discovery recovery	RuntimeRegionPlanner	none	none	current canonical static graph and exact FIELD_READ evidence are mandatory	DELETE_FALLBACK	6+
+replay-admission	plan/applied/raw/imported full-row comparisons	ConcolicReplayValidator	ConcolicSummaryImporter	none	canonical modelAssignmentKey plus unique dynamicBindingId; fresh key and current container selector remain explicit evidence	CONSOLIDATE_KEEP_EXECUTION_LOCAL_EVIDENCE	6+
+boolean-report	root javaType/solverSort/nullnessSolverSort/caseProjectionEvidence	BooleanReachConditionExtractor	none	none	javaTypeDescriptor,solverTerm,string nullness term and internal validated bridges	DELETE	6+
+solver-internal	private permissive S-expression tree and duplicate dynamic selector checks	ConcolicConstraintSolver	local solver only	none	shared strict SMT application splitter plus canonical dynamic binding identity	CONSOLIDATE_AND_DELETE	6+
+scheduler-trace	fallback reason/canonicalSymbol/supportFor/fingerprint node count and reason/METHOD_ENTER siteId	ConcolicScheduler,CausynthTraceRecorder	none	none	typed admission blocker,fingerprint digest+complete,event sequence and endpoint identity	DELETE	6+
+correctness	engine array Java primitive element equality	ConcolicRegionRuntime	ConcolicSummaryImporter/Composer	none	requires the live Java array and cannot be reconstructed from the imported artifact	KEEP	-
+replay-admission	standalone ConcolicReplayValidator and imported-summary self-replay	ConcolicReplayValidator	ConcolicSummaryImporter	none	one Importer admission keyed by modelAssignmentKey/dynamicBindingId; fresh key/observation and container token/scope/selector remain explicit	DELETE_CLASS_KEEP_CANONICAL_JOIN	7+
+branch-replay	BranchReplayPlan/V1 suffix mirrors/repeated observation parse	BranchReplayPlan,ConcolicSummaryImporter	RegionPathWorklist,ConcolicScheduler	none	BranchReplayContract V2 with exact witness identity and solverPathContext plus one observation validator	DELETE_AND_UPDATE_READERS_V2	7+
+map-observation	parallel key/value arrays,size before/after mirrors,fixed stability booleans,five binding-complete mirrors	ConcolicRegionRuntime	ConcolicSummaryImporter	none	V2 canonical entries with actual expressions/tokens and one complete gate; live Map double traversal/identity checks remain runtime-only	DELETE_AND_UPDATE_READER_V2	7+
+trace-runtime	in-memory duplicate event lists and shutdown aggregation mode	CausynthTraceRecorder	none	workflow properties	streaming canonical trace plus CLOSED complete manifest, followed by one host offline aggregation	DELETE_MODE_AND_UPDATE_WORKFLOW	7+
+scheduler	scheduleId,empty admission mode/blockers,array materialization second validation	ConcolicScheduler	none	none	canonical activation identity,admission state and runtime/instrumentation materialization validation	DELETE	7+
+composer	resolved-edge endpoint mirrors and missing/incomplete/unbound gap mirrors	ConcolicSmtComposer	none	none	outputClosure producer,admitted binding+summary,and one COMPOSITION_GAP carrier	DELETE_AND_CONSOLIDATE	7+
+static-planning	MethodFacts/MethodFactsBuilder and projected-edge full rescan	SymbolicRegionPlanner,SeedBackwardStaticAnalyzer	StaticGraphIndex	none	canonical graph index plus endpoint-indexed dirty projected-edge queue	CONSOLIDATE_AND_DELETE_ALGORITHM	7+
+solver-result	solver constant,duplicate modelAssignments,unmaterializable symbol lists	ConcolicConstraintSolver	none	none	Result assignments plus typed resolution gaps and status/reason	DELETE	7+

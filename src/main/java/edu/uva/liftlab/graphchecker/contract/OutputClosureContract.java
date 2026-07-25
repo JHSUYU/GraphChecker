@@ -230,20 +230,6 @@ public final class OutputClosureContract {
 
         public JsonArray captures() { return captureBindings().deepCopy(); }
 
-        JsonObject executionOutput() {
-            JsonObject result = new JsonObject();
-            result.addProperty("symbol", portId());
-            result.addProperty("cell", cell());
-            result.addProperty("kind", outputKind());
-            result.addProperty("location",
-                    "FAILURE_PREDICATE".equals(outputKind())
-                            ? "THROW_OR_BRANCH"
-                            : "RETURN_OR_HEAP_EFFECT");
-            result.addProperty("javaTypeDescriptor",
-                    javaTypeDescriptor());
-            return result;
-        }
-
         JsonObject toJson() {
             JsonObject result = new JsonObject();
             result.add("output", output.deepCopy());

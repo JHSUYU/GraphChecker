@@ -100,8 +100,8 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.exitRegionFrame(root, null, "");
 
             JsonObject result = resultRows(results).get(0);
-            assertTrue(result.get("allModelAssignmentsApplied")
-                    .getAsBoolean());
+            assertEquals(1, result.getAsJsonArray(
+                    "modelAssignmentsApplied").size());
             JsonObject applied = result.getAsJsonArray(
                     "modelAssignmentsApplied").get(0).getAsJsonObject();
             assertEquals(symbol, applied.get("inputSymbol").getAsString());
@@ -1131,8 +1131,6 @@ public class ConcolicRegionRuntimeTest {
                 JsonParser.parseString("[\"EDGE.MAP.FIELD\","
                         + "\"EDGE.MAP.VALUES\",\"EDGE.TO.ARRAY\","
                         + "\"EDGE.OUTPUT.FIELD\"]"));
-        declaration.addProperty("recursiveElementProjectionComposable",
-                false);
         declaration.addProperty("complete", true);
         return declaration;
     }

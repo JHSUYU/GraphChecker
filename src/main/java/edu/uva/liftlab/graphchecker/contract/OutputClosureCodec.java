@@ -15,6 +15,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.validFieldDescriptor;
+
 /**
  * Versioned structural codec for {@link OutputClosureContract}.
  *
@@ -24,7 +27,6 @@ import java.util.Set;
  */
 public final class OutputClosureCodec {
     private static final int MAX_MEMBERS = 128;
-    private static final int MAX_DESCRIPTOR_LENGTH = 1024;
     private static final Set<String> OUTPUT_KINDS = set(
             "REGION_OUTPUT", "SINK_STATE", "HEAP_STATE",
             "FAILURE_PREDICATE", "RETURN");
@@ -220,15 +222,6 @@ public final class OutputClosureCodec {
         return result;
     }
 
-    public static JsonArray executionOutputs(
-            OutputClosureContract contract) {
-        JsonArray result = new JsonArray();
-        for (OutputClosureContract.Member member : contract.members()) {
-            result.add(member.executionOutput());
-        }
-        return result;
-    }
-
     private static OutputClosureContract.Member decodeMember(
             JsonObject encoded, int index) {
         String path = "outputClosure.members[" + index + "]";
@@ -391,87 +384,6 @@ public final class OutputClosureCodec {
         if (content.isEmpty()) return "";
         String[] parameters = content.split(",", -1);
         return index < parameters.length ? parameters[index].trim() : "";
-    }
-
-    private static String javaTypeDescriptor(String javaType) {
-        String value = OutputClosureContract.trim(javaType);
-        int dimensions = 0;
-        while (value.endsWith("[]") && dimensions < 255) {
-            dimensions++;
-            value = value.substring(0, value.length() - 2).trim();
-        }
-        String base;
-        if ("boolean".equals(value)) base = "Z";
-        else if ("byte".equals(value)) base = "B";
-        else if ("char".equals(value)) base = "C";
-        else if ("short".equals(value)) base = "S";
-        else if ("int".equals(value)) base = "I";
-        else if ("long".equals(value)) base = "J";
-        else if ("float".equals(value)) base = "F";
-        else if ("double".equals(value)) base = "D";
-        else if ("void".equals(value)) return "";
-        else if (sourceClassName(value)) {
-            base = "L" + value.replace('.', '/') + ";";
-        } else {
-            return "";
-        }
-        StringBuilder result = new StringBuilder(dimensions + base.length());
-        for (int i = 0; i < dimensions; i++) result.append('[');
-        result.append(base);
-        return validFieldDescriptor(result.toString())
-                ? result.toString() : "";
-    }
-
-    private static boolean sourceClassName(String value) {
-        if (value.isEmpty() || value.length() > MAX_DESCRIPTOR_LENGTH - 2) {
-            return false;
-        }
-        boolean component = false;
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-            if (c == '.' || c == '/') {
-                if (!component) return false;
-                component = false;
-            } else if (c <= ' ' || c == ';' || c == '[') {
-                return false;
-            } else {
-                component = true;
-            }
-        }
-        return component;
-    }
-
-    static boolean validFieldDescriptor(String value) {
-        if (value == null || value.isEmpty()
-                || value.length() > MAX_DESCRIPTOR_LENGTH) {
-            return false;
-        }
-        int cursor = 0;
-        int dimensions = 0;
-        while (cursor < value.length() && value.charAt(cursor) == '[') {
-            if (++dimensions > 255) return false;
-            cursor++;
-        }
-        if (cursor >= value.length()) return false;
-        char type = value.charAt(cursor++);
-        if ("ZBCSIJFD".indexOf(type) >= 0) {
-            return cursor == value.length();
-        }
-        if (type != 'L') return false;
-        boolean component = false;
-        for (; cursor < value.length(); cursor++) {
-            char c = value.charAt(cursor);
-            if (c == ';') return component && cursor + 1 == value.length();
-            if (c == '/') {
-                if (!component) return false;
-                component = false;
-            } else if (c <= ' ' || c == '.' || c == '[') {
-                return false;
-            } else {
-                component = true;
-            }
-        }
-        return false;
     }
 
     private static void requireFieldDescriptor(String value, String path) {
