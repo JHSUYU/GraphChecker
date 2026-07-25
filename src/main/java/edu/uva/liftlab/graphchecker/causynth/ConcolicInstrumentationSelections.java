@@ -106,9 +106,9 @@ final class ConcolicInstrumentationSelections {
                 }
                 JsonObject row = parsed.getAsJsonObject();
                 String activationId = jsonString(row, "activationId");
+                JsonObject bundle = bundle(row);
                 if (!selected.isEmpty()
-                        && "ALL".equals(jsonString(row,
-                        "activationSelectionRequired"))
+                        && "ALL".equals(jsonString(bundle, "selection"))
                         && selected.equals(activationId)) {
                     throw new IOException("Activation " + selected
                             + " belongs to a reachability bundle that "
@@ -117,12 +117,10 @@ final class ConcolicInstrumentationSelections {
                 if (!selected.isEmpty() && !selected.equals(activationId)) {
                     continue;
                 }
-                if (!strictJsonBooleanEquals(row, "replayable", true)
-                        || !strictJsonBooleanEquals(row,
-                        "schedulerReady", true)) {
+                if (!admissionExecutable(row)) {
                     continue;
                 }
-                String root = jsonString(row, "rootMethod");
+                String root = jsonString(rootSelector(row), "method");
                 if (!root.isEmpty()) {
                     roots.add(root);
                 }
@@ -195,35 +193,24 @@ final class ConcolicInstrumentationSelections {
         }
 
         String scheduleId = jsonString(row, "scheduleId");
+        JsonObject bundle = bundle(row);
         if (!selected.equals(jsonString(row, "activationId"))
-                || !selected.equals(jsonString(row,
-                "activationSelectionRequired"))
-                || !selected.equals(jsonString(row,
-                "activationBundleRootActivationId"))
+                || !selected.equals(jsonString(bundle, "selection"))
+                || !selected.equals(jsonString(bundle,
+                "rootActivationId"))
                 || scheduleId.isEmpty()
-                || !scheduleId.equals(jsonString(row,
-                "activationBundleScheduleId"))
-                || !strictJsonIntEquals(row, "activationBundleSize", 1)
-                || !strictJsonIntEquals(row, "activationBundleIndex", 0)
-                || !"PRIMARY".equals(jsonString(row,
-                "activationBundleMemberRole"))) {
+                || !scheduleId.equals(jsonString(bundle, "scheduleId"))
+                || !strictJsonIntEquals(bundle, "size", 1)
+                || !strictJsonIntEquals(bundle, "index", 0)
+                || !"PRIMARY".equals(jsonString(bundle, "role"))) {
             return false;
         }
 
-        if (!strictJsonBooleanEquals(row, "replayable", true)
-                || !strictJsonBooleanEquals(row, "boundaryReady", true)
-                || !strictJsonBooleanEquals(row, "schedulerReady", true)
-                || !strictJsonBooleanEquals(row,
-                "runtimePathEvidenceComplete", true)
-                || !strictJsonBooleanEquals(row,
-                "pathSignatureTruncated", false)
-                || !strictJsonBooleanEquals(row,
-                "containedCallTreeTruncated", false)
-                || !emptyJsonArray(row, "runtimeGaps")) {
+        if (!admissionExecutable(row) || !admissionBlockersEmpty(row)) {
             return false;
         }
         boolean seedReplay = "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
-                .equals(jsonString(row, "replayMode"))
+                .equals(admissionMode(row))
                 && "CAPTURE_OUTPUT_PATH".equals(jsonString(row,
                         "executionPhase"))
                 && absentOrEmptyJsonArray(row, "modelAssignments");
@@ -294,7 +281,7 @@ final class ConcolicInstrumentationSelections {
                                                      String selected) {
         if (!selected.startsWith("ACT.PATH.")
                 || !"RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY".equals(
-                strictJsonString(row, "replayMode"))
+                strictAdmissionMode(row))
                 || !"REPLAY_OUTPUT_PATH_FLIP".equals(
                 strictJsonString(row, "executionPhase"))) {
             return false;
@@ -669,9 +656,7 @@ final class ConcolicInstrumentationSelections {
                             "activationId"))) {
                         continue;
                     }
-                    if (!strictJsonBooleanEquals(row, "replayable", true)
-                            || !strictJsonBooleanEquals(row,
-                            "schedulerReady", true)) {
+                    if (!admissionExecutable(row)) {
                         continue;
                     }
                     String activationId = jsonString(row, "activationId");
@@ -1232,9 +1217,7 @@ final class ConcolicInstrumentationSelections {
                     JsonObject row = parsed.getAsJsonObject();
                     if (!selected.isEmpty() && !selected.equals(jsonString(
                             row, "activationId"))) continue;
-                    if (!strictJsonBooleanEquals(row, "replayable", true)
-                            || !strictJsonBooleanEquals(row,
-                            "schedulerReady", true)) continue;
+                    if (!admissionExecutable(row)) continue;
                     if (!row.has(OutputClosureContract.FIELD)) {
                         continue;
                     }
@@ -1442,6 +1425,45 @@ final class ConcolicInstrumentationSelections {
         } catch (RuntimeException ignored) {
             return "";
         }
+    }
+
+    private static JsonObject admission(JsonObject row) {
+        JsonElement value = row == null ? null : row.get("admission");
+        return value != null && value.isJsonObject()
+                ? value.getAsJsonObject() : null;
+    }
+
+    private static JsonObject bundle(JsonObject row) {
+        JsonElement value = row == null ? null : row.get("bundle");
+        return value != null && value.isJsonObject()
+                ? value.getAsJsonObject() : null;
+    }
+
+    private static JsonObject rootSelector(JsonObject row) {
+        JsonElement value = row == null ? null : row.get("rootSelector");
+        return value != null && value.isJsonObject()
+                ? value.getAsJsonObject() : null;
+    }
+
+    private static boolean admissionExecutable(JsonObject row) {
+        JsonObject admission = admission(row);
+        return admission != null
+                && "EXECUTABLE".equals(jsonString(admission, "state"));
+    }
+
+    private static boolean admissionBlockersEmpty(JsonObject row) {
+        JsonObject admission = admission(row);
+        return admission != null
+                && emptyJsonArray(admission, "blockers");
+    }
+
+    private static String admissionMode(JsonObject row) {
+        return jsonString(admission(row), "mode");
+    }
+
+    private static String strictAdmissionMode(JsonObject row) {
+        JsonObject admission = admission(row);
+        return admission == null ? "" : strictJsonString(admission, "mode");
     }
 
     private static boolean jsonBoolean(JsonObject object, String field,

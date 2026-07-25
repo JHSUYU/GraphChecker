@@ -111,9 +111,7 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashSet<>();
     private final Set<String> truncatedMethodCallerIndexMethods =
             new LinkedHashSet<>();
-    private final List<Map<String, Object>> discoveredExceptionSeeds = new ArrayList<>();
-    private final Set<String> discoveredExceptionMethods = new LinkedHashSet<>();
-    private final Set<String> discoveredExceptionVariables = new LinkedHashSet<>();
+    private int discoveredExceptionSeedCount;
     private final Map<String, Boolean> receiverProjectionWriteSummary =
             new LinkedHashMap<>();
     /**
@@ -136,15 +134,7 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     private final List<Map<String, Object>> edges = new ArrayList<>();
     private boolean globalStaticIndexBuilt;
-    private int globalStaticIndexCandidateMethodCount;
-    private int globalStaticIndexIndexedMethodCount;
-    private int globalStaticIndexUnreadableMethodCount;
     private int edgeCounter;
-    private int projectedPassEdgeChecks;
-    private int projectedPassUnsupported;
-    private int projectedPassNoSuffix;
-    private int projectedPassCandidates;
-    private int projectedPassEmitted;
 
     SeedBackwardStaticAnalyzer(CausynthTargetContext target) {
         this.target = target;
@@ -278,19 +268,16 @@ final class SeedBackwardStaticAnalyzer {
 
     CausynthAnalysisResult analyze() throws IOException {
         CausynthAnalysisResult result = new CausynthAnalysisResult();
-        result.targetResolved.put("seedMode", "EXCEPTION_ANNOTATION");
-        result.targetResolved.put("seedException", target.seedException);
-        result.targetResolved.put("exceptionTarget",
-                target.exceptionTargetSite.toMap());
+        result.targetResolved.put("schemaVersion", 2);
+        result.targetResolved.put("kind", "TARGET_ATTESTATION");
+        result.targetResolved.put("targetId",
+                target.exceptionTargetSite.id);
+        result.targetResolved.put("method",
+                target.exceptionTargetSite.methodSignature);
+        result.targetResolved.put("exception", target.seedException);
+        result.targetResolved.put("constructionOrdinal",
+                target.exceptionTargetSite.exceptionConstructionOrdinal);
         result.targetResolved.put("analysisScope", target.analysisScope);
-        result.seeds.add(object(
-                "id", "seed.exception_target",
-                "kind", "annotated_exception_target",
-                "exception", target.seedException,
-                "site", target.exceptionTargetSite.toMap(),
-                "discovery",
-                "CLASSFILE_ANNOTATION_THEN_STATIC_THROW_GUARD_AND_PAYLOAD"));
-
         Set<String> candidateClasses = findCandidateClasses();
         loadClasses(candidateClasses);
         initializeExceptionSeedAnchors();
@@ -298,35 +285,7 @@ final class SeedBackwardStaticAnalyzer {
         finishSeedDiscovery(result);
 
         result.edges.addAll(edges);
-        result.cells.addAll(collectCells());
         result.traceMethods.addAll(collectTraceMethods());
-        result.slices.put("strategy",
-                "annotation-directed backward static analysis from one exact exception construction");
-        result.slices.put("candidateClassCount", candidateClasses.size());
-        result.slices.put("rpcMappingCount", emittedRpcMappings.size());
-        result.slices.put("fieldWriterIndexedFieldCount",
-                fieldWritersByField.size());
-        result.slices.put("fieldWriterExpandedFieldCount",
-                expandedFieldWriterFields.size());
-        result.slices.put("constructorCallerIndexedConstructorCount",
-                constructorCallersByCallee.size());
-        result.slices.put("constructorCallerExpandedConstructorCount",
-                expandedConstructorCallees.size());
-        result.slices.put("methodCallerIndexedMethodCount",
-                methodCallersByCallee.size());
-        result.slices.put("methodCallerExpandedKeyCount",
-                expandedMethodCallerKeys.size());
-        addGlobalStaticIndexSummary(result.slices);
-        addRuntimeDispatchSummary(result.slices);
-        result.slices.put("loadedMethodCount", factsByMethod.size());
-        result.slices.put("selectedMethodCount", selectedMethods.size());
-        result.slices.put("edgeCount", edges.size());
-        result.slices.put("edgeKinds", summarizeEdgeKinds(edges));
-        result.slices.put("projectedPassEdgeChecks", projectedPassEdgeChecks);
-        result.slices.put("projectedPassUnsupported", projectedPassUnsupported);
-        result.slices.put("projectedPassNoSuffix", projectedPassNoSuffix);
-        result.slices.put("projectedPassCandidates", projectedPassCandidates);
-        result.slices.put("projectedPassEmitted", projectedPassEmitted);
         addStaticAnalysisBudgetSummary(result);
         return result;
     }
@@ -348,77 +307,16 @@ final class SeedBackwardStaticAnalyzer {
                 "edgeCapReached", edgeCapReached,
                 "capReached", methodCapReached || edgeCapReached,
                 "complete", !methodCapReached && !edgeCapReached);
-        result.slices.put("staticAnalysisBudget", budget);
         result.symbolicCoverage.put("staticAnalysisBudget",
                 new LinkedHashMap<>(budget));
     }
 
-    private void addGlobalStaticIndexSummary(Map<String, Object> slices) {
-        slices.put("globalStaticIndexScope",
-                "ALL_APPLICATION_CONCRETE_METHODS");
-        slices.put("globalStaticIndexCandidateMethodCount",
-                globalStaticIndexCandidateMethodCount);
-        slices.put("globalStaticIndexIndexedMethodCount",
-                globalStaticIndexIndexedMethodCount);
-        slices.put("globalStaticIndexUnreadableMethodCount",
-                globalStaticIndexUnreadableMethodCount);
-        slices.put("fieldWriterIndexTruncatedFieldCount",
-                truncatedFieldWriterIndexFields.size());
-        slices.put("methodCallerIndexTruncatedMethodCount",
-                truncatedMethodCallerIndexMethods.size());
-        slices.put("globalStaticIndexComplete", globalStaticIndexBuilt
-                && globalStaticIndexUnreadableMethodCount == 0
-                && truncatedFieldWriterIndexFields.isEmpty()
-                && truncatedMethodCallerIndexMethods.isEmpty());
-        slices.put("globalStaticIndexAuthority",
-                "ALL_APPLICATION_METHOD_SCAN_WITH_EXPLICIT_INCOMPLETE_ON_BOUND_OR_BODY_FAILURE_V1");
-    }
-
-    private void addRuntimeDispatchSummary(Map<String, Object> slices) {
-        slices.put("runtimeDispatchEvidenceConfigured",
-                runtimeDispatchEvidence.configured());
-        slices.put("runtimeDispatchEvidenceSource",
-                runtimeDispatchEvidence.source());
-        slices.put("runtimeDispatchEvidenceRowCount",
-                runtimeDispatchEvidence.rowCount());
-        slices.put("runtimeDispatchEvidenceSiteCount",
-                runtimeDispatchEvidence.siteCount());
-        slices.put("runtimeDispatchEvidenceRejectedRowCount",
-                runtimeDispatchEvidence.rejectedRowCount());
-        slices.put("runtimeSelectedDispatchSiteCount",
-                runtimeSelectedDispatchSites.size());
-        slices.put("runtimeSelectedDispatchSites",
-                sortedLimited(runtimeSelectedDispatchSites,
-                        Integer.MAX_VALUE));
-        slices.put("runtimeRecursiveMethodCount",
-                runtimeRecursiveMethods.size());
-        slices.put("runtimeRecursiveMethods",
-                sortedLimited(runtimeRecursiveMethods,
-                        Integer.MAX_VALUE));
-        slices.put("blockedRuntimeDispatchSites",
-                new LinkedHashMap<>(blockedRuntimeDispatchSites));
-        slices.put("runtimeDispatchSelectionComplete",
-                runtimeDispatchEvidence.rejectedRowCount() == 0
-                        && blockedRuntimeDispatchSites.isEmpty());
-        slices.put("runtimeDispatchSelectionAuthority",
-                runtimeDispatchEvidence.configured()
-                        ? "UNIQUE_CALLSITE_CORRELATED_ACTUAL_CALLEE_V1"
-                        : "STATIC_CLASS_HIERARCHY_FALLBACK");
-    }
-
     private void finishSeedDiscovery(CausynthAnalysisResult result) {
-        result.seeds.addAll(discoveredExceptionSeeds);
-        result.targetResolved.put("discoveredSeedCount",
-                discoveredExceptionSeeds.size());
-        result.targetResolved.put("discoveredSeedMethods",
-                new ArrayList<>(discoveredExceptionMethods));
-        result.targetResolved.put("discoveredSeedVariables",
-                new ArrayList<>(discoveredExceptionVariables));
-        if (discoveredExceptionSeeds.size() != 1) {
+        if (discoveredExceptionSeedCount != 1) {
             throw new IllegalStateException("Annotated exception target did "
                     + "not resolve to exactly one Jimple throw: "
                     + target.exceptionTargetSite.stableIdentity()
-                    + "; matches=" + discoveredExceptionSeeds.size());
+                    + "; matches=" + discoveredExceptionSeedCount);
         }
     }
 
@@ -477,7 +375,6 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void initializeExceptionSeedAnchors() {
-        int seedIndex = 0;
         for (Map.Entry<String, List<Fact>> entry : factsByMethod.entrySet()) {
             String method = entry.getKey();
             if (!target.exceptionTargetSite.methodSignature.equals(method)) {
@@ -495,17 +392,10 @@ final class SeedBackwardStaticAnalyzer {
                 String exceptionNode = factNode(throwFact) + "#exception:"
                         + target.seedException;
                 Set<String> methodRelevant = relevant(method);
-                Set<String> throwVariables = new LinkedHashSet<>();
-                Set<String> payloadVariables = new LinkedHashSet<>();
-                Set<String> guardVariables = new LinkedHashSet<>();
-                List<Map<String, Object>> pathGuards = new ArrayList<>();
-
                 ThrowStmt throwStmt = (ThrowStmt) throwFact.unit;
                 String thrownValue = canonical(method, throwStmt.getOp().toString());
                 if (!ignoreNode(thrownValue)) {
                     methodRelevant.add(thrownValue);
-                    throwVariables.add(thrownValue);
-                    discoveredExceptionVariables.add(thrownValue);
                     addEdge("seed_exception_throw", thrownValue, exceptionNode,
                             method, throwFact,
                             "direct throw at annotated exception target");
@@ -517,8 +407,6 @@ final class SeedBackwardStaticAnalyzer {
                         continue;
                     }
                     methodRelevant.add(node);
-                    payloadVariables.add(node);
-                    discoveredExceptionVariables.add(node);
                     addEdge("exception_payload_argument", node, exceptionNode,
                             method, construction.fact,
                             "exception constructor payload contributes to thrown value");
@@ -532,8 +420,6 @@ final class SeedBackwardStaticAnalyzer {
                             continue;
                         }
                         methodRelevant.add(node);
-                        guardVariables.add(node);
-                        discoveredExceptionVariables.add(node);
                         addEdge("exception_guard", node, exceptionNode,
                                 method, guard.fact,
                                 "dominating branch requires Jimple outcome "
@@ -555,46 +441,15 @@ final class SeedBackwardStaticAnalyzer {
                             guard.branchShape.annotate(edge);
                         }
                     }
-                    pathGuards.add(object(
-                            "siteId", stableSiteId(method,
-                                    guard.fact.unitIndex, "exception_guard"),
-                            "line", guard.fact.line,
-                            "unitIndex", guard.fact.unitIndex,
-                            "jimpleCondition", guard.condition,
-                            "requiredOutcome", guard.requiredOutcome,
-                            "reachingSuccessorIndices",
-                            guard.reachingSuccessorIndices,
-                            "branchKind", guard.branchShape.kind,
-                            "switchCaseKeys",
-                            guard.branchShape.caseKeys,
-                            "defaultSuccessorIndex",
-                            guard.branchShape.defaultSuccessorIndex,
-                            "successorIndexAuthority",
-                            "STATIC_BRANCH_CASE_ORDER_THEN_DEFAULT_V1"));
                 }
 
                 selectedMethods.add(method);
-                discoveredExceptionMethods.add(method);
-                discoveredExceptionSeeds.add(object(
-                        "id", "seed.exception_site." + seedIndex++,
-                        "kind", "discovered_exception_site",
-                        "exception", target.seedException,
-                        "method", method,
-                        "line", throwFact.line,
-                        "unitIndex", throwFact.unitIndex,
-                        "throwUnit", throwFact.unitText,
-                        "annotation", target.exceptionTargetSite.toMap(),
-                        "throwVariables", new ArrayList<>(throwVariables),
-                        "payloadVariables", new ArrayList<>(payloadVariables),
-                        "guardVariables", new ArrayList<>(guardVariables),
-                        "pathGuards", pathGuards,
-                        "authority",
-                        "CLASSFILE_ANNOTATED_EXCEPTION_CAUSALITY_V1"));
+                discoveredExceptionSeedCount++;
             }
         }
         LOG.info("Discovered {} direct throw sites for {} in {} methods",
-                discoveredExceptionSeeds.size(), target.seedException,
-                discoveredExceptionMethods.size());
+                discoveredExceptionSeedCount, target.seedException,
+                discoveredExceptionSeedCount == 0 ? 0 : 1);
     }
 
     private ExceptionConstruction annotatedExceptionConstruction(
@@ -1712,16 +1567,13 @@ final class SeedBackwardStaticAnalyzer {
                     || !method.getDeclaringClass().isApplicationClass()) {
                 continue;
             }
-            globalStaticIndexCandidateMethodCount++;
             List<Fact> facts = factsByMethod.get(method.getSignature());
             if (facts == null) {
                 facts = factsFromMethod(method);
             }
             if (facts.isEmpty()) {
-                globalStaticIndexUnreadableMethodCount++;
                 continue;
             }
-            globalStaticIndexIndexedMethodCount++;
             for (FieldWrite write : fieldWritesInMethod(method.getSignature(), facts)) {
                 addIndexedFieldWrite(write);
             }
@@ -3859,26 +3711,21 @@ final class SeedBackwardStaticAnalyzer {
             String from = String.valueOf(edge.get("fromCell"));
             String to = String.valueOf(edge.get("toCell"));
             String method = String.valueOf(edge.get("method"));
-            projectedPassEdgeChecks++;
             boolean edgeHasInvoke = edge.get("invoke") != null;
             if (!supportsProjectedPropagation(kind)
                     || ("local_def_use".equals(kind) && edgeHasInvoke)
                     || !canCarryProjectedFields(from)
                     || !canCarryProjectedFields(to)) {
-                projectedPassUnsupported++;
                 continue;
             }
             Set<String> suffixes = new LinkedHashSet<>();
             suffixes.addAll(projectionSuffixesForBase(method, from));
             suffixes.addAll(projectionSuffixesForBase(method, to));
             if (suffixes.isEmpty()) {
-                projectedPassNoSuffix++;
                 continue;
             }
-            projectedPassCandidates++;
             if (addProjectedEdgesForObjectFlow(kind, from, to, method,
                     null, edge)) {
-                projectedPassEmitted++;
                 changed = true;
             }
         }
@@ -3894,23 +3741,6 @@ final class SeedBackwardStaticAnalyzer {
                 && !method.getDeclaringClass().isInterface()
                 && !method.getDeclaringClass().isAbstract()
                 && structuralFieldAccessor(sig) == null;
-    }
-
-    private List<Map<String, Object>> collectCells() {
-        Set<String> cells = new LinkedHashSet<>();
-        for (Map<String, Object> edge : edges) {
-            cells.add(String.valueOf(edge.get("fromCell")));
-            cells.add(String.valueOf(edge.get("toCell")));
-        }
-        List<Map<String, Object>> output = new ArrayList<>();
-        int index = 0;
-        for (String cell : cells) {
-            output.add(object(
-                    "id", "C." + index++,
-                    "cell", cell,
-                    "kind", cellKind(cell)));
-        }
-        return output;
     }
 
     private Set<String> relevant(String method) {
@@ -4617,42 +4447,30 @@ final class SeedBackwardStaticAnalyzer {
         if (edge == null) {
             String edgeId = "DF." + edgeCounter++;
             boolean hasProjectionBase = projectionBaseEdge != null;
-            // A projected row is a derived view of its base edge.  Its
-            // rendered kind must never manufacture stronger semantic
-            // authority than that base. Require an explicit false/true tuple
-            // on the base so incomplete rows fail closed.
-            boolean baseMappingOnly = hasProjectionBase
-                    && StaticDataflowEdgeSchema.mappingOnly(
-                    projectionBaseEdge);
-            boolean mappingOnly = baseMappingOnly;
-            boolean baseSemanticAssertionsAllowed = !hasProjectionBase
-                    || StaticDataflowEdgeSchema.semanticAssertionsAllowed(
-                    projectionBaseEdge);
-            boolean baseAutomaticDerivationAllowed = !hasProjectionBase
-                    || StaticDataflowEdgeSchema
-                    .eligibleForAutomaticDerivation(projectionBaseEdge);
-            boolean baseAutomaticSmtAllowed = !hasProjectionBase
-                    || StaticDataflowEdgeSchema.eligibleForAutomaticSmt(
-                    projectionBaseEdge);
-            boolean semanticAssertionsAllowed = !mappingOnly
-                    && baseSemanticAssertionsAllowed;
-            boolean eligibleForAutomaticDerivation =
-                    semanticAssertionsAllowed
-                            && baseAutomaticDerivationAllowed;
-            boolean eligibleForAutomaticSmt = semanticAssertionsAllowed
-                    && baseAutomaticSmtAllowed;
+            String semanticMode = hasProjectionBase
+                    ? StaticDataflowEdgeSchema.semanticMode(
+                    projectionBaseEdge)
+                    : StaticDataflowEdgeSchema.ASSERTABLE;
+            if (semanticMode.isEmpty()) {
+                semanticMode = StaticDataflowEdgeSchema
+                        .RUNTIME_VALIDATION_REQUIRED;
+            }
+            boolean mappingOnly = StaticDataflowEdgeSchema.MAPPING_ONLY
+                    .equals(semanticMode);
+            boolean assertable = StaticDataflowEdgeSchema.ASSERTABLE
+                    .equals(semanticMode);
             String mappingAuthority = mappingOnly
                     ? StaticDataflowEdgeSchema.mappingAuthority(
                     projectionBaseEdge) : "";
-            String edgeTransferKind = SymbolicPlanningStage.transferKind(
+            String edgeTransferKind = StaticDataflowEdgeSchema.transferKind(
                     kind,
                     fact == null ? "" : fact.unitText,
                     fact == null ? null : fact.invoke,
                     fromText, toText);
-            boolean exactDirectCopy = !mappingOnly
+            boolean exactDirectCopy = assertable
                     && exactLocalDirectCopy(kind, fromText, toText,
                     method, fact, edgeTransferKind);
-            boolean projectedDirectCopy = !mappingOnly
+            boolean projectedDirectCopy = assertable
                     && exactProjectedDirectCopy(kind, fromText, toText,
                     projectionBaseEdge, edgeTransferKind);
             String relation = exactDirectCopy || projectedDirectCopy
@@ -4662,28 +4480,16 @@ final class SeedBackwardStaticAnalyzer {
                     "id", edgeId,
                     "kind", kind,
                     "transferKind", edgeTransferKind,
+                    "semanticMode", semanticMode,
                     "relation", mappingOnly ? "" : relation,
-                    "candidateRelation", relation,
                     "fromCell", fromText,
                     "toCell", toText,
                     "method", method,
                     "siteId", stableSiteId(method,
                             fact == null ? -1 : fact.unitIndex, kind),
                     "evidence", evidence);
-            if (mappingOnly) {
-                edge.put("mappingOnly", true);
-                if (!mappingAuthority.isEmpty()) {
-                    edge.put("mappingAuthority", mappingAuthority);
-                }
-            }
-            if (!semanticAssertionsAllowed) {
-                edge.put("semanticAssertionsAllowed", false);
-            }
-            if (!eligibleForAutomaticDerivation) {
-                edge.put("eligibleForAutomaticDerivation", false);
-            }
-            if (!eligibleForAutomaticSmt) {
-                edge.put("eligibleForAutomaticSmt", false);
+            if (mappingOnly && !mappingAuthority.isEmpty()) {
+                edge.put("mappingAuthority", mappingAuthority);
             }
             if (hasProjectionBase) {
                 edge.put("projectionBaseEdgeId", stringValue(
@@ -5065,39 +4871,6 @@ final class SeedBackwardStaticAnalyzer {
             return sorted;
         }
         return new ArrayList<>(sorted.subList(0, limit));
-    }
-
-    private static Map<String, Object> summarizeEdgeKinds(List<Map<String, Object>> edges) {
-        Map<String, Object> counts = object();
-        for (Map<String, Object> edge : edges) {
-            String kind = String.valueOf(edge.get("kind"));
-            Object previous = counts.get(kind);
-            counts.put(kind, previous instanceof Number
-                    ? ((Number) previous).intValue() + 1 : 1);
-        }
-        return counts;
-    }
-
-    private static String cellKind(String cell) {
-        if (cell.contains("#exception:")) {
-            return "exception";
-        }
-        if (cell.contains(".param")) {
-            return "parameter";
-        }
-        if (cell.endsWith(".return")) {
-            return "return";
-        }
-        if (cell.contains("#u")) {
-            return "unit";
-        }
-        if (cell.startsWith("<") && cell.contains(":")) {
-            return cell.contains(" ") ? "field_or_method" : "signature";
-        }
-        if (cell.contains("::")) {
-            return "local";
-        }
-        return "seed";
     }
 
     private static String firstNonBlank(String... values) {

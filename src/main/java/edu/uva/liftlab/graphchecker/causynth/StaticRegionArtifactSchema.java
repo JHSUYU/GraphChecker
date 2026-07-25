@@ -1,62 +1,14 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Compact persisted schema for static regions.
- *
- * <p>The planner keeps its rich in-memory rows because they are useful while
- * assembling and checking a region.  The durable artifact has one canonical
- * static-dataflow edge table, however, so output slices retain edge ids rather
- * than copying the same edges a second time.
- */
+/** Canonical persisted schema for static region rows. */
 final class StaticRegionArtifactSchema {
-    static final int VERSION = 1;
-
-    private static final String[] REGION_RETIRED_FIELDS = {
-            "mandatorySeedGuardInputCount",
-            "seedGuardInputDerivationGapCount",
-            "symbolicInputPortCount",
-            "methodCount",
-            "rawSymbolicInputCount",
-            "selectedExternalInputCount",
-            "broadInputPortCount",
-            "outputSlicePromotedInputCount",
-            "derivedInputCount",
-            "unresolvedInputCount",
-            "causalCellCount",
-            "staticRootCandidate", "rootAuthority", "rootReason",
-            "rootValidation", "sinkMethods", "symbolicInputPolicy",
-            "inputPortSelectionAuthority",
-            "mandatorySeedGuardInputAuthority", "precision",
-            "broadInputPortLimit", "outputSliceInputPortLimit",
-            "causalCellLimit", "methodLimit",
-            "pathAssumptionSites", "exploreBranchSites"
-    };
-    private static final String[] SLICE_RETIRED_FIELDS = {
-            "accessorImplementationAdmissionCount",
-            "causalEdgeCount", "methodCount",
-            "requestedStateTransformerObligationCount",
-            "causalCellCount", "inputPortCountBeforeSlice",
-            "promotedInputPortCount",
-            "promotionCapacityOmittedInputCount",
-            "promotionAuthority", "inputPortPromotionLimit",
-            "causalCellLimit", "methodLimit", "derivedInputs"
-    };
-    private static final String[] BRANCH_RETIRED_FIELDS = {
-            "sourceEdgeId", "sourceEdgeKind", "sourceEdgeKinds",
-            "controlDependenceAuthority",
-            "controlDependenceAuthorities", "policyAuthority",
-            "pathAssumptionProof", "explorationReason",
-            "successorIndexAuthority", "switchArmIdentityAuthority",
-            "role"
-    };
+    static final int VERSION = 2;
 
     private StaticRegionArtifactSchema() {
     }
@@ -64,168 +16,59 @@ final class StaticRegionArtifactSchema {
     static List<Map<String, Object>> regions(
             List<Map<String, Object>> regions,
             List<Map<String, Object>> staticEdges) {
-        Set<String> canonicalEdgeIds = canonicalEdgeIds(staticEdges);
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map<String, Object> original : values(regions)) {
-            Map<String, Object> region = copyMap(original);
-            region.put("schemaVersion", VERSION);
-            remove(region, REGION_RETIRED_FIELDS);
-            for (Map<String, Object> input : maps(
-                    region.get("symbolicInputs"))) {
-                input.remove("promotionAuthority");
+        Set<String> edgeIds = ids(staticEdges, "id",
+                "static dataflow edge");
+        for (Map<String, Object> region : regions) {
+            Object slices = region.get("outputSlices");
+            if (!(slices instanceof Collection<?>)) continue;
+            for (Object value : (Collection<?>) slices) {
+                if (!(value instanceof Map<?, ?>)) {
+                    throw new IllegalStateException(
+                            "outputSlices contains a non-object");
+                }
+                Set<String> references = ids(
+                        ((Map<?, ?>) value).get("causalEdgeIds"),
+                        "output slice causal edge");
+                if (!edgeIds.containsAll(references)) {
+                    references.removeAll(edgeIds);
+                    throw new IllegalStateException(
+                            "output slice references missing edges: "
+                                    + references);
+                }
             }
-            for (Map<String, Object> branch : maps(
-                    region.get("branchPolicies"))) {
-                remove(branch, BRANCH_RETIRED_FIELDS);
-            }
-            for (Map<String, Object> slice : maps(
-                    region.get("outputSlices"))) {
-                compactOutputSlice(slice, canonicalEdgeIds);
-            }
-            result.add(region);
         }
-        return result;
+        return regions;
     }
 
     static List<Map<String, Object>> regionEdges(
             List<Map<String, Object>> edges) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map<String, Object> original : values(edges)) {
-            Map<String, Object> edge = copyMap(original);
-            edge.put("schemaVersion", VERSION);
-            edge.remove("rootValidation");
-            result.add(edge);
-        }
-        return result;
+        return edges;
     }
 
-    private static void compactOutputSlice(Map<String, Object> slice,
-                                           Set<String> canonicalEdgeIds) {
-        remove(slice, SLICE_RETIRED_FIELDS);
-
-        List<String> ids = strings(slice.get("causalEdgeIds"));
-        Set<String> uniqueIds = new LinkedHashSet<>();
-        for (String id : ids) {
-            if (id.isEmpty() || !uniqueIds.add(id)
-                    || !canonicalEdgeIds.contains(id)) {
-                throw new IllegalStateException(
-                        "output slice references a missing, empty, or "
-                                + "duplicate canonical edge id: " + id);
-            }
-        }
-
-        Object embeddedValue = slice.get("causalEdges");
-        if (embeddedValue instanceof Collection<?>) {
-            Set<String> embeddedIds = new LinkedHashSet<>();
-            int embeddedCount = 0;
-            for (Object item : (Collection<?>) embeddedValue) {
-                if (!(item instanceof Map<?, ?>)) {
-                    throw new IllegalStateException(
-                            "output slice causalEdges contains a non-object");
-                }
-                embeddedCount++;
-                Map<?, ?> edge = (Map<?, ?>) item;
-                String id = firstNonBlank(string(edge.get("edgeId")),
-                        string(edge.get("id")));
-                if (id.isEmpty() || !embeddedIds.add(id)) {
-                    throw new IllegalStateException(
-                            "output slice has an empty or duplicate embedded "
-                                    + "causal edge id: " + id);
-                }
-            }
-            if (embeddedCount != ids.size()
-                    || !embeddedIds.equals(uniqueIds)) {
-                throw new IllegalStateException(
-                        "output slice causalEdgeIds disagree with "
-                                + "embedded causalEdges");
-            }
-        } else if (embeddedValue != null) {
-            throw new IllegalStateException(
-                    "output slice causalEdges is not an array");
-        } else if (!ids.isEmpty()) {
-            throw new IllegalStateException(
-                    "output slice is missing its in-memory causal edge ledger");
-        }
-        slice.remove("causalEdges");
-    }
-
-    private static Set<String> canonicalEdgeIds(
-            List<Map<String, Object>> staticEdges) {
+    private static Set<String> ids(List<Map<String, Object>> rows,
+                                   String field, String description) {
         Set<String> result = new LinkedHashSet<>();
-        for (Map<String, Object> edge : values(staticEdges)) {
-            String id = string(edge.get("id"));
+        for (Map<String, Object> row : rows) {
+            String id = string(row.get(field));
             if (id.isEmpty() || !result.add(id)) {
-                throw new IllegalStateException(
-                        "static dataflow catalog has an empty or duplicate "
-                                + "canonical edge id: " + id);
+                throw new IllegalStateException(description
+                        + " has an empty or duplicate id: " + id);
             }
         }
         return result;
     }
 
-    private static void remove(Map<String, Object> row, String[] fields) {
-        for (String field : fields) {
-            row.remove(field);
-        }
-    }
-
-    private static List<String> strings(Object value) {
-        List<String> result = new ArrayList<>();
-        if (!(value instanceof Collection<?>)) {
-            return result;
-        }
-        for (Object item : (Collection<?>) value) {
-            result.add(string(item));
+    private static Set<String> ids(Object values, String description) {
+        Set<String> result = new LinkedHashSet<>();
+        if (!(values instanceof Collection<?>)) return result;
+        for (Object value : (Collection<?>) values) {
+            String id = string(value);
+            if (id.isEmpty() || !result.add(id)) {
+                throw new IllegalStateException(description
+                        + " has an empty or duplicate id: " + id);
+            }
         }
         return result;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> maps(Object value) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        if (!(value instanceof Collection<?>)) {
-            return result;
-        }
-        for (Object item : (Collection<?>) value) {
-            if (!(item instanceof Map<?, ?>)) {
-                throw new IllegalStateException(
-                        "expected an array of JSON objects");
-            }
-            result.add((Map<String, Object>) item);
-        }
-        return result;
-    }
-
-    private static List<Map<String, Object>> values(
-            List<Map<String, Object>> rows) {
-        return rows == null ? new ArrayList<Map<String, Object>>() : rows;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> copyMap(Map<String, Object> source) {
-        return (Map<String, Object>) copy(source);
-    }
-
-    private static Object copy(Object value) {
-        if (value instanceof Map<?, ?>) {
-            Map<String, Object> result = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
-                result.put(string(entry.getKey()), copy(entry.getValue()));
-            }
-            return result;
-        }
-        if (value instanceof Collection<?>) {
-            List<Object> result = new ArrayList<>();
-            for (Object item : (Collection<?>) value) {
-                result.add(copy(item));
-            }
-            return result;
-        }
-        return value;
-    }
-
-    private static String firstNonBlank(String first, String second) {
-        return first.isEmpty() ? second : first;
     }
 
     private static String string(Object value) {

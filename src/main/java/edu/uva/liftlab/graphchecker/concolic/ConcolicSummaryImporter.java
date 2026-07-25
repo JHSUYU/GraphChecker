@@ -314,7 +314,8 @@ public final class ConcolicSummaryImporter {
                     "rootCallId", -1));
             summary.add("captureGoal", captureGoal.toJson());
             summary.addProperty("rootMethod", firstNonBlank(
-                    string(activation, "rootMethod"), string(region, "rootMethod")));
+                    activationRootMethod(activation),
+                    string(region, "rootMethod")));
             summary.add("symbolicInputs", symbolicInputs(activation));
             if (outputContract != null) {
                 summary.add(OutputClosureContract.FIELD,
@@ -6225,8 +6226,8 @@ public final class ConcolicSummaryImporter {
                 + dynamicFieldSymbol + "_"
                 + owner.replace('.', '/');
         Set<String> applicationMethods = new LinkedHashSet<>();
-        String rootMethod = ConcolicCodePosition.sootMethodKey(string(
-                activation, "rootMethod"));
+        String rootMethod = ConcolicCodePosition.sootMethodKey(
+                activationRootMethod(activation));
         if (!rootMethod.isEmpty()) applicationMethods.add(rootMethod);
         JsonObject slice = analysis.slice();
         for (JsonElement method : array(slice, "methods")) {
@@ -6336,8 +6337,8 @@ public final class ConcolicSummaryImporter {
             OutputMemberAnalysis analysis, String dynamicFieldSymbol) {
         JsonObject activation = analysis.activation;
         Set<String> applicationMethods = new LinkedHashSet<>();
-        String rootMethod = ConcolicCodePosition.sootMethodKey(string(
-                activation, "rootMethod"));
+        String rootMethod = ConcolicCodePosition.sootMethodKey(
+                activationRootMethod(activation));
         if (!rootMethod.isEmpty()) applicationMethods.add(rootMethod);
         JsonObject slice = analysis.slice();
         for (JsonElement element : array(slice, "methods")) {
@@ -8587,9 +8588,7 @@ public final class ConcolicSummaryImporter {
             collectMethod(methodKeys, string(region, "anchorMethod"));
             collectMethods(methodKeys, activationMethods);
         }
-        // Activation files can be regenerated independently of region JSON.
-        // Its root is therefore admitted as an explicit fallback identity.
-        collectMethod(methodKeys, string(activation, "rootMethod"));
+        collectMethod(methodKeys, activationRootMethod(activation));
         return new PathAdmissionPolicy(methodKeys, boundaries,
                 outputSliceRestricted
                         ? "REQUESTED_OUTPUT_SLICE_METHOD"
@@ -9899,6 +9898,10 @@ public final class ConcolicSummaryImporter {
         JsonElement value = parent == null ? null : parent.get(field);
         return value != null && value.isJsonObject()
                 ? value.getAsJsonObject() : new JsonObject();
+    }
+
+    private static String activationRootMethod(JsonObject activation) {
+        return string(object(activation, "rootSelector"), "method");
     }
 
     private static JsonArray array(JsonObject parent, String field) {

@@ -289,10 +289,7 @@ validate_multitype_producer_artifacts() {
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
-      and .regionRelation.guardSemantics
-        == "EXACT_NORMALIZED_PATH_CONDITION"
-      and .regionRelation.caseCount > 1
-      and .regionRelation.caseCount == (.regionRelation.cases | length)
+      and (.regionRelation.cases | length) > 1
       and all(.regionRelation.cases[];
         .guard.kind == "PATH_CONDITION"
         and ((.guard.conditions // []) | length) > 0))
@@ -339,15 +336,12 @@ validate_dependent_scalar_artifacts() {
   # lines are deliberately excluded because they are not semantic identity.
   jq -e --arg method "${target_method}" \
     --arg exception "${target_exception}" '
-    .seedMode == "EXCEPTION_ANNOTATION"
-    and .seedException == $exception
-    and .exceptionTarget.id == "dependent-scalar"
-    and .exceptionTarget.method == $method
-    and .exceptionTarget.exception == $exception
-    and .exceptionTarget.authority
-      == "CLASSFILE_CAUSYNTH_EXCEPTION_TARGET_TYPE_USE_V1"
-    and .discoveredSeedCount == 1
-    and .discoveredSeedMethods == [$method]
+    .schemaVersion == 2
+    and .kind == "TARGET_ATTESTATION"
+    and .targetId == "dependent-scalar"
+    and .method == $method
+    and .exception == $exception
+    and .constructionOrdinal == 0
   ' "${target_resolution}" >/dev/null \
     || die "dependent-scalar lost its exact annotated target root"
 
@@ -359,8 +353,7 @@ validate_dependent_scalar_artifacts() {
     [.[] | select(
       .captureGoal.kind == "OUTPUT_CLOSURE"
       and .captureGoal.scope == "BOUNDED_OUTPUT_RELEVANT_PATHS"
-      and .replayable == true
-      and .symbolicReady == true)
+      and .admission.state == "READY")
       | select(
         ([output_members | .[].output.cell] | index($arithmetic)) != null
         or ([output_members | .[].output.cell] | index($text)) != null)
@@ -386,7 +379,8 @@ validate_dependent_scalar_artifacts() {
         and .canonicalInputResolutionUsed == true)
       and ([.[] | select(
           .captureGoal.kind == "TARGET_BRANCH"
-          and .replayable == true
+          and (.admission.state == "READY"
+            or .admission.state == "DISCOVERED")
           and .regionId == $edges[0].toRegion
           and .regionInstanceId == $edges[0].toRegionInstance)]
         | length) == 1)
@@ -434,20 +428,17 @@ validate_dependent_scalar_artifacts() {
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
-      and .regionRelation.guardSemantics
-        == "EXACT_NORMALIZED_PATH_CONDITION"
-      and .regionRelation.caseCount == (.regionRelation.cases | length)
-      and .regionRelation.caseCount > 1
+      and (.regionRelation.cases | length) > 1
       and all(.regionRelation.cases[];
         .relationallyComplete == true
         and (.guard.conditions | length) > 0
         and (.outputExpressions | length) == 1))
     and any(.[];
       (singleton_output_member | .slice.outputCell == $arithmetic)
-      and .regionRelation.caseCount == 6)
+      and (.regionRelation.cases | length) == 6)
     and any(.[];
       (singleton_output_member | .slice.outputCell == $text)
-      and .regionRelation.caseCount == 2
+      and (.regionRelation.cases | length) == 2
       and ([.regionRelation.cases[].outputExpressions[]?._exp] | sort)
         == ["Y_I_5", "Y_I_9"]
       and ([.regionRelation.cases[].guard.conditions[]
@@ -538,9 +529,7 @@ validate_container_producer_artifacts() {
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
-    and .regionRelation.guardSemantics
-      == "EXACT_NORMALIZED_PATH_CONDITION"
-    and .regionRelation.caseCount == 2
+    and (.regionRelation.cases | length) == 2
     and ($outputSlice.containerElementFieldBindings | length) == 1
     and $static.schemaVersion == 2
       and $static.kind == "ARRAY_ELEMENT_FIELD"
@@ -592,8 +581,6 @@ validate_container_producer_artifacts() {
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
-    and .regionRelation.guardSemantics
-      == "EXACT_NORMALIZED_PATH_CONDITION"
     and (.regionRelation.cases | length) >= 2
     and ($outputSlice.inputAliasCanonicalizations | length) >= 3
     and all($outputSlice.inputAliasCanonicalizations[];
@@ -703,11 +690,7 @@ validate_unreachable_parity_producer_artifacts() {
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
-      and .regionRelation.guardSemantics
-        == "EXACT_NORMALIZED_PATH_CONDITION"
-      and .regionRelation.caseCount
-        == (.regionRelation.cases | length)
-      and .regionRelation.caseCount > 2
+      and (.regionRelation.cases | length) > 2
       and all(.regionRelation.cases[];
         .relationallyComplete == true
         and (.guard.conditions | length) > 0
@@ -814,8 +797,7 @@ validate_scalar_unsat_producer_artifacts() {
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
-      and .regionRelation.caseCount > 1
-      and .regionRelation.caseCount == (.regionRelation.cases | length)
+      and (.regionRelation.cases | length) > 1
       and (output_members | map(.output.portId) | sort) as $ports
       | all(.regionRelation.cases[];
           (.outputExpressions | keys | sort) == $ports))
@@ -838,8 +820,7 @@ validate_scalar_unsat_producer_artifacts() {
     jq -e -s "${output_closure_helpers}"'
       [.[] | select(
         .captureGoal.kind == "OUTPUT_CLOSURE"
-        and .replayable == true
-        and .symbolicReady == true)] as $producers
+        and .admission.state == "READY")] as $producers
       | ($producers | length) == 2
       and ([$producers[] | output_members | length] | sort) == [1, 2]
       and any($producers[];
@@ -911,9 +892,10 @@ validate_compound_target_artifacts() {
   jq -e -s --arg consumer "${consumer_name}" \
     --arg target_region "$(jq -r '.regionId' "${target_closure}")" '
     [.[] | select(.captureGoal.kind == "OUTPUT_CLOSURE"
-      and .symbolicReady == true and .replayable == true)] as $producers
+      and .admission.state == "READY")] as $producers
     | [.[] | select(.captureGoal.kind == "TARGET_BRANCH"
-      and .replayable == true
+      and (.admission.state == "READY"
+        or .admission.state == "DISCOVERED")
       and .regionId == $target_region
       and any(.branches[]?;
         .policy == "EXPLORE" and (.siteId | contains($consumer))))] as $targets
@@ -955,7 +937,7 @@ validate_compound_target_artifacts() {
       (output_members | length) == 3
       and .relationallyComplete == true
       and .regionRelation.complete == true
-      and .regionRelation.caseCount == 2
+      and (.regionRelation.cases | length) == 2
       and all(.regionRelation.cases[];
         (.outputExpressions | length) == 3))
   ' "${merged_summaries[@]}" >/dev/null \

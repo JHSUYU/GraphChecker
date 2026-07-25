@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -27,6 +28,14 @@ public class RegionPathWorklistTest {
                 RegionCaptureGoal.targetBranch());
         targetSummary.remove("outputClosure");
         targetActivation.remove("outputClosure");
+        int targetIndex = 0;
+        for (com.google.gson.JsonElement element
+                : targetSummary.getAsJsonArray("branchMappings")) {
+            JsonObject site = element.getAsJsonObject()
+                    .getAsJsonObject("witness").getAsJsonObject("site");
+            site.addProperty("siteId", "SITE#u" + targetIndex++);
+            site.addProperty("method", "SITE");
+        }
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
@@ -49,12 +58,17 @@ public class RegionPathWorklistTest {
                 result.manifest.get("state").getAsString());
 
         JsonArray targetBranches = new JsonArray();
-        for (String site : Arrays.asList("SITE.0", "SITE.1")) {
+        for (String site : Arrays.asList("SITE#u0", "SITE#u1")) {
             JsonObject branch = new JsonObject();
             branch.addProperty("siteId", site);
             branch.addProperty("policy", "EXPLORE");
             targetBranches.add(branch);
         }
+        JsonObject helperBranch = new JsonObject();
+        helperBranch.addProperty("siteId", "HELPER#u0");
+        helperBranch.addProperty("policy", "EXPLORE");
+        targetBranches.add(helperBranch);
+        targetActivation.addProperty("targetMethod", "SITE");
         targetActivation.add("branches", targetBranches);
         RegionPathWorklist.Result targetResult = RegionPathWorklist.plan(
                 Collections.singletonList(targetSummary),
@@ -116,12 +130,22 @@ public class RegionPathWorklistTest {
         assertTrue(task.has("outputClosure"));
         assertFalse(task.has("requestedOutput"));
         assertEquals("REGION.3@test#call7",
-                task.get("regionInstanceId").getAsString());
-        assertEquals(7, task.get("rootCallId").getAsLong());
-        assertEquals(task.get("outputDemandKey"),
-                result.manifest.get("outputDemandKey"));
-        assertEquals(task.get("outputClosureFingerprint"),
-                result.manifest.get("outputClosureFingerprint"));
+                OutputClosureCodec.decodeEnvelope(task.getAsJsonObject(
+                        "outputClosure")).producer()
+                        .regionInstanceId());
+        assertEquals(7, OutputClosureCodec.decodeEnvelope(
+                task.getAsJsonObject("outputClosure")).producer()
+                .rootCallId());
+        assertEquals(OutputClosureCodec.decodeEnvelope(
+                        task.getAsJsonObject("outputClosure")).demandKey(),
+                result.manifest.get("outputDemandKey").getAsString());
+        assertEquals(OutputClosureCodec.decodeEnvelope(
+                        task.getAsJsonObject("outputClosure"))
+                        .closureFingerprint(),
+                result.manifest.get("outputClosureFingerprint")
+                        .getAsString());
+        assertFalse(task.has("outputDemandKey"));
+        assertFalse(task.has("outputClosureFingerprint"));
 
         JsonObject boundedLoop = summary("ACT.LOOP",
                 RegionCaptureGoal.outputClosure());
@@ -197,8 +221,12 @@ public class RegionPathWorklistTest {
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
-        assertEquals(first.tasks.get(0).get("outputDemandKey"),
-                second.tasks.get(0).get("outputDemandKey"));
+        assertEquals(OutputClosureCodec.decodeEnvelope(first.tasks.get(0)
+                        .getAsJsonObject("outputClosure"))
+                        .demandKey(),
+                OutputClosureCodec.decodeEnvelope(second.tasks.get(0)
+                        .getAsJsonObject("outputClosure"))
+                        .demandKey());
         assertNotEquals(first.tasks.get(0).get("queryKey"),
                 second.tasks.get(0).get("queryKey"));
         JsonObject record = new JsonObject();
@@ -225,8 +253,12 @@ public class RegionPathWorklistTest {
                 Collections.singletonList(otherDemandActivation),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
-        assertNotEquals(first.tasks.get(0).get("outputDemandKey"),
-                third.tasks.get(0).get("outputDemandKey"));
+        assertNotEquals(OutputClosureCodec.decodeEnvelope(first.tasks.get(0)
+                        .getAsJsonObject("outputClosure"))
+                        .demandKey(),
+                OutputClosureCodec.decodeEnvelope(third.tasks.get(0)
+                        .getAsJsonObject("outputClosure"))
+                        .demandKey());
         assertNotEquals(first.tasks.get(0).get("queryKey"),
                 third.tasks.get(0).get("queryKey"));
     }

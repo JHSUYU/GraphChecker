@@ -1108,6 +1108,364 @@ rg -g '*.java' '@Test\b' src/test | wc -l
 代码、关闭具体正确性缺口并通过同一十三-fixture 门禁时才重新进入实施计划；单纯拆文件、
 搬 JSON 或增加 wrapper 不算进展。
 
+## 下一轮大规模精简计划：61k–69k
+
+第一轮合理目标是净减 12,000–20,000 行，把当前 81,581 行手写生产 Java 降到约
+61,000–69,000 行。45,000–55,000 行仍是长期目标，但不能靠删除证明字段、削弱
+fail-closed、把代码搬家、压缩格式或生成代码凑数。
+
+本轮最高原则仍是：
+
+1. 正确性优先，全部 maintained fixture 的真实 concolic/Z3 语义不能改变；
+2. 不过度验证：同一事实只在真实 trust boundary 验证一次；
+3. 不过度设计：新 abstraction 必须立即替换并删除旧实现；
+4. 行数是删除重复 authority 后的结果，不是独立 KPI。
+
+计划中的字段与类名都是删除候选，不是预先批准的删除清单。每项必须先由 field ledger
+确认 writer、Java 生产 reader、shell reader 和语义用途；发现真实消费者或 correctness
+authority 时，更新 ledger 并保留，而不是为了完成 PR 强删。
+
+### 删除原则
+
+字段分为三类：
+
+- 零生产消费者、协议常量、纯计数镜像：直接删除；
+- 当前有消费者，但可由唯一 canonical object 无歧义推导：原子 schema 升级后删除；
+- 参与 fail-closed、运行时身份、read-from、output closure 或异常路径闭包的证据：必须保留。
+
+所有 schema 迁移采用一次性切换：writer、Java reader、shell reader 在同一个 PR 更新，
+旧 artifact 直接拒绝；不保留双写、长期 fallback 或 shadow schema。
+
+这是全新版本重构，不提供旧 artifact 向新 schema 的迁移承诺。新 authority 切换后，旧
+reader、旧 writer、兼容 adapter、legacy parser、fallback 分支和只服务旧格式的测试必须在
+同一个 PR 删除；不能以“以后再清理”为理由留在主路径。
+
+### PR 0：冻结语义基线
+
+先记录：
+
+- 当前 81,581 行生产代码；
+- 全部十三个 workload 的 SAT/UNSAT、relation case 数、trace/artifact 大小和各阶段耗时；
+- 一份一次性 field ledger：字段、writer、生产 reader、shell reader、是否可推导、删除 PR；
+- 测试只检查语义 contract 和 retired field 不再出现，不锁定整份 JSON 字节形状。
+
+这一步不改变系统行为。基线和 ledger 是删除决策的工作文件，不演化成第二套长期 schema。
+
+### PR 1：删除确定的死代码和死字段
+
+#### 静态分析链
+
+从 `CausynthAnalysisResult` 核查并删除无生产消费者的：
+
+- `seeds`
+- `cells`
+- `symbolicModels`
+- `automaticDerivationBoundary`
+- 最终整个 `slices`
+
+连带候选：
+
+- `collectCells()`、`cellKind()`
+- `buildAutomaticDerivationBoundary()`
+- 从未填充的 `modelSummaries`
+- `candidateRelation`
+- branch policy 的 `sourceEdgeIds`
+- `requiredModels -> models` 整条无执行消费者链
+- 所有只写入 `result.slices` 的统计量
+
+`instrumentConcolicRegions()` 改为返回小型 typed `InstrumentationResult`，只覆盖当前真实
+局部读取，随后删除万能 `Map slices`。
+
+#### Scheduler 和 runtime
+
+核查并删除 `ConcolicScheduler.Result.jobs` 镜像及 `JsonObject job` 林造，改用
+`scheduledPrimaryCount` 控制配额。连带候选：
+
+- `Result.mergePlan`
+- `Candidate.reason`
+- `workloadKind()`
+- job 中第二份 `materializations`、`edgeBindings`
+- `selectionReason`、`captureReady` 等 job-only 字段
+
+从 raw concolic result 核查并删除无消费者的：
+
+- `runtimeThread`
+- `runtimeThreadId`
+- `concretePrimitiveOutput`
+- `durationNanos`
+- `test`
+- `invocationOrdinal`
+- `branchReplayValidation`
+
+Scheduler binding 候选：
+
+- 固定 `objectIdentityRequired=false`
+- `discoveredExecutionId`
+- `discoveredExecutionIds`
+
+#### Worklist、Merger、Composer
+
+核查并删除：
+
+- `ConcolicSmtComposer.MergeStats`
+- worklist task 的固定 `status=PENDING_SOLVE`
+- `dynamicIdsExcludedFromQueryKey`
+- 可由 closure/activation 推导的 `rootMethod`
+- 顶层 `regionInstanceId/rootCallId/outputDemandKey/outputClosureFingerprint` 镜像
+- 无消费者的顶层 `engineArrayInputBindings`
+- `caseProjectionCatalogComplete`
+- relationship 的固定 `status=UNVERIFIED_CANDIDATE`
+
+从 `RegionSummaryMerger` 核查并删除可由 canonical 数组、`gaps`、`kind/schema` 推导的：
+
+- `caseCount`
+- `guardSemantics`
+- `mergeSemantics`
+- `coverageSemantics`
+- 固定 authority
+- manifest 的 `diagnosticCount/status/semanticAuthority/domainSemanticAdapterAllowed`
+
+### PR 2：压缩静态分析模型和 artifact
+
+当前 Planner 先生成 rich `Map`，随后 `StaticRegionArtifactSchema` 深复制并删除大量字段。
+改成：
+
+1. 用精简 `MethodFacts` 替代 `SymbolicExecutionPlanBuilder` 的大 Map；
+2. `MethodFacts` 只保留 `method/classification/symbolicInputs/outputs/siteIds`；
+3. 核查并删除 Builder 中的：
+   `id/requiresSymbolicExecution/reason/edgeCount/heapInputs/environmentInputs/guards/`
+   `exceptions/transferKinds/possibleCallees/runtimeObservedCallees/truncated/precision`；
+4. 扩展 `StaticGraphIndex` 后删除已被替代的 `SymbolicPlanningStage` 和
+   `SymbolicExecutionPlanBuilder`；
+5. Planner 直接构造 canonical `StaticRegionArtifact`，删除 deep-copy-then-strip；
+6. output slice 不同时携带 `causalEdges` 与 `causalEdgeIds`，只通过 ID 查 canonical edge
+   table。
+
+`target_resolved.json` 保留，但压缩为最小 target attestation：
+
+- schema/kind
+- target id
+- method
+- exception
+- construction ordinal
+- analysis scope
+
+候选删除 `seedMode`、重复 `seedException`、恒等于 1 的 count、singleton method list 和
+纯诊断变量列表，并在同一个 PR 同步 Java/shell readers。
+
+截至 2026-07-25，PR 0、PR 1 已完成，PR 1 的隔离全矩阵为 13/13、6 SAT/7 UNSAT。
+PR 2 已完成实现：method plan rich Map 两个类已经删除，region planner 只保留五字段
+`MethodFacts`；static region 直接产生 canonical row，output slice 只存 canonical edge
+ID；target attestation 已一次性切到 V2。该里程碑已通过快速回归以及 baseline、
+dependent-scalar 的完整 concolic/worklist/merge/compose/Z3 流程。用户工作树中的
+container fixture 修改不属于重构提交，也不会被覆盖或暂存。
+
+### PR 3：静态 edge 和 runtime activation schema V2
+
+#### Static edge
+
+将：
+
+- `mappingOnly`
+- `semanticAssertionsAllowed`
+- `eligibleForAutomaticDerivation`
+- `eligibleForAutomaticSmt`
+- 固定 `direction=backward_provenance`
+
+收敛为：
+
+```json
+{"semanticMode":"ASSERTABLE | MAPPING_ONLY | RUNTIME_VALIDATION_REQUIRED"}
+```
+
+decoder 根据枚举检查对应必要字段，不再维护相互可能冲突的布尔组合。
+
+#### Runtime activation
+
+将 readiness 收敛为：
+
+```json
+{
+  "admission": {
+    "state": "EXECUTABLE",
+    "mode": "RUNTIME_ROOT_REPLAY",
+    "blockers": []
+  }
+}
+```
+
+它替代：
+
+- `replayable`
+- `boundaryReady`
+- `symbolicReady`
+- `schedulerReady`
+- `runtimePathEvidenceComplete`
+- 各种 truncation boolean
+- `runtimeGaps`
+- `replayMode`
+
+root 选择字段压缩为 tagged `rootSelector`，bundle 字段压缩为一个 `bundle` 对象。
+
+Edge evidence 改为 discriminated schema，例如：
+
+```json
+{
+  "evidenceKind": "COMPLETE_VALUE_EQUALITY_V1",
+  "fingerprint": "...",
+  "writerEventSeq": 10,
+  "readerEventSeq": 20
+}
+```
+
+删除 `relation/relationKind`、endpoint sequence aliases、固定 authority 与
+`confirmed=true` 镜像。runtime planner 必须提供 static graph，同时删除
+`catalogSupplied=false`、`legacyStatic()` 等 graphless 兼容路径。
+
+截至 2026-07-25，PR 3 的第一个原子切换已经完成：static dataflow edge 与 static
+region 统一升到 V2，五个互相镜像的 edge policy 字段已由唯一 `semanticMode` 替代；
+runtime discovery、scheduler、instrumentation 与 runtime executor 的九个 readiness/
+replay/truncation 字段已由唯一 `admission {state,mode,blockers}` 替代。旧字段没有双写、
+fallback 或兼容 reader。57 项快速回归全部通过，baseline 的 target 与两个 producer
+path campaign、summary merge、SMT composition 和 Z3 端到端结果仍为 `sat`。回归还发现
+并修正了 Scheduler 遗留的 static graph V1 authority 常量；否则 V2 图会被错误降级并使
+producer activation 阻塞。第二个原子切换将七个顶层 activation bundle 镜像压缩为唯一
+`bundle {rootActivationId,scheduleId,role,index,size,selection}`，同步切换 Java 与 shell
+reader，无双写；57 项快速回归与 baseline 端到端 Z3 仍通过。PR 3 剩余的
+root selection 也已一次性收敛成 tagged
+`rootSelector {kind,method,receiverClass?,thread?,ordinal,arguments?}`：删除顶层
+`rootMethod/receiverType/invocationOrdinal`、context authority/boolean 镜像和 argument
+selector schema/authority 镜像，不保留 legacy/global fallback。迁移回归发现并修正了
+worklist identity 的旧顶层 root 读点；57 项快速回归和 baseline 全流程仍通过。PR 3
+同时删除 runtime planner 的 graphless overload、`catalogSupplied=false` 和
+`legacyStatic()` 宽泛输入路径；所有 planning 现在必须消费同一份 frozen static graph，
+57 项快速回归和 baseline 全流程仍通过。最后一个原子切换将 runtime edge binding
+统一成三种 discriminated evidence：
+`COMPLETE_VALUE_EQUALITY_V1`、`FIELD_ASSIGNMENT_READ_FROM_V1` 和
+`CONTAINER_MUTATION_READ_FROM_V1`。writer、Scheduler、Composer 与回归 fixture
+一次性切换到 `evidenceKind + writerEventSeq + readerEventSeq + kind-specific payload`；
+已删除 `relation/relationKind`、sequence aliases、`confirmed` boolean、固定 authority、
+path-completeness 镜像和只写不读的 write-evidence wrapper 字段。证据种类本身决定
+必需 payload，reader 不猜旧字段，也不保留兼容 fallback。57 项快速回归通过；完整
+13-fixture matrix 是该 PR 合入前的最终 gate。
+
+### PR 4：压缩 trace、Importer 和 replay admission
+
+默认 trace 只写 Planner 真正读取的字段。候选删除：
+
+- `timeNanos`
+- 重复的 `test/process/threadName/tid`
+- execution event 的 `parentCallId/unitIndex/declaredType/expression/exceptionType`
+- `hasOutcome + outcome` 双字段，改为可选 `outcome`
+- `hasSuccessorIndex + successorIndex` 双字段，改为可选值
+
+Importer 收敛为：
+
+- raw row 只 decode 一次；
+- 建 capture、binding、observation、site/occurrence、model symbol 索引；
+- `(activationId, regionId, regionInstanceId)` 使用严格唯一索引，禁止静默覆盖；
+- summary ID 只 hash canonical semantic payload，不 hash 无关诊断字段；
+- replay 的唯一校验迁入一个 `ReplayAdmission`；
+- 删除重复 branch validation。
+
+确认 unique checks 已迁移后，删除 `ConcolicPathReplayVerifier` 和
+`ConcolicReplayValidator`；保留小而独立的 `BranchReplayObservationValidator`。
+
+### PR 5：Worklist、merge 和大 SMT schema 收敛
+
+- `outputClosure` 是唯一 closure carrier，删除顶层 producer/demand 镜像；
+- 保留 `demandKey` 和 `closureFingerprint` 各自语义，不能误合并；
+- `regionRelation.complete`、case/summary `relationallyComplete` 收敛成顶层唯一 gate；
+- merged summary 删除 `activationId=MERGED_PATHS`、producer identity 镜像和
+  `sourceRegionInstanceIds`；
+- case 使用完整 path hash 作为 `caseId`，删除重复 `pathKey`，运行时派生 `symbolScope`；
+- 四套 gap 集合合并为 `gaps:[{kind,subject}]`，唯一准入条件是 `gaps.isEmpty()`；
+- `resolvedEdgeBindings` 只存 binding/edge ID，不复制完整 binding；
+- artifact ref 删除 `sizeBytes`，保留 `path + sha256`；
+- Boolean report 收敛为 `roots + valuations + reachCondition`，删除重复 truth-row 派生字段。
+
+### PR 6：替换高复杂度算法
+
+#### 静态 worklist
+
+把 `SeedBackwardStaticAnalyzer` 的 bounded full scan 改为 dirty queue：
+
+- 新 method 才进入 method queue；
+- 新 state 才重新处理对应 method；
+- caller/field-writer/constructor expansion 每个 key 只执行一次；
+- projected propagation 只处理新增 edge。
+
+#### Runtime planning
+
+一次建立：
+
+```text
+callId -> invocation
+parentCallId -> children
+callId -> runtime/field events
+(test, method) -> ordered invocations
+(field, receiverObjectId) -> ordered reads/writes
+digest -> ordered endpoints
+invocationId -> completion
+```
+
+随后：
+
+- root activation 只遍历自己的 subtree；
+- latest writer 用 binary search；
+- 删除 upstream×downstream、write×read 的笛卡尔积扫描；
+- HDFS 循环场景主要查询从二次/三次扫描降到近似 `O(E log E)`。
+
+#### Composer
+
+- 预建 `SummaryIndex`，用 monotone demand queue 替代反复整图 pass；
+- equality fixed-point 改为 union-find；
+- causal alias BFS 使用缓存 adjacency/multi-source BFS；
+- case 两两互斥的 `O(k²)` SMT 改为一个 `O(k)` exactly-one cardinality；
+- Scheduler 删除 `GSON.toJson(...).contains(regionId)`，改用 typed region index。
+
+增量 `z3 -in` 独立为最后一个性能 PR；先证明与当前逐 valuation 启动 Z3 语义等价。
+
+### 明确不能删除
+
+必须保留：
+
+- `OutputClosureContract` 及每个 OUT 独立的 output slice；
+- capture binding、transformer obligation、container element-field proof；
+- joint-output 原子 row 语义；
+- `sourceActivationId`、`dynamicFieldBindings`；
+- branch contract、solver path context；
+- writer/reader event sequence；
+- receiver/value object identity、完整 fingerprint、mutation invocation evidence；
+- 唯一 `relationallyComplete`、所有 fail-closed gaps、`CANDIDATE_ONLY`；
+- trust-boundary artifact SHA；
+- strict symbolic coverage gate，但收敛为 typed `CoverageReport`；
+- target exception method 的 branch scope、完整 reached-path PC 与精确 exception-type 筛选。
+
+### 每个 PR 的验收门槛
+
+每个 PR 必须同时满足：
+
+1. ledger 能指出被删字段/代码的 writer 和全部 reader，并说明是零消费者还是由哪个
+   canonical value 推导；
+2. 生产 Java 净减少；新增类型、codec 或验证必须同时删除更多旧实现，不能只搬代码；
+3. 当前 13 类 / 57 项快速回归通过，不新增锁定整份 JSON 的测试；
+4. 受影响的 fixture 运行真实 concolic 与真实 Z3，不用 dry-run/fake Z3；
+5. schema 切换同时更新 writer、Java reader、shell reader，旧 schema fail closed；
+6. SAT/UNSAT、root sorts、joint-output case、read-from 与 target-path 语义不漂移；
+7. 不减少 unsupported/gap coverage，不用 fallback 或自由符号换取“成功”；
+8. 重要里程碑独立 commit/push。
+
+删除旧 authority 或完成一个 schema cutover 前，必须运行全部十三个 fixture：
+
+```bash
+GRAPH_CHECKER_MATRIX_JOBS=13 \
+  experiments/generic/three-thread-rpc/run_robustness_matrix_parallel.sh all
+```
+
+预期仍为六个 `sat/reachable`、七个 `unsat/unreachable`、零 failure。fixture 的 shared-field
+RPC 模式、一次写/一次读和确定交互顺序不得为了缩短测试而改变。
+
 ## TODO：用自然 replay 将候选升级为可信结果
 
 当前停止点是准确、结构完整且由 Z3 检查过的候选 SMT。后续工作应把选中的 producer 输入

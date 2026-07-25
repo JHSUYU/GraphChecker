@@ -104,13 +104,12 @@ public final class CausynthPipeline {
                 exceptionTarget.stableIdentity());
         CausynthAnalysisResult result =
                 new SeedBackwardStaticAnalyzer(target).analyze();
-        SymbolicPlanningStage.build(result);
         SymbolicRegionAssemblyStage.assemble(result);
-        buildAutomaticDerivationBoundary(result);
         instrumentRuntimeTrace(result);
-        instrumentConcolicRegions(result);
+        InstrumentationResult instrumentation =
+                instrumentConcolicRegions(result);
         boolean boundedOutputClosureCoverageReady =
-                recordSymbolicCoverageAuthority(result);
+                selectedBoundedOutputClosureCoverageReady(instrumentation);
         if (!concolicInstrumentationEnabled()) {
             new CausynthArtifactWriter(target.outputDir, result).writeAll();
         }
@@ -122,16 +121,6 @@ public final class CausynthPipeline {
             LOG.info("Seed backward analysis wrote {} edges to {}",
                     result.edges.size(), target.outputDir);
         }
-    }
-
-    private boolean recordSymbolicCoverageAuthority(
-            CausynthAnalysisResult result) {
-        boolean ready = selectedBoundedOutputClosureCoverageReady(result);
-        result.slices.put("boundedOutputClosureCoverageReady", ready);
-        result.slices.put("symbolicCoverageGateAuthority", ready
-                ? "RUNTIME_SELECTED_BOUNDED_OUTPUT_CLOSURE_V1"
-                : "GLOBAL_SYMBOLIC_REGION_COVERAGE");
-        return ready;
     }
 
     private void enforceSymbolicCoverage(CausynthAnalysisResult result,
@@ -222,27 +211,19 @@ public final class CausynthPipeline {
                 LOG.debug("Skipping trace instrumentation for {}", signature, exception);
             }
         }
-        result.slices.put("traceInstrumentedMethodCount", count);
-        result.slices.put("traceInstrumentedFieldAccessCount", fieldCount);
-        result.slices.put("richTraceInstrumentedMethodCount", richMethodCount);
-        result.slices.put("traceInstrumentedCallSiteCount", callSiteCount);
-        result.slices.put("traceInstrumentedBranchCount", branchCount);
-        result.slices.put("traceObservationIsolatedFromConcolic",
-                observationIsolation != null);
         LOG.info("Instrumented {} selected methods ({} rich), {} callsites, "
                         + "{} branches, and {} field accesses for runtime trace",
                 count, richMethodCount, callSiteCount, branchCount, fieldCount);
     }
 
     /**
-     * Inserts region hooks. Without an activation plan, static candidates are
-     * retained for backward-compatible discovery runs. After concrete
-     * discovery, the runtime activation plan is authoritative and a replay
-     * transformation inserts hooks at the runtime-selected roots.
+     * Inserts region hooks at the roots selected by the runtime activation
+     * plan. Concolic instrumentation without that plan is not executable.
      */
-    private void instrumentConcolicRegions(CausynthAnalysisResult result) {
+    private InstrumentationResult instrumentConcolicRegions(
+            CausynthAnalysisResult result) {
         if (!concolicInstrumentationEnabled()) {
-            return;
+            return InstrumentationResult.disabled();
         }
         ConcolicRegionRefs refs = ConcolicRegionRefs.create();
         ConcolicBranchSelection branchSelection =
@@ -253,7 +234,8 @@ public final class CausynthPipeline {
         ConcolicOutputCaptureSelection outputCaptureSelection =
                 ConcolicInstrumentationSelections
                         .outputCaptureSelectionFromEnvironment();
-        Set<String> roots = concolicRootMethods(result);
+        ConcolicRootSelection rootSelection = concolicRootSelection();
+        Set<String> roots = rootSelection.roots;
         Set<String> backedViewMethods = concolicBackedViewMethods(result);
         backedViewMethods.addAll(roots);
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
@@ -422,78 +404,48 @@ public final class CausynthPipeline {
                 signature, exception);
             }
         }
-        int accessorCallContextCount =
-                instrumentConcolicAccessorCallContexts(
-                        materializationSelection, refs);
-        int materializationCount = instrumentConcolicMaterializations(
-                materializationSelection, refs);
-        int outputCaptureHookCount = instrumentConcolicOutputCaptures(
-                outputCaptureSelection, refs);
-        int mapEntryObservationHookCount =
-                instrumentConcolicMapEntryObservations(backedViewMethods, refs);
-        int branchCount = instrumentConcolicBranches(branchSelection, refs);
-        result.slices.put("concolicRegionRootCount", roots.size());
-        result.slices.put("concolicRegionInstrumentedRootCount", instrumented);
-        result.slices.put("concolicRegionSkippedRootCount", skipped);
-        result.slices.put("concolicMappedBranchCount", branchCount);
-        result.slices.put("concolicMaterializationHookCount",
-                materializationCount);
-        result.slices.put("concolicAccessorCallContextHookCount",
-                accessorCallContextCount);
-        result.slices.put("concolicOutputCaptureHookCount",
-                outputCaptureHookCount);
-        result.slices.put("concolicMapEntryObservationHookCount",
-                mapEntryObservationHookCount);
+        instrumentConcolicAccessorCallContexts(materializationSelection, refs);
+        instrumentConcolicMaterializations(materializationSelection, refs);
+        instrumentConcolicOutputCaptures(outputCaptureSelection, refs);
+        instrumentConcolicMapEntryObservations(backedViewMethods, refs);
+        instrumentConcolicBranches(branchSelection, refs);
         LOG.info("Instrumented {} symbolic-region roots for concolic replay ({} skipped)",
                 instrumented, skipped);
+        return new InstrumentationResult(true, rootSelection.plan,
+                roots.size(), instrumented, skipped);
     }
 
-    private Set<String> concolicRootMethods(CausynthAnalysisResult result) {
+    private ConcolicRootSelection concolicRootSelection() {
         String planValue = stringValue(firstNonBlank(
                 System.getProperty("causynth.concolic.activation.plan"),
                 System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
-        if (!planValue.isEmpty()) {
-            String selected = stringValue(firstNonBlank(
-                    System.getProperty("causynth.concolic.activation.id"),
-                    System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
-            try {
-                Set<String> runtimeRoots = readRuntimeSelectedRoots(
-                        Paths.get(planValue), selected);
-                if (runtimeRoots.isEmpty()) {
-                    throw new IllegalStateException(
-                            "Activation plan contains no replayable runtime-selected roots: "
-                                    + planValue);
-                }
-                result.slices.put("concolicRootAuthority",
-                        "RUNTIME_ACTIVATION_PLAN");
-                result.slices.put("concolicActivationPlan",
-                        Paths.get(planValue).toAbsolutePath().toString());
-                result.slices.put("concolicSelectedRootMethods",
-                        new ArrayList<>(runtimeRoots));
-                return runtimeRoots;
-            } catch (IOException | RuntimeException exception) {
+        String selected = stringValue(firstNonBlank(
+                System.getProperty("causynth.concolic.activation.id"),
+                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
+        if (planValue.isEmpty() || selected.isEmpty()) {
+            throw new IllegalStateException(
+                    "Concolic instrumentation requires an activation plan "
+                            + "and selected activation id");
+        }
+        Path plan = Paths.get(planValue).toAbsolutePath().normalize();
+        try {
+            Set<String> runtimeRoots = readRuntimeSelectedRoots(plan, selected);
+            if (runtimeRoots.isEmpty()) {
                 throw new IllegalStateException(
-                        "Could not load runtime-selected concolic roots from "
-                                + planValue, exception);
+                        "Activation plan contains no replayable runtime-selected roots: "
+                                + plan);
             }
+            return new ConcolicRootSelection(plan, runtimeRoots);
+        } catch (IOException | RuntimeException exception) {
+            throw new IllegalStateException(
+                    "Could not load runtime-selected concolic roots from "
+                            + plan, exception);
         }
-
-        Set<String> staticCandidates = new LinkedHashSet<>();
-        for (Map<String, Object> row : result.symbolicRegions) {
-            String root = stringValue(firstNonBlank(
-                    stringValue(row.get("staticRootCandidate")),
-                    stringValue(row.get("rootMethod"))));
-            if (!root.isEmpty()) {
-                staticCandidates.add(root);
-            }
-        }
-        result.slices.put("concolicRootAuthority", "STATIC_CANDIDATE_FALLBACK");
-        return staticCandidates;
     }
 
     private boolean selectedBoundedOutputClosureCoverageReady(
-            CausynthAnalysisResult result) {
-        if (!concolicInstrumentationEnabled()) {
+            InstrumentationResult instrumentation) {
+        if (!instrumentation.enabled) {
             return false;
         }
         String planValue = stringValue(firstNonBlank(
@@ -517,28 +469,18 @@ public final class CausynthPipeline {
             return false;
         }
 
-        int rootCount = intValue(result.slices.get(
-                "concolicRegionRootCount"), -1);
-        int instrumentedCount = intValue(result.slices.get(
-                "concolicRegionInstrumentedRootCount"), -1);
-        int skippedCount = intValue(result.slices.get(
-                "concolicRegionSkippedRootCount"), -1);
-        String recordedPlan = stringValue(result.slices.get(
-                "concolicActivationPlan"));
         boolean samePlan;
         try {
-            samePlan = !recordedPlan.isEmpty()
-                    && Paths.get(planValue).toAbsolutePath().normalize().equals(
-                    Paths.get(recordedPlan).toAbsolutePath().normalize());
+            samePlan = Paths.get(planValue).toAbsolutePath().normalize().equals(
+                    instrumentation.plan);
         } catch (RuntimeException invalidPath) {
             samePlan = false;
         }
-        return "RUNTIME_ACTIVATION_PLAN".equals(stringValue(
-                result.slices.get("concolicRootAuthority")))
-                && samePlan
-                && rootCount == 1
-                && instrumentedCount == rootCount
-                && skippedCount == 0;
+        return samePlan
+                && instrumentation.rootCount == 1
+                && instrumentation.instrumentedCount
+                == instrumentation.rootCount
+                && instrumentation.skippedCount == 0;
     }
 
     /**
@@ -1528,8 +1470,8 @@ public final class CausynthPipeline {
     private static TraceSiteSelection traceSiteSelection(
             CausynthAnalysisResult result) {
         TraceSiteSelection selection = new TraceSiteSelection();
-        for (Map<String, Object> row : result.symbolicPlan) {
-            String method = stringValue(row.get("method"));
+        for (Map<String, Object> edge : result.edges) {
+            String method = stringValue(edge.get("method"));
             if (!method.isEmpty()) {
                 selection.relevantMethods.add(method);
             }
@@ -2667,20 +2609,36 @@ public final class CausynthPipeline {
                 matcher.group(3), params);
     }
 
-    private static void buildAutomaticDerivationBoundary(
-            CausynthAnalysisResult result) {
-        Map<String, Object> boundary = result.automaticDerivationBoundary;
-        boundary.put("schemaVersion", 1);
-        boundary.put("kind", "AUTOMATIC_DERIVATION_BOUNDARY");
-        boundary.put("complete", true);
-        boundary.put("domainSemanticAdapterUsed", false);
-        boundary.put("automaticEqualityAuthority",
-                "RUNTIME_COMPLETE_VALUE_FINGERPRINT_ONLY");
-        boundary.put("automaticStateAuthority",
-                "RUNTIME_CONFIRMED_WRITE_READ_PAIR_ONLY");
-        boundary.put("scope", stringValue(result.targetResolved.get(
-                "analysisScope")));
-        result.slices.put("automaticDerivationBoundary", boundary);
+    private static final class ConcolicRootSelection {
+        private final Path plan;
+        private final Set<String> roots;
+
+        private ConcolicRootSelection(Path plan, Set<String> roots) {
+            this.plan = plan;
+            this.roots = roots;
+        }
+    }
+
+    private static final class InstrumentationResult {
+        private final boolean enabled;
+        private final Path plan;
+        private final int rootCount;
+        private final int instrumentedCount;
+        private final int skippedCount;
+
+        private InstrumentationResult(boolean enabled, Path plan,
+                                      int rootCount, int instrumentedCount,
+                                      int skippedCount) {
+            this.enabled = enabled;
+            this.plan = plan;
+            this.rootCount = rootCount;
+            this.instrumentedCount = instrumentedCount;
+            this.skippedCount = skippedCount;
+        }
+
+        private static InstrumentationResult disabled() {
+            return new InstrumentationResult(false, null, 0, 0, 0);
+        }
     }
 
     private static String stringValue(Object value) {

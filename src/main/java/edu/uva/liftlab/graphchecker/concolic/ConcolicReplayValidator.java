@@ -1257,7 +1257,9 @@ public final class ConcolicReplayValidator {
                 JsonObject task, JsonObject summary) {
             try {
                 OutputClosureContract requested =
-                        OutputClosureCodec.decode(task);
+                        OutputClosureCodec.decodeEnvelope(task
+                                .getAsJsonObject(
+                                        OutputClosureContract.FIELD));
                 OutputClosureContract imported =
                         OutputClosureCodec.decode(summary);
                 boolean sameContract = sameProducer(

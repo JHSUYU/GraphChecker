@@ -32,76 +32,12 @@ final class SymbolicRegionAssemblyStage {
     }
 
     static void assemble(CausynthAnalysisResult result) {
-        SymbolicRegionPlanner.Result planned = SymbolicRegionPlanner.plan(
-                result.edges, result.symbolicPlan);
-        enrichHeapMutationGuardMetadata(planned.regions, result.edges);
+        SymbolicRegionPlanner.Result planned =
+                SymbolicRegionPlanner.plan(result.edges);
         addArgumentPathFieldContracts(planned.regions);
         result.symbolicRegions.addAll(planned.regions);
         result.symbolicRegionEdges.addAll(planned.regionEdges);
-        result.symbolicModels.addAll(planned.modelSummaries);
         result.symbolicCoverage.putAll(planned.coverage);
-        result.slices.put("symbolicRegions", planned.summary);
-        result.slices.put("symbolicCoverage", planned.coverage);
-    }
-
-    /** Reattaches per-site mutation guards to compact causal-edge rows. */
-    static void enrichHeapMutationGuardMetadata(
-            List<Map<String, Object>> regions,
-            List<Map<String, Object>> analysisEdges) {
-        Map<String, Map<String, Object>> byId = new LinkedHashMap<>();
-        for (Map<String, Object> edge : analysisEdges) {
-            if ("heap_mutation_path_guard".equals(
-                    stringValue(edge.get("kind")))) {
-                byId.put(stringValue(edge.get("id")), edge);
-            }
-        }
-        for (Map<String, Object> region : regions) {
-            Object slicesValue = region.get("outputSlices");
-            if (!(slicesValue instanceof Collection)) {
-                continue;
-            }
-            for (Object sliceValue : (Collection<?>) slicesValue) {
-                if (!(sliceValue instanceof Map)) {
-                    continue;
-                }
-                Map<?, ?> slice = (Map<?, ?>) sliceValue;
-                Object referencesValue = slice.get("causalEdges");
-                if (!(referencesValue instanceof Collection)) {
-                    continue;
-                }
-                for (Object referenceValue
-                        : (Collection<?>) referencesValue) {
-                    if (!(referenceValue instanceof Map)) {
-                        continue;
-                    }
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> reference =
-                            (Map<String, Object>) referenceValue;
-                    Map<String, Object> source = byId.get(stringValue(
-                            reference.get("edgeId")));
-                    if (source == null) {
-                        continue;
-                    }
-                    copyIfPresent(source, reference, "guardSiteId");
-                    copyIfPresent(source, reference,
-                            "guardedMutationSiteId");
-                    copyIfPresent(source, reference, "requiredOutcome");
-                    copyIfPresent(source, reference,
-                            "guardedMutationCount");
-                    copyIfPresent(source, reference,
-                            "guardedMutationsAuthority");
-                    copyIfPresent(source, reference, "guardedMutations");
-                }
-            }
-        }
-    }
-
-    private static void copyIfPresent(Map<String, Object> source,
-                                      Map<String, Object> target,
-                                      String field) {
-        if (source.containsKey(field)) {
-            target.put(field, source.get(field));
-        }
     }
 
     /**

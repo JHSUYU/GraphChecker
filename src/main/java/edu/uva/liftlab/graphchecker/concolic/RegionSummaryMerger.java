@@ -102,21 +102,14 @@ public final class RegionSummaryMerger {
         boolean complete = diagnostics.isEmpty() && !merged.isEmpty();
         for (JsonObject summary : merged) {
             JsonObject relation = object(summary, "regionRelation");
-            caseCount += integer(relation, "caseCount", 0);
+            caseCount += array(relation, "cases").size();
             complete &= bool(relation, "complete", false);
         }
         manifest.addProperty("guardedCaseCount", caseCount);
         manifest.addProperty("pathWorklistState", string(pathManifest,
                 "state"));
-        manifest.addProperty("diagnosticCount", diagnostics.size());
         manifest.add("diagnostics", GSON.toJsonTree(diagnostics));
         manifest.addProperty("complete", complete);
-        manifest.addProperty("status", complete
-                ? "COMPLETE_GUARDED_REGION_RELATIONS"
-                : "REGION_RELATIONS_WITH_EXPLICIT_GAPS");
-        manifest.addProperty("semanticAuthority",
-                "RUNTIME_CONCOLIC_PATHS_ONLY");
-        manifest.addProperty("domainSemanticAdapterAllowed", false);
         return new Result(merged, manifest);
     }
 
@@ -201,18 +194,9 @@ public final class RegionSummaryMerger {
         JsonObject relation = new JsonObject();
         relation.addProperty("schemaVersion", 1);
         relation.addProperty("kind", "GUARDED_PATH_MERGE");
-        relation.addProperty("caseCount", cases.size());
         relation.add("cases", cases);
-        relation.addProperty("guardSemantics",
-                "EXACT_NORMALIZED_PATH_CONDITION");
-        relation.addProperty("mergeSemantics",
-                "GUARDED_OUTPUT_AND_STATE_TRANSFORMERS");
-        relation.addProperty("coverageSemantics",
-                "SOLVER_CLOSED_RELEVANT_BRANCH_FLIPS_WITHIN_BOUNDS");
         relation.addProperty("pathClosureState", pathState);
         relation.addProperty("complete", complete);
-        relation.addProperty("authority",
-                "RUNTIME_CONCOLIC_MULTI_PATH_SUMMARIES");
 
         String relationHash = sha256(region + "\n"
                 + firstInput.outputIdentity + "\n"

@@ -88,7 +88,6 @@ final class ExceptionTargetAnnotationScanner {
                 unresolved.methodDescriptor, signature,
                 unresolved.exceptionClass,
                 unresolved.exceptionConstructionOrdinal,
-                unresolved.bytecodeInstructionIndex,
                 unresolved.sourceLine);
     }
 
@@ -171,15 +170,11 @@ final class ExceptionTargetAnnotationScanner {
                                    Map<String, ExceptionTargetSite> sites)
             throws IOException {
         Map<String, Integer> newOrdinals = new LinkedHashMap<>();
-        int instructionIndex = -1;
         int line = -1;
         for (AbstractInsnNode instruction = method.instructions.getFirst();
              instruction != null; instruction = instruction.getNext()) {
             if (instruction instanceof LineNumberNode) {
                 line = ((LineNumberNode) instruction).line;
-            }
-            if (instruction.getOpcode() >= 0) {
-                instructionIndex++;
             }
             if (!(instruction instanceof TypeInsnNode)
                     || instruction.getOpcode() != Opcodes.NEW) {
@@ -209,7 +204,7 @@ final class ExceptionTargetAnnotationScanner {
                 ExceptionTargetSite site = new ExceptionTargetSite(id,
                         className, method.name, method.desc, "",
                         creation.desc.replace('/', '.'), ordinal,
-                        instructionIndex, line);
+                        line);
                 ExceptionTargetSite previous = sites.putIfAbsent(
                         site.stableIdentity(), site);
                 if (previous != null && !previous.id.equals(site.id)) {

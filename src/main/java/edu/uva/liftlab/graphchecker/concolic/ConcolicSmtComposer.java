@@ -982,47 +982,27 @@ public final class ConcolicSmtComposer {
                 && !fingerprint.equals(string(binding, "valueFingerprint"))) {
             return false;
         }
-        if (hasAny(expected, "writerEventSeq", "writeSeq",
-                "fromEndpointSeq", "fromEventSeq")) {
-            long expectedWriter = firstLong(expected, "writerEventSeq",
-                    "writeSeq", "fromEndpointSeq", "fromEventSeq");
-            long actualWriter = firstLong(binding, "writerEventSeq",
-                    "writeSeq", "fromEndpointSeq", "fromEventSeq");
+        if (expected.has("writerEventSeq")) {
+            long expectedWriter = firstLong(expected, "writerEventSeq");
+            long actualWriter = firstLong(binding, "writerEventSeq");
             if (expectedWriter != actualWriter) return false;
         }
-        if (hasAny(expected, "readerEventSeq", "readSeq",
-                "toEndpointSeq", "toEventSeq")) {
-            long expectedReader = firstLong(expected, "readerEventSeq",
-                    "readSeq", "toEndpointSeq", "toEventSeq");
-            long actualReader = firstLong(binding, "readerEventSeq",
-                    "readSeq", "toEndpointSeq", "toEventSeq");
+        if (expected.has("readerEventSeq")) {
+            long expectedReader = firstLong(expected, "readerEventSeq");
+            long actualReader = firstLong(binding, "readerEventSeq");
             if (expectedReader != actualReader) return false;
         }
         return true;
     }
 
-    private static boolean hasAny(JsonObject object, String... fields) {
-        if (object == null) return false;
-        for (String field : fields) {
-            if (object.has(field)) return true;
-        }
-        return false;
-    }
-
     private static String bindingRelationKind(JsonObject binding) {
-        String explicit = firstNonBlank(string(binding, "relationKind"),
-                string(binding, "relation"));
-        if ("EQUALITY".equals(explicit) || "READ_FROM".equals(explicit)) {
-            return explicit;
-        }
-        String kind = string(binding, "kind");
-        if ("SYMBOLIC_EQUALITY".equals(kind)) return "EQUALITY";
-        if ("VERSIONED_HEAP_READ_FROM".equals(kind)) return "READ_FROM";
-        String authority = string(binding, "selectionAuthority");
-        if ("RUNTIME_CONFIRMED_VALUE_EQUALITY".equals(authority)) {
+        String kind = string(binding, "evidenceKind");
+        if (AutomaticRegionEdge.COMPLETE_VALUE_EQUALITY.equals(kind)) {
             return "EQUALITY";
         }
-        if ("RUNTIME_CONFIRMED_READ_FROM".equals(authority)) {
+        if (AutomaticRegionEdge.FIELD_ASSIGNMENT_READ_FROM.equals(kind)
+                || AutomaticRegionEdge.CONTAINER_MUTATION_READ_FROM
+                .equals(kind)) {
             return "READ_FROM";
         }
         return "";
@@ -1227,8 +1207,6 @@ public final class ConcolicSmtComposer {
             result.addProperty("targetRegionInstance", targetInstance);
             result.addProperty("targetInput", targetInput);
             result.addProperty("recursive", recursive);
-            result.addProperty("selectionAuthority",
-                    string(binding, "selectionAuthority"));
             result.addProperty("edgeId", string(binding, "edgeId"));
             result.add("binding", binding.deepCopy());
             return result;
@@ -1803,10 +1781,8 @@ public final class ConcolicSmtComposer {
                 JsonObject binding = edge.binding;
                 String output = bindingSourceOutput(binding);
                 String input = bindingTargetInput(binding);
-                long writeSeq = firstLong(binding, "writerEventSeq",
-                        "writeSeq", "fromEndpointSeq", "fromEventSeq");
-                long readSeq = firstLong(binding, "readerEventSeq",
-                        "readSeq", "toEndpointSeq", "toEventSeq");
+                long writeSeq = firstLong(binding, "writerEventSeq");
+                long readSeq = firstLong(binding, "readerEventSeq");
                 if (!trustedRuntimeValueEquality(binding)
                         || bool(binding, "inputProjectionUsed", false)
                         || !edgeBindingSourceMatches(binding, edge.summary)
@@ -1818,7 +1794,6 @@ public final class ConcolicSmtComposer {
                         || !edge.targetInput.equals(input)
                         || !edge.source.regionId.equals(regionOf(output))
                         || !edge.targetRegion.equals(regionOf(input))
-                        || !bool(binding, "orderConfirmed", false)
                         || writeSeq < 0L || readSeq < 0L
                         || writeSeq >= readSeq
                         || !ports.contains(output) || !ports.contains(input)
@@ -3765,8 +3740,7 @@ public final class ConcolicSmtComposer {
             if (!bool(relation, "complete", false)) {
                 heapGap(region, "IncompleteGuardedPathMerge@" + region);
             }
-            if (integer(relation, "caseCount", -1) != cases.size()
-                    || cases.size() == 0) {
+            if (cases.size() == 0) {
                 heapGap(region, "GuardedPathCaseCountGap@" + region);
                 return;
             }
@@ -4572,7 +4546,6 @@ public final class ConcolicSmtComposer {
             candidate.addProperty("kind", kind);
             candidate.addProperty("formula", formula);
             candidate.addProperty("required", required);
-            candidate.addProperty("status", "UNVERIFIED_CANDIDATE");
             candidate.add("roles", roles.deepCopy());
             JsonArray sources = new JsonArray();
             for (String value : provenance) sources.add(value);
@@ -6809,19 +6782,16 @@ public final class ConcolicSmtComposer {
                 }
                 for (int index = 0; index < bindings.size(); index++) {
                     JsonObject binding = bindings.get(index).getAsJsonObject();
-                    if (!bool(binding, "orderConfirmed", false)) continue;
                     String write = "event_write_" + smtName(firstNonBlank(
                             string(relation, "edgeId"), "edge")) + "_" + index;
                     String read = "event_read_" + smtName(firstNonBlank(
                             string(relation, "edgeId"), "edge")) + "_" + index;
                     declare(write, Sort.INT);
                     declare(read, Sort.INT);
-                    if (binding.has("writeSeq")) assertNamed(write + "_seq",
-                            "(= " + write + " "
-                                    + integer(binding, "writeSeq", 0) + ")");
-                    if (binding.has("readSeq")) assertNamed(read + "_seq",
-                            "(= " + read + " "
-                                    + integer(binding, "readSeq", 0) + ")");
+                    assertNamed(write + "_seq", "(= " + write + " "
+                            + integer(binding, "writerEventSeq", 0) + ")");
+                    assertNamed(read + "_seq", "(= " + read + " "
+                            + integer(binding, "readerEventSeq", 0) + ")");
                     assertNamed("order_" + stats.orders,
                             "(< " + write + " " + read + ")");
                     stats.orders++;
@@ -7000,10 +6970,7 @@ public final class ConcolicSmtComposer {
                                             String groupId, int alternative,
                                             String guard, MergeStats stats) {
             JsonArray bindings = selectedBindings(relation);
-            boolean requiresOrder = bool(relation, "requiresOrder", true);
-            boolean requiresIdentity = bool(relation,
-                    "requiresObjectIdentity", true);
-            if (bindings.size() == 0 && (requiresOrder || requiresIdentity)) {
+            if (bindings.size() == 0) {
                 unsupported.add("MissingAlternativeWriterEvidence:"
                         + groupId + ":" + alternative);
                 return;
@@ -7013,48 +6980,34 @@ public final class ConcolicSmtComposer {
                 JsonObject binding = bindings.get(index).getAsJsonObject();
                 String suffix = smtName(groupId) + "_" + alternative + "_"
                         + index;
-                if (requiresOrder) {
-                    if (!bool(binding, "orderConfirmed", false)
-                            || !binding.has("writeSeq")
-                            || !binding.has("readSeq")) {
-                        unsupported.add("AlternativeWriterOrderGap:"
-                                + groupId + ":" + alternative + ":" + index);
-                    } else {
-                        String write = "event_write_alt_" + suffix;
-                        String read = "event_read_alt_" + suffix;
-                        declare(write, Sort.INT);
-                        declare(read, Sort.INT);
-                        assertNamed(write + "_seq", "(= " + write + " "
-                                + integer(binding, "writeSeq", 0) + ")");
-                        assertNamed(read + "_seq", "(= " + read + " "
-                                + integer(binding, "readSeq", 0) + ")");
-                        assertNamed("order_alt_" + suffix, "(=> " + guard
-                                + " (< " + write + " " + read + "))");
-                        stats.orders++;
-                    }
+                if (!AutomaticRegionEdge.trustedReadFromEvidence(binding)) {
+                    unsupported.add("AlternativeWriterEvidenceGap:"
+                            + groupId + ":" + alternative + ":" + index);
+                    continue;
                 }
-                if (requiresIdentity) {
-                    int receiver = integer(binding, "receiverObjectId", 0);
-                    if (receiver == 0
-                            || (binding.has("objectIdentityConfirmed")
-                            && !bool(binding, "objectIdentityConfirmed",
-                            false))) {
-                        unsupported.add("AlternativeWriterIdentityGap:"
-                                + groupId + ":" + alternative + ":" + index);
-                    } else {
-                        String writer = "receiver_write_alt_" + suffix;
-                        String reader = "receiver_read_alt_" + suffix;
-                        declare(writer, Sort.INT);
-                        declare(reader, Sort.INT);
-                        assertNamed(writer + "_id", "(= " + writer + " "
-                                + receiver + ")");
-                        assertNamed(reader + "_id", "(= " + reader + " "
-                                + receiver + ")");
-                        assertNamed("identity_alt_" + suffix, "(=> " + guard
-                                + " (= " + writer + " " + reader + "))");
-                        stats.identities++;
-                    }
-                }
+                String write = "event_write_alt_" + suffix;
+                String read = "event_read_alt_" + suffix;
+                declare(write, Sort.INT);
+                declare(read, Sort.INT);
+                assertNamed(write + "_seq", "(= " + write + " "
+                        + integer(binding, "writerEventSeq", 0) + ")");
+                assertNamed(read + "_seq", "(= " + read + " "
+                        + integer(binding, "readerEventSeq", 0) + ")");
+                assertNamed("order_alt_" + suffix, "(=> " + guard
+                        + " (< " + write + " " + read + "))");
+                stats.orders++;
+                int receiver = integer(binding, "receiverObjectId", 0);
+                String writer = "receiver_write_alt_" + suffix;
+                String reader = "receiver_read_alt_" + suffix;
+                declare(writer, Sort.INT);
+                declare(reader, Sort.INT);
+                assertNamed(writer + "_id", "(= " + writer + " "
+                        + receiver + ")");
+                assertNamed(reader + "_id", "(= " + reader + " "
+                        + receiver + ")");
+                assertNamed("identity_alt_" + suffix, "(=> " + guard
+                        + " (= " + writer + " " + reader + "))");
+                stats.identities++;
             }
         }
 
@@ -7102,15 +7055,8 @@ public final class ConcolicSmtComposer {
                             + ":" + output + "->" + input);
                     continue;
                 }
-                if (!bool(binding, "orderConfirmed", false)) {
-                    heapGap(region, "EdgeBindingOrderGap@" + region
-                            + ":" + output + "->" + input);
-                    continue;
-                }
-                long writeSeq = firstLong(binding, "writerEventSeq",
-                        "writeSeq", "fromEndpointSeq", "fromEventSeq");
-                long readSeq = firstLong(binding, "readerEventSeq",
-                        "readSeq", "toEndpointSeq", "toEventSeq");
+                long writeSeq = firstLong(binding, "writerEventSeq");
+                long readSeq = firstLong(binding, "readerEventSeq");
                 if (writeSeq < 0L || readSeq < 0L
                         || writeSeq >= readSeq) {
                     heapGap(region, "EdgeBindingSequenceGap@" + region
@@ -7119,11 +7065,6 @@ public final class ConcolicSmtComposer {
                 }
                 int receiver = 0;
                 if (readFrom) {
-                    if (!bool(binding, "objectIdentityConfirmed", false)) {
-                        heapGap(region, "EdgeBindingIdentityGap@" + region
-                                + ":" + output + "->" + input);
-                        continue;
-                    }
                     receiver = integer(binding, "receiverObjectId", 0);
                     if (receiver == 0) {
                         heapGap(region, "EdgeBindingIdentityGap@" + region
