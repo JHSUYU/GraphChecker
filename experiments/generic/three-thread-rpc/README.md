@@ -189,7 +189,7 @@ the generated candidate SMT and independently invoked Z3 must both report
 `UNREACHABLE`/`unsat`; the fixture and scripts contain no handwritten
 reachability formula or expected-SMT shortcut.
 
-Three scalar shared-field UNSAT profiles cover object propagation without
+Five scalar shared-field UNSAT profiles cover object propagation without
 introducing a second RPC model:
 
 - `unreachable-correlated-fields/` publishes correlated `left` and `right`
@@ -202,6 +202,12 @@ introducing a second RPC model:
 - `unreachable-inherited-alias/` resolves the same derived object through two
   helper aliases, then combines an inherited field with a derived field before
   publishing a bounded value below an independent floor.
+- `unreachable-mutated-object/` snapshots a nested object field, computes a
+  bounded scalar output, and then overwrites the object. The later heap writes
+  are deliberately irrelevant and must not pollute the requested output slice.
+- `unreachable-long-fields/` carries nested `long` base/adjustment fields and
+  Boolean leaves through helpers; its two complete output images remain
+  disjoint by odd/even parity.
 
 These workloads use the same deterministic protocol as the maintained RPC
 fixtures. Both producers rendezvous, the first publisher signals the second,
@@ -256,9 +262,9 @@ and input-only unforced producer-path replay. Its two Boolean roots produce four
 `sat` rows because `input1` and `input2` remain existential in each row.
 `unreachable-parity` additionally requires two closed multi-case producer
 relations, the exact odd/even output images, zero satisfying rows, four
-unsatisfying rows, and direct Z3 `unsat`. The three scalar object-field UNSAT
+unsatisfying rows, and direct Z3 `unsat`. The five scalar object-field UNSAT
 profiles require the same four unsatisfying rows; the correlated-fields profile
-also checks that its two outputs remain one atomic relation. Run all nine
+also checks that its two outputs remain one atomic relation. Run all eleven
 maintained profiles with `run_robustness_matrix.sh all`. Unit tests are not run
 by this command.
 
@@ -290,8 +296,8 @@ witness rather than serialized a second time. Malformed witnesses and duplicate
 branch-event identities fail closed. Multiway `switch` remains a separate
 successor-aware observation.
 
-All nine matrix profiles pass this protocol through candidate SMT generation,
-independent Z3 checking, and their expected semantic reach profiles; four
+All eleven matrix profiles pass this protocol through candidate SMT generation,
+independent Z3 checking, and their expected semantic reach profiles; six
 profiles are intentionally unreachable and therefore expect Z3 `unsat`.
 
 ## TODO: promote a candidate with natural replay

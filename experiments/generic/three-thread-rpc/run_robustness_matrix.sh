@@ -20,7 +20,8 @@ Usage: experiments/generic/three-thread-rpc/run_robustness_matrix.sh [MODE]
   all   Also run dependent-scalar, containers, and all UNSAT workloads.
   baseline | cross-method-fields | multitype | dependent-scalar | containers |
   unreachable-parity | unreachable-correlated-fields |
-  unreachable-nested-object | unreachable-inherited-alias
+  unreachable-nested-object | unreachable-inherited-alias |
+  unreachable-mutated-object | unreachable-long-fields
         Run one named workload. This is useful for an exact post-fix gate.
 
 Each entry runs the fixture runner's clean and candidate commands, invokes Z3
@@ -750,17 +751,19 @@ validate_unreachable_parity_producer_artifacts() {
 validate_two_boolean_unsat_report() {
   local label=$1
   local reach_report=$2
-  local integer_roots=$3
+  local non_boolean_roots=$3
+  local descriptor=$4
 
-  jq -e --argjson integerRoots "${integer_roots}" '
+  jq -e --argjson rootCount "${non_boolean_roots}" \
+    --arg descriptor "${descriptor}" '
     .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
     and .reachability == "UNREACHABLE"
     and (.rootBooleanInputs | length) == 2
     and all(.rootBooleanInputs[]; .javaTypeDescriptor == "Z")
-    and (.existentialNonBooleanRootInputs | length) == $integerRoots
+    and (.existentialNonBooleanRootInputs | length) == $rootCount
     and all(.existentialNonBooleanRootInputs[];
-      .javaTypeDescriptor == "I")
+      .javaTypeDescriptor == $descriptor)
     and (.truthTable | length) == 4
     and all(.truthTable[];
       .solverStatus == "unsat" and .reachesBug == false)
@@ -1075,7 +1078,7 @@ validate_semantic_profile() {
       validate_unreachable_parity_producer_artifacts "${work_root}"
       ;;
     unreachable-correlated-fields)
-      validate_two_boolean_unsat_report "${label}" "${reach_report}" 2
+      validate_two_boolean_unsat_report "${label}" "${reach_report}" 2 I
       jq -e '
         ([.existentialNonBooleanRootInputs[].cell] | sort) as $cells
         | ($cells | length) == 2
@@ -1086,7 +1089,7 @@ validate_semantic_profile() {
       validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
       ;;
     unreachable-nested-object)
-      validate_two_boolean_unsat_report "${label}" "${reach_report}" 4
+      validate_two_boolean_unsat_report "${label}" "${reach_report}" 4 I
       jq -e '
         ([.rootBooleanInputs[].cell] | length) == 2
         and all(.rootBooleanInputs[];
@@ -1100,7 +1103,7 @@ validate_semantic_profile() {
       validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
       ;;
     unreachable-inherited-alias)
-      validate_two_boolean_unsat_report "${label}" "${reach_report}" 2
+      validate_two_boolean_unsat_report "${label}" "${reach_report}" 2 I
       jq -e '
         ([.existentialNonBooleanRootInputs[].cell] | sort) as $cells
         | ($cells | length) == 2
@@ -1108,6 +1111,29 @@ validate_semantic_profile() {
         and any($cells[]; endswith(" int delta>"))
       ' "${reach_report}" >/dev/null \
         || die "${label} lost its inherited same-object field roots"
+      validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
+      ;;
+    unreachable-mutated-object)
+      validate_two_boolean_unsat_report "${label}" "${reach_report}" 1 I
+      jq -e '
+        .existentialNonBooleanRootInputs[0].cell
+          | endswith("$MutableNumbers: int base>")
+      ' "${reach_report}" >/dev/null \
+        || die "${label} did not exclude the irrelevant object mutation"
+      validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
+      ;;
+    unreachable-long-fields)
+      validate_two_boolean_unsat_report "${label}" "${reach_report}" 4 J
+      jq -e '
+        ([.rootBooleanInputs[].cell] | length) == 2
+        and all(.rootBooleanInputs[];
+          .cell | endswith("$SwitchLeaf: boolean enabled>"))
+        and ([.existentialNonBooleanRootInputs[].cell
+          | select(endswith("#field:base"))] | length) == 2
+        and ([.existentialNonBooleanRootInputs[].cell
+          | select(endswith("#field:adjustment"))] | length) == 2
+      ' "${reach_report}" >/dev/null \
+        || die "${label} lost its nested long-field roots"
       validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
       ;;
     *) die "no semantic profile for matrix label: ${label}" ;;
@@ -1245,7 +1271,7 @@ run_case() {
 mode=${1:-core}
 [[ $# -le 1 ]] || die "expected at most one mode argument"
 case "${mode}" in
-  core|all|baseline|cross-method-fields|multitype|dependent-scalar|containers|unreachable-parity|unreachable-correlated-fields|unreachable-nested-object|unreachable-inherited-alias) ;;
+  core|all|baseline|cross-method-fields|multitype|dependent-scalar|containers|unreachable-parity|unreachable-correlated-fields|unreachable-nested-object|unreachable-inherited-alias|unreachable-mutated-object|unreachable-long-fields) ;;
   help|-h|--help) usage; exit 0 ;;
   *) usage >&2; die "unknown matrix mode: ${mode}" ;;
 esac
@@ -1271,13 +1297,16 @@ case "${mode}" in
   all)
     labels=(baseline cross-method-fields multitype dependent-scalar containers \
       unreachable-parity unreachable-correlated-fields \
-      unreachable-nested-object unreachable-inherited-alias)
+      unreachable-nested-object unreachable-inherited-alias \
+      unreachable-mutated-object unreachable-long-fields)
     configs=(workflow.properties cross-method-fields/workflow.properties \
       multitype/workflow.properties dependent-scalar/workflow.properties \
       containers/workflow.properties unreachable-parity/workflow.properties \
       unreachable-correlated-fields/workflow.properties \
       unreachable-nested-object/workflow.properties \
-      unreachable-inherited-alias/workflow.properties)
+      unreachable-inherited-alias/workflow.properties \
+      unreachable-mutated-object/workflow.properties \
+      unreachable-long-fields/workflow.properties)
     ;;
   baseline)
     labels=(baseline)
@@ -1314,6 +1343,14 @@ case "${mode}" in
   unreachable-inherited-alias)
     labels=(unreachable-inherited-alias)
     configs=(unreachable-inherited-alias/workflow.properties)
+    ;;
+  unreachable-mutated-object)
+    labels=(unreachable-mutated-object)
+    configs=(unreachable-mutated-object/workflow.properties)
+    ;;
+  unreachable-long-fields)
+    labels=(unreachable-long-fields)
+    configs=(unreachable-long-fields/workflow.properties)
     ;;
 esac
 
