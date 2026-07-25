@@ -76,7 +76,7 @@ public class ConcolicSmtComposerTest {
                     integerCondition(">", 0));
             JsonObject nonPositive = producerSummary(singlePutEffect(), true);
             nonPositive.addProperty("summaryId", "SUMMARY.P.SECOND");
-            nonPositive.addProperty("activationId", "ACT.P.SECOND");
+            nonPositive.addProperty("taskId", "TASK.P.SECOND");
             installTwoEntryContainerEvidence(nonPositive);
             nonPositive.getAsJsonArray("pathCondition").add(
                     integerCondition("<=", 0));
@@ -147,7 +147,8 @@ public class ConcolicSmtComposerTest {
                     producerSummary(singlePutEffect(), true).toString()
                             .replace("REGION.P", "REGION.U")
                             .replace("SUMMARY.P", "SUMMARY.U")
-                            .replace("ACT.P", "ACT.U")
+                            .replace("TASK.P", "TASK.U")
+                            .replace("GOAL.P", "GOAL.U")
                             .replace("fixture#call1", "fixture#call0"))
                     .getAsJsonObject();
             upstream.addProperty("rootCallId", 0);
@@ -174,7 +175,8 @@ public class ConcolicSmtComposerTest {
                             "--output", fixture.output.toString(),
                             "--manifest", fixture.manifest.toString(),
                             "--fatal-region", "REGION.F",
-                            "--activation-id", "ACT.F",
+                            "--region-instance-id",
+                            "REGION.F@fixture#call2",
                             "--bounded-upstream-region", "REGION.P",
                             "--bounded-upstream-region", "REGION.U"
                     });
@@ -335,8 +337,8 @@ public class ConcolicSmtComposerTest {
 
             JsonObject second = producerSummary(new JsonArray(), true);
             second.addProperty("summaryId", "SUMMARY.P.SECOND.SINGLETON");
-            second.addProperty("activationId",
-                    "ACT.P.SECOND.SINGLETON");
+            second.addProperty("taskId",
+                    "TASK.P.SECOND.SINGLETON");
             second.getAsJsonObject("outputExpressions").add(
                     secondOutput, symbol("I", "second_joint_output"));
             explicitPrimitiveOutputClosure(second, "REGION.P.in.2",
@@ -502,13 +504,14 @@ public class ConcolicSmtComposerTest {
                                               boolean complete) {
         JsonObject summary = new JsonObject();
         summary.addProperty("summaryId", "SUMMARY.P");
-        summary.addProperty("activationId", "ACT.P");
+        summary.addProperty("goalId", "GOAL.P.OUTPUT_RELATION");
+        summary.addProperty("taskId", "TASK.P.1");
         summary.addProperty("regionId", "REGION.P");
         summary.addProperty("regionInstanceId",
                 "REGION.P@fixture#call1");
         summary.addProperty("rootCallId", 1);
         summary.addProperty("relationallyComplete", complete);
-        summary.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
+        summary.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         summary.add("pathCondition", new JsonArray());
         summary.add("outputExpressions", new JsonObject());
         summary.add("heapStateInitializers", initializers);
@@ -642,6 +645,8 @@ public class ConcolicSmtComposerTest {
         for (int caseIndex = 0; caseIndex < operators.length; caseIndex++) {
             JsonObject item = new JsonObject();
             item.addProperty("caseId", "CASE.JOINT." + caseIndex);
+            item.addProperty("sourceTaskId",
+                    "TASK.P.JOINT." + caseIndex);
             JsonObject guard = new JsonObject();
             guard.addProperty("kind", "PATH_CONDITION");
             JsonArray conditions = new JsonArray();
@@ -1168,7 +1173,7 @@ public class ConcolicSmtComposerTest {
     private static void prepareOutputCase(JsonObject summary, String operator,
                                           String observationId,
                                           String valueSymbol) {
-        summary.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
+        summary.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         JsonObject requested = new JsonObject();
         requested.addProperty("portId", "REGION.P.out.0");
         summary.add("requestedOutput", requested);
@@ -1184,7 +1189,7 @@ public class ConcolicSmtComposerTest {
                                                  String observationId,
                                                  String valueSymbol,
                                                  String dynamicFieldSymbol) {
-        summary.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
+        summary.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         JsonObject requested = new JsonObject();
         requested.addProperty("portId", "REGION.P.out.0");
         summary.add("requestedOutput", requested);
@@ -1197,7 +1202,7 @@ public class ConcolicSmtComposerTest {
         summary.add("heapObservations", observations);
         JsonArray dynamicBindings = new JsonArray();
         dynamicBindings.add(runtimeDynamicFieldBinding(observationId,
-                dynamicFieldSymbol, summary.get("activationId").getAsString()));
+                dynamicFieldSymbol, summary.get("taskId").getAsString()));
         summary.add("dynamicFieldBindings", dynamicBindings);
     }
 
@@ -1275,7 +1280,7 @@ public class ConcolicSmtComposerTest {
         JsonObject result = dynamicHeapObservation(id, valueSymbol,
                 dynamicFieldSymbol);
         String region = "REGION.P";
-        String activationId = "ACT.P";
+        String taskId = "TASK.P.1";
         String dynamicBindingId = "DYNAMIC_FIELD:" + dynamicFieldSymbol;
         String selectorDigest = ConcolicSmtComposer
                 .heapObservationStateSelectorDigestForTests(id,
@@ -1295,13 +1300,13 @@ public class ConcolicSmtComposerTest {
         result.addProperty("expressionAuthority",
                 "ACTIVATION_LOCAL_MAP_OBJECT_TOKEN_REF_WITNESS_V1");
         result.addProperty("backingMapObjectToken", mapToken);
-        result.addProperty("objectTokenScope", activationId);
+        result.addProperty("objectTokenScope", taskId);
         result.addProperty("mapExpressionWitnessSchemaVersion", 1);
         result.addProperty("mapExpressionWitnessKind",
                 "ACTIVATION_LOCAL_MAP_REF_SYMBOL_WITNESS");
         result.addProperty("mapExpressionWitnessObjectToken", mapToken);
         result.addProperty("mapExpressionWitnessObjectTokenScope",
-                activationId);
+                taskId);
         result.addProperty("mapExpressionWitnessAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN_TO_"
                         + "SCOPED_REF_SYMBOL_V1");
@@ -1333,7 +1338,7 @@ public class ConcolicSmtComposerTest {
         proof.addProperty("observationId", id);
         proof.addProperty("entryReadObservationId", id);
         proof.addProperty("regionId", region);
-        proof.addProperty("activationId", activationId);
+        proof.addProperty("sourceTaskId", taskId);
         proof.addProperty("baseInputSymbol", baseInputSymbol);
         proof.addProperty("dynamicBindingId", dynamicBindingId);
         proof.addProperty("dynamicFieldSymbol", dynamicFieldSymbol);
@@ -1341,13 +1346,13 @@ public class ConcolicSmtComposerTest {
         proof.addProperty("expressionAuthority",
                 "ACTIVATION_LOCAL_MAP_OBJECT_TOKEN_REF_WITNESS_V1");
         proof.addProperty("backingMapObjectToken", mapToken);
-        proof.addProperty("objectTokenScope", activationId);
+        proof.addProperty("objectTokenScope", taskId);
         proof.addProperty("mapExpressionWitnessSchemaVersion", 1);
         proof.addProperty("mapExpressionWitnessKind",
                 "ACTIVATION_LOCAL_MAP_REF_SYMBOL_WITNESS");
         proof.addProperty("mapExpressionWitnessObjectToken", mapToken);
         proof.addProperty("mapExpressionWitnessObjectTokenScope",
-                activationId);
+                taskId);
         proof.addProperty("mapExpressionWitnessAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN_TO_"
                         + "SCOPED_REF_SYMBOL_V1");
@@ -1363,7 +1368,7 @@ public class ConcolicSmtComposerTest {
 
     private static JsonObject runtimeDynamicFieldBinding(
             String observationId, String dynamicFieldSymbol,
-            String activationId) {
+            String taskId) {
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", 1);
         result.addProperty("kind", "DYNAMIC_MAP_ENTRY_FIELD_BINDING");
@@ -1383,7 +1388,7 @@ public class ConcolicSmtComposerTest {
         result.addProperty("leafOwnerObjectToken", 41);
         result.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        result.addProperty("objectTokenScope", activationId);
+        result.addProperty("objectTokenScope", taskId);
         result.addProperty("entryReadObservationId", observationId);
         result.add("keyExpression", constant("I", "Y_I_7"));
         result.addProperty("keyExpressionAuthority",
@@ -1396,7 +1401,7 @@ public class ConcolicSmtComposerTest {
     }
 
     private static JsonObject runtimeContainerFieldBinding(
-            String dynamic, int index, String activationId) {
+            String dynamic, int index, String taskId) {
         String bindingId = "BIND_ARRAY_" + index;
         String method = "<example.Store: void update(example.Keys)>";
         JsonObject result = new JsonObject();
@@ -1417,7 +1422,7 @@ public class ConcolicSmtComposerTest {
         result.addProperty("leafOwnerObjectToken", 302L + index);
         result.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        result.addProperty("objectTokenScope", activationId);
+        result.addProperty("objectTokenScope", taskId);
         result.addProperty("containerBindingId", bindingId);
         result.addProperty("containerInputPort", "REGION.P.in.4");
         result.addProperty("containerInputCell",
@@ -1446,7 +1451,7 @@ public class ConcolicSmtComposerTest {
         selector.addProperty("elementObjectToken", 302L + index);
         selector.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        selector.addProperty("objectTokenScope", activationId);
+        selector.addProperty("objectTokenScope", taskId);
         selector.addProperty("authority",
                 "EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_"
                         + "ACTIVATION_LOCAL_ELEMENT_IDENTITY");
@@ -1490,7 +1495,7 @@ public class ConcolicSmtComposerTest {
             binding.addProperty("leafOwnerObjectToken", 601L + index);
             binding.addProperty("objectTokenAuthority",
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-            binding.addProperty("objectTokenScope", "ACT.P");
+            binding.addProperty("objectTokenScope", "TASK.P.1");
             binding.addProperty("fieldJavaType", "long");
             binding.add("entrySnapshotElementObjectTokens",
                     tokens.deepCopy());
@@ -1547,7 +1552,7 @@ public class ConcolicSmtComposerTest {
                             + "OUTPUT_RECHECK");
             selector.addProperty("objectTokenAuthority",
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-            selector.addProperty("objectTokenScope", "ACT.P");
+            selector.addProperty("objectTokenScope", "TASK.P.1");
             selector.addProperty("crossExecutionOrdinalAuthority", "NONE");
             selector.add("expectedMapKey", keys.get(index).deepCopy());
             selector.addProperty("expectedMapKeyAuthority",
@@ -1596,6 +1601,8 @@ public class ConcolicSmtComposerTest {
         result.addProperty("regionId", summary.get(
                 "regionId").getAsString());
         result.addProperty("state", RegionPathWorklist.State.CLOSED.name());
+        result.addProperty("goalId", summary.get(
+                "goalId").getAsString());
         JsonObject bounds = new JsonObject();
         bounds.addProperty("maxPathsPerRegion", 64);
         bounds.addProperty("maxFlipsPerPath", 32);
@@ -1710,7 +1717,7 @@ public class ConcolicSmtComposerTest {
     }
 
     private static JsonObject engineArrayInputBinding(
-            String activationId, String inputPort, String inputCell,
+            String taskId, String inputPort, String inputCell,
             String descriptor, String engineArrayId, long objectToken,
             JsonElement... values) {
         JsonObject expression = arrayValueExpression(descriptor,
@@ -1721,7 +1728,7 @@ public class ConcolicSmtComposerTest {
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", 2);
         result.addProperty("kind", "ENGINE_ARRAY_INPUT_BINDING");
-        result.addProperty("sourceActivationId", activationId);
+        result.addProperty("sourceTaskId", taskId);
         result.addProperty("inputPort", inputPort);
         result.addProperty("inputCell", inputCell);
         result.addProperty("inputJavaTypeDescriptor", descriptor);
@@ -1865,7 +1872,7 @@ public class ConcolicSmtComposerTest {
                     fieldExpression.deepCopy(), "==",
                     constant("J", "Y_J_" + (11 + 11 * index))));
             JsonObject runtime = runtimeContainerFieldBinding(dynamic, index,
-                    summary.get("activationId").getAsString());
+                    summary.get("taskId").getAsString());
             runtime.add("fieldExpression", fieldExpression);
             runtime.addProperty("fieldJavaType", "long");
             runtimeBindings.add(runtime);
@@ -1891,6 +1898,7 @@ public class ConcolicSmtComposerTest {
         RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
                 java.util.Collections.singletonList(summary),
                 closedPathManifest(summary));
+        assertFalse(merged.manifest.toString(), merged.summaries.isEmpty());
         return merged.summaries.get(0);
     }
 
@@ -1903,7 +1911,7 @@ public class ConcolicSmtComposerTest {
                 "--output", fixture.output.toString(),
                 "--manifest", fixture.manifest.toString(),
                 "--fatal-region", "REGION.F",
-                "--activation-id", "ACT.F"));
+                "--region-instance-id", "REGION.F@fixture#call2"));
         return ConcolicSmtComposer.Arguments.parse(
                 values.toArray(new String[0]));
     }
@@ -2030,7 +2038,6 @@ public class ConcolicSmtComposerTest {
         JsonObject fatal = new JsonObject();
         fatal.addProperty("schemaVersion", 1);
         fatal.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");
-        fatal.addProperty("activationId", "ACT.F");
         fatal.addProperty("regionId", "REGION.F");
         fatal.addProperty("regionInstanceId", "REGION.F@fixture#call2");
         fatal.addProperty("readyForSolver", true);

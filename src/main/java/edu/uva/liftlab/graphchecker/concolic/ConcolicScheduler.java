@@ -35,7 +35,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Builds graph-directed concolic jobs from static regions and concrete
- * unit-test activations.
+ * runtime-selected region instance plans.
  *
  * <p>The scheduler deliberately separates three phases:</p>
  * <ol>
@@ -77,13 +77,13 @@ public final class ConcolicScheduler {
 
     public static Result schedule(Arguments arguments) throws IOException {
         requireFile(arguments.regions, "symbolic regions");
-        requireFile(arguments.activations, "activation plan");
+        requireFile(arguments.regionPlan, "region plan");
         requireFile(arguments.edgeValidations, "runtime edge validation");
         requireFile(arguments.staticGraph, "static data-flow graph");
         Files.createDirectories(arguments.outputDirectory);
 
         List<JsonObject> regions = readJsonl(arguments.regions);
-        List<JsonObject> activations = readJsonl(arguments.activations);
+        List<JsonObject> regionPlans = readJsonl(arguments.regionPlan);
         List<JsonObject> edges = readJsonl(arguments.edgeValidations);
         List<JsonObject> summaries = arguments.captureOnly
                 || arguments.summaries == null
@@ -102,14 +102,12 @@ public final class ConcolicScheduler {
 
         MergePlan mergePlan = buildMergePlan(regionIndex, edges,
                 staticGraph);
-        List<Candidate> candidates = candidates(arguments, activations,
+        List<Candidate> candidates = candidates(arguments, regionPlans,
                 regionIndex, definitions);
         Collections.sort(candidates, Candidate.ORDER);
 
         Result result = new Result();
         Set<String> selectedRegions = new LinkedHashSet<>();
-        Map<String, JsonObject> emittedActivationDefinitions =
-                new LinkedHashMap<>();
         for (Candidate candidate : candidates) {
             if (result.scheduledPrimaryCount >= arguments.maxJobs) {
                 break;
@@ -118,11 +116,12 @@ public final class ConcolicScheduler {
                     && !selectedRegions.add(candidate.region.regionId)) {
                 continue;
             }
-            String scheduleId = "SCHEDULE." + result.scheduledPrimaryCount;
             MaterializationPlan materialization = candidate.materialization;
-            JsonObject scheduledActivation = candidate.activation.deepCopy();
+            JsonObject executionTask = candidate.activation.deepCopy();
+            executionTask.addProperty("taskId",
+                    candidate.seedTaskId());
             mergePlan.attachOutboundValueEqualityBindings(
-                    scheduledActivation, candidate.outputContract);
+                    executionTask, candidate.outputContract);
             JsonObject captured = candidate.outputContract != null ? null
                     : exactTargetSummary(candidate, summaries);
             String executionPhase = candidate.outputContract != null
@@ -131,19 +130,19 @@ public final class ConcolicScheduler {
                     ? "CAPTURE_ONLY"
                     : captured != null
                     ? "NEGATE_CAPTURED_PATH" : "CAPTURE_THEN_NEGATE";
-            RegionCaptureGoal goal = RegionCaptureGoal.from(
+            ClosureGoalKind goal = ClosureGoalKind.fromTask(
                     candidate.activation);
-            goal.writeTo(scheduledActivation);
-            scheduledActivation.addProperty("executionPhase", executionPhase);
-            scheduledActivation.add("materializations",
+            goal.writeToTask(executionTask);
+            executionTask.addProperty("executionPhase", executionPhase);
+            executionTask.add("materializations",
                     materialization.actions.deepCopy());
-            scheduledActivation.add("concreteFallbacks",
+            executionTask.add("concreteFallbacks",
                     materialization.concreteFallbacks.deepCopy());
             if (candidate.outputContract != null) {
-                OutputClosureCodec.writeTo(scheduledActivation,
+                OutputClosureCodec.writeTo(executionTask,
                         candidate.outputContract);
             }
-            compactScheduledActivation(scheduledActivation,
+            compactExecutionTask(executionTask,
                     materialization.ready);
 
             if (captured != null && candidate.outputContract == null) {
@@ -151,16 +150,13 @@ public final class ConcolicScheduler {
                         mergePlan);
                 result.queries.add(query);
             }
-            List<JsonObject> activationBundle = scheduledActivationBundle(
-                    scheduledActivation, scheduleId);
-            appendUniqueActivationBundle(result.scheduledActivations,
-                    emittedActivationDefinitions, activationBundle);
+            result.executionTasks.add(executionTask);
             result.scheduledPrimaryCount++;
         }
 
         writeJsonl(arguments.outputDirectory.resolve(
-                        "scheduled_activation_plan.jsonl"),
-                result.scheduledActivations);
+                        "execution_task_plan.jsonl"),
+                result.executionTasks);
         if (!arguments.captureOnly) {
             writeJsonl(arguments.outputDirectory.resolve(
                             "branch_queries.jsonl"),
@@ -170,109 +166,7 @@ public final class ConcolicScheduler {
     }
 
     /**
-     * Expands the recursively declared reachability support for one selected
-     * activation.  Support rows must precede their consumer in the emitted
-     * plan so the runtime can activate every upstream region needed by the
-     * same concrete execution.  The custom runtime must select ALL rows for a
-     * bundle; selecting only the primary activation silently loses the
-     * producer path and is therefore recorded as an explicit requirement.
-     */
-    private static List<JsonObject> scheduledActivationBundle(
-            JsonObject primary, String scheduleId) throws IOException {
-        List<JsonObject> definitions = new ArrayList<>();
-        Map<String, JsonObject> byId = new LinkedHashMap<>();
-        Set<String> visiting = new LinkedHashSet<>();
-        String primaryId = string(primary, "activationId");
-        if (primaryId.isEmpty()) {
-            throw new IOException("Scheduled activation has no activationId");
-        }
-        flattenReachabilityActivation(primary, primaryId, scheduleId, false,
-                definitions, byId, visiting);
-        int bundleSize = definitions.size();
-        for (int index = 0; index < definitions.size(); index++) {
-            JsonObject member = definitions.get(index);
-            JsonObject bundle = object(member, "bundle");
-            bundle.addProperty("index", index);
-            bundle.addProperty("size", bundleSize);
-            bundle.addProperty("selection",
-                    bundleSize > 1 ? "ALL" : primaryId);
-            member.add("bundle", bundle);
-        }
-        return definitions;
-    }
-
-    private static void flattenReachabilityActivation(
-            JsonObject activation, String primaryId, String scheduleId,
-            boolean support, List<JsonObject> result,
-            Map<String, JsonObject> definitions, Set<String> visiting)
-            throws IOException {
-        String activationId = string(activation, "activationId");
-        if (activationId.isEmpty()) {
-            throw new IOException("Reachability activation has no "
-                    + "activationId for bundle " + primaryId);
-        }
-        if (!visiting.add(activationId)) {
-            throw new IOException("Cyclic reachability activation bundle at "
-                    + activationId + " for " + primaryId);
-        }
-        JsonArray nested = array(activation,
-                "reachabilitySupportActivations");
-        for (JsonElement element : nested) {
-            if (!element.isJsonObject()) {
-                throw new IOException("Non-object reachability support in "
-                        + activationId);
-            }
-            flattenReachabilityActivation(element.getAsJsonObject(),
-                    primaryId, scheduleId, true, result, definitions,
-                    visiting);
-        }
-        visiting.remove(activationId);
-
-        JsonObject normalized = activation.deepCopy();
-        normalized.remove("reachabilitySupportActivations");
-        compactScheduledActivation(normalized, null);
-        JsonObject previous = definitions.get(activationId);
-        if (previous != null) {
-            if (!previous.equals(normalized)) {
-                throw new IOException("Conflicting reachability activation "
-                        + "definitions for " + activationId);
-            }
-            return;
-        }
-        definitions.put(activationId, normalized.deepCopy());
-        JsonObject bundle = new JsonObject();
-        bundle.addProperty("rootActivationId", primaryId);
-        bundle.addProperty("scheduleId", scheduleId);
-        bundle.addProperty("role", support
-                ? "REACHABILITY_SUPPORT" : "PRIMARY");
-        normalized.add("bundle", bundle);
-        result.add(normalized);
-    }
-
-    private static void appendUniqueActivationBundle(
-            List<JsonObject> output, Map<String, JsonObject> emitted,
-            List<JsonObject> bundle) throws IOException {
-        for (JsonObject activation : bundle) {
-            String activationId = string(activation, "activationId");
-            JsonObject previous = emitted.get(activationId);
-            if (previous != null) {
-                JsonObject left = previous.deepCopy();
-                JsonObject right = activation.deepCopy();
-                left.remove("bundle");
-                right.remove("bundle");
-                if (!left.equals(right)) {
-                    throw new IOException("Conflicting scheduled activation "
-                            + "definitions for " + activationId);
-                }
-                continue;
-            }
-            emitted.put(activationId, activation.deepCopy());
-            output.add(activation);
-        }
-    }
-
-    /**
-     * Converts one discovered output-closure activation into an executable,
+     * Converts one discovered output-closure goal into an executable,
      * scheduler-authorized capture plan.  Campaign execution uses exactly the
      * same definition-site resolver as ordinary scheduling.
      */
@@ -284,8 +178,8 @@ public final class ConcolicScheduler {
         }
         JsonObject result = activation == null
                 ? new JsonObject() : activation.deepCopy();
-        RegionCaptureGoal captureGoal = RegionCaptureGoal.from(result);
-        boolean canonicalOutputClosure = captureGoal.isOutputClosure()
+        ClosureGoalKind goalKind = ClosureGoalKind.fromTask(result);
+        boolean canonicalOutputClosure = goalKind.capturesOutputRelation()
                 && result.has(OutputClosureContract.FIELD);
         OutputClosureContract outputClosure = canonicalOutputClosure
                 ? OutputClosureCodec.decode(result) : null;
@@ -300,7 +194,7 @@ public final class ConcolicScheduler {
         MaterializationPlan materialization = materializationPlan(result,
                 definitions, definitionMethods,
                 outputClosure);
-        RegionCaptureGoal.outputClosure().writeTo(result);
+        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(result);
         result.remove("modelAssignments");
         boolean outputCaptureReady = outputClosure != null
                 && outputClosureMembersReady(outputClosure);
@@ -316,12 +210,12 @@ public final class ConcolicScheduler {
         if (canonicalOutputClosure) {
             OutputClosureCodec.writeTo(result, outputClosure);
         }
-        compactScheduledActivation(result, schedulerReady);
+        compactExecutionTask(result, schedulerReady);
         return result;
     }
 
     /** Promotes one discovery admission to the executable schedule schema. */
-    private static void compactScheduledActivation(
+    private static void compactExecutionTask(
             JsonObject activation, Boolean scheduledReady) {
         boolean ready = scheduledReady != null
                 ? scheduledReady
@@ -344,36 +238,90 @@ public final class ConcolicScheduler {
     }
 
     private static List<Candidate> candidates(Arguments arguments,
-                                              List<JsonObject> activations,
+                                              List<JsonObject> regionPlans,
                                               Map<String, Region> regions,
                                               DefinitionIndex definitions) {
         List<Candidate> result = new ArrayList<>();
-        for (JsonObject discoveredActivation : activations) {
-            String activationId = string(discoveredActivation,
-                    "activationId");
-            String regionId = string(discoveredActivation, "regionId");
+        for (JsonObject envelope : regionPlans) {
+            String regionInstanceId = string(envelope,
+                    "regionInstanceId");
+            String regionId = string(envelope, "regionId");
             Region region = regions.get(regionId);
-            if (region == null || activationId.isEmpty()) {
+            if (region == null || regionInstanceId.isEmpty()) {
                 continue;
             }
-            JsonObject activation = discoveredActivation;
-            if (!admissionReplayable(activation)) {
-                continue;
-            }
-            if (!arguments.activationId.isEmpty()
-                    && !arguments.activationId.equals(activationId)) {
+            if (!arguments.regionInstanceId.isEmpty()
+                    && !arguments.regionInstanceId.equals(
+                    regionInstanceId)) {
                 continue;
             }
             if (!arguments.regionId.isEmpty()
                     && !arguments.regionId.equals(regionId)) {
                 continue;
             }
-            RegionCaptureGoal captureGoal = RegionCaptureGoal.from(activation);
+            Set<String> goalIds = new LinkedHashSet<>();
+            for (JsonElement goalElement : array(envelope,
+                    "closureGoals")) {
+                if (!goalElement.isJsonObject()) {
+                    throw new IllegalArgumentException(
+                            "closureGoals must contain objects for "
+                                    + regionInstanceId);
+                }
+                JsonObject goal = goalElement.getAsJsonObject();
+                String goalId = string(goal, "goalId");
+                if (goalId.isEmpty() || !goalIds.add(goalId)) {
+                    throw new IllegalArgumentException(
+                            "closure goal ids must be nonempty and unique "
+                                    + "for " + regionInstanceId);
+                }
+                if (!arguments.goalId.isEmpty()
+                        && !arguments.goalId.equals(goalId)) {
+                    continue;
+                }
+                JsonObject activation = projectGoal(envelope, goal);
+                if (!admissionReplayable(activation)) {
+                    continue;
+                }
+                ClosureGoalKind goalKind = ClosureGoalKind.fromTask(
+                        activation);
+                appendGoalCandidates(arguments, result, activation,
+                        regionInstanceId, goalId, region, definitions,
+                        goalKind);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Projects one semantic goal into the current executable task shape.
+     * The envelope remains the canonical discovery row; no derived activation
+     * is created or persisted.
+     */
+    private static JsonObject projectGoal(JsonObject envelope,
+                                          JsonObject goal) {
+        JsonObject task = envelope.deepCopy();
+        task.remove("closureGoals");
+        for (Map.Entry<String, JsonElement> entry : goal.entrySet()) {
+            String field = entry.getKey();
+            if ("kind".equals(field)) {
+                continue;
+            }
+            task.add(field, entry.getValue().deepCopy());
+        }
+        ClosureGoalKind.fromGoal(goal).writeToTask(task);
+        return task;
+    }
+
+    private static void appendGoalCandidates(
+            Arguments arguments, List<Candidate> result,
+            JsonObject activation, String regionInstanceId, String goalId,
+            Region region, DefinitionIndex definitions,
+            ClosureGoalKind goalKind) {
             Set<String> definitionMethods = runtimeDefinitionMethods(
                     activation);
-            if (captureGoal.isOutputClosure()) {
+            if (goalKind.capturesOutputRelation()) {
                 if (!activation.has(OutputClosureContract.FIELD)) {
-                    continue;
+                    return;
                 }
                 OutputClosureContract outputClosure =
                         OutputClosureCodec.decode(activation);
@@ -389,11 +337,12 @@ public final class ConcolicScheduler {
                 if (!closureReady) {
                     upstreamPlan = upstreamPlan.notReady();
                 }
-                result.add(new Candidate(executionActivation, activationId,
-                        region,
+                result.add(new Candidate(executionActivation,
+                        regionInstanceId,
+                        goalId, region,
                         TargetBranch.outputCapture(), true,
                         upstreamPlan, outputClosure));
-                continue;
+                return;
             }
             JsonArray branches = array(activation, "branches");
             for (int index = 0; index < branches.size(); index++) {
@@ -427,14 +376,12 @@ public final class ConcolicScheduler {
                 boolean desired = hasWitness ? !observed : required;
                 TargetBranch target = new TargetBranch(siteId,
                         occurrence, observed, desired);
-                result.add(new Candidate(activation, activationId, region,
-                        target, hasWitness,
+                result.add(new Candidate(activation, regionInstanceId, goalId,
+                        region, target, hasWitness,
                         materializationPlan(activation, definitions,
                                 definitionMethods, null),
                         null));
             }
-        }
-        return result;
     }
 
     /** Restricts static definition lookup to the concrete runtime call
@@ -444,8 +391,8 @@ public final class ConcolicScheduler {
         JsonElement encoded = activation.get("runtimeDefinitionMethods");
         if (encoded == null || !encoded.isJsonArray()) {
             throw new IllegalArgumentException(
-                    "activation requires runtimeDefinitionMethods array: "
-                            + string(activation, "activationId"));
+                    "execution task requires runtimeDefinitionMethods array: "
+                            + string(activation, "regionInstanceId"));
         }
         Set<String> result = new LinkedHashSet<>();
         for (JsonElement element : encoded.getAsJsonArray()) {
@@ -453,13 +400,13 @@ public final class ConcolicScheduler {
                     || !element.getAsJsonPrimitive().isString()) {
                 throw new IllegalArgumentException(
                         "runtimeDefinitionMethods contains non-string value: "
-                                + string(activation, "activationId"));
+                                + string(activation, "regionInstanceId"));
             }
             String method = safe(element.getAsString()).trim();
             if (method.isEmpty()) {
                 throw new IllegalArgumentException(
                         "runtimeDefinitionMethods contains empty method: "
-                                + string(activation, "activationId"));
+                                + string(activation, "regionInstanceId"));
             }
             result.add(method);
         }
@@ -914,9 +861,8 @@ public final class ConcolicScheduler {
     private static String requestedMapStateCell(
             JsonObject activation, OutputClosureContract contract,
             JsonObject binding) {
-        if (!RegionCaptureGoal.from(activation).isOutputClosure()
-                || !"BOUNDED_OUTPUT_RELEVANT_PATHS".equals(string(
-                object(activation, RegionCaptureGoal.FIELD), "scope"))) {
+        if (!ClosureGoalKind.fromTask(activation)
+                .capturesOutputRelation()) {
             return "";
         }
         String cell = string(binding, "cell");
@@ -1538,10 +1484,10 @@ public final class ConcolicScheduler {
         JsonObject query = new JsonObject();
         query.addProperty("schemaVersion", 1);
         query.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");
-        query.addProperty("activationId", candidate.activationId);
+        query.addProperty("goalId", candidate.goalId);
         query.addProperty("regionId", candidate.region.regionId);
         query.addProperty("regionInstanceId",
-                string(candidate.activation, "regionInstanceId"));
+                candidate.regionInstanceId);
         try {
             BranchReplayContract contract =
                     BranchReplayContract.fromSummary(summary,
@@ -1564,7 +1510,7 @@ public final class ConcolicScheduler {
                 "engineArrayInputBindings").deepCopy());
         query.add("symbolicContext",
                 mergePlan.contextFor(candidate.region.regionId,
-                        string(candidate.activation, "regionInstanceId")));
+                        candidate.regionInstanceId));
         return query;
     }
 
@@ -1573,25 +1519,22 @@ public final class ConcolicScheduler {
     }
 
     /**
-     * Selects target-PC provenance only from the exact runtime activation.
-     * Activation ids restart in every trace (for example every trace has an
-     * ACT.0), so an id-only index can silently join a path condition from a
-     * different JVM execution to the current region instance.
+     * Selects target-PC provenance only from the exact runtime region
+     * instance and closure goal.
      */
     private static JsonObject exactTargetSummary(
             Candidate candidate, List<JsonObject> summaries) {
-        String expectedInstance = string(candidate.activation,
-                "regionInstanceId");
+        String expectedInstance = candidate.regionInstanceId;
         if (expectedInstance.isEmpty()) return null;
         JsonObject selected = null;
         for (JsonObject summary : summaries) {
-            if (!candidate.activationId.equals(string(summary,
-                    "activationId"))
+            if (!candidate.goalId.equals(string(summary, "goalId"))
                     || !candidate.region.regionId.equals(string(summary,
                     "regionId"))
                     || !expectedInstance.equals(string(summary,
                     "regionInstanceId"))
-                    || !RegionCaptureGoal.from(summary).isTargetBranch()
+                    || !ClosureGoalKind.fromTask(summary)
+                    .capturesTargetReach()
                     || !bool(summary, "relationallyComplete", false)
                     || string(summary, "summaryId").isEmpty()) {
                 continue;
@@ -1920,28 +1863,39 @@ public final class ConcolicScheduler {
                         .thenComparingInt(value -> integer(object(
                                 value.activation, "rootSelector"),
                                 "ordinal", Integer.MAX_VALUE))
-                        .thenComparing(value -> value.activationId);
+                        .thenComparing(value -> value.regionInstanceId)
+                        .thenComparing(value -> value.goalId);
 
         private final JsonObject activation;
-        private final String activationId;
+        private final String regionInstanceId;
+        private final String goalId;
         private final Region region;
         private final TargetBranch target;
         private final boolean directed;
         private final OutputClosureContract outputContract;
         private final MaterializationPlan materialization;
 
-        private Candidate(JsonObject activation, String activationId,
-                          Region region, TargetBranch target,
+        private Candidate(JsonObject activation, String regionInstanceId,
+                          String goalId, Region region, TargetBranch target,
                           boolean hasRequiredWitness,
                           MaterializationPlan materialization,
                           OutputClosureContract outputContract) {
             this.activation = activation;
-            this.activationId = activationId;
+            this.regionInstanceId = regionInstanceId;
+            this.goalId = goalId;
             this.region = region;
             this.target = target;
             this.outputContract = outputContract;
             this.directed = outputContract != null || !hasRequiredWitness;
             this.materialization = materialization;
+        }
+
+        private String seedTaskId() {
+            String identity = regionInstanceId + "\n" + goalId + "\n"
+                    + target.siteId + "\n" + target.selectedOccurrence
+                    + "\n" + target.observedOutcome
+                    + "\n" + target.desiredOutcome;
+            return "TASK.SEED." + ArtifactIO.sha256(identity);
         }
     }
 
@@ -1968,18 +1922,6 @@ public final class ConcolicScheduler {
                 JsonObject activation,
                 OutputClosureContract outputClosure) {
             if (activation == null) return;
-            for (JsonElement element : array(activation,
-                    "reachabilitySupportActivations")) {
-                if (element.isJsonObject()) {
-                    JsonObject nested = element.getAsJsonObject();
-                    OutputClosureContract nestedClosure =
-                            nested.has(OutputClosureContract.FIELD)
-                                    ? OutputClosureCodec.decode(nested)
-                                    : null;
-                    attachOutboundValueEqualityBindings(nested,
-                            nestedClosure);
-                }
-            }
             String region = string(activation, "regionId");
             String instance = string(activation, "regionInstanceId");
             if (region.isEmpty() || instance.isEmpty()) return;
@@ -2220,40 +2162,43 @@ public final class ConcolicScheduler {
     }
 
     public static final class Result {
-        public final List<JsonObject> scheduledActivations = new ArrayList<>();
+        public final List<JsonObject> executionTasks = new ArrayList<>();
         public final List<JsonObject> queries = new ArrayList<>();
         public int scheduledPrimaryCount;
     }
 
     public static final class Arguments {
         public final Path regions;
-        public final Path activations;
+        public final Path regionPlan;
         public final Path edgeValidations;
         public final Path staticGraph;
         public final Path summaries;
         public final Path outputDirectory;
         public final String regionId;
-        public final String activationId;
+        public final String regionInstanceId;
+        public final String goalId;
         public final String targetSite;
         public final int maxJobs;
         public final boolean allowMultipleJobsPerRegion;
         public final boolean captureOnly;
 
-        private Arguments(Path regions, Path activations,
+        private Arguments(Path regions, Path regionPlan,
                           Path edgeValidations, Path staticGraph,
                           Path summaries, Path outputDirectory, String regionId,
-                          String activationId, String targetSite,
+                          String regionInstanceId, String goalId,
+                          String targetSite,
                           int maxJobs,
                           boolean allowMultipleJobsPerRegion,
                           boolean captureOnly) {
             this.regions = regions;
-            this.activations = activations;
+            this.regionPlan = regionPlan;
             this.edgeValidations = edgeValidations;
             this.staticGraph = staticGraph;
             this.summaries = summaries;
             this.outputDirectory = outputDirectory;
             this.regionId = safe(regionId);
-            this.activationId = safe(activationId);
+            this.regionInstanceId = safe(regionInstanceId);
+            this.goalId = safe(goalId);
             this.targetSite = safe(targetSite);
             this.maxJobs = Math.max(1, maxJobs);
             this.allowMultipleJobsPerRegion = allowMultipleJobsPerRegion;
@@ -2283,16 +2228,17 @@ public final class ConcolicScheduler {
                 }
             }
             Path regions = requiredPath(values, "regions");
-            Path activations = requiredPath(values, "activation-plan");
+            Path regionPlan = requiredPath(values, "region-plan");
             Path edges = requiredPath(values, "edge-validations");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
-                    sibling(activations, "concolic-schedule").toString()));
+                    sibling(regionPlan, "concolic-schedule").toString()));
             Path staticGraph = requiredPath(values, "static-graph");
             Path summaries = optionalPath(values.get("summaries"));
-            return new Arguments(regions, activations, edges, staticGraph,
+            return new Arguments(regions, regionPlan, edges, staticGraph,
                     summaries, output,
                     firstNonBlank(values.get("region-id")),
-                    firstNonBlank(values.get("activation-id")),
+                    firstNonBlank(values.get("region-instance-id")),
+                    firstNonBlank(values.get("goal-id")),
                     firstNonBlank(values.get("target-site")),
                     parseInt(values.get("max-jobs"), 1),
                     Boolean.parseBoolean(values.get("multiple-per-region")),
@@ -2301,13 +2247,14 @@ public final class ConcolicScheduler {
 
         private static boolean knownOption(String key) {
             return "regions".equals(key)
-                    || "activation-plan".equals(key)
+                    || "region-plan".equals(key)
                     || "edge-validations".equals(key)
                     || "static-graph".equals(key)
                     || "summaries".equals(key)
                     || "output-dir".equals(key)
                     || "region-id".equals(key)
-                    || "activation-id".equals(key)
+                    || "region-instance-id".equals(key)
+                    || "goal-id".equals(key)
                     || "target-site".equals(key)
                     || "max-jobs".equals(key)
                     || "multiple-per-region".equals(key)

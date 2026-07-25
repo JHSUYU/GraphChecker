@@ -106,6 +106,13 @@ validate_artifact_binding() {
 }
 
 output_closure_helpers='
+def region_goals:
+  .[] as $plan
+  | $plan.closureGoals[]
+  | . + {
+      regionId: $plan.regionId,
+      regionInstanceId: $plan.regionInstanceId
+    };
 def output_members:
   if has("outputClosure") then
     if (.outputClosure | type) == "object"
@@ -173,7 +180,7 @@ validate_composition_common() {
 validate_cross_method_joint_output_artifacts() {
   local work_root=$1
   local smt=$2
-  local activation_plan="${work_root}/runtime/concolic_activation_plan.jsonl"
+  local region_plan="${work_root}/runtime/concolic_region_plan.jsonl"
   local merged="${work_root}/producer-campaign/a/merged_region_summaries.jsonl"
   local composition="${work_root}/candidate/candidate_composition_manifest.json"
   local producer_cell='<edu.uva.liftlab.graphchecker.fixtures.CrossMethodExternalFieldThreeThreadWorkload$RpcBus: int a>'
@@ -181,14 +188,14 @@ validate_cross_method_joint_output_artifacts() {
   local port selector
   local -a output_ports selectors
 
-  require_file "cross-method runtime activation plan" "${activation_plan}"
+  require_file "cross-method runtime activation plan" "${region_plan}"
   require_file "cross-method Producer A merged relation" "${merged}"
   require_file "cross-method composition manifest" "${composition}"
 
   jq -e -s --arg producer "${producer_cell}" --arg witness "${witness_cell}" \
     "${output_closure_helpers}"'
-    [.[] | select(
-      .captureGoal.kind == "OUTPUT_CLOSURE"
+    [region_goals | select(
+      .kind == "OUTPUT_RELATION_CLOSURE"
       and ([.outputClosure.members[].output.cell] | sort)
         == ([$producer, $witness] | sort))] as $joint
     | ($joint | length) == 1
@@ -201,7 +208,7 @@ validate_cross_method_joint_output_artifacts() {
       and ([$edges[].fromOutputCell] | sort)
         == ([$producer, $witness] | sort)
       and ([$edges[].toRegionInstance] | unique | length) == 1)
-  ' "${activation_plan}" >/dev/null \
+  ' "${region_plan}" >/dev/null \
     || die "cross-method Producer A is not one two-output runtime demand"
 
   jq -e --arg producer "${producer_cell}" --arg witness "${witness_cell}" '
@@ -313,7 +320,7 @@ validate_multitype_producer_artifacts() {
 validate_dependent_scalar_artifacts() {
   local work_root=$1
   local target_resolution="${work_root}/analysis/target_resolved.json"
-  local activation_plan="${work_root}/runtime/concolic_activation_plan.jsonl"
+  local region_plan="${work_root}/runtime/concolic_region_plan.jsonl"
   local campaign_root="${work_root}/producer-campaign"
   local fixture_class="edu.uva.liftlab.graphchecker.fixtures.DependentScalarThreeThreadWorkload"
   local target_method="<${fixture_class}\$ConsumerThread: void executeWorker()>"
@@ -323,7 +330,7 @@ validate_dependent_scalar_artifacts() {
   local -a path_closures merged_summaries
 
   require_file "dependent-scalar annotation target" "${target_resolution}"
-  require_file "dependent-scalar runtime activation plan" "${activation_plan}"
+  require_file "dependent-scalar runtime activation plan" "${region_plan}"
   [[ -d "${campaign_root}" ]] \
     || die "dependent-scalar producer campaign not found: ${campaign_root}"
 
@@ -346,9 +353,8 @@ validate_dependent_scalar_artifacts() {
   # sequence values are intentionally not pinned.
   jq -e -s --arg arithmetic "${arithmetic_cell}" \
     --arg text "${text_cell}" "${output_closure_helpers}"'
-    [.[] | select(
-      .captureGoal.kind == "OUTPUT_CLOSURE"
-      and .captureGoal.scope == "BOUNDED_OUTPUT_RELEVANT_PATHS"
+    [region_goals | select(
+      .kind == "OUTPUT_RELATION_CLOSURE"
       and .admission.state == "READY")
       | select(
         ([output_members | .[].output.cell] | index($arithmetic)) != null
@@ -369,14 +375,14 @@ validate_dependent_scalar_artifacts() {
       and all($edges[];
         .fromRegion != .toRegion
         and .inputProjectionUsed == false)
-      and ([.[] | select(
-          .captureGoal.kind == "TARGET_BRANCH"
+      and ([region_goals | select(
+          .kind == "TARGET_REACH_CLOSURE"
           and (.admission.state == "READY"
             or .admission.state == "DISCOVERED")
           and .regionId == $edges[0].toRegion
           and .regionInstanceId == $edges[0].toRegionInstance)]
         | length) == 1)
-  ' "${activation_plan}" >/dev/null \
+  ' "${region_plan}" >/dev/null \
     || die "dependent-scalar runtime roots are not two exact producers and one target"
 
   mapfile -t path_closures < <(find "${campaign_root}" -mindepth 2 \
@@ -488,7 +494,9 @@ validate_container_producer_artifacts() {
       and (.status == "UNSAT"
         or (.status == "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
           and (.regionId | type == "string" and length > 0)
-          and (.activationId | type == "string" and length > 0))))
+          and (.taskId | type == "string" and length > 0)
+          and (.regionInstanceId | type == "string" and length > 0)
+          and (.goalId | type == "string" and length > 0))))
     and ([.[].queryKey] | unique | length) == length
   ' "${exploration_records[@]}" >/dev/null \
     || die "container retained exploration ledger is incomplete"
@@ -731,7 +739,7 @@ validate_scalar_unsat_producer_artifacts() {
   local label=$1
   local work_root=$2
   local campaign_root="${work_root}/producer-campaign"
-  local activation_plan="${work_root}/runtime/concolic_activation_plan.jsonl"
+  local region_plan="${work_root}/runtime/concolic_region_plan.jsonl"
   local composition="${work_root}/candidate/candidate_composition_manifest.json"
   local expected_bindings=2
   local -a path_closures merged_summaries
@@ -740,7 +748,7 @@ validate_scalar_unsat_producer_artifacts() {
     && expected_bindings=3
   [[ -d "${campaign_root}" ]] \
     || die "${label} producer campaign not found: ${campaign_root}"
-  require_file "${label} activation plan" "${activation_plan}"
+  require_file "${label} activation plan" "${region_plan}"
   require_file "${label} composition manifest" "${composition}"
   mapfile -t path_closures < <(find "${campaign_root}" -mindepth 2 \
     -maxdepth 2 -type f -name region_path_closure.json | sort)
@@ -783,8 +791,8 @@ validate_scalar_unsat_producer_artifacts() {
 
   if [[ "${label}" == "unreachable-correlated-fields" ]]; then
     jq -e -s "${output_closure_helpers}"'
-      [.[] | select(
-        .captureGoal.kind == "OUTPUT_CLOSURE"
+      [region_goals | select(
+        .kind == "OUTPUT_RELATION_CLOSURE"
         and .admission.state == "READY")] as $producers
       | ($producers | length) == 2
       and ([$producers[] | output_members | length] | sort) == [1, 2]
@@ -794,7 +802,7 @@ validate_scalar_unsat_producer_artifacts() {
             "<edu.uva.liftlab.graphchecker.fixtures.CorrelatedFieldsUnreachableThreeThreadWorkload$RpcBus: int left>",
             "<edu.uva.liftlab.graphchecker.fixtures.CorrelatedFieldsUnreachableThreeThreadWorkload$RpcBus: int right>"
           ] | sort))
-    ' "${activation_plan}" >/dev/null \
+    ' "${region_plan}" >/dev/null \
       || die "${label} did not preserve the joint left/right output demand"
   fi
 }
@@ -802,7 +810,7 @@ validate_scalar_unsat_producer_artifacts() {
 validate_compound_target_artifacts() {
   local label=$1
   local work_root=$2
-  local activation_plan="${work_root}/runtime/concolic_activation_plan.jsonl"
+  local region_plan="${work_root}/runtime/concolic_region_plan.jsonl"
   local target_closure="${work_root}/target-campaign/region_path_closure.json"
   local target_query="${work_root}/schedule/branch_queries.jsonl"
   local composition="${work_root}/candidate/candidate_composition_manifest.json"
@@ -817,7 +825,7 @@ validate_compound_target_artifacts() {
       expected_reached=zero
       consumer_name='$UnreachableConsumerThread: void executeWorker()>'
     }
-  require_file "${label} activation plan" "${activation_plan}"
+  require_file "${label} activation plan" "${region_plan}"
   require_file "${label} target closure" "${target_closure}"
   require_file "${label} target path query" "${target_query}"
   require_file "${label} composition manifest" "${composition}"
@@ -827,7 +835,7 @@ validate_compound_target_artifacts() {
   jq -e '
     .kind == "REGION_PATH_WORKLIST"
     and .state == "CLOSED"
-    and .captureGoal == "TARGET_BRANCH"
+    and .goalKind == "TARGET_REACH_CLOSURE"
     and (.gaps | length) == 0
   ' "${target_closure}" >/dev/null \
     || die "${label} target-function path worklist is incomplete"
@@ -851,9 +859,9 @@ validate_compound_target_artifacts() {
   jq -e -s --arg consumer "${consumer_name}" \
     --arg target_region "$(jq -r '.regionId' "${target_closure}")" \
     "${output_closure_helpers}"'
-    [.[] | select(.captureGoal.kind == "OUTPUT_CLOSURE"
+    [region_goals | select(.kind == "OUTPUT_RELATION_CLOSURE"
       and .admission.state == "READY")] as $producers
-    | [.[] | select(.captureGoal.kind == "TARGET_BRANCH"
+    | [region_goals | select(.kind == "TARGET_REACH_CLOSURE"
       and (.admission.state == "READY"
         or .admission.state == "DISCOVERED")
       and .regionId == $target_region
@@ -870,7 +878,7 @@ validate_compound_target_artifacts() {
     and ([$targets[0].branches[]
       | select(.policy == "EXPLORE"
         and (.siteId | contains($consumer)))] | length) >= 5
-  ' "${activation_plan}" >/dev/null \
+  ' "${region_plan}" >/dev/null \
     || die "${label} lost its two joint three-output producer demands"
 
   mapfile -t producer_closures < <(find "${campaign_root}" -mindepth 2 \

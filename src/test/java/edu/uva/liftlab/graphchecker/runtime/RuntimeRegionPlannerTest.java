@@ -123,7 +123,7 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
-    public void derivesOutputClosureActivationFromConfirmedReadFrom()
+    public void attachesOutputRelationGoalToConfirmedWriterInstance()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -139,6 +139,7 @@ public class RuntimeRegionPlannerTest {
             String absentAnchor = "<example.Updater: void fatalAnchor()>";
             String field = "<example.State: java.util.Map entries>";
             String writerRegion = "{\"regionId\":\"REGION.W\","
+                    + "\"selection\":\"STATIC_OVER_APPROXIMATION\","
                     + "\"rootMethod\":\"" + updater + "\","
                     + "\"anchorMethod\":\"" + absentAnchor + "\","
                     + "\"methods\":[\"" + updater + "\"],"
@@ -249,6 +250,8 @@ public class RuntimeRegionPlannerTest {
                     + "\"branchPolicies\":[],\"models\":[]}"
                     + System.lineSeparator();
             String readerRegion = "{\"regionId\":\"REGION.R\","
+                    + "\"selection\":"
+                    + "\"EXCEPTION_BACKWARD_CAUSAL_CLOSURE\","
                     + "\"rootMethod\":\"" + reader + "\","
                     + "\"anchorMethod\":\"" + reader + "\","
                     + "\"methods\":[\"" + reader + "\"],"
@@ -310,26 +313,30 @@ public class RuntimeRegionPlannerTest {
                     Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
                     Arrays.asList(write, read));
 
-            assertEquals(3, result.activations.size());
-            Map<String, Object> upstream = result.activations.get(2);
-            Map<String, Object> captureGoal = (Map<String, Object>)
-                    upstream.get("captureGoal");
-            assertEquals("OUTPUT_CLOSURE", captureGoal.get("kind"));
-            assertEquals("READY", admissionState(upstream));
-            assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
-            assertEquals(11L, upstream.get("rootCallId"));
-            assertEquals(1, ((List<?>) upstream.get("edgeBindings")).size());
-            assertCanonicalOutputOnly(upstream);
+            assertEquals(2, result.activations.size());
+            Map<String, Object> writerEnvelope =
+                    activationForRootCall(result, 11L);
+            Map<String, Object> outputGoal =
+                    closureGoal(writerEnvelope,
+                            "OUTPUT_RELATION_CLOSURE");
+            assertEquals("READY", admissionState(outputGoal));
+            assertFalse(outputGoal.containsKey(
+                    "requestedOutputSliceComplete"));
+            assertEquals(11L, writerEnvelope.get("rootCallId"));
+            assertEquals(1, ((List<?>) outputGoal.get(
+                    "edgeBindings")).size());
+            assertCanonicalOutputOnly(outputGoal);
             @SuppressWarnings("unchecked")
             Map<String, Object> retainedSlice = outputSlice(
-                    upstream, "REGION.W.out.0");
+                    outputGoal, "REGION.W.out.0");
             @SuppressWarnings("unchecked")
             Map<String, Object> retainedOutput = (Map<String, Object>)
-                    outputMember(upstream, "REGION.W.out.0").get("output");
+                    outputMember(outputGoal,
+                            "REGION.W.out.0").get("output");
             assertEquals(field, retainedOutput.get("cell"));
-            assertEquals(1, ((java.util.List<?>) upstream.get(
+            assertEquals(1, ((java.util.List<?>) outputGoal.get(
                     "heapStateBindings")).size());
-            assertEquals(1, ((java.util.List<?>) upstream.get(
+            assertEquals(1, ((java.util.List<?>) outputGoal.get(
                     "symbolize")).size());
             assertEquals(true, retainedSlice.get(
                     "captureBindingsComplete"));
@@ -385,14 +392,15 @@ public class RuntimeRegionPlannerTest {
                     "\"toInputPort\":\"REGION.R.in.0\""));
             @SuppressWarnings("unchecked")
             Map<String, Object> edgeBinding =
-                    ((List<Map<String, Object>>) upstream.get(
+                    ((List<Map<String, Object>>) outputGoal.get(
                             "edgeBindings")).get(0);
             assertEquals(field, edgeBinding.get("toInputCell"));
             assertEquals("FIELD_ASSIGNMENT_READ_FROM_V1",
                     edgeBinding.get("evidenceKind"));
             assertTrue(result.activationsJsonl().contains(
                     "\"writerEventSeq\":2"));
-            assertEquals(1, derivedActivationCount(result));
+            assertEquals(1, closureGoals(writerEnvelope,
+                    "OUTPUT_RELATION_CLOSURE").size());
 
             // The same compact row must fail closed when even one referenced
             // canonical edge is absent.
@@ -407,13 +415,15 @@ public class RuntimeRegionPlannerTest {
                             Collections.<RuntimeRegionPlanner.RuntimeEvent>
                                     emptyList(),
                             Arrays.asList(write, read));
-            assertEquals("DISCOVERED",
-                    admissionState(missingEdge.activations.get(2)));
-            assertFalse(missingEdge.activations.get(2).containsKey(
+            Map<String, Object> missingGoal = closureGoal(
+                    activationForRootCall(missingEdge, 11L),
+                    "OUTPUT_RELATION_CLOSURE");
+            assertEquals("DISCOVERED", admissionState(missingGoal));
+            assertFalse(missingGoal.containsKey(
                     "requestedOutputSlice"));
-            assertFalse(missingEdge.activations.get(2).containsKey(
+            assertFalse(missingGoal.containsKey(
                     "outputClosure"));
-            assertTrue(String.valueOf(missingEdge.activations.get(2).get(
+            assertTrue(String.valueOf(missingGoal.get(
                     "admission")).contains(
                     "OUTPUT_MEMBER_INCOMPLETE"));
         } finally {
@@ -426,11 +436,14 @@ public class RuntimeRegionPlannerTest {
             throws Exception {
         RuntimeRegionPlanner.Result result = jointPrimitiveDemandResult(
                 false);
-        List<Map<String, Object>> derived = derivedActivations(result);
-        assertEquals(2, derived.size());
+        Map<String, Object> producer =
+                activationForRegion(result, "REGION.P");
+        List<Map<String, Object>> outputGoals = closureGoals(
+                producer, "OUTPUT_RELATION_CLOSURE");
+        assertEquals(2, outputGoals.size());
 
         Map<String, Object> joint = upstreamDemandFor(
-                derived, "REGION.DXY");
+                outputGoals, "REGION.DXY");
         assertCanonicalOutputOnly(joint);
         assertEquals("READY", admissionState(joint));
         assertEquals(2, ((List<?>) outputClosure(joint).get(
@@ -453,7 +466,7 @@ public class RuntimeRegionPlannerTest {
                 edgeBindingIds(joint));
 
         Map<String, Object> isolated = upstreamDemandFor(
-                derived, "REGION.DX");
+                outputGoals, "REGION.DX");
         assertCanonicalOutputOnly(isolated);
         assertEquals(1, ((List<?>) outputClosure(isolated).get(
                 "members")).size());
@@ -469,11 +482,13 @@ public class RuntimeRegionPlannerTest {
             throws Exception {
         RuntimeRegionPlanner.Result result = jointPrimitiveDemandResult(
                 true);
-        List<Map<String, Object>> derived = derivedActivations(result);
-        assertEquals(2, derived.size());
+        List<Map<String, Object>> outputGoals = closureGoals(
+                activationForRegion(result, "REGION.P"),
+                "OUTPUT_RELATION_CLOSURE");
+        assertEquals(2, outputGoals.size());
 
         Map<String, Object> rejected = upstreamDemandFor(
-                derived, "REGION.DXY");
+                outputGoals, "REGION.DXY");
         assertEquals("DISCOVERED", admissionState(rejected));
         assertFalse(rejected.containsKey("outputClosure"));
         assertFalse(rejected.containsKey("requestedOutput"));
@@ -484,11 +499,54 @@ public class RuntimeRegionPlannerTest {
 
         // The unrelated D{x} demand remains independently usable.
         Map<String, Object> isolated = upstreamDemandFor(
-                derived, "REGION.DX");
+                outputGoals, "REGION.DX");
         assertCanonicalOutputOnly(isolated);
         assertEquals("READY", admissionState(isolated));
         assertEquals(1, ((List<?>) outputClosure(isolated).get(
                 "members")).size());
+    }
+
+    @Test
+    public void emitsOneEnvelopePerInstanceAndOnlySemanticClosureGoals()
+            throws Exception {
+        RuntimeRegionPlanner.Result result = jointPrimitiveDemandResult(
+                false);
+        assertTrue(closureGoals(activationForRegion(result, "REGION.P"),
+                "TARGET_REACH_CLOSURE").isEmpty());
+        java.util.Set<String> instances = new java.util.LinkedHashSet<>();
+        for (Map<String, Object> envelope : result.activations) {
+            assertFalse(envelope.containsKey("activationId"));
+            assertFalse(envelope.containsKey("captureGoal"));
+            assertTrue(instances.add(String.valueOf(
+                    envelope.get("regionInstanceId"))));
+            assertFalse(envelope.containsKey("admission"));
+            assertFalse(envelope.containsKey("symbolize"));
+            assertFalse(envelope.containsKey("branches"));
+            assertFalse(envelope.containsKey(
+                    "runtimeDefinitionMethods"));
+            assertFalse(envelope.containsKey("_plannerBaseExecution"));
+
+            java.util.Set<String> goalIds =
+                    new java.util.LinkedHashSet<>();
+            for (Map<String, Object> goal : closureGoals(envelope, "")) {
+                assertTrue(goal.containsKey("goalId"));
+                assertTrue(goalIds.add(String.valueOf(
+                        goal.get("goalId"))));
+                assertTrue(goal.containsKey("admission"));
+                assertTrue(goal.containsKey("symbolize"));
+                assertTrue(goal.containsKey("branches"));
+                assertTrue(goal.containsKey(
+                        "runtimeDefinitionMethods"));
+                String kind = String.valueOf(goal.get("kind"));
+                assertTrue("non-semantic closure goal: " + kind,
+                        "OUTPUT_RELATION_CLOSURE".equals(kind)
+                                || "TARGET_REACH_CLOSURE".equals(kind));
+                assertFalse("branch flips are worklist queries, not goals",
+                        "BRANCH_FLIP".equals(kind)
+                                || "TARGET_BRANCH".equals(kind));
+            }
+        }
+        assertEquals(result.activations.size(), instances.size());
     }
 
     @Test
@@ -515,6 +573,7 @@ public class RuntimeRegionPlannerTest {
             String runtimeBranch = updater + "#u4";
             String unobservedBranch = updater + "#u15";
             String writerRegion = "{\"regionId\":\"REGION.W\","
+                    + "\"selection\":\"STATIC_OVER_APPROXIMATION\","
                     + "\"rootMethod\":\"" + constructor + "\","
                     + "\"anchorMethod\":\"" + updater + "\","
                     + "\"methods\":[\"" + constructor + "\",\""
@@ -618,6 +677,8 @@ public class RuntimeRegionPlannerTest {
                     + "\"guard\":\"alternative\",\"role\":"
                     + "\"OUTPUT_RELATION\"}],\"models\":[]}\n";
             String readerRegion = "{\"regionId\":\"REGION.R\","
+                    + "\"selection\":"
+                    + "\"EXCEPTION_BACKWARD_CAUSAL_CLOSURE\","
                     + "\"rootMethod\":\"" + reader + "\","
                     + "\"anchorMethod\":\"" + reader + "\","
                     + "\"methods\":[\"" + reader + "\"],"
@@ -675,9 +736,11 @@ public class RuntimeRegionPlannerTest {
                     Arrays.asList(mutation, mutationReturn, branch),
                     Arrays.asList(payloadRead, stateRead, downstreamRead));
 
-            assertEquals(3, result.activations.size());
+            assertEquals(2, result.activations.size());
             @SuppressWarnings("unchecked")
-            Map<String, Object> output = result.activations.get(2);
+            Map<String, Object> output = closureGoal(
+                    activationForRootCall(result, 11L),
+                    "OUTPUT_RELATION_CLOSURE");
             assertFalse(output.containsKey("requestedOutputSliceComplete"));
             assertCanonicalOutputOnly(output);
             Map<String, Object> slice = outputSlice(
@@ -752,6 +815,8 @@ public class RuntimeRegionPlannerTest {
             String guardSite = anchor + "#u8";
             String failure = anchor + "#u11#exception:example.Bug";
             String region = "{\"regionId\":\"REGION.0\","
+                    + "\"selection\":"
+                    + "\"EXCEPTION_BACKWARD_CAUSAL_CLOSURE\","
                     + "\"rootMethod\":\"" + root + "\","
                     + "\"anchorMethod\":\"" + anchor + "\","
                     + "\"methods\":[\"" + root + "\",\"" + anchor
@@ -826,18 +891,20 @@ public class RuntimeRegionPlannerTest {
 
             assertEquals(1, result.activations.size());
             Map<String, Object> activation = result.activations.get(0);
-            assertFalse(activation.containsKey("concreteDemandSlice"));
+            Map<String, Object> targetGoal = closureGoal(
+                    activation, "TARGET_REACH_CLOSURE");
+            assertFalse(targetGoal.containsKey("concreteDemandSlice"));
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> actions =
-                    (List<Map<String, Object>>) activation.get("symbolize");
+                    (List<Map<String, Object>>) targetGoal.get("symbolize");
             assertEquals(2, actions.size());
             assertEquals("HEAP_OBJECT_FIELD", actions.get(0).get("location"));
             assertEquals("HEAP_OBJECT_FIELD", actions.get(1).get("location"));
             assertEquals(fieldA, actions.get(0).get("cell"));
             assertEquals(fieldB, actions.get(1).get("cell"));
-            assertFalse(String.valueOf(activation.get(
+            assertFalse(String.valueOf(targetGoal.get(
                     "runtimeDefinitionMethods")).contains(other));
-            assertEquals("READY", admissionState(activation));
+            assertEquals("READY", admissionState(targetGoal));
         } finally {
             folder.delete();
         }
@@ -984,104 +1051,6 @@ public class RuntimeRegionPlannerTest {
         } finally {
             folder.delete();
         }
-    }
-
-    private static RuntimeRegionPlanner.Result
-    mapValueProjectionActivationResult(boolean includeExactFieldRead) {
-        String mapField = "<example.Producer: java.util.Map elements>";
-        String outputField = "<example.Payload: example.Element[] elements>";
-        String elementField = "<example.Element: long expiryDate>";
-        String mapLocal = "<example.Producer: example.Payload export()>::$r1";
-        String viewLocal = "<example.Producer: example.Payload export()>::$r2";
-        String arrayLocal = "<example.Producer: example.Payload export()>::$r3";
-
-        List<Map<String, Object>> causal = new ArrayList<>();
-        if (includeExactFieldRead) {
-            causal.add(row("edgeId", "GOOD.FIELD", "fromCell", mapField,
-                    "toCell", mapLocal, "transferKind", "HEAP_READ",
-                    "kind", "field_read"));
-        }
-        causal.add(row("edgeId", "BAD.GUARD", "fromCell", mapField,
-                "toCell", mapLocal, "transferKind", "GUARD",
-                "kind", "path_guard_dependency"));
-        causal.add(projectionEdge("VIEW", mapLocal, viewLocal,
-                "MAP_VALUES_VIEW", false));
-        causal.add(projectionEdge("SNAP", viewLocal, arrayLocal,
-                "COLLECTION_TO_ARRAY", true));
-        causal.add(row("edgeId", "OUT", "fromCell", arrayLocal,
-                "toCell", outputField, "transferKind", "HEAP_WRITE",
-                "kind", "field_write"));
-
-        Map<String, Object> producerSlice = row(
-                "outputPort", "REGION.P.out.keys",
-                "outputCell", outputField,
-                "complete", true,
-                "inputBindings", Collections.singletonList(row(
-                        "dependencyCell", mapField,
-                        "inputPort", "REGION.P.in.map")),
-                "causalEdges", causal);
-        Map<String, Object> producer = row(
-                "activationId", "ACT.P.OUT",
-                "regionId", "REGION.P",
-                "regionInstanceId", "REGION.P@test#call1",
-                "captureGoal", row("kind", "OUTPUT_CLOSURE"),
-                "requestedOutputCaptureRequired", false,
-                "requestedOutput", row("portId", "REGION.P.out.keys",
-                        "cell", outputField),
-                "requestedOutputSlice", producerSlice,
-                "edgeBindings", Collections.singletonList(row(
-                        "edgeId", "EDGE.PD",
-                        "toRegionInstance", "REGION.D@test#call2",
-                        "toInputPort", "REGION.D.in.keys")),
-                "admission", row("state", "READY", "mode",
-                        "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY",
-                        "blockers", Collections.emptyList()));
-
-        Map<String, Object> downstreamBinding = row(
-                "schemaVersion", 1,
-                "kind", "ARRAY_ELEMENT_FIELD",
-                "bindingId", "BIND.DOWNSTREAM.EXPIRY",
-                "baseInputSymbol", "REGION.D.in.expiry",
-                "containerInputPort", "REGION.D.in.keys",
-                "declaredFieldSignature", elementField,
-                "declaredFieldOwnerClass", "example.Element",
-                "declaredFieldType", "long",
-                "declaredFieldName", "expiryDate",
-                "fieldPath", Collections.singletonList("expiryDate"),
-                "complete", true);
-        Map<String, Object> downstream = row(
-                "activationId", "ACT.D.OUT",
-                "regionId", "REGION.D",
-                "regionInstanceId", "REGION.D@test#call2",
-                "captureGoal", row("kind", "OUTPUT_CLOSURE"),
-                "requestedOutputSlice", row(
-                        "complete", true,
-                        "containerElementFieldBindings",
-                        Collections.singletonList(downstreamBinding)));
-        RuntimeRegionPlanner.Result result =
-                new RuntimeRegionPlanner.Result();
-        result.activations.add(producer);
-        result.activations.add(downstream);
-        return result;
-    }
-
-    private static Map<String, Object> projectionEdge(
-            String id, String from, String to, String operation,
-            boolean snapshot) {
-        return row("edgeId", id, "fromCell", from, "toCell", to,
-                "siteId", "<example.Producer: example.Payload export()>#u"
-                        + (snapshot ? "3" : "2"),
-                "transferKind", "MODEL_TRANSFORM",
-                "kind", snapshot ? "container_snapshot_projection"
-                        : "container_backed_view_projection",
-                "containerProjectionContractVersion", 1,
-                "containerProjectionOperation", operation,
-                "containerProjectionAuthority",
-                "JAVA_COLLECTION_API_EXACT_SIGNATURE_WHITELIST_V1",
-                "receiverValueDependencyComplete", true,
-                "elementIdentityPreserving", true,
-                "backedView", !snapshot,
-                "snapshot", snapshot);
     }
 
     private static Map<String, Object> row(Object... values) {
@@ -1736,6 +1705,8 @@ public class RuntimeRegionPlannerTest {
 
             JsonObject producerRegion = new JsonObject();
             producerRegion.addProperty("regionId", "REGION.P");
+            producerRegion.addProperty("selection",
+                    "STATIC_OVER_APPROXIMATION");
             producerRegion.addProperty("rootMethod", producer);
             producerRegion.addProperty("anchorMethod", producer);
             producerRegion.add("methods", jsonStrings(producer));
@@ -1765,10 +1736,14 @@ public class RuntimeRegionPlannerTest {
                     "REGION.DXY", dxy,
                     new String[]{"REGION.DXY.in.x", "REGION.DXY.in.y"},
                     new String[]{outputX, outputY});
+            jointConsumer.addProperty("selection",
+                    "EXCEPTION_BACKWARD_CAUSAL_CLOSURE");
             JsonObject xConsumer = consumerRegion(
                     "REGION.DX", dx,
                     new String[]{"REGION.DX.in.x"},
                     new String[]{outputX});
+            xConsumer.addProperty("selection",
+                    "STATIC_OVER_APPROXIMATION");
             writeRegions(regions, (producerRegion + "\n"
                     + jointConsumer + "\n" + xConsumer + "\n").getBytes(
                     StandardCharsets.UTF_8));
@@ -1974,16 +1949,61 @@ public class RuntimeRegionPlannerTest {
         return result;
     }
 
-    private static List<Map<String, Object>> derivedActivations(
-            RuntimeRegionPlanner.Result result) {
-        List<Map<String, Object>> derived = new ArrayList<>();
+    private static Map<String, Object> activationForRootCall(
+            RuntimeRegionPlanner.Result result, long rootCallId) {
         for (Map<String, Object> activation : result.activations) {
-            if (String.valueOf(activation.get("activationId"))
-                    .startsWith("ACT.UPSTREAM.")) {
-                derived.add(activation);
+            Object value = activation.get("rootCallId");
+            if (value instanceof Number
+                    && ((Number) value).longValue() == rootCallId) {
+                return activation;
             }
         }
-        return derived;
+        throw new AssertionError("missing activation for root call "
+                + rootCallId);
+    }
+
+    private static Map<String, Object> activationForRegion(
+            RuntimeRegionPlanner.Result result, String regionId) {
+        Map<String, Object> found = null;
+        for (Map<String, Object> activation : result.activations) {
+            if (!regionId.equals(activation.get("regionId"))) {
+                continue;
+            }
+            if (found != null) {
+                throw new AssertionError("multiple activations for region "
+                        + regionId);
+            }
+            found = activation;
+        }
+        if (found == null) {
+            throw new AssertionError("missing activation for region "
+                    + regionId);
+        }
+        return found;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> closureGoals(
+            Map<String, Object> activation, String kind) {
+        Object value = activation.get("closureGoals");
+        assertTrue("missing closureGoals: " + activation,
+                value instanceof List);
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> goal
+                : (List<Map<String, Object>>) value) {
+            if (kind.isEmpty() || kind.equals(goal.get("kind"))) {
+                result.add(goal);
+            }
+        }
+        return result;
+    }
+
+    private static Map<String, Object> closureGoal(
+            Map<String, Object> activation, String kind) {
+        List<Map<String, Object>> goals = closureGoals(activation, kind);
+        assertEquals("expected one " + kind + " goal in " + activation,
+                1, goals.size());
+        return goals.get(0);
     }
 
     @SuppressWarnings("unchecked")
@@ -2498,18 +2518,6 @@ public class RuntimeRegionPlannerTest {
 
     private static Path companionStaticGraph(Path regions) {
         return regions.resolveSibling("static_dataflow_edges.jsonl");
-    }
-
-    private static int derivedActivationCount(
-            RuntimeRegionPlanner.Result result) {
-        int count = 0;
-        for (Map<String, Object> activation : result.activations) {
-            if (String.valueOf(activation.get("activationId"))
-                    .startsWith("ACT.UPSTREAM.")) {
-                count++;
-            }
-        }
-        return count;
     }
 
     @SuppressWarnings("unchecked")

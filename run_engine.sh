@@ -54,7 +54,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|static_regions|static_graph|runtime_activation_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|relationship_candidates|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|static_regions|static_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_region_instance_id|schedule_target_site|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|relationship_candidates|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -88,15 +88,15 @@ reset_config() {
   trace_test=""
   static_regions=""
   static_graph=""
-  runtime_activation_plan=""
+  runtime_region_plan=""
   runtime_edge_validations=""
   schedule_output_dir=""
   schedule_summaries=""
   schedule_region_id=""
-  schedule_activation_id=""
+  schedule_region_instance_id=""
   schedule_target_site=""
   raw_concolic_results=""
-  import_activation_plan=""
+  import_task_plan=""
   imported_summaries=""
   import_diagnostics=""
   merged_summaries=""
@@ -107,7 +107,7 @@ reset_config() {
   relationship_candidates=""
   reach_report=""
   fatal_region=""
-  fatal_activation_id=""
+  fatal_region_instance_id=""
   solver_timeout_ms=""
   reach_max_inputs=""
   reach_max_valuations=""
@@ -170,15 +170,16 @@ apply_environment_overrides() {
   apply_env_override trace_test CAUSYNTH_TRACE_TEST
   apply_env_override static_regions CAUSYNTH_STATIC_REGIONS
   apply_env_override static_graph CAUSYNTH_STATIC_GRAPH
-  apply_env_override runtime_activation_plan CAUSYNTH_ACTIVATION_PLAN
+  apply_env_override runtime_region_plan CAUSYNTH_REGION_PLAN
   apply_env_override runtime_edge_validations CAUSYNTH_EDGE_VALIDATIONS
   apply_env_override schedule_output_dir CAUSYNTH_SCHEDULE_OUTPUT_DIR
   apply_env_override schedule_summaries CAUSYNTH_SCHEDULE_SUMMARIES
   apply_env_override schedule_region_id CAUSYNTH_SCHEDULE_REGION_ID
-  apply_env_override schedule_activation_id CAUSYNTH_SCHEDULE_ACTIVATION_ID
+  apply_env_override schedule_region_instance_id \
+    CAUSYNTH_SCHEDULE_REGION_INSTANCE_ID
   apply_env_override schedule_target_site CAUSYNTH_SCHEDULE_TARGET_SITE
   apply_env_override raw_concolic_results CAUSYNTH_RAW_RESULTS
-  apply_env_override import_activation_plan CAUSYNTH_IMPORT_ACTIVATION_PLAN
+  apply_env_override import_task_plan CAUSYNTH_IMPORT_TASK_PLAN
   apply_env_override imported_summaries CAUSYNTH_IMPORTED_SUMMARIES
   apply_env_override import_diagnostics CAUSYNTH_IMPORT_DIAGNOSTICS
   apply_env_override merged_summaries CAUSYNTH_MERGED_SUMMARIES
@@ -189,7 +190,8 @@ apply_environment_overrides() {
   apply_env_override relationship_candidates CAUSYNTH_RELATIONSHIP_CANDIDATES
   apply_env_override reach_report CAUSYNTH_REACH_REPORT
   apply_env_override fatal_region CAUSYNTH_FATAL_REGION
-  apply_env_override fatal_activation_id CAUSYNTH_FATAL_ACTIVATION_ID
+  apply_env_override fatal_region_instance_id \
+    CAUSYNTH_FATAL_REGION_INSTANCE_ID
   apply_env_override solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS
   apply_env_override reach_max_inputs CAUSYNTH_REACH_MAX_INPUTS
   apply_env_override reach_max_valuations CAUSYNTH_REACH_MAX_VALUATIONS
@@ -330,11 +332,11 @@ initialize_config() {
 
   static_regions=${static_regions:-${causynth_output_dir}/symbolic_regions.jsonl}
   static_graph=${static_graph:-${causynth_output_dir}/static_dataflow_edges.jsonl}
-  runtime_activation_plan=${runtime_activation_plan:-${causynth_output_dir}/runtime/concolic_activation_plan.jsonl}
+  runtime_region_plan=${runtime_region_plan:-${causynth_output_dir}/runtime/concolic_region_plan.jsonl}
   runtime_edge_validations=${runtime_edge_validations:-${causynth_output_dir}/runtime/runtime_region_edge_validation.jsonl}
   schedule_output_dir=${schedule_output_dir:-${causynth_output_dir}/schedule}
   raw_concolic_results=${raw_concolic_results:-${schedule_output_dir}/concolic_region_results.jsonl}
-  import_activation_plan=${import_activation_plan:-${schedule_output_dir}/scheduled_activation_plan.jsonl}
+  import_task_plan=${import_task_plan:-${schedule_output_dir}/execution_task_plan.jsonl}
   imported_summaries=${imported_summaries:-${schedule_output_dir}/concolic_region_summaries.jsonl}
   import_diagnostics=${import_diagnostics:-${schedule_output_dir}/concolic_import_diagnostics.jsonl}
   merged_summaries=${merged_summaries:-${schedule_output_dir}/merged_region_summaries.jsonl}
@@ -347,11 +349,11 @@ initialize_config() {
 
   static_regions=$(resolve_path "${static_regions}")
   static_graph=$(resolve_path "${static_graph}")
-  runtime_activation_plan=$(resolve_path "${runtime_activation_plan}")
+  runtime_region_plan=$(resolve_path "${runtime_region_plan}")
   runtime_edge_validations=$(resolve_path "${runtime_edge_validations}")
   schedule_output_dir=$(resolve_path "${schedule_output_dir}")
   raw_concolic_results=$(resolve_path "${raw_concolic_results}")
-  import_activation_plan=$(resolve_path "${import_activation_plan}")
+  import_task_plan=$(resolve_path "${import_task_plan}")
   imported_summaries=$(resolve_path "${imported_summaries}")
   import_diagnostics=$(resolve_path "${import_diagnostics}")
   merged_summaries=$(resolve_path "${merged_summaries}")
@@ -410,7 +412,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command trace_test static_regions static_graph runtime_activation_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest relationship_candidates reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command trace_test static_regions static_graph runtime_region_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_task_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest relationship_candidates reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -485,13 +487,14 @@ do_analyze() {
 
 do_schedule() {
   require_file "symbolic regions" "${static_regions}"
-  require_file "runtime activation plan" "${runtime_activation_plan}"
+  local region_plan="${runtime_region_plan}"
+  require_file "runtime region plan" "${region_plan}"
   require_file "runtime edge validations" "${runtime_edge_validations}"
   ensure_output_directory "${schedule_output_dir}"
   local -a args
   args=(
     --regions "${static_regions}"
-    --activation-plan "${runtime_activation_plan}"
+    --region-plan "${region_plan}"
     --edge-validations "${runtime_edge_validations}"
     --output-dir "${schedule_output_dir}"
   )
@@ -503,7 +506,8 @@ do_schedule() {
     args+=(--summaries "${schedule_summaries}")
   fi
   [[ -z "${schedule_region_id}" ]] || args+=(--region-id "${schedule_region_id}")
-  [[ -z "${schedule_activation_id}" ]] || args+=(--activation-id "${schedule_activation_id}")
+  [[ -z "${schedule_region_instance_id}" ]] \
+    || args+=(--region-instance-id "${schedule_region_instance_id}")
   [[ -z "${schedule_target_site}" ]] || args+=(--target-site "${schedule_target_site}")
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
     "${args[@]}" "$@"
@@ -511,12 +515,12 @@ do_schedule() {
 
 do_import() {
   require_file "raw concolic results" "${raw_concolic_results}"
-  require_file "import activation plan" "${import_activation_plan}"
+  require_file "import activation plan" "${import_task_plan}"
   require_file "symbolic regions" "${static_regions}"
   ensure_output_directory "$(dirname "${imported_summaries}")"
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter \
     --results "${raw_concolic_results}" \
-    --activation-plan "${import_activation_plan}" \
+    --task-plan "${import_task_plan}" \
     --regions "${static_regions}" \
     --output "${imported_summaries}" \
     --diagnostics "${import_diagnostics}" "$@"
@@ -545,7 +549,8 @@ do_compose() {
   local -a selection
   selection=()
   [[ -z "${fatal_region}" ]] || selection+=(--fatal-region "${fatal_region}")
-  [[ -z "${fatal_activation_id}" ]] || selection+=(--activation-id "${fatal_activation_id}")
+  [[ -z "${fatal_region_instance_id}" ]] \
+    || selection+=(--region-instance-id "${fatal_region_instance_id}")
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
     --fatal-query "${fatal_queries}" \
     "${PATH_LIST_ARGUMENTS[@]}" \
@@ -587,7 +592,7 @@ do_workload() {
       bash -lc "${workload_command}")
   fi
   local trace_dir
-  trace_dir=$(dirname "${runtime_activation_plan}")
+  trace_dir=$(dirname "${runtime_region_plan}")
   run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
     --trace-dir "${trace_dir}" \
     --static-graph "${static_graph}" \
@@ -716,16 +721,13 @@ debug_runtime_artifacts() {
        fromRegion, fromPort, toRegion, toPort,
        bindingCount: ((.bindings // []) | length),
        bindings: ((.bindings // [])[:$max])}'
-  debug_jsonl_projection concolic_activation_plan \
-    "${runtime_activation_plan}" '
+  debug_jsonl_projection concolic_region_instance_plan \
+    "${runtime_region_plan}" '
     select(type == "object")
-    | {activationId, regionInstanceId, regionId, rootSelector,
-       admission: ((.admission // {})
-         | {state, mode,
-            blockerCount: ((.blockers // []) | length),
-            blockers: ((.blockers // [])[:$max])}),
-       symbolizeCount: ((.symbolize // []) | length),
-       branchCount: ((.branches // []) | length)}'
+    | {regionInstanceId, regionId, rootSelector,
+       goalCount: ((.closureGoals // []) | length),
+       goals: ((.closureGoals // [])
+         | map({goalId, kind, admission})[:$max])}'
 }
 
 debug_merge_artifacts() {
@@ -745,7 +747,7 @@ debug_merge_artifacts() {
          cases: (($relation.cases // [])
            | map(. as $case
              | {caseId: ($case.caseId // ""),
-                sourceActivationId: ($case.sourceActivationId // ""),
+                sourceTaskId: ($case.sourceTaskId // ""),
                 guard: (($case.guard // {})
                   | {kind: (.kind // ""),
                      conditionCount: ((.conditions // []) | length),

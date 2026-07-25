@@ -362,7 +362,7 @@ public final class ConcolicRegionRuntime {
         String test = firstNonBlank(System.getProperty("causynth.trace.test"),
                 System.getenv("CAUSYNTH_TRACE_TEST"), "unknown-test");
         int ordinal = nextOrdinal(test + "\n" + rootMethod);
-        Activation activation = config.select(rootMethod, test, ordinal,
+        ExecutionTask activation = config.select(rootMethod, test, ordinal,
                 receiver, rootArguments);
         if (activation == null) {
             return 0L;
@@ -373,7 +373,7 @@ public final class ConcolicRegionRuntime {
         return startSymbolicRegion(activation, receiver);
     }
 
-    private static long startSymbolicRegion(Activation activation,
+    private static long startSymbolicRegion(ExecutionTask activation,
                                             Object receiver) {
         if (!reserveSymbolicEngine()) {
             writeSkipped(activation, "another concolic region is active");
@@ -390,7 +390,7 @@ public final class ConcolicRegionRuntime {
         boolean pathConditionPaused = false;
         long token = 0L;
         try {
-            api.start(activation.regionId, activation.activationId);
+            api.start(activation.regionId, activation.taskId);
             engineStarted = true;
             // Region setup performs reflection, collection lookups and JSON-safe
             // bookkeeping.  Once the first receiver field becomes symbolic,
@@ -453,7 +453,7 @@ public final class ConcolicRegionRuntime {
         return token;
     }
 
-    private static long enterConcreteReplay(Activation activation,
+    private static long enterConcreteReplay(ExecutionTask activation,
                                             Object receiver) {
         String invalid = activation.concreteReplayError();
         if (!invalid.isEmpty()) {
@@ -1498,7 +1498,7 @@ public final class ConcolicRegionRuntime {
                 JsonElement valueExpression = value == null
                         ? nullReferenceExpression()
                         : activationLocalValueRefWitnessExpression(
-                        active.activation.activationId, valueToken);
+                        active.activation.taskId, valueToken);
 
                 JsonObject row = new JsonObject();
                 row.addProperty("index", index);
@@ -1572,7 +1572,7 @@ public final class ConcolicRegionRuntime {
             observation.addProperty("objectTokenAuthority",
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             observation.addProperty("objectTokenScope",
-                    active.activation.activationId);
+                    active.activation.taskId);
             observation.add("mapExpression",
                     copyJsonTree(cursor.mapExpression));
             observation.addProperty("mapExpressionAuthority",
@@ -1635,7 +1635,7 @@ public final class ConcolicRegionRuntime {
         observation.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         observation.addProperty("objectTokenScope",
-                active.activation.activationId);
+                active.activation.taskId);
         boolean snapshotComplete = false;
         JsonArray entries = new JsonArray();
         try {
@@ -1782,7 +1782,7 @@ public final class ConcolicRegionRuntime {
         observation.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         observation.addProperty("objectTokenScope",
-                active.activation.activationId);
+                active.activation.taskId);
         observation.addProperty("expressionAuthority",
                 cursor.mapExpressionAuthority);
         observation.addProperty("keyExpressionAuthority",
@@ -2028,11 +2028,11 @@ public final class ConcolicRegionRuntime {
         }
         long valueObjectToken = active.objectToken(cursor.value);
         if (valueObjectToken <= 0L
-                || safe(active.activation.activationId).isEmpty()) {
+                || safe(active.activation.taskId).isEmpty()) {
             return false;
         }
         JsonObject witness = activationLocalValueRefWitnessExpression(
-                active.activation.activationId, valueObjectToken);
+                active.activation.taskId, valueObjectToken);
         cursor.valueExpression = witness;
         cursor.valueExpressionAuthority = VALUE_REF_WITNESS_AUTHORITY;
         annotateValueRefWitness(cursor.entryObservation, active, cursor);
@@ -2048,11 +2048,11 @@ public final class ConcolicRegionRuntime {
         }
         long mapObjectToken = active.objectToken(cursor.binding.map);
         if (mapObjectToken <= 0L
-                || safe(active.activation.activationId).isEmpty()) {
+                || safe(active.activation.taskId).isEmpty()) {
             return false;
         }
         cursor.mapExpression = activationLocalValueRefWitnessExpression(
-                active.activation.activationId, mapObjectToken);
+                active.activation.taskId, mapObjectToken);
         cursor.mapExpressionAuthority = MAP_REF_WITNESS_AUTHORITY;
         annotateMapRefWitness(cursor.entryObservation, active, cursor);
         return true;
@@ -2076,16 +2076,16 @@ public final class ConcolicRegionRuntime {
                 && backingMapObjectToken > 0L
                 && cursor.mapExpression.equals(
                 activationLocalValueRefWitnessExpression(
-                        active.activation.activationId,
+                        active.activation.taskId,
                         backingMapObjectToken));
     }
 
     private static JsonObject activationLocalValueRefWitnessExpression(
-            String activationId, long objectToken) {
+            String taskId, long objectToken) {
         JsonObject witness = new JsonObject();
         witness.addProperty("_type", "SymbolExpression");
         witness.addProperty("_java_type", "L");
-        witness.addProperty("_exp", valueRefWitnessSymbol(activationId,
+        witness.addProperty("_exp", valueRefWitnessSymbol(taskId,
                 objectToken));
         return witness;
     }
@@ -2106,7 +2106,7 @@ public final class ConcolicRegionRuntime {
                 VALUE_REF_WITNESS_KIND);
         target.addProperty("valueExpressionWitnessObjectToken", token);
         target.addProperty("valueExpressionWitnessObjectTokenScope",
-                active.activation.activationId);
+                active.activation.taskId);
         target.addProperty("valueExpressionWitnessAuthority",
                 VALUE_REF_WITNESS_TOKEN_AUTHORITY);
     }
@@ -2127,7 +2127,7 @@ public final class ConcolicRegionRuntime {
                 MAP_REF_WITNESS_KIND);
         target.addProperty("mapExpressionWitnessObjectToken", token);
         target.addProperty("mapExpressionWitnessObjectTokenScope",
-                active.activation.activationId);
+                active.activation.taskId);
         target.addProperty("mapExpressionWitnessAuthority",
                 VALUE_REF_WITNESS_TOKEN_AUTHORITY);
     }
@@ -2141,9 +2141,9 @@ public final class ConcolicRegionRuntime {
         target.remove("valueExpressionWitnessAuthority");
     }
 
-    private static String valueRefWitnessSymbol(String activationId,
+    private static String valueRefWitnessSymbol(String taskId,
                                                 long objectToken) {
-        byte[] bytes = safe(activationId).getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = safe(taskId).getBytes(StandardCharsets.UTF_8);
         StringBuilder hex = new StringBuilder(bytes.length * 2);
         for (byte value : bytes) {
             int unsigned = value & 0xff;
@@ -2793,7 +2793,7 @@ public final class ConcolicRegionRuntime {
             row.addProperty("objectTokenAuthority",
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             row.addProperty("objectTokenScope",
-                    active.activation.activationId);
+                    active.activation.taskId);
             active.verifyMapProjectionOutput(outputPort, outputCell,
                     assignedValue,
                     "ACTIVE_TOKEN_EXACT_POST_INSTANCE_FIELD_ASSIGNMENT");
@@ -3298,7 +3298,7 @@ public final class ConcolicRegionRuntime {
         }
         if (!safe(active.activation.regionId).equals(
                 string(envelope, "regionId"))
-                || !safe(active.activation.activationId).equals(
+                || !safe(active.activation.taskId).equals(
                 string(envelope, "activationId"))) {
             return VmBranchEventAttestation.invalid(
                     "event stream region/activation does not match owner");
@@ -3334,7 +3334,7 @@ public final class ConcolicRegionRuntime {
         }
         if (!safe(active.activation.regionId).equals(
                 string(selected, "regionId"))
-                || !safe(active.activation.activationId).equals(
+                || !safe(active.activation.taskId).equals(
                 string(selected, "activationId"))) {
             return VmBranchEventAttestation.invalid(
                     "event region/activation differs from its owner");
@@ -3623,7 +3623,7 @@ public final class ConcolicRegionRuntime {
             summary.addProperty("active", false);
             summary.addProperty("regionId", active.activation.regionId);
             summary.addProperty("activationId",
-                    active.activation.activationId);
+                    active.activation.taskId);
             summary.addProperty("pathConditionRecordingPaused", false);
             summary.addProperty("pathConditionPauseDepth", 0);
             summary.add("pathCondition", new JsonArray());
@@ -3650,18 +3650,21 @@ public final class ConcolicRegionRuntime {
         result.addProperty("event", "CONCOLIC_REGION_RESULT");
         result.addProperty("schemaVersion", 1);
         result.addProperty("executionMode", executionMode);
-        result.addProperty("activationId", active.activation.activationId);
+        result.addProperty("goalId", active.activation.goalId);
+        result.addProperty("taskId", active.activation.taskId);
+        result.addProperty("regionInstanceId",
+                active.activation.regionInstanceId);
         result.addProperty("regionId", active.activation.regionId);
         result.addProperty("exitKind", exitKind);
         result.addProperty("exceptionType", safe(exceptionType));
-        addActivationReplayEvidence(result, active.activation);
+        addTaskReplayEvidence(result, active.activation);
     }
 
-    private static void addActivationReplayEvidence(
-            JsonObject result, Activation activation) {
-        if (result == null || activation == null) return;
-        if (!activation.pathQueryKey.isEmpty()) {
-            result.addProperty("pathQueryKey", activation.pathQueryKey);
+    private static void addTaskReplayEvidence(
+            JsonObject result, ExecutionTask task) {
+        if (result == null || task == null) return;
+        if (!task.pathQueryKey.isEmpty()) {
+            result.addProperty("pathQueryKey", task.pathQueryKey);
         }
     }
 
@@ -4267,7 +4270,7 @@ public final class ConcolicRegionRuntime {
         result.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         result.addProperty("objectTokenScope",
-                active.activation.activationId);
+                active.activation.taskId);
         Object owner = resolveFieldPathLeafOwner(root, path);
         if (owner == null || owner == MissingValue.INSTANCE
                 || path == null || path.isEmpty()) {
@@ -4329,7 +4332,7 @@ public final class ConcolicRegionRuntime {
         result.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         result.addProperty("objectTokenScope",
-                active.activation.activationId);
+                active.activation.taskId);
         result.addProperty("exactFieldSignature", safe(fieldSignature));
         result.addProperty("exactFieldSignatureAuthority",
                 "BYTECODE_GETFIELD_DECLARING_OWNER_NAME_AND_TYPE");
@@ -4713,11 +4716,15 @@ public final class ConcolicRegionRuntime {
                 + safe(rootMethod) + "\n" + selector.identity());
     }
 
-    private static void writeSkipped(Activation activation, String reason) {
+    private static void writeSkipped(ExecutionTask activation,
+                                     String reason) {
         JsonObject result = new JsonObject();
         result.addProperty("event", "CONCOLIC_REGION_SKIPPED");
         result.addProperty("schemaVersion", 1);
-        result.addProperty("activationId", activation.activationId);
+        result.addProperty("goalId", activation.goalId);
+        result.addProperty("taskId", activation.taskId);
+        result.addProperty("regionInstanceId",
+                activation.regionInstanceId);
         result.addProperty("regionId", activation.regionId);
         result.addProperty("rootMethod", activation.rootMethod);
         result.addProperty("reason", reason);
@@ -4992,7 +4999,7 @@ public final class ConcolicRegionRuntime {
 
         private final int schemaVersion = 2;
         private final String kind = KIND;
-        private final String sourceActivationId;
+        private final String sourceTaskId;
         private final String inputPort;
         private final String inputCell;
         private final String dynamicBindingId;
@@ -5012,7 +5019,7 @@ public final class ConcolicRegionRuntime {
                                         String canonicalInputPort,
                                         String canonicalInputCell,
                                         DynamicFieldBinding dynamicBinding) {
-            this.sourceActivationId = active.activation.activationId;
+            this.sourceTaskId = active.activation.taskId;
             this.inputPort = safe(canonicalInputPort);
             this.inputCell = safe(canonicalInputCell);
             this.dynamicBindingId = dynamicBinding == null ? ""
@@ -5290,7 +5297,7 @@ public final class ConcolicRegionRuntime {
             JsonObject result = new JsonObject();
             result.addProperty("schemaVersion", schemaVersion);
             result.addProperty("kind", kind);
-            result.addProperty("sourceActivationId", sourceActivationId);
+            result.addProperty("sourceTaskId", sourceTaskId);
             result.addProperty("inputPort", inputPort);
             result.addProperty("inputCell", inputCell);
             result.addProperty("inputJavaTypeDescriptor",
@@ -5491,7 +5498,7 @@ public final class ConcolicRegionRuntime {
                     groupId, new ArrayList<>(specs), map,
                     active.objectToken(map), elements, elementTokens,
                     keyExpressions, keySelectors,
-                    active.activation.activationId, true, "");
+                    active.activation.taskId, true, "");
             snapshot.validateReplayAssignments(active);
             for (MapValueElementProjectionSpec spec : specs) {
                 for (int index = 0; index < elements.length; index++) {
@@ -5591,7 +5598,7 @@ public final class ConcolicRegionRuntime {
                     new ArrayList<>(specs), map, active.objectToken(map),
                     new Object[0], new long[0], new JsonElement[0],
                     new String[0],
-                    active.activation.activationId, false, problem);
+                    active.activation.taskId, false, problem);
         }
 
         /**
@@ -5902,7 +5909,7 @@ public final class ConcolicRegionRuntime {
             this.mapObjectToken = snapshot.mapObjectToken;
             this.elementObjectToken = active.objectToken(element);
             this.elementOwner = element;
-            this.objectTokenScope = active.activation.activationId;
+            this.objectTokenScope = active.activation.taskId;
             this.expectedMapKey = copyJsonTree(
                     snapshot.entryKeyExpressions[outputIndex]);
         }
@@ -6230,7 +6237,7 @@ public final class ConcolicRegionRuntime {
 
     private static final class ActiveRegion {
         private final long token;
-        private final Activation activation;
+        private final ExecutionTask activation;
         private final Object receiver;
         private final Thread thread;
         private final boolean engineBacked;
@@ -6318,8 +6325,8 @@ public final class ConcolicRegionRuntime {
         private final Set<String> preparedArrayInputPorts =
                 new LinkedHashSet<>();
 
-        private ActiveRegion(long token, Activation activation, Object receiver,
-                             Thread thread) {
+        private ActiveRegion(long token, ExecutionTask activation,
+                             Object receiver, Thread thread) {
             this.token = token;
             this.activation = activation;
             this.receiver = receiver;
@@ -6680,7 +6687,7 @@ public final class ConcolicRegionRuntime {
                     missing.addProperty("phase", "MISSING_ENTRY_SNAPSHOT");
                     missing.addProperty("groupId", group);
                     missing.addProperty("objectTokenScope",
-                            activation.activationId);
+                            activation.taskId);
                     missing.addProperty("complete", false);
                     missing.addProperty("problem",
                             "declared backing Map input was never observed");
@@ -7484,7 +7491,7 @@ public final class ConcolicRegionRuntime {
             this.entryValueOwner = accessOwner;
             this.entryValueOwnerObjectToken = active.objectToken(accessOwner);
             this.leafOwnerObjectToken = active.objectToken(leafOwner);
-            this.objectTokenScope = active.activation.activationId;
+            this.objectTokenScope = active.activation.taskId;
             this.entryReadObservationId = cursor.entryObservationId;
             this.containerSelector = null;
             this.keyExpression = cursor.keyExpression == null ? null
@@ -7515,7 +7522,7 @@ public final class ConcolicRegionRuntime {
             this.entryValueOwner = null;
             this.entryValueOwnerObjectToken = 0L;
             this.leafOwnerObjectToken = active.objectToken(leafOwner);
-            this.objectTokenScope = active.activation.activationId;
+            this.objectTokenScope = active.activation.taskId;
             this.entryReadObservationId = "";
             this.containerSelector = new ContainerElementSelector(active,
                     spec, container, accessOwner, resolvedElementIndex,
@@ -7661,7 +7668,7 @@ public final class ConcolicRegionRuntime {
             this.containerObjectToken = container == null ? 0L
                     : container.objectToken;
             this.elementObjectToken = active.objectToken(element);
-            this.objectTokenScope = active.activation.activationId;
+            this.objectTokenScope = active.activation.taskId;
             this.observationLocation = container == null ? ""
                     : container.location;
             this.complete = container != null && !container.ambiguous
@@ -8517,7 +8524,7 @@ public final class ConcolicRegionRuntime {
             this.complete = bool(json, "complete", false);
         }
 
-        private String validationError(Activation activation,
+        private String validationError(ExecutionTask activation,
                                        SymbolizeAction action) {
             if (schemaVersion != 1 || !KIND.equals(kind) || !complete) {
                 return "unsupported or incomplete projection schema/kind";
@@ -8585,7 +8592,7 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Activation-authored selector for one field occurrence owned by an
+     * Task-authored selector for one field occurrence owned by an
      * element of an object array input.  This is deliberately a small generic
      * union member rather than an inferred container heuristic: a planner must
      * name both the static field family and its exact owning container port.
@@ -8644,7 +8651,7 @@ public final class ConcolicRegionRuntime {
                     "declaredFieldType"));
         }
 
-        private String structuralValidationError(Activation activation,
+        private String structuralValidationError(ExecutionTask activation,
                                                  SymbolizeAction action,
                                                  Object leafOwner,
                                                  String fieldSignature) {
@@ -9913,8 +9920,10 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static final class Activation {
-        private final String activationId;
+    private static final class ExecutionTask {
+        private final String goalId;
+        private final String taskId;
+        private final String regionInstanceId;
         private final String regionId;
         private final String test;
         private final String rootMethod;
@@ -9923,7 +9932,6 @@ public final class ConcolicRegionRuntime {
         private final RootContextSelector rootContextSelector;
         private final RootArgumentSelector rootArgumentSelector;
         private final boolean replayable;
-        private final boolean requiresAllSelection;
         private final boolean concreteReplayOnly;
         private final boolean observationOnlyReplay;
         /** Complete planner-authored action catalog used by exact selector
@@ -9940,9 +9948,17 @@ public final class ConcolicRegionRuntime {
         private final List<OutputCaptureRequest> outputCaptures;
         private boolean modelAssignmentKeysUnique = true;
 
-        private Activation(JsonObject json) {
+        private ExecutionTask(JsonObject json) {
             JsonObject rootSelector = object(json, "rootSelector");
-            this.activationId = string(json, "activationId");
+            this.goalId = string(json, "goalId");
+            this.taskId = string(json, "taskId");
+            this.regionInstanceId = string(json, "regionInstanceId");
+            if (taskId.isEmpty() || goalId.isEmpty()
+                    || regionInstanceId.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "execution task requires taskId, goalId and "
+                                + "regionInstanceId");
+            }
             this.regionId = string(json, "regionId");
             this.test = string(json, "test");
             this.rootMethod = string(rootSelector, "method");
@@ -9952,8 +9968,6 @@ public final class ConcolicRegionRuntime {
             this.rootArgumentSelector = RootArgumentSelector.from(
                     rootSelector);
             this.replayable = admissionExecutable(json);
-            this.requiresAllSelection = "ALL".equals(string(
-                    object(json, "bundle"), "selection"));
             this.concreteReplayOnly = bool(json, "concreteReplayOnly", false);
             this.observationOnlyReplay = bool(json,
                     "observationOnlyReplay", false);
@@ -9965,7 +9979,7 @@ public final class ConcolicRegionRuntime {
             this.mapValueElementFieldProjections = new ArrayList<>();
             this.outputCaptures = new ArrayList<>();
             JsonArray materializations = executableMaterializations(json,
-                    replayable, activationId);
+                    replayable, taskId);
             JsonArray declaredActions = array(json, "symbolize");
             for (JsonElement element : declaredActions) {
                 if (element.isJsonObject()) {
@@ -10047,22 +10061,21 @@ public final class ConcolicRegionRuntime {
         }
 
         private static JsonArray executableMaterializations(
-                JsonObject activation, boolean replayable,
-                String activationId) {
+                JsonObject task, boolean replayable, String taskId) {
             if (!replayable) {
                 return new JsonArray();
             }
-            JsonElement encoded = activation.get("materializations");
+            JsonElement encoded = task.get("materializations");
             if (encoded == null || !encoded.isJsonArray()) {
-                throw new IllegalArgumentException("Replayable activation "
-                        + activationId + " requires materializations to be a "
+                throw new IllegalArgumentException("Replayable task "
+                        + taskId + " requires materializations to be a "
                         + "JSON array");
             }
             JsonArray actions = encoded.getAsJsonArray();
             for (int index = 0; index < actions.size(); index++) {
                 if (!actions.get(index).isJsonObject()) {
-                    throw new IllegalArgumentException("Replayable activation "
-                            + activationId + " materializations[" + index
+                    throw new IllegalArgumentException("Replayable task "
+                            + taskId + " materializations[" + index
                             + "] must be a JSON object");
                 }
             }
@@ -10202,44 +10215,46 @@ public final class ConcolicRegionRuntime {
 
     private static final class Configuration {
         private final boolean enabled;
-        private final String selectedActivation;
+        private final String selectedTask;
         private final Path resultFile;
-        private final List<Activation> activations;
+        private final List<ExecutionTask> tasks;
 
-        private Configuration(boolean enabled, String selectedActivation,
-                              Path resultFile, List<Activation> activations) {
+        private Configuration(boolean enabled, String selectedTask,
+                              Path resultFile,
+                              List<ExecutionTask> tasks) {
             this.enabled = enabled;
-            this.selectedActivation = selectedActivation;
+            this.selectedTask = selectedTask;
             this.resultFile = resultFile;
-            this.activations = activations;
+            this.tasks = tasks;
         }
 
-        private Activation select(String rootMethod, String test, int ordinal,
-                                  Object receiver, Object[] rootArguments) {
-            List<Activation> candidates = new ArrayList<>();
-            for (Activation activation : activations) {
-                if (!activation.replayable) {
+        private ExecutionTask select(String rootMethod, String test,
+                                     int ordinal, Object receiver,
+                                     Object[] rootArguments) {
+            List<ExecutionTask> candidates = new ArrayList<>();
+            for (ExecutionTask task : tasks) {
+                if (!task.replayable) {
                     continue;
                 }
-                if (!selectedActivation.isEmpty()
-                        && !selectedActivation.equals(activation.activationId)) {
+                if (!selectedTask.isEmpty()
+                        && !selectedTask.equals(task.taskId)) {
                     continue;
                 }
-                if (!rootMethod.equals(activation.rootMethod)) {
+                if (!rootMethod.equals(task.rootMethod)) {
                     continue;
                 }
-                if (!activation.test.isEmpty()
+                if (!task.test.isEmpty()
                         && !"unknown-test".equals(test)
-                        && !activation.test.equals(test)) {
+                        && !task.test.equals(test)) {
                     continue;
                 }
-                candidates.add(activation);
+                candidates.add(task);
             }
 
             String actualThreadName = Thread.currentThread().getName();
             Map<String, Integer> contextOccurrences =
                     new LinkedHashMap<>();
-            for (Activation activation : candidates) {
+            for (ExecutionTask activation : candidates) {
                 RootContextSelector selector =
                         activation.rootContextSelector;
                 if (!selector.present
@@ -10260,7 +10275,7 @@ public final class ConcolicRegionRuntime {
             // behind, making plan order affect future root selection.
             Map<String, SelectorOccurrence> occurrences =
                     new LinkedHashMap<>();
-            for (Activation activation : candidates) {
+            for (ExecutionTask activation : candidates) {
                 RootContextSelector contextSelector =
                         activation.rootContextSelector;
                 if (contextSelector.present
@@ -10282,8 +10297,8 @@ public final class ConcolicRegionRuntime {
                 }
             }
 
-            Activation selected = null;
-            for (Activation activation : candidates) {
+            ExecutionTask selected = null;
+            for (ExecutionTask activation : candidates) {
                 RootContextSelector contextSelector =
                         activation.rootContextSelector;
                 boolean contextMatches = !contextSelector.present
@@ -10302,8 +10317,8 @@ public final class ConcolicRegionRuntime {
                 if (selected != null) {
                     throw new IllegalStateException("Ambiguous runtime root "
                             + "selection for " + rootMethod
-                            + " activations=" + selected.activationId + ","
-                            + activation.activationId);
+                            + " tasks=" + selected.taskId + ","
+                            + activation.taskId);
                 }
                 selected = activation;
             }
@@ -10312,21 +10327,21 @@ public final class ConcolicRegionRuntime {
 
         private static Configuration load() {
             String planValue = firstNonBlank(
-                    System.getProperty("causynth.concolic.activation.plan"),
-                    System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN"));
-            String selected = firstNonBlank(
-                    System.getProperty("causynth.concolic.activation.id"),
-                    System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID"));
+                    System.getProperty("causynth.concolic.task.plan"),
+                    System.getenv("CAUSYNTH_CONCOLIC_TASK_PLAN"));
+            String selectedTask = firstNonBlank(
+                    System.getProperty("causynth.concolic.task.id"),
+                    System.getenv("CAUSYNTH_CONCOLIC_TASK_ID"));
             Path result = Paths.get(firstNonBlank(
                     System.getProperty("causynth.concolic.results"),
                     System.getenv("CAUSYNTH_CONCOLIC_RESULTS"),
                     "target/causynth-trace/concolic_region_results.jsonl"));
             if (planValue.isEmpty()) {
-                return new Configuration(false, selected, result,
+                return new Configuration(false, selectedTask, result,
                         Collections.emptyList());
             }
             Path plan = Paths.get(planValue);
-            List<Activation> activations = new ArrayList<>();
+            List<ExecutionTask> tasks = new ArrayList<>();
             if (Files.isRegularFile(plan)) {
                 try (BufferedReader reader = Files.newBufferedReader(plan,
                         StandardCharsets.UTF_8)) {
@@ -10337,10 +10352,8 @@ public final class ConcolicRegionRuntime {
                         }
                         JsonElement parsed = new JsonParser().parse(line);
                         if (parsed.isJsonObject()) {
-                            Activation activation = new Activation(parsed.getAsJsonObject());
-                            if (!activation.activationId.isEmpty()) {
-                                activations.add(activation);
-                            }
+                            tasks.add(new ExecutionTask(
+                                    parsed.getAsJsonObject()));
                         }
                     }
                 } catch (IOException exception) {
@@ -10352,45 +10365,39 @@ public final class ConcolicRegionRuntime {
                             + exception.getMessage(), exception);
                 }
             }
-            validateEffectiveActivationKeys(activations, selected, plan);
-            return new Configuration(!activations.isEmpty(), selected, result,
-                    activations);
+            validateEffectiveTaskKeys(tasks, selectedTask, plan);
+            return new Configuration(!tasks.isEmpty(), selectedTask,
+                    result, tasks);
         }
 
-        private static void validateEffectiveActivationKeys(
-                List<Activation> activations, String selected, Path plan) {
-            Set<String> activationIds = new LinkedHashSet<>();
+        private static void validateEffectiveTaskKeys(
+                List<ExecutionTask> tasks, String selectedTask,
+                Path plan) {
+            Set<String> taskIds = new LinkedHashSet<>();
             Map<String, String> runtimeKeys = new LinkedHashMap<>();
-            for (Activation activation : activations) {
-                if (!selected.isEmpty()
-                        && selected.equals(activation.activationId)
-                        && activation.requiresAllSelection) {
-                    throw new IllegalStateException("Selected activation "
-                            + selected + " belongs to a reachability bundle "
-                            + "that requires ALL plan rows in " + plan);
-                }
+            for (ExecutionTask activation : tasks) {
                 if (!activation.replayable
-                        || (!selected.isEmpty() && !selected.equals(
-                        activation.activationId))) {
+                        || (!selectedTask.isEmpty()
+                        && !selectedTask.equals(activation.taskId))) {
                     continue;
                 }
                 if (!activation.rootArgumentSelector.valid) {
                     throw new IllegalStateException("Malformed runtime root "
-                            + "argument selector for activation "
-                            + activation.activationId + ": "
+                            + "argument selector for task "
+                            + activation.taskId + ": "
                             + activation.rootArgumentSelector.error
                             + " in " + plan);
                 }
                 if (!activation.rootContextSelector.valid) {
                     throw new IllegalStateException("Malformed stable runtime "
-                            + "root context for activation "
-                            + activation.activationId + ": "
+                            + "root context for task "
+                            + activation.taskId + ": "
                             + activation.rootContextSelector.error
                             + " in " + plan);
                 }
-                if (!activationIds.add(activation.activationId)) {
+                if (!taskIds.add(activation.taskId)) {
                     throw new IllegalStateException("Duplicate effective "
-                            + "activationId " + activation.activationId
+                            + "taskId " + activation.taskId
                             + " in " + plan);
                 }
                 String root = activation.rootMethod;
@@ -10407,22 +10414,21 @@ public final class ConcolicRegionRuntime {
                 String key = root + "\n" + contextSelector.identity()
                         + "\n" + contextSelector.selectionIdentity() + "\n"
                         + selectorIdentity + "\n" + selectionIdentity;
-                String previous = runtimeKeys.put(key,
-                        activation.activationId);
+                String previous = runtimeKeys.put(key, activation.taskId);
                 if (previous != null) {
                     throw new IllegalStateException("Ambiguous effective "
-                            + "activation runtime key root=" + root
+                            + "task runtime key root=" + root
                             + " context=" + contextSelector.identity()
                             + " selector=" + selectorIdentity
                             + " selection=" + selectionIdentity
-                            + " activations=" + previous + ","
-                            + activation.activationId + " in " + plan);
+                            + " tasks=" + previous + ","
+                            + activation.taskId + " in " + plan);
                 }
             }
-            if (!selected.isEmpty() && activationIds.isEmpty()) {
-                throw new IllegalStateException("Selected activation "
-                        + selected + " is absent or non-replayable in "
-                        + plan);
+            if (!selectedTask.isEmpty() && taskIds.isEmpty()) {
+                throw new IllegalStateException("Selected execution task "
+                        + selectedTask
+                        + " is absent or non-replayable in " + plan);
             }
         }
     }
@@ -10472,8 +10478,8 @@ public final class ConcolicRegionRuntime {
                     && cleanupEnd != null;
         }
 
-        private void start(String regionId, String activationId) throws Exception {
-            Object status = startRegion.invoke(null, regionId, activationId);
+        private void start(String regionId, String taskId) throws Exception {
+            Object status = startRegion.invoke(null, regionId, taskId);
             if (status instanceof Number
                     && ((Number) status).longValue() != 0L) {
                 throw new IllegalStateException(

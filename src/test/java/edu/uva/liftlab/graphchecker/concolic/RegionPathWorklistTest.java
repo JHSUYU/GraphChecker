@@ -19,15 +19,15 @@ public class RegionPathWorklistTest {
     @Test
     public void outputCaptureFlipsLatestBranchAndDropsOldSuffix() {
         JsonObject summary = summary("ACT.NEW",
-                RegionCaptureGoal.outputClosure());
-        JsonObject activation = activation("ACT.NEW",
-                RegionCaptureGoal.outputClosure());
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject executionTask = executionTask("ACT.NEW",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         JsonObject targetSummary = summary("ACT.TARGET",
-                RegionCaptureGoal.targetBranch());
-        JsonObject targetActivation = activation("ACT.TARGET",
-                RegionCaptureGoal.targetBranch());
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        JsonObject targetTask = executionTask("ACT.TARGET",
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
         targetSummary.remove("outputClosure");
-        targetActivation.remove("outputClosure");
+        targetTask.remove("outputClosure");
         int targetIndex = 0;
         for (com.google.gson.JsonElement element
                 : targetSummary.getAsJsonArray("branchMappings")) {
@@ -39,7 +39,7 @@ public class RegionPathWorklistTest {
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
-                Collections.singletonList(activation),
+                Collections.singletonList(executionTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
@@ -60,7 +60,7 @@ public class RegionPathWorklistTest {
 
         RegionPathWorklist.Result bounded = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
-                Collections.singletonList(activation),
+                Collections.singletonList(executionTask),
                 Collections.<JsonObject>emptyList(),
                 new RegionPathWorklist.Bounds(2, 32, 256));
         assertEquals(1, bounded.tasks.size());
@@ -77,37 +77,37 @@ public class RegionPathWorklistTest {
         helperBranch.addProperty("siteId", "HELPER#u0");
         helperBranch.addProperty("policy", "EXPLORE");
         targetBranches.add(helperBranch);
-        targetActivation.addProperty("targetMethod", "SITE");
-        targetActivation.add("branches", targetBranches);
+        targetTask.addProperty("targetMethod", "SITE");
+        targetTask.add("branches", targetBranches);
         RegionPathWorklist.Result targetResult = RegionPathWorklist.plan(
                 Collections.singletonList(targetSummary),
-                Collections.singletonList(targetActivation),
+                Collections.singletonList(targetTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
         assertEquals(2, targetResult.tasks.size());
         for (JsonObject task : targetResult.tasks) {
-            assertEquals("TARGET_BRANCH", task.getAsJsonObject(
-                    "captureGoal").get("kind").getAsString());
+            assertEquals("TARGET_REACH_CLOSURE",
+                    task.get("goalKind").getAsString());
             assertFalse(task.has("outputClosure"));
         }
-        assertEquals("TARGET_BRANCH", targetResult.manifest.get(
-                "captureGoal").getAsString());
+        assertEquals("TARGET_REACH_CLOSURE",
+                targetResult.manifest.get("goalKind").getAsString());
     }
 
     @Test
     public void completeEmptyOutputSliceDoesNotBecomeWildcard() {
         JsonObject summary = summary("ACT.EMPTY.SLICE",
-                RegionCaptureGoal.outputClosure());
-        JsonObject activation = activation(
-                "ACT.EMPTY.SLICE", RegionCaptureGoal.outputClosure());
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject executionTask = executionTask(
+                "ACT.EMPTY.SLICE", ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         JsonObject closure = outputClosure("REGION.3.out.0",
                 "<P: int x>", "PROOF.EMPTY");
         attachClosure(summary, closure);
-        attachClosure(activation, closure);
+        attachClosure(executionTask, closure);
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
-                Collections.singletonList(activation),
+                Collections.singletonList(executionTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
@@ -119,17 +119,17 @@ public class RegionPathWorklistTest {
     @Test
     public void explicitClosureScopesBranchTasksAndManifest() {
         JsonObject summary = summary("ACT.CLOSURE",
-                RegionCaptureGoal.outputClosure());
-        JsonObject activation = activation("ACT.CLOSURE",
-                RegionCaptureGoal.outputClosure());
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject executionTask = executionTask("ACT.CLOSURE",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         JsonObject closure = outputClosure("REGION.3.out.0",
                 "<P: int x>", "PROOF.A", "SITE.1");
         attachClosure(summary, closure);
-        attachClosure(activation, closure);
+        attachClosure(executionTask, closure);
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
-                Collections.singletonList(activation),
+                Collections.singletonList(executionTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
@@ -157,13 +157,13 @@ public class RegionPathWorklistTest {
         assertFalse(task.has("outputClosureFingerprint"));
 
         JsonObject boundedLoop = summary("ACT.LOOP",
-                RegionCaptureGoal.outputClosure());
-        JsonObject boundedLoopActivation = activation("ACT.LOOP",
-                RegionCaptureGoal.outputClosure());
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject boundedLoopTask = executionTask("ACT.LOOP",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         JsonObject loopClosure = outputClosure("REGION.3.out.0",
                 "<P: int x>", "PROOF.LOOP", "SITE.1");
         attachClosure(boundedLoop, loopClosure);
-        attachClosure(boundedLoopActivation, loopClosure);
+        attachClosure(boundedLoopTask, loopClosure);
         boundedLoop.getAsJsonArray("branchMappings").add(
                 SummaryBranchMapping.concrete(
                         ExactConcreteBranchObservation.attested(
@@ -172,7 +172,7 @@ public class RegionPathWorklistTest {
                         SummaryBranchMapping.Policy.EXPLORE).toJson());
         RegionPathWorklist.Result loopResult = RegionPathWorklist.plan(
                 Collections.singletonList(boundedLoop),
-                Collections.singletonList(boundedLoopActivation),
+                Collections.singletonList(boundedLoopTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
         assertEquals(loopResult.manifest.toString(),
@@ -183,50 +183,50 @@ public class RegionPathWorklistTest {
                 "deferredObservations").size());
 
         JsonObject legacySummary = summary("ACT.CLOSURE",
-                RegionCaptureGoal.outputClosure());
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         legacySummary.remove("outputClosure");
         boolean rejected = false;
         try {
             RegionPathWorklist.plan(
                     Collections.singletonList(legacySummary),
-                    Collections.singletonList(activation),
+                    Collections.singletonList(executionTask),
                     Collections.<JsonObject>emptyList(),
                     RegionPathWorklist.Bounds.defaults());
         } catch (IllegalArgumentException expected) {
             rejected = expected.getMessage().contains(
                     "canonical outputClosure is required");
         }
-        assertTrue("legacy summary must not inherit joint activation scope",
+        assertTrue("legacy summary must not inherit joint task scope",
                 rejected);
     }
 
     @Test
     public void closureDemandAndProofCannotReuseTerminalFlipRecord() {
         JsonObject firstSummary = summary("ACT.CLOSURE.A",
-                RegionCaptureGoal.outputClosure());
-        JsonObject firstActivation = activation("ACT.CLOSURE.A",
-                RegionCaptureGoal.outputClosure());
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject firstTask = executionTask("ACT.CLOSURE.A",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         JsonObject firstClosure = outputClosure("REGION.3.out.0",
                 "<P: int x>", "PROOF.A", "SITE.1");
         attachClosure(firstSummary, firstClosure);
-        attachClosure(firstActivation, firstClosure);
+        attachClosure(firstTask, firstClosure);
         RegionPathWorklist.Result first = RegionPathWorklist.plan(
                 Collections.singletonList(firstSummary),
-                Collections.singletonList(firstActivation),
+                Collections.singletonList(firstTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
         JsonObject secondSummary = summary("ACT.CLOSURE.B",
-                RegionCaptureGoal.outputClosure());
-        JsonObject secondActivation = activation("ACT.CLOSURE.B",
-                RegionCaptureGoal.outputClosure());
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject secondTask = executionTask("ACT.CLOSURE.B",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         JsonObject secondClosure = outputClosure("REGION.3.out.0",
                 "<P: int x>", "PROOF.B", "SITE.1");
         attachClosure(secondSummary, secondClosure);
-        attachClosure(secondActivation, secondClosure);
+        attachClosure(secondTask, secondClosure);
         RegionPathWorklist.Result second = RegionPathWorklist.plan(
                 Collections.singletonList(secondSummary),
-                Collections.singletonList(secondActivation),
+                Collections.singletonList(secondTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
@@ -244,22 +244,22 @@ public class RegionPathWorklistTest {
         record.addProperty("status", "UNSAT");
         RegionPathWorklist.Result replay = RegionPathWorklist.plan(
                 Collections.singletonList(secondSummary),
-                Collections.singletonList(secondActivation),
+                Collections.singletonList(secondTask),
                 Collections.singletonList(record),
                 RegionPathWorklist.Bounds.defaults());
         assertEquals(1, replay.tasks.size());
 
         JsonObject otherDemandSummary = summary("ACT.CLOSURE.C",
-                RegionCaptureGoal.outputClosure());
-        JsonObject otherDemandActivation = activation("ACT.CLOSURE.C",
-                RegionCaptureGoal.outputClosure());
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject otherDemandTask = executionTask("ACT.CLOSURE.C",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         JsonObject otherDemand = outputClosure("REGION.3.out.1",
                 "<P: int y>", "PROOF.A", "SITE.1");
         attachClosure(otherDemandSummary, otherDemand);
-        attachClosure(otherDemandActivation, otherDemand);
+        attachClosure(otherDemandTask, otherDemand);
         RegionPathWorklist.Result third = RegionPathWorklist.plan(
                 Collections.singletonList(otherDemandSummary),
-                Collections.singletonList(otherDemandActivation),
+                Collections.singletonList(otherDemandTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
         assertNotEquals(OutputClosureCodec.decodeEnvelope(first.tasks.get(0)
@@ -278,11 +278,11 @@ public class RegionPathWorklistTest {
                 "<P: int result>", "PROOF.DEFERRED",
                 "SITE.0", "SITE.1", "SITE.LATE");
         JsonObject concrete = summary("ACT.CONCRETE",
-                RegionCaptureGoal.outputClosure());
-        JsonObject concreteActivation = activation("ACT.CONCRETE",
-                RegionCaptureGoal.outputClosure());
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject concreteTask = executionTask("ACT.CONCRETE",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         attachClosure(concrete, closure);
-        attachClosure(concreteActivation, closure);
+        attachClosure(concreteTask, closure);
         concrete.getAsJsonArray("branchMappings").add(
                 SummaryBranchMapping.concrete(
                         ExactConcreteBranchObservation.attested(
@@ -292,7 +292,7 @@ public class RegionPathWorklistTest {
 
         RegionPathWorklist.Result bridgePending = RegionPathWorklist.plan(
                 Collections.singletonList(concrete),
-                Collections.singletonList(concreteActivation),
+                Collections.singletonList(concreteTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
         assertEquals(RegionPathWorklist.State.PENDING.name(),
@@ -312,7 +312,7 @@ public class RegionPathWorklistTest {
         }
         RegionPathWorklist.Result exhausted = RegionPathWorklist.plan(
                 Collections.singletonList(concrete),
-                Collections.singletonList(concreteActivation),
+                Collections.singletonList(concreteTask),
                 exhaustedRecords, RegionPathWorklist.Bounds.defaults());
         assertTrue(exhausted.tasks.isEmpty());
         assertEquals(RegionPathWorklist.State.GAPPED.name(),
@@ -322,16 +322,17 @@ public class RegionPathWorklistTest {
         assertFalse(exhausted.manifest.has("deferredObservations"));
 
         JsonObject wrongOccurrence = summary("ACT.WRONG.OCCURRENCE",
-                RegionCaptureGoal.outputClosure());
-        JsonObject wrongActivation = activation("ACT.WRONG.OCCURRENCE",
-                RegionCaptureGoal.outputClosure());
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject wrongTask = executionTask("ACT.WRONG.OCCURRENCE",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        shareGoal(concrete, wrongOccurrence, wrongTask);
         attachClosure(wrongOccurrence, closure);
-        attachClosure(wrongActivation, closure);
+        attachClosure(wrongTask, closure);
         addWitness(wrongOccurrence, "SITE.LATE", 1,
                 nestedFieldPredicate(99));
         RegionPathWorklist.Result stillDeferred = RegionPathWorklist.plan(
                 Arrays.asList(concrete, wrongOccurrence),
-                Arrays.asList(concreteActivation, wrongActivation),
+                Arrays.asList(concreteTask, wrongTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
         assertEquals(RegionPathWorklist.State.PENDING.name(),
@@ -340,17 +341,18 @@ public class RegionPathWorklistTest {
                 "deferredObservations").size());
 
         JsonObject exactOccurrence = summary("ACT.EXACT.OCCURRENCE",
-                RegionCaptureGoal.outputClosure());
-        JsonObject exactActivation = activation("ACT.EXACT.OCCURRENCE",
-                RegionCaptureGoal.outputClosure());
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject exactTask = executionTask("ACT.EXACT.OCCURRENCE",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        shareGoal(concrete, exactOccurrence, exactTask);
         attachClosure(exactOccurrence, closure);
-        attachClosure(exactActivation, closure);
+        attachClosure(exactTask, closure);
         addWitness(exactOccurrence, "SITE.LATE", 2,
                 nestedFieldPredicate(100));
         RegionPathWorklist.Result witnessed = RegionPathWorklist.plan(
                 Arrays.asList(concrete, wrongOccurrence, exactOccurrence),
-                Arrays.asList(concreteActivation, wrongActivation,
-                        exactActivation),
+                Arrays.asList(concreteTask, wrongTask,
+                        exactTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
         assertEquals(RegionPathWorklist.State.PENDING.name(),
@@ -411,25 +413,36 @@ public class RegionPathWorklistTest {
         artifact.add("outputClosure", closure.deepCopy());
     }
 
-    private static JsonObject activation(String id, RegionCaptureGoal goal) {
-        JsonObject activation = new JsonObject();
-        activation.addProperty("activationId", id);
-        activation.addProperty("regionId", "REGION.3");
-        activation.add("captureGoal", goal.toJson());
-        attachClosure(activation, outputClosure("REGION.3.out.0",
-                "<P: int x>", "PROOF.DEFAULT", "SITE.0", "SITE.1"));
-        return activation;
+    private static void shareGoal(JsonObject source,
+                                  JsonObject... executionArtifacts) {
+        String goalId = source.get("goalId").getAsString();
+        for (JsonObject artifact : executionArtifacts) {
+            artifact.addProperty("goalId", goalId);
+        }
     }
 
-    private static JsonObject summary(String activationId,
-                                      RegionCaptureGoal goal) {
+    private static JsonObject executionTask(String id,
+                                            ClosureGoalKind goal) {
+        JsonObject task = new JsonObject();
+        task.addProperty("goalId", id + ".GOAL");
+        task.addProperty("taskId", "TASK." + id);
+        task.addProperty("regionId", "REGION.3");
+        goal.writeToTask(task);
+        attachClosure(task, outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.DEFAULT", "SITE.0", "SITE.1"));
+        return task;
+    }
+
+    private static JsonObject summary(String id,
+                                      ClosureGoalKind goal) {
         JsonObject summary = new JsonObject();
-        summary.addProperty("summaryId", "SUMMARY." + activationId);
-        summary.addProperty("activationId", activationId);
+        summary.addProperty("summaryId", "SUMMARY." + id);
+        summary.addProperty("goalId", id + ".GOAL");
+        summary.addProperty("taskId", "TASK." + id);
         summary.addProperty("regionId", "REGION.3");
         summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", true);
-        summary.add("captureGoal", goal.toJson());
+        goal.writeToTask(summary);
         attachClosure(summary, outputClosure("REGION.3.out.0",
                 "<P: int x>", "PROOF.DEFAULT", "SITE.0", "SITE.1"));
 

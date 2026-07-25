@@ -14,8 +14,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
@@ -24,6 +26,8 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 public class ConcolicSummaryImporterTest {
+    private static final Map<String, String> TEST_TASK_REGION_INSTANCES =
+            Collections.synchronizedMap(new HashMap<String, String>());
 
 
 
@@ -100,8 +104,7 @@ public class ConcolicSummaryImporterTest {
             write(activations, "{\"activationId\":\"ACT.0\","
                     + "\"regionId\":\"REGION.0\",\"rootMethod\":\""
                     + method + "\","
-                    + "\"captureGoal\":"
-                    + RegionCaptureGoal.outputClosure().toJson() + ","
+                    + "\"goalKind\":\"OUTPUT_RELATION_CLOSURE\","
                     + "\"receiverType\":\"Handler\","
                     + "\"symbolize\":[{\"symbol\":\"REGION.0.in.0\"}],"
                     + "\"materializations\":[],"
@@ -137,6 +140,10 @@ public class ConcolicSummaryImporterTest {
             assertTrue(summary.contains("InvalidToken"));
             JsonObject importedSummary = JsonParser.parseString(
                     summary.trim()).getAsJsonObject();
+            assertFalse(importedSummary.has("activationId"));
+            assertTrue(importedSummary.has("regionInstanceId"));
+            assertTrue(importedSummary.has("goalId"));
+            assertTrue(importedSummary.has("taskId"));
             assertFalse(importedSummary.has("executionKind"));
             assertEquals(0, importedSummary.getAsJsonArray(
                     "symbolicInputs").size());
@@ -458,8 +465,7 @@ public class ConcolicSummaryImporterTest {
                 "REGION.TIME@fixture#call1");
         activation.addProperty("rootCallId", 1);
         activation.addProperty("rootMethod", method);
-        activation.add("captureGoal",
-                RegionCaptureGoal.outputClosure().toJson());
+        activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         JsonObject slice = new JsonObject();
         slice.addProperty("complete", true);
         slice.addProperty("outputPort", "REGION.TIME.out.0");
@@ -1486,8 +1492,7 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("regionInstanceId",
                 "REGION.P@fixture#call10");
         activation.addProperty("rootCallId", 10);
-        activation.add("captureGoal",
-                RegionCaptureGoal.outputClosure().toJson());
+        activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         activation.addProperty("rootMethod", method);
         JsonArray requestedOutputMethods = new JsonArray();
         requestedOutputMethods.add(method);
@@ -1673,6 +1678,10 @@ public class ConcolicSummaryImporterTest {
         JsonObject summary = summaryRows.isEmpty() ? new JsonObject()
                 : JsonParser.parseString(summaryRows).getAsJsonObject();
         String diagnosticRows = readOptional(diagnostics);
+        if (summary.size() == 0) {
+            throw new IllegalStateException("map fixture import failed: "
+                    + diagnosticRows);
+        }
         return new MapFixture(summary, diagnosticRows);
     }
 
@@ -1745,8 +1754,7 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("activationId", "ACT.P");
         activation.addProperty("regionId", "REGION.P");
         activation.addProperty("rootMethod", method);
-        activation.add("captureGoal",
-                RegionCaptureGoal.outputClosure().toJson());
+        activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         activation.add("requestedOutputMethods", singletonString(method));
         activation.add("materializations", actions);
         activation.add("symbolize", actions.deepCopy());
@@ -2672,8 +2680,7 @@ public class ConcolicSummaryImporterTest {
                 "REGION.OUT@fixture#call1");
         activation.addProperty("rootCallId", 1);
         activation.addProperty("rootMethod", rootMethod);
-        activation.add("captureGoal",
-                RegionCaptureGoal.outputClosure().toJson());
+        activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         activation.addProperty("requestedOutputCaptureRequired", true);
         activation.addProperty("requestedOutputCaptureComplete", true);
         JsonObject requested = new JsonObject();
@@ -2771,8 +2778,7 @@ public class ConcolicSummaryImporterTest {
         activation.add("materializations", inputs.deepCopy());
         OutputClosureCodec.writeTo(activation, contract);
         if (wrongGoal) {
-            activation.add("captureGoal",
-                    RegionCaptureGoal.targetBranch().toJson());
+            activation.addProperty("goalKind", "TARGET_REACH_CLOSURE");
         }
         write(activations, activation + "\n");
 
@@ -2857,8 +2863,7 @@ public class ConcolicSummaryImporterTest {
                 regionId + "@fixture#call1");
         activation.addProperty("rootCallId", 1);
         activation.addProperty("rootMethod", rootMethod);
-        activation.add("captureGoal",
-                RegionCaptureGoal.outputClosure().toJson());
+        activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         JsonObject requested = new JsonObject();
         requested.addProperty("portId", port);
         requested.addProperty("cell", cell);
@@ -3036,8 +3041,14 @@ public class ConcolicSummaryImporterTest {
     }
 
     private static JsonObject readObject(Path path) throws Exception {
-        return JsonParser.parseString(new String(Files.readAllBytes(path),
-                StandardCharsets.UTF_8).trim()).getAsJsonObject();
+        String content = new String(Files.readAllBytes(path),
+                StandardCharsets.UTF_8).trim();
+        if (content.isEmpty()) {
+            Path diagnostics = path.resolveSibling("diagnostics.jsonl");
+            throw new IllegalStateException("empty JSON object " + path
+                    + "; diagnostics=" + readOptional(diagnostics));
+        }
+        return JsonParser.parseString(content).getAsJsonObject();
     }
 
     private static MapFixture importExactFieldAssignmentCaptureFixture(
@@ -3202,8 +3213,7 @@ public class ConcolicSummaryImporterTest {
                 "REGION.FIELD@fixture#call1");
         activation.addProperty("rootCallId", 1);
         activation.addProperty("rootMethod", method);
-        activation.add("captureGoal",
-                RegionCaptureGoal.outputClosure().toJson());
+        activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         activation.addProperty("requestedOutputCaptureRequired", true);
         activation.addProperty("requestedOutputCaptureComplete", true);
         JsonObject requested = new JsonObject();
@@ -3450,8 +3460,7 @@ public class ConcolicSummaryImporterTest {
                 "REGION.ARRAY@fixture#call1");
         activation.addProperty("rootCallId", 1);
         activation.addProperty("rootMethod", method);
-        activation.add("captureGoal",
-                RegionCaptureGoal.outputClosure().toJson());
+        activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         JsonObject slice = new JsonObject();
         slice.addProperty("complete", true);
         slice.addProperty("outputPort", "REGION.ARRAY.out.0");
@@ -3613,8 +3622,7 @@ public class ConcolicSummaryImporterTest {
                 "REGION.MAP@fixture#call1");
         activation.addProperty("rootCallId", 1);
         activation.addProperty("rootMethod", method);
-        activation.add("captureGoal",
-                RegionCaptureGoal.outputClosure().toJson());
+        activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         JsonObject slice = new JsonObject();
         slice.addProperty("complete", true);
         slice.addProperty("outputPort", outputPort);
@@ -4105,6 +4113,15 @@ public class ConcolicSummaryImporterTest {
                 } else if (parsed.isJsonObject()
                         && parsed.getAsJsonObject().has("activationId")) {
                     JsonObject activation = parsed.getAsJsonObject();
+                    canonicalTaskIdentityForTest(activation);
+                    if (!activation.has("regionInstanceId")) {
+                        long rootCallId = activation.has("rootCallId")
+                                ? activation.get("rootCallId").getAsLong()
+                                : 0L;
+                        activation.addProperty("regionInstanceId",
+                                textForTest(activation, "regionId")
+                                        + "@test#call" + rootCallId);
+                    }
                     if (!activation.has("materializations")) {
                         JsonElement declarations = activation.get(
                                 "symbolize");
@@ -4115,6 +4132,9 @@ public class ConcolicSummaryImporterTest {
                                         : new JsonArray());
                     }
                     canonicalizeOutputClosureForTest(activation);
+                    TEST_TASK_REGION_INSTANCES.put(
+                            textForTest(activation, "taskId"),
+                            textForTest(activation, "regionInstanceId"));
                     line = activation.toString();
                 }
             }
@@ -4127,7 +4147,8 @@ public class ConcolicSummaryImporterTest {
     private static void canonicalizeOutputClosureForTest(
             JsonObject activation) {
         if (activation.has(OutputClosureContract.FIELD)
-                || !RegionCaptureGoal.from(activation).isOutputClosure()) {
+                || !"OUTPUT_RELATION_CLOSURE".equals(
+                textForTest(activation, "goalKind"))) {
             return;
         }
         JsonObject requested = activation.has("requestedOutput")
@@ -4238,6 +4259,19 @@ public class ConcolicSummaryImporterTest {
 
     private static JsonObject canonicalRuntimeResultForTest(JsonObject raw) {
         JsonObject result = raw.deepCopy();
+        String activationId = textForTest(result, "activationId");
+        canonicalTaskIdentityForTest(result);
+        rewriteTaskScopedEvidenceForTest(result,
+                activationId,
+                textForTest(result, "taskId"));
+        if (!result.has("regionInstanceId")) {
+            result.addProperty("regionInstanceId",
+                    firstNonBlankForTest(TEST_TASK_REGION_INSTANCES.get(
+                            textForTest(result, "taskId")),
+                            textForTest(result, "regionId")
+                                    + "@test#call0"));
+        }
+        result.remove("activationId");
         if (!result.has("schemaVersion")) {
             result.addProperty("schemaVersion", 1);
         }
@@ -4264,10 +4298,8 @@ public class ConcolicSummaryImporterTest {
             engine.addProperty("regionId", result.get("regionId")
                     .getAsString());
         }
-        if (!engine.has("activationId")) {
-            engine.addProperty("activationId", result.get("activationId")
-                    .getAsString());
-        }
+        engine.addProperty("activationId", result.get("taskId")
+                .getAsString());
         if (!engine.has("threadContextId")) {
             engine.addProperty("threadContextId", 1L);
         }
@@ -4282,6 +4314,74 @@ public class ConcolicSummaryImporterTest {
         }
         result.add("engineSummary", engine);
         return result;
+    }
+
+    private static void canonicalTaskIdentityForTest(JsonObject row) {
+        String activationId = textForTest(row, "activationId");
+        if (activationId.isEmpty()) return;
+        if (!row.has("goalId")) {
+            row.addProperty("goalId", activationId + ".GOAL");
+        }
+        if (!row.has("taskId")) {
+            row.addProperty("taskId", "TASK." + activationId);
+        }
+    }
+
+    private static void rewriteTaskScopedEvidenceForTest(
+            JsonElement value, String activationId, String taskId) {
+        if (value == null || activationId.isEmpty() || taskId.isEmpty()) {
+            return;
+        }
+        if (value.isJsonArray()) {
+            for (JsonElement element : value.getAsJsonArray()) {
+                rewriteTaskScopedEvidenceForTest(element, activationId,
+                        taskId);
+            }
+            return;
+        }
+        if (!value.isJsonObject()) return;
+        JsonObject object = value.getAsJsonObject();
+        if (object.has("sourceActivationId")) {
+            object.remove("sourceActivationId");
+            object.addProperty("sourceTaskId", taskId);
+        }
+        for (String field : new String[]{
+                "objectTokenScope",
+                "valueExpressionWitnessObjectTokenScope",
+                "mapExpressionWitnessObjectTokenScope"}) {
+            if (activationId.equals(textForTest(object, field))) {
+                object.addProperty(field, taskId);
+            }
+        }
+        for (Map.Entry<String, JsonElement> entry
+                : new ArrayList<>(object.entrySet())) {
+            JsonElement element = entry.getValue();
+            if (element != null && element.isJsonPrimitive()
+                    && element.getAsJsonPrimitive().isString()) {
+                String encoded = element.getAsString();
+                String oldPrefix = witnessPrefixForTest(activationId);
+                if (encoded.startsWith(oldPrefix)) {
+                    object.addProperty(entry.getKey(),
+                            witnessPrefixForTest(taskId)
+                                    + encoded.substring(oldPrefix.length()));
+                }
+            } else {
+                rewriteTaskScopedEvidenceForTest(element, activationId,
+                        taskId);
+            }
+        }
+    }
+
+    private static String witnessPrefixForTest(String scope) {
+        byte[] bytes = scope.getBytes(StandardCharsets.UTF_8);
+        StringBuilder hex = new StringBuilder(bytes.length * 2);
+        for (byte value : bytes) {
+            int unsigned = value & 0xff;
+            hex.append(Character.forDigit(unsigned >>> 4, 16));
+            hex.append(Character.forDigit(unsigned & 0xf, 16));
+        }
+        return "CAUSYNTH_REF_WITNESS_V1_A" + hex.length() + "_"
+                + hex + "_T";
     }
 
     private static void writeVerbatim(Path path, String value)

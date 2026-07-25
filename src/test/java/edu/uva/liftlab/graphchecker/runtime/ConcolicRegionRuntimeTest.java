@@ -8,7 +8,6 @@ import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
-import edu.uva.liftlab.graphchecker.concolic.RegionCaptureGoal;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.objectweb.asm.ClassReader;
@@ -100,6 +99,13 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.exitRegionFrame(root, null, "");
 
             JsonObject result = resultRows(results).get(0);
+            assertFalse(result.has("activationId"));
+            assertEquals("TASK.ACT.MODEL.STATIC.PRIMITIVE",
+                    result.get("taskId").getAsString());
+            assertEquals("ACT.MODEL.STATIC.PRIMITIVE.GOAL",
+                    result.get("goalId").getAsString());
+            assertEquals("REGION.TEST@TEST#call1",
+                    result.get("regionInstanceId").getAsString());
             assertEquals(1, result.getAsJsonArray(
                     "modelAssignmentsApplied").size());
             JsonObject applied = result.getAsJsonArray(
@@ -109,6 +115,41 @@ public class ConcolicRegionRuntimeTest {
             assertFalse(applied.has("appliedAt"));
             assertEquals("t", applied.getAsJsonArray(
                     "materializationPath").get(0).getAsString());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void selectsOneExecutionTaskByTaskId() throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("tasks.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.SelectedTask: void run()>";
+        JsonObject first = concreteActivation("ACT.SELECT.FIRST", root, 1);
+        JsonObject second = concreteActivation("ACT.SELECT.SECOND", root, 1);
+        Files.write(plan, (first + "\n" + second + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "concrete-overlap-test");
+        try {
+            System.setProperty("causynth.concolic.task.id",
+                    "TASK.ACT.SELECT.SECOND");
+            ConcolicRegionRuntime.resetForTests();
+            long token = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
+            assertTrue(token > 0L);
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+
+            List<JsonObject> rows = resultRows(results);
+            assertEquals(1, rows.size());
+            assertEquals("TASK.ACT.SELECT.SECOND",
+                    rows.get(0).get("taskId").getAsString());
+            assertFalse(rows.get(0).has("activationId"));
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -1290,8 +1331,12 @@ public class ConcolicRegionRuntimeTest {
     private static JsonObject concreteActivation(
             String id, String root, int ordinal) {
         JsonObject activation = new JsonObject();
-        activation.addProperty("activationId", id);
+        activation.addProperty("goalId", id + ".GOAL");
+        activation.addProperty("goalKind", "TARGET_REACH_CLOSURE");
+        activation.addProperty("taskId", "TASK." + id);
         activation.addProperty("regionId", "REGION.TEST");
+        activation.addProperty("regionInstanceId",
+                "REGION.TEST@TEST#call" + ordinal);
         activation.addProperty("test", id.startsWith("ACT.MODEL")
                 ? "concrete-model-test" : "concrete-overlap-test");
         JsonObject rootSelector = new JsonObject();
@@ -1646,6 +1691,7 @@ public class ConcolicRegionRuntimeTest {
                     "capture and descriptor counts differ");
         }
         String regionId = activation.get("regionId").getAsString();
+        activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         long rootCallId = 0L;
         String regionInstanceId = regionId + "@TEST#call" + rootCallId;
         activation.addProperty("regionInstanceId", regionInstanceId);
@@ -1699,12 +1745,12 @@ public class ConcolicRegionRuntimeTest {
 
     private static String[] installPlan(Path plan, Path results, String test) {
         String[] old = {
-                System.getProperty("causynth.concolic.activation.plan"),
-                System.getProperty("causynth.concolic.activation.id"),
+                System.getProperty("causynth.concolic.task.plan"),
+                System.getProperty("causynth.concolic.task.id"),
                 System.getProperty("causynth.concolic.results"),
                 System.getProperty("causynth.trace.test")};
-        System.setProperty("causynth.concolic.activation.plan", plan.toString());
-        System.clearProperty("causynth.concolic.activation.id");
+        System.setProperty("causynth.concolic.task.plan", plan.toString());
+        System.clearProperty("causynth.concolic.task.id");
         System.setProperty("causynth.concolic.results", results.toString());
         System.setProperty("causynth.trace.test", test);
         ConcolicRegionRuntime.resetForTests();
@@ -1712,8 +1758,8 @@ public class ConcolicRegionRuntimeTest {
     }
 
     private static void restorePlan(String[] old) {
-        restore("causynth.concolic.activation.plan", old[0]);
-        restore("causynth.concolic.activation.id", old[1]);
+        restore("causynth.concolic.task.plan", old[0]);
+        restore("causynth.concolic.task.id", old[1]);
         restore("causynth.concolic.results", old[2]);
         restore("causynth.trace.test", old[3]);
     }

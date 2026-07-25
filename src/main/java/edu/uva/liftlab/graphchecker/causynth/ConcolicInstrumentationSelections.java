@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.concolic.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import soot.SootClass;
@@ -27,7 +28,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Activation-plan parsing and immutable instrumentation selections.
+ * Execution-task parsing and immutable instrumentation selections.
  *
  * <p>This class deliberately contains no Soot body mutation. It validates the
  * scheduler-owned plan and exposes only the exact sites that the pipeline may
@@ -39,16 +40,16 @@ final class ConcolicInstrumentationSelections {
     }
 
     static InstrumentationPlan instrumentationPlanFromEnvironment() {
-        String planValue = activationPlanValue();
-        String selected = selectedActivationValue();
-        if (planValue.isEmpty() || selected.isEmpty()) {
+        String planValue = taskPlanValue();
+        String selectedTask = selectedTaskValue();
+        if (planValue.isEmpty() || selectedTask.isEmpty()) {
             throw new IllegalStateException(
-                    "Concolic instrumentation requires an activation plan "
-                            + "and selected activation id");
+                    "Concolic instrumentation requires a task plan "
+                            + "and selected task id");
         }
         Path plan = Paths.get(planValue).toAbsolutePath().normalize();
         try {
-            return InstrumentationPlan.from(plan, selected);
+            return InstrumentationPlan.from(plan, selectedTask);
         } catch (IOException exception) {
             throw new IllegalStateException(
                     "Could not load concolic instrumentation plan from "
@@ -56,20 +57,20 @@ final class ConcolicInstrumentationSelections {
         }
     }
 
-    private static String activationPlanValue() {
+    private static String taskPlanValue() {
         return stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
+                System.getProperty("causynth.concolic.task.plan"),
+                System.getenv("CAUSYNTH_CONCOLIC_TASK_PLAN")));
     }
 
-    private static String selectedActivationValue() {
+    private static String selectedTaskValue() {
         return stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
+                System.getProperty("causynth.concolic.task.id"),
+                System.getenv("CAUSYNTH_CONCOLIC_TASK_ID")));
     }
 
     /**
-     * One immutable view of the scheduler-selected activation rows. The
+     * One immutable view of the scheduler-selected execution task. The
      * instrumentation pipeline builds this once and derives every selection
      * from it instead of reparsing the JSONL for each hook family.
      */
@@ -92,18 +93,15 @@ final class ConcolicInstrumentationSelections {
                     && boundedOutputClosureRowReady(row, closure);
         }
 
-        static InstrumentationPlan from(Path activationPlan,
-                                        String selectedActivation)
+        static InstrumentationPlan from(Path taskPlan, String selectedTask)
                 throws IOException {
-            if (activationPlan == null
-                    || !Files.isRegularFile(activationPlan)) {
-                throw new IOException("Activation plan not found: "
-                        + activationPlan);
+            if (taskPlan == null || !Files.isRegularFile(taskPlan)) {
+                throw new IOException("Task plan not found: " + taskPlan);
             }
-            Path normalized = activationPlan.toAbsolutePath().normalize();
-            String selected = stringValue(firstNonBlank(selectedActivation));
+            Path normalized = taskPlan.toAbsolutePath().normalize();
+            String selected = stringValue(firstNonBlank(selectedTask));
             if (selected.isEmpty()) {
-                throw new IOException("Selected activation id is required");
+                throw new IOException("Selected task id is required");
             }
             JsonObject selectedRow = null;
             try (BufferedReader reader = Files.newBufferedReader(normalized,
@@ -119,43 +117,38 @@ final class ConcolicInstrumentationSelections {
                     try {
                         parsed = JsonParser.parseString(line);
                     } catch (RuntimeException malformed) {
-                        throw new IOException("Malformed activation plan row "
+                        throw new IOException("Malformed task plan row "
                                 + lineNumber + " in " + normalized, malformed);
                     }
                     if (!parsed.isJsonObject()) {
-                        throw new IOException("Activation plan row "
+                        throw new IOException("Task plan row "
                                 + lineNumber + " is not a JSON object in "
                                 + normalized);
                     }
                     JsonObject row = parsed.getAsJsonObject();
-                    String activationId = jsonString(row, "activationId");
-                    if (!selected.equals(activationId)) {
+                    String taskId = jsonString(row, "taskId");
+                    if (!selected.equals(taskId)) {
                         continue;
                     }
-                    if ("ALL".equals(jsonString(bundle(row),
-                            "selection"))) {
-                        throw new IOException("Activation " + selected
-                                + " belongs to a reachability bundle that "
-                                + "requires ALL plan rows");
-                    }
                     if (selectedRow != null) {
-                        throw new IOException("Duplicate activation "
-                                + selected + " in " + normalized);
+                        throw new IOException("Duplicate execution task "
+                                + selected + " in "
+                                + normalized);
                     }
                     selectedRow = row;
                 }
             }
             if (selectedRow == null) {
-                throw new IOException("Activation " + selected
+                throw new IOException("Execution task " + selected
                         + " not found in " + normalized);
             }
             if (!admissionExecutable(selectedRow)) {
-                throw new IOException("Activation " + selected
+                throw new IOException("Execution task " + selected
                         + " is not executable");
             }
             String root = jsonString(rootSelector(selectedRow), "method");
             if (root.isEmpty()) {
-                throw new IOException("Activation " + selected
+                throw new IOException("Execution task " + selected
                         + " has no root method");
             }
             OutputClosureContract closure = null;
@@ -163,15 +156,15 @@ final class ConcolicInstrumentationSelections {
                 try {
                     closure = OutputClosureCodec.decode(selectedRow);
                 } catch (RuntimeException malformed) {
-                    throw new IOException("Malformed output closure for "
-                            + "activation " + selected, malformed);
+                    throw new IOException("Malformed output closure for task "
+                            + selected, malformed);
                 }
             } else if (selectedRow.has("requestedOutput")
                     || selectedRow.has("requestedOutputSlice")
                     || selectedRow.has("requestedOutputCapture")
                     || selectedRow.has("requestedOutputCaptureRequired")
                     || selectedRow.has("requestedOutputCaptureComplete")) {
-                throw new IOException("Activation " + selected
+                throw new IOException("Execution task " + selected
                         + " uses retired singular output fields");
             }
             return new InstrumentationPlan(selectedRow, closure);
@@ -196,14 +189,8 @@ final class ConcolicInstrumentationSelections {
 
     private static boolean boundedOutputClosureRowReady(
             JsonObject row, OutputClosureContract closure) {
-        JsonElement captureGoalElement = row.get("captureGoal");
-        if (captureGoalElement == null || !captureGoalElement.isJsonObject()) {
-            return false;
-        }
-        JsonObject captureGoal = captureGoalElement.getAsJsonObject();
-        if (!"OUTPUT_CLOSURE".equals(jsonString(captureGoal, "kind"))
-                || !"BOUNDED_OUTPUT_RELEVANT_PATHS".equals(
-                jsonString(captureGoal, "scope"))) {
+        if (!ClosureGoalKind.OUTPUT_RELATION_CLOSURE.name().equals(
+                jsonString(row, ClosureGoalKind.TASK_FIELD))) {
             return false;
         }
 
@@ -347,7 +334,7 @@ final class ConcolicInstrumentationSelections {
 
     /**
      * The small set of concrete Jimple values that a scheduled activation
-     * asks Soot to expose to the VM.  This is intentionally activation-plan
+     * asks Soot to expose to the VM.  This is intentionally task-plan
      * driven: the static region supplies candidates, while the runtime
      * instance decides which concrete local/heap owner is authoritative.
      */
@@ -400,18 +387,18 @@ final class ConcolicInstrumentationSelections {
                 JsonObject row) throws IOException {
             ConcolicMaterializationSelection result =
                     new ConcolicMaterializationSelection();
-            String activationId = jsonString(row, "activationId");
+            String taskId = jsonString(row, "taskId");
             JsonElement actions = row.get("materializations");
             if (actions == null || !actions.isJsonArray()) {
-                throw new IOException("Replayable activation "
-                        + activationId + " requires materializations "
+                throw new IOException("Replayable execution task "
+                        + taskId + " requires materializations "
                         + "to be a JSON array");
             }
             int actionIndex = 0;
             for (JsonElement element : actions.getAsJsonArray()) {
                 if (!element.isJsonObject()) {
-                    throw new IOException("Replayable activation "
-                            + activationId + " materializations["
+                    throw new IOException("Replayable execution task "
+                            + taskId + " materializations["
                             + actionIndex + "] must be a JSON object");
                 }
                 result.add(element.getAsJsonObject());
@@ -1068,12 +1055,6 @@ final class ConcolicInstrumentationSelections {
 
     private static JsonObject admission(JsonObject row) {
         JsonElement value = row == null ? null : row.get("admission");
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : null;
-    }
-
-    private static JsonObject bundle(JsonObject row) {
-        JsonElement value = row == null ? null : row.get("bundle");
         return value != null && value.isJsonObject()
                 ? value.getAsJsonObject() : null;
     }

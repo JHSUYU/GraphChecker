@@ -82,7 +82,7 @@ public class ConcolicSummaryImporterReplayAdmissionTest {
     @Test
     public void acceptsContainerReboundInReplayActivation() {
         JsonObject planned = containerAssignment();
-        JsonObject applied = replayedContainer(planned, "ACT.REPLAY");
+        JsonObject applied = replayedContainer(planned, "TASK.REPLAY");
         JsonObject binding = containerBinding(applied);
         List<String> failures =
                 ConcolicSummaryImporter.dynamicRebindingAdmissionFailures(
@@ -131,7 +131,7 @@ public class ConcolicSummaryImporterReplayAdmissionTest {
     private static JsonObject raw(JsonArray assignments,
                                   JsonArray bindings) {
         JsonObject raw = new JsonObject();
-        raw.addProperty("activationId", "ACT.REPLAY");
+        raw.addProperty("taskId", "TASK.REPLAY");
         raw.add("modelAssignmentsApplied", assignments);
         raw.add("dynamicFieldBindings", bindings);
         return raw;

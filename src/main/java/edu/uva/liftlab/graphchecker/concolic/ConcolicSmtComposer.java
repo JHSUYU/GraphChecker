@@ -143,8 +143,8 @@ public final class ConcolicSmtComposer {
         JsonObject fatal = selectFatalQuery(queryRows, arguments);
         if (fatal.size() == 0) {
             throw new IOException("No ready fatal query matches region="
-                    + arguments.fatalRegion + " activation="
-                    + arguments.activationId);
+                    + arguments.fatalRegion + " instance="
+                    + arguments.regionInstanceId);
         }
         requireCanonicalFatalQuerySchema(fatal);
         boolean targetPathSet = "TARGET_REACH_PATH_SET_QUERY".equals(
@@ -202,7 +202,7 @@ public final class ConcolicSmtComposer {
 
         List<String> fatalTerms = new ArrayList<>();
         String previousFatalScope = emitter.enterSymbolScope("fatal:"
-                + firstNonBlank(string(fatal, "activationId"),
+                + firstNonBlank(string(fatal, "regionInstanceId"),
                 string(fatal, "queryId"), fatalSite,
                 string(fatal, "regionId"), "selected"));
         try {
@@ -400,9 +400,9 @@ public final class ConcolicSmtComposer {
                     "regionId"))) {
                 continue;
             }
-            if (!arguments.activationId.isEmpty()
-                    && !arguments.activationId.equals(string(row,
-                    "activationId"))) {
+            if (!arguments.regionInstanceId.isEmpty()
+                    && !arguments.regionInstanceId.equals(string(row,
+                    "regionInstanceId"))) {
                 continue;
             }
             if (bool(row, "readyForSolver", false)) {
@@ -818,6 +818,13 @@ public final class ConcolicSmtComposer {
         if (!"GUARDED_PATH_MERGE".equals(string(relation, "kind"))
                 || cases.size() == 0) {
             return false;
+        }
+        for (JsonElement element : cases) {
+            if (!element.isJsonObject()
+                    || string(element.getAsJsonObject(),
+                    "sourceTaskId").isEmpty()) {
+                return false;
+            }
         }
         if (closure.outputPorts().size() > 1) {
             for (JsonElement element : cases) {
@@ -2960,9 +2967,7 @@ public final class ConcolicSmtComposer {
                         + origin);
                 return;
             }
-            String expectedActivation = firstNonBlank(string(container,
-                    "activationId"), string(container,
-                    "sourceActivationId"));
+            String expectedTask = string(container, "sourceTaskId");
             JsonArray rows = declared.getAsJsonArray();
             for (int ordinal = 0; ordinal < rows.size(); ordinal++) {
                 if (!rows.get(ordinal).isJsonObject()) {
@@ -2978,8 +2983,7 @@ public final class ConcolicSmtComposer {
                         "inputJavaTypeDescriptor");
                 String arrayId = string(row, "engineArrayId");
                 long token = longInteger(row, "arrayObjectToken", 0L);
-                String sourceActivation = string(row,
-                        "sourceActivationId");
+                String sourceTask = string(row, "sourceTaskId");
                 if (integer(row, "schemaVersion", -1) != 2) {
                     issues.add("SCHEMA_VERSION_UNSUPPORTED");
                 }
@@ -3003,11 +3007,11 @@ public final class ConcolicSmtComposer {
                         schema.javaType))) {
                     issues.add("CANONICAL_INPUT_PORT_SCHEMA_MISMATCH");
                 }
-                if (!expectedActivation.isEmpty()
-                        && !expectedActivation.equals(sourceActivation)) {
-                    issues.add("SOURCE_ACTIVATION_MISMATCH");
+                if (!expectedTask.isEmpty()
+                        && !expectedTask.equals(sourceTask)) {
+                    issues.add("SOURCE_TASK_MISMATCH");
                 }
-                if (sourceActivation.isEmpty() || token <= 0L) {
+                if (sourceTask.isEmpty() || token <= 0L) {
                     issues.add("ARRAY_OBJECT_IDENTITY_INVALID");
                 }
                 validateEngineArrayValueExpression(row, descriptor,
@@ -4210,9 +4214,7 @@ public final class ConcolicSmtComposer {
                 Map<String, Integer> proofDynamicBindingCounts) {
             String observationId = string(observation, "observationId");
             String statePort = string(observation, "statePort");
-            String activationId = firstNonBlank(string(summary,
-                    "activationId"), string(summary,
-                    "sourceActivationId"));
+            String sourceTaskId = string(summary, "sourceTaskId");
             String baseInputSymbol = string(proof, "baseInputSymbol");
             String dynamicBindingId = string(proof, "dynamicBindingId");
             String dynamicFieldSymbol = string(proof,
@@ -4280,10 +4282,10 @@ public final class ConcolicSmtComposer {
                     && countIsOne(proofObservationCounts, observationId)
                     && !region.isEmpty()
                     && region.equals(string(proof, "regionId"))
-                    && !activationId.isEmpty()
-                    && activationId.equals(string(proof, "activationId"))
-                    && activationId.equals(objectTokenScope)
-                    && activationId.equals(string(proof,
+                    && !sourceTaskId.isEmpty()
+                    && sourceTaskId.equals(string(proof, "sourceTaskId"))
+                    && sourceTaskId.equals(objectTokenScope)
+                    && sourceTaskId.equals(string(proof,
                     "objectTokenScope"))
                     && !statePort.isEmpty()
                     && statePort.equals(string(proof, "statePort"))
@@ -5764,16 +5766,14 @@ public final class ConcolicSmtComposer {
                     "resolvedFromSelectorAuthority");
             int runtimeOccurrence = integer(selector,
                     "elementOccurrence", -1);
-            String activationId = firstNonBlank(string(summary,
-                    "activationId"), string(summary,
-                    "sourceActivationId"));
+            String sourceTaskId = string(summary, "sourceTaskId");
             if (integer(runtime, "schemaVersion", -1) != 3
                     || !bool(runtime, "complete", false)
                     || !completeContainerSelector(runtime)
-                    || activationId.isEmpty()
-                    || !activationId.equals(string(runtime,
+                    || sourceTaskId.isEmpty()
+                    || !sourceTaskId.equals(string(runtime,
                     "objectTokenScope"))
-                    || !activationId.equals(string(selector,
+                    || !sourceTaskId.equals(string(selector,
                     "objectTokenScope"))
                     || !"ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_"
                     .concat("IDENTITY_AND_STABLE_FIELD_SITE_OCCURRENCE")
@@ -5915,9 +5915,9 @@ public final class ConcolicSmtComposer {
                     && valueRefWitnessSymbol(scope, token).equals(raw);
         }
 
-        private static String valueRefWitnessSymbol(String activationId,
+        private static String valueRefWitnessSymbol(String taskId,
                                                     long objectToken) {
-            byte[] bytes = firstNonBlank(activationId, "")
+            byte[] bytes = firstNonBlank(taskId, "")
                     .getBytes(StandardCharsets.UTF_8);
             StringBuilder hex = new StringBuilder(bytes.length * 2);
             for (byte value : bytes) {
@@ -7882,7 +7882,7 @@ public final class ConcolicSmtComposer {
         private Path manifest;
         private Path relationships;
         private String fatalRegion = "";
-        private String activationId = "";
+        private String regionInstanceId = "";
         private final Set<String> boundedUpstreamRegions =
                 new LinkedHashSet<>();
 
@@ -7935,7 +7935,8 @@ public final class ConcolicSmtComposer {
                     : sibling(result.output,
                     "symbolic_relationship_candidates.json");
             result.fatalRegion = firstNonBlank(values.get("fatal-region"));
-            result.activationId = firstNonBlank(values.get("activation-id"));
+            result.regionInstanceId = firstNonBlank(
+                    values.get("region-instance-id"));
             for (String value : boundedRegionValues) {
                 for (String region : value.split(",")) {
                     String normalized = firstNonBlank(region);
@@ -7952,7 +7953,7 @@ public final class ConcolicSmtComposer {
                     || "output".equals(key) || "manifest".equals(key)
                     || "relationships".equals(key)
                     || "fatal-region".equals(key)
-                    || "activation-id".equals(key);
+                    || "region-instance-id".equals(key);
         }
 
         private static Path path(Map<String, String> values, String key,

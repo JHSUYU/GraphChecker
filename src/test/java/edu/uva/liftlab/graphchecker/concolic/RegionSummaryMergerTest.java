@@ -44,12 +44,13 @@ public class RegionSummaryMergerTest {
             assertFalse(pathCase.has("pathKey"));
             assertFalse(pathCase.has("symbolScope"));
             assertFalse(pathCase.has("relationallyComplete"));
+            assertTrue(pathCase.get("sourceTaskId").getAsString()
+                    .startsWith("TASK."));
         }
         assertFalse(relation.has("complete"));
         assertTrue(result.summaries.get(0).get(
                 "relationallyComplete").getAsBoolean());
         assertFalse(result.summaries.get(0).has("protocolModel"));
-        assertFalse(result.summaries.get(0).has("activationId"));
         assertFalse(result.summaries.get(0).has(
                 "sourceRegionInstanceIds"));
         assertFalse(result.summaries.get(0).has("regionInstanceId"));
@@ -284,14 +285,15 @@ public class RegionSummaryMergerTest {
     private static JsonObject summary(String id, String operator) {
         JsonObject summary = new JsonObject();
         summary.addProperty("summaryId", id);
-        summary.addProperty("activationId", "ACT." + id);
+        summary.addProperty("goalId", "GOAL.OUTPUT.4");
+        summary.addProperty("taskId", "TASK." + id);
         summary.addProperty("regionId", "REGION.4");
         summary.addProperty("regionInstanceId",
                 "REGION.4@fixture#call7");
         summary.addProperty("rootCallId", 7);
         summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", true);
-        summary.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
+        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(summary);
         summary.add(OutputClosureContract.FIELD, outputClosure(false, 1));
         JsonArray path = new JsonArray();
         JsonObject condition = new JsonObject();
@@ -338,6 +340,8 @@ public class RegionSummaryMergerTest {
         manifest.addProperty("schemaVersion", 1);
         manifest.addProperty("kind", "REGION_PATH_WORKLIST");
         manifest.addProperty("regionId", "REGION.4");
+        manifest.addProperty("goalId", "GOAL.OUTPUT.4");
+        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(manifest);
         manifest.addProperty("state", state.name());
         JsonObject bounds = new JsonObject();
         bounds.addProperty("maxPathsPerRegion", 64);

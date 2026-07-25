@@ -39,27 +39,25 @@ import static org.junit.Assert.assertTrue;
 
 public class CausynthPipelineTest {
     private String previousConcolicInstrumentation;
-    private String previousActivationPlan;
-    private String previousActivationId;
+    private String previousTaskPlan;
+    private String previousTaskId;
 
     @Before
     public void rememberSystemProperties() {
         previousConcolicInstrumentation =
                 System.getProperty("causynth.instrument.concolic");
-        previousActivationPlan =
-                System.getProperty("causynth.concolic.activation.plan");
-        previousActivationId =
-                System.getProperty("causynth.concolic.activation.id");
+        previousTaskPlan =
+                System.getProperty("causynth.concolic.task.plan");
+        previousTaskId =
+                System.getProperty("causynth.concolic.task.id");
     }
 
     @After
     public void resetSoot() {
         restoreProperty("causynth.instrument.concolic",
                 previousConcolicInstrumentation);
-        restoreProperty("causynth.concolic.activation.plan",
-                previousActivationPlan);
-        restoreProperty("causynth.concolic.activation.id",
-                previousActivationId);
+        restoreProperty("causynth.concolic.task.plan", previousTaskPlan);
+        restoreProperty("causynth.concolic.task.id", previousTaskId);
         G.reset();
     }
 
@@ -125,8 +123,15 @@ public class CausynthPipelineTest {
             members.add(member);
         }
         activation.add("materializations", new JsonArray());
+        activation.addProperty("goalId", outputGoalId(activation));
+        activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         envelope.add("members", members);
         activation.add("outputClosure", envelope);
+    }
+
+    private static String outputGoalId(JsonObject activation) {
+        return activation.get("taskId").getAsString()
+                + ".GOAL.OUTPUT";
     }
 
     private static void writePlanRow(Path plan, JsonObject row)
@@ -155,7 +160,7 @@ public class CausynthPipelineTest {
             String cell = callee + ".param0:int";
 
             JsonObject activation = new JsonObject();
-            activation.addProperty("activationId", "ACT.JOINT.CAPTURE");
+            activation.addProperty("taskId", "TASK.JOINT.CAPTURE");
             addGlobalRootSelector(activation, caller);
             admitExecutable(activation,
                     "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
@@ -186,7 +191,8 @@ public class CausynthPipelineTest {
                     .ConcolicOutputCaptureSelection selection =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
-                            plan, "ACT.JOINT.CAPTURE").outputCaptures();
+                            plan, "TASK.JOINT.CAPTURE")
+                            .outputCaptures();
             assertEquals(2, selection.targets().size());
 
             Files.write(plan, Arrays.asList(activation.toString(),
@@ -194,7 +200,7 @@ public class CausynthPipelineTest {
             boolean duplicateActivationRejected = false;
             try {
                 ConcolicInstrumentationSelections.InstrumentationPlan.from(
-                        plan, "ACT.JOINT.CAPTURE");
+                        plan, "TASK.JOINT.CAPTURE");
             } catch (java.io.IOException expected) {
                 duplicateActivationRejected = true;
             }
@@ -211,7 +217,7 @@ public class CausynthPipelineTest {
             try {
                 ConcolicInstrumentationSelections
                         .InstrumentationPlan.from(
-                        plan, "ACT.JOINT.CAPTURE").outputCaptures();
+                        plan, "TASK.JOINT.CAPTURE").outputCaptures();
             } catch (java.io.IOException expected) {
                 malformedRejected = true;
             }
@@ -230,7 +236,7 @@ public class CausynthPipelineTest {
             try {
                 ConcolicInstrumentationSelections
                         .InstrumentationPlan.from(
-                        plan, "ACT.JOINT.CAPTURE").outputCaptures();
+                        plan, "TASK.JOINT.CAPTURE").outputCaptures();
             } catch (java.io.IOException expected) {
                 duplicateRejected = true;
             }
@@ -247,7 +253,7 @@ public class CausynthPipelineTest {
             boolean singularRejected = false;
             try {
                 ConcolicInstrumentationSelections.InstrumentationPlan.from(
-                        plan, "ACT.JOINT.CAPTURE");
+                        plan, "TASK.JOINT.CAPTURE");
             } catch (java.io.IOException expected) {
                 singularRejected = true;
             }
@@ -302,7 +308,7 @@ public class CausynthPipelineTest {
                     + ".param0:java.lang.String";
             Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
             JsonObject activation = new JsonObject();
-            activation.addProperty("activationId", "ACT.CAPTURE");
+            activation.addProperty("taskId", "TASK.CAPTURE");
             addGlobalRootSelector(activation, root.getSignature());
             admitExecutable(activation,
                     "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
@@ -324,16 +330,16 @@ public class CausynthPipelineTest {
                     captures, "Ljava/lang/String;");
             Files.write(plan, (activation + "\n").getBytes(
                     StandardCharsets.UTF_8));
-            System.setProperty("causynth.concolic.activation.plan",
+            System.setProperty("causynth.concolic.task.plan",
                     plan.toString());
-            System.setProperty("causynth.concolic.activation.id",
-                    "ACT.CAPTURE");
+            System.setProperty("causynth.concolic.task.id",
+                    "TASK.CAPTURE");
 
             ConcolicInstrumentationSelections
                     .ConcolicOutputCaptureSelection selection =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
-                            plan, "ACT.CAPTURE").outputCaptures();
+                            plan, "TASK.CAPTURE").outputCaptures();
             assertEquals(1, selection.targets().size());
             Class<?> refsClass = Class.forName(
                     CausynthPipeline.class.getName() + "$ConcolicRegionRefs");
@@ -413,7 +419,7 @@ public class CausynthPipelineTest {
             Path plan = folder.getRoot().toPath().resolve(
                     "field-activation.jsonl");
             JsonObject activation = new JsonObject();
-            activation.addProperty("activationId", "ACT.FIELD.CAPTURE");
+            activation.addProperty("taskId", "TASK.FIELD.CAPTURE");
             addGlobalRootSelector(activation, root.getSignature());
             admitExecutable(activation,
                     "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
@@ -439,7 +445,8 @@ public class CausynthPipelineTest {
                     .ConcolicOutputCaptureSelection selection =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
-                            plan, "ACT.FIELD.CAPTURE").outputCaptures();
+                            plan, "TASK.FIELD.CAPTURE")
+                            .outputCaptures();
             Class<?> refsClass = Class.forName(
                     CausynthPipeline.class.getName()
                             + "$ConcolicRegionRefs");

@@ -14,6 +14,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -112,7 +114,6 @@ final class RuntimeRegionPlanner {
                 RuntimeFieldAccessIndex.build(fields, calls);
 
         int instanceIndex = 0;
-        int activationIndex = 0;
         Map<String, List<InstanceEvidence>> evidenceByRegion = new LinkedHashMap<>();
         Map<String, List<InstanceEvidence>> sharedStateEvidenceByRegion =
                 new LinkedHashMap<>();
@@ -223,21 +224,9 @@ final class RuntimeRegionPlanner {
                             instanceEvidence);
                 }
 
-                Map<String, Object> activation = object(
-                        "activationId", "ACT." + activationIndex++,
-                        "regionInstanceId", instanceId,
-                        "regionId", region.regionId,
-                        "test", root.test,
-                        "rootSelector", rootSelector(root, ordinal,
-                                ordinalWithinContext,
-                                rootArgumentSelector),
-                        "rootCallId", root.callId,
+                Map<String, Object> baseExecution = object(
                         "runtimeDefinitionMethods",
                         demandSlice.definitionMethods(observedMethods),
-                        "targetMethod", region.anchorMethod,
-                        "captureGoal", object(
-                                "kind", "TARGET_BRANCH",
-                                "scope", "ONE_DIRECTED_BRANCH"),
                         "admission", admission(replayable, symbolicReady,
                                 replayable
                                         ? "RUNTIME_SELECTED_ROOT_REPLAY"
@@ -245,6 +234,27 @@ final class RuntimeRegionPlanner {
                                 runtimeGaps),
                         "symbolize", symbolize,
                         "branches", branchPlan);
+                List<Map<String, Object>> closureGoals =
+                        new ArrayList<>();
+                if (region.isTargetClosure()) {
+                    Map<String, Object> targetReachGoal =
+                            new LinkedHashMap<>(baseExecution);
+                    targetReachGoal.put("goalId", targetReachGoalId(
+                            instanceId, region.anchorMethod));
+                    targetReachGoal.put("kind", "TARGET_REACH_CLOSURE");
+                    closureGoals.add(targetReachGoal);
+                }
+                Map<String, Object> activation = object(
+                        "regionInstanceId", instanceId,
+                        "regionId", region.regionId,
+                        "test", root.test,
+                        "rootSelector", rootSelector(root, ordinal,
+                                ordinalWithinContext,
+                                rootArgumentSelector),
+                        "rootCallId", root.callId,
+                        "targetMethod", region.anchorMethod,
+                        "closureGoals", closureGoals,
+                        "_plannerBaseExecution", baseExecution);
                 result.activations.add(activation);
                 instanceIndex++;
             }
@@ -261,8 +271,8 @@ final class RuntimeRegionPlanner {
         validateRegionEdges(regionEdges, evidenceByRegion,
                 sharedStateEvidenceByRegion, staticProjections, result,
                 edgeBindings, relationEvidence);
-        deriveUpstreamActivations(edgeBindings, staticProjections, result);
-        refineMapValueElementProjectionActivations(result);
+        attachOutputRelationGoals(edgeBindings, staticProjections, result);
+        refineMapValueElementProjectionGoals(result);
         finalizeOutputClosureArtifacts(result);
         return result;
     }
@@ -2012,19 +2022,27 @@ final class RuntimeRegionPlanner {
 
             Map<String, Object> activation = activations.get(
                     instance.instanceId);
-            boolean replayable = admissionReplayable(activation);
+            Map<String, Object> baseExecution =
+                    plannerBaseExecution(activation);
+            Map<String, Object> targetGoal = targetReachGoal(activation);
+            boolean replayable = admissionReplayable(baseExecution);
             boolean symbolicReady = replayable && boundaryReady
                     && symbolicPotential;
 
-            if (activation != null) {
-                activation.put("symbolize", symbolize);
-                activation.put("branches", branches);
-                activation.put("runtimeDefinitionMethods",
+            if (baseExecution != null) {
+                baseExecution.put("symbolize", symbolize);
+                baseExecution.put("branches", branches);
+                baseExecution.put("runtimeDefinitionMethods",
                         instance.concreteDemandSlice.definitionMethods(
                                 instance.observedMethods));
-                activation.put("admission", admission(replayable,
-                        symbolicReady, admissionMode(activation),
+                baseExecution.put("admission", admission(replayable,
+                        symbolicReady, admissionMode(baseExecution),
                         Collections.emptyList()));
+                if (targetGoal != null) {
+                    copy(baseExecution, targetGoal,
+                            "symbolize", "branches",
+                            "runtimeDefinitionMethods", "admission");
+                }
             }
         }
     }
@@ -2056,29 +2074,30 @@ final class RuntimeRegionPlanner {
                 "blockers", blockers);
     }
 
-    private static boolean admissionReplayable(
-            Map<String, Object> activation) {
-        Map<String, Object> admission = activation == null ? null
-                : mapValue(activation.get("admission"));
+    private static boolean admissionReplayable(Map<String, Object> goal) {
+        Map<String, Object> admission = goal == null ? null
+                : mapValue(goal.get("admission"));
         String state = admission == null ? ""
                 : string(admission.get("state"));
         return "READY".equals(state) || "DISCOVERED".equals(state)
                 || "EXECUTABLE".equals(state);
     }
 
-    private static String admissionMode(Map<String, Object> activation) {
-        Map<String, Object> admission = activation == null ? null
-                : mapValue(activation.get("admission"));
+    private static String admissionMode(Map<String, Object> goal) {
+        Map<String, Object> admission = goal == null ? null
+                : mapValue(goal.get("admission"));
         return admission == null ? "" : string(admission.get("mode"));
     }
 
     /**
-     * Derives a separate upstream-output activation from confirmed runtime
-     * read-from evidence.  The original path activation is preserved because a
-     * region may simultaneously contain the target and provide an output for
-     * another region query.
+     * Attaches bounded output-relation goals to the one activation envelope
+     * that represents the concrete upstream region invocation.
+     *
+     * <p>A read-from demand is not a new invocation. Keeping it as a goal
+     * preserves goal-local input, branch, admission, and output-closure
+     * scope without copying the region instance plan.</p>
      */
-    private static void deriveUpstreamActivations(
+    private static void attachOutputRelationGoals(
             List<UpstreamEdgeBinding> bindings,
             StaticProjectionIndex staticProjections, Result result) {
         Map<String, Map<String, Object>> baseByInstance = new LinkedHashMap<>();
@@ -2123,7 +2142,6 @@ final class RuntimeRegionPlanner {
                     + binding.downstream.instanceId, binding);
         }
 
-        int activationIndex = 0;
         for (List<UpstreamEdgeBinding> demand : grouped.values()) {
             UpstreamEdgeBinding first = demand.get(0);
             Map<String, Object> base = baseByInstance.get(
@@ -2132,15 +2150,16 @@ final class RuntimeRegionPlanner {
                 continue;
             }
 
-            Map<String, Object> activation = new LinkedHashMap<>(base);
-            String derivedId = "ACT.UPSTREAM." + activationIndex++;
+            Map<String, Object> baseExecution = plannerBaseExecution(base);
+            if (baseExecution == null) {
+                continue;
+            }
+            Map<String, Object> outputGoal = object(
+                    "goalId", outputRelationGoalId(demand),
+                    "kind", "OUTPUT_RELATION_CLOSURE");
+            copy(baseExecution, outputGoal, "runtimeDefinitionMethods");
             boolean writerPathReplayable =
                     first.upstream.runtimePathEvidenceComplete;
-            activation.put("activationId", derivedId);
-            activation.remove("summaryMode");
-            activation.put("captureGoal", object(
-                    "kind", "OUTPUT_CLOSURE",
-                    "scope", "BOUNDED_OUTPUT_RELEVANT_PATHS"));
 
             Map<String, List<UpstreamEdgeBinding>> byOutput =
                     new LinkedHashMap<>();
@@ -2151,7 +2170,7 @@ final class RuntimeRegionPlanner {
             List<String> issues = new ArrayList<>();
             for (String outputPort : sorted(byOutput.keySet())) {
                 UpstreamOutputMemberPlan member =
-                        upstreamOutputMemberPlan(base,
+                        upstreamOutputMemberPlan(baseExecution,
                                 byOutput.get(outputPort));
                 members.add(member);
                 if (!member.issue.isEmpty()) {
@@ -2174,21 +2193,21 @@ final class RuntimeRegionPlanner {
             }
 
             if (issues.isEmpty()
-                    && !mergeUpstreamMemberExecution(activation, members,
+                    && !mergeOutputGoalExecution(outputGoal, members,
                     issues)) {
                 outputClosure = null;
             }
             if (issues.isEmpty()) {
-                activation.put("_plannerOutputClosure", outputClosure);
-                activation.put("_plannerOutputMembers", members);
+                outputGoal.put("_plannerOutputClosure", outputClosure);
+                outputGoal.put("_plannerOutputMembers", members);
             } else {
-                activation.put("symbolize", Collections.emptyList());
-                activation.put("branches", Collections.emptyList());
-                activation.remove("containerElementFieldBindings");
-                activation.remove("heapStateBindings");
+                outputGoal.put("symbolize", Collections.emptyList());
+                outputGoal.put("branches", Collections.emptyList());
+                outputGoal.remove("containerElementFieldBindings");
+                outputGoal.remove("heapStateBindings");
             }
 
-            activation.put("admission", admission(writerPathReplayable,
+            outputGoal.put("admission", admission(writerPathReplayable,
                     writerPathReplayable && issues.isEmpty(),
                     writerPathReplayable
                             ? "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
@@ -2199,8 +2218,8 @@ final class RuntimeRegionPlanner {
             for (UpstreamEdgeBinding binding : demand) {
                 bindingRows.add(binding.toMap());
             }
-            activation.put("edgeBindings", bindingRows);
-            result.activations.add(activation);
+            outputGoal.put("edgeBindings", bindingRows);
+            closureGoals(base).add(outputGoal);
         }
     }
 
@@ -2325,8 +2344,8 @@ final class RuntimeRegionPlanner {
                 heapBindings, contract, "");
     }
 
-    private static boolean mergeUpstreamMemberExecution(
-            Map<String, Object> activation,
+    private static boolean mergeOutputGoalExecution(
+            Map<String, Object> goal,
             List<UpstreamOutputMemberPlan> members, List<String> issues) {
         Map<String, Map<String, Object>> inputs = new LinkedHashMap<>();
         Map<String, Map<String, Object>> branches = new LinkedHashMap<>();
@@ -2343,18 +2362,18 @@ final class RuntimeRegionPlanner {
                     "HEAP_STATE_BINDING", issues);
         }
         if (!issues.isEmpty()) return false;
-        activation.put("symbolize", new ArrayList<>(inputs.values()));
-        activation.put("branches", new ArrayList<>(branches.values()));
+        goal.put("symbolize", new ArrayList<>(inputs.values()));
+        goal.put("branches", new ArrayList<>(branches.values()));
         if (containers.isEmpty()) {
-            activation.remove("containerElementFieldBindings");
+            goal.remove("containerElementFieldBindings");
         } else {
-            activation.put("containerElementFieldBindings",
+            goal.put("containerElementFieldBindings",
                     new ArrayList<>(containers.values()));
         }
         if (heaps.isEmpty()) {
-            activation.remove("heapStateBindings");
+            goal.remove("heapStateBindings");
         } else {
-            activation.put("heapStateBindings",
+            goal.put("heapStateBindings",
                     new ArrayList<>(heaps.values()));
         }
         return true;
@@ -2376,12 +2395,15 @@ final class RuntimeRegionPlanner {
 
     private static void finalizeOutputClosureArtifacts(Result result) {
         for (Map<String, Object> activation : result.activations) {
-            activation.remove("_plannerOutputMembers");
-            Object encoded = activation.remove("_plannerOutputClosure");
-            if (encoded instanceof OutputClosureContract) {
-                activation.put(OutputClosureContract.FIELD,
-                        ((OutputClosureContract) encoded).toJson());
+            for (Map<String, Object> goal : closureGoals(activation)) {
+                goal.remove("_plannerOutputMembers");
+                Object encoded = goal.remove("_plannerOutputClosure");
+                if (encoded instanceof OutputClosureContract) {
+                    goal.put(OutputClosureContract.FIELD,
+                            ((OutputClosureContract) encoded).toJson());
+                }
             }
+            activation.remove("_plannerBaseExecution");
         }
     }
 
@@ -2911,30 +2933,33 @@ final class RuntimeRegionPlanner {
      * object identity.  Import remains independently fail-closed until those
      * same-execution observations are complete.</p>
      */
-    private static void refineMapValueElementProjectionActivations(
+    private static void refineMapValueElementProjectionGoals(
             Result result) {
-        Map<String, List<Map<String, Object>>> selectedByInstance =
+        Map<String, List<GoalContext>> selectedByInstance =
                 new LinkedHashMap<>();
-        for (Map<String, Object> activation : result.activations) {
+        List<GoalContext> outputGoals = outputGoalContexts(result);
+        for (GoalContext context : outputGoals) {
             UpstreamOutputMemberPlan member =
-                    singletonPlannerOutputMember(activation);
-            if (!"OUTPUT_CLOSURE".equals(captureGoalKind(activation))
-                    || member == null || !member.outputSlice.complete) {
+                    singletonPlannerOutputMember(context.goal);
+            if (member == null || !member.outputSlice.complete) {
                 continue;
             }
-            String instance = string(activation.get("regionInstanceId"));
+            String instance = string(context.activation.get(
+                    "regionInstanceId"));
             if (!instance.isEmpty()) {
-                add(selectedByInstance, instance, activation);
+                add(selectedByInstance, instance, context);
             }
         }
 
-        for (Map<String, Object> activation : result.activations) {
+        for (GoalContext context : outputGoals) {
+            Map<String, Object> activation = context.activation;
+            Map<String, Object> goal = context.goal;
             UpstreamOutputMemberPlan producerMember =
-                    singletonPlannerOutputMember(activation);
+                    singletonPlannerOutputMember(goal);
             Map<String, Object> producerSlice = producerMember == null
                     ? null : producerMember.outputSlice.toMap();
             List<Map<String, Object>> edgeBindings = mapRows(
-                    activation.get("edgeBindings"));
+                    goal.get("edgeBindings"));
             if (producerSlice == null || edgeBindings.isEmpty()) {
                 continue;
             }
@@ -2946,11 +2971,11 @@ final class RuntimeRegionPlanner {
                 String downstreamInstance = string(edge.get(
                         "toRegionInstance"));
                 String downstreamInput = string(edge.get("toInputPort"));
-                List<Map<String, Object>> selected = values(
+                List<GoalContext> selected = values(
                         selectedByInstance.get(downstreamInstance));
-                for (Map<String, Object> downstream : selected) {
+                for (GoalContext downstream : selected) {
                     UpstreamOutputMemberPlan downstreamMember =
-                            singletonPlannerOutputMember(downstream);
+                            singletonPlannerOutputMember(downstream.goal);
                     if (downstreamMember == null) {
                         continue;
                     }
@@ -2963,7 +2988,7 @@ final class RuntimeRegionPlanner {
                         }
                         DownstreamContainerDemand demand =
                                 DownstreamContainerDemand.from(edge,
-                                        downstream, declaration);
+                                        downstream.activation, declaration);
                         if (!demand.complete()) {
                             issues.add("INCOMPLETE_DOWNSTREAM_CONTAINER_DEMAND:"
                                     + firstNonBlank(demand.bindingId,
@@ -3040,31 +3065,26 @@ final class RuntimeRegionPlanner {
                 }
             }
 
-            activation.put("mapValueElementFieldProjections",
+            goal.put("mapValueElementFieldProjections",
                     declarations);
             boolean composable = issues.isEmpty()
                     && !declarations.isEmpty();
-            activation.remove("recursiveElementProjectionCompositionGap");
+            goal.remove("recursiveElementProjectionCompositionGap");
             // Preserve all pre-existing readiness decisions when the static
             // declaration is complete. Runtime identity evidence is checked
             // later by the importer. A static proof/declaration failure still
-            // closes this activation before scheduling.
+            // closes this goal before scheduling.
             if (!composable) {
-                activation.put("admission", admission(false, false,
-                        admissionMode(activation), issues));
+                goal.put("admission", admission(false, false,
+                        admissionMode(goal), issues));
             }
         }
     }
 
-    private static String captureGoalKind(Map<String, Object> activation) {
-        Map<String, Object> goal = mapValue(activation.get("captureGoal"));
-        return goal == null ? "" : string(goal.get("kind"));
-    }
-
     private static UpstreamOutputMemberPlan singletonPlannerOutputMember(
-            Map<String, Object> activation) {
-        Object encoded = activation == null ? null
-                : activation.get("_plannerOutputMembers");
+            Map<String, Object> goal) {
+        Object encoded = goal == null ? null
+                : goal.get("_plannerOutputMembers");
         if (!(encoded instanceof List<?>)
                 || ((List<?>) encoded).size() != 1
                 || !(((List<?>) encoded).get(0)
@@ -3072,6 +3092,103 @@ final class RuntimeRegionPlanner {
             return null;
         }
         return (UpstreamOutputMemberPlan) ((List<?>) encoded).get(0);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> closureGoals(
+            Map<String, Object> activation) {
+        Object encoded = activation == null ? null
+                : activation.get("closureGoals");
+        if (!(encoded instanceof List<?>)) {
+            throw new IllegalStateException(
+                    "region instance plan is missing closureGoals");
+        }
+        return (List<Map<String, Object>>) encoded;
+    }
+
+    private static Map<String, Object> targetReachGoal(
+            Map<String, Object> activation) {
+        if (activation == null) return null;
+        for (Map<String, Object> goal : closureGoals(activation)) {
+            if ("TARGET_REACH_CLOSURE".equals(string(goal.get("kind")))) {
+                return goal;
+            }
+        }
+        return null;
+    }
+
+    private static Map<String, Object> plannerBaseExecution(
+            Map<String, Object> activation) {
+        return activation == null ? null
+                : mapValue(activation.get("_plannerBaseExecution"));
+    }
+
+    private static List<GoalContext> outputGoalContexts(Result result) {
+        List<GoalContext> contexts = new ArrayList<>();
+        for (Map<String, Object> activation : result.activations) {
+            for (Map<String, Object> goal : closureGoals(activation)) {
+                if ("OUTPUT_RELATION_CLOSURE".equals(string(
+                        goal.get("kind")))) {
+                    contexts.add(new GoalContext(activation, goal));
+                }
+            }
+        }
+        return contexts;
+    }
+
+    private static String targetReachGoalId(
+            String regionInstanceId, String targetMethod) {
+        return "GOAL.TARGET_REACH." + stableId(regionInstanceId + "\n"
+                + safe(targetMethod));
+    }
+
+    private static String outputRelationGoalId(
+            List<UpstreamEdgeBinding> demand) {
+        if (demand == null || demand.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "output relation goal requires one demand binding");
+        }
+        UpstreamEdgeBinding first = demand.get(0);
+        List<String> members = new ArrayList<>();
+        for (UpstreamEdgeBinding binding : demand) {
+            members.add(string(binding.edge.edgeId) + "\t"
+                    + (binding.output == null ? ""
+                    : binding.output.portId) + "\t"
+                    + (binding.downstreamInput == null ? ""
+                    : binding.downstreamInput.portId));
+        }
+        Collections.sort(members);
+        return "GOAL.OUTPUT_RELATION." + stableId(
+                first.upstream.instanceId + "\n"
+                        + first.downstream.instanceId + "\n"
+                        + String.join("\n", members));
+    }
+
+    private static String stableId(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(safe(value).getBytes(
+                    StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder();
+            for (byte item : bytes) {
+                result.append(String.format("%02x", item & 0xff));
+            }
+            return result.substring(0, 20);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable",
+                    impossible);
+        }
+    }
+
+    private static final class GoalContext {
+        private final Map<String, Object> activation;
+        private final Map<String, Object> goal;
+
+        private GoalContext(Map<String, Object> activation,
+                            Map<String, Object> goal) {
+            this.activation = activation;
+            this.goal = goal;
+        }
     }
 
     private static List<Map<String, Object>> selectActivationRows(
@@ -4535,6 +4652,7 @@ final class RuntimeRegionPlanner {
         private String regionId = "";
         private String rootMethod = "";
         private String anchorMethod = "";
+        private String selection = "";
         private final Set<String> methods = new LinkedHashSet<>();
         private final List<StaticPort> inputs = new ArrayList<>();
         private final List<StaticPort> outputs = new ArrayList<>();
@@ -4666,6 +4784,10 @@ final class RuntimeRegionPlanner {
             return outputSlices.get(safe(outputPort));
         }
 
+        private boolean isTargetClosure() {
+            return "EXCEPTION_BACKWARD_CAUSAL_CLOSURE".equals(selection);
+        }
+
         private StaticPort portFor(List<StaticPort> ports, String endpoint,
                                    boolean allowUniqueFieldFallback) {
             String value = safe(endpoint);
@@ -4700,6 +4822,7 @@ final class RuntimeRegionPlanner {
             region.rootMethod = jsonString(json, "rootMethod");
             region.anchorMethod = firstNonBlank(jsonString(json, "anchorMethod"),
                     region.rootMethod);
+            region.selection = jsonString(json, "selection");
             region.methods.addAll(jsonStringArray(json, "methods"));
             region.methods.add(region.rootMethod);
             for (JsonObject object : jsonObjectArray(json,

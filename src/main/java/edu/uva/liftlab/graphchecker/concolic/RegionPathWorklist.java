@@ -53,11 +53,11 @@ public final class RegionPathWorklist {
     }
 
     public static Result plan(List<JsonObject> summaries,
-                              List<JsonObject> activations,
+                              List<JsonObject> executionTasks,
                               List<JsonObject> explorationRecords,
                               Bounds bounds) {
         Bounds effective = bounds == null ? Bounds.defaults() : bounds;
-        return new Planner(summaries, activations, explorationRecords,
+        return new Planner(summaries, executionTasks, explorationRecords,
                 effective).run();
     }
 
@@ -81,7 +81,7 @@ public final class RegionPathWorklist {
 
     /**
      * Content identity of one canonical output-closure path, independent of
-     * activation ids.
+     * execution task ids.
      */
     public static String stablePathKey(JsonObject summary) {
         return stablePathKey(summary, ExplorationScope.from(summary, null));
@@ -104,7 +104,7 @@ public final class RegionPathWorklist {
 
     private static final class Planner {
         private final Bounds bounds;
-        private final Map<String, JsonObject> activations =
+        private final Map<String, JsonObject> taskById =
                 new LinkedHashMap<>();
         private final Map<String, JsonObject> records = new LinkedHashMap<>();
         private final List<JsonObject> summaries = new ArrayList<>();
@@ -127,23 +127,21 @@ public final class RegionPathWorklist {
                 new IdentityHashMap<>();
 
         private Planner(List<JsonObject> summaries,
-                        List<JsonObject> activations,
+                        List<JsonObject> executionTasks,
                         List<JsonObject> explorationRecords,
                         Bounds bounds) {
             this.bounds = bounds;
-            for (JsonObject activation : safe(activations)) {
-                String id = string(activation, "activationId");
-                if (!id.isEmpty()) this.activations.put(id, activation);
+            for (JsonObject task : safe(executionTasks)) {
+                String id = string(task, "taskId");
+                if (!id.isEmpty()) this.taskById.put(id, task);
             }
             for (JsonObject record : safe(explorationRecords)) {
                 String key = string(record, "queryKey");
                 if (!key.isEmpty()) this.records.put(key, record);
             }
             for (JsonObject summary : safe(summaries)) {
-                RegionCaptureGoal goal = RegionCaptureGoal.from(summary);
-                if (goal.isOutputClosure() || goal.isTargetBranch()) {
-                    this.summaries.add(summary);
-                }
+                ClosureGoalKind.fromTask(summary);
+                this.summaries.add(summary);
             }
             for (JsonObject summary : this.summaries) {
                 try {
@@ -166,26 +164,19 @@ public final class RegionPathWorklist {
             Set<String> observedRegions = new TreeSet<>();
             Map<String, ExplorationScope> observedScopes =
                     new LinkedHashMap<>();
-            for (JsonObject activation : activations.values()) {
-                RegionCaptureGoal goal = RegionCaptureGoal.from(activation);
-                if (goal.isOutputClosure() || goal.isTargetBranch()) {
-                    ExplorationScope scope = ExplorationScope.from(null,
-                            activation);
-                    observedScopes.put(scope.identity, scope);
-                }
+            for (JsonObject task : taskById.values()) {
+                ClosureGoalKind.fromTask(task);
+                ExplorationScope scope = ExplorationScope.from(null,
+                        task);
+                observedScopes.put(scope.identity, scope);
             }
             for (JsonObject summary : summaries) {
                 String region = string(summary, "regionId");
                 if (region.isEmpty()) continue;
-                JsonObject activation = activations.get(string(summary,
-                        "activationId"));
-                RegionCaptureGoal goal = RegionCaptureGoal.from(
-                        activation == null ? summary : activation);
-                if (!goal.isOutputClosure() && !goal.isTargetBranch()) {
-                    continue;
-                }
+                JsonObject task = taskById.get(string(summary,
+                        "taskId"));
                 ExplorationScope scope = ExplorationScope.from(summary,
-                        activation);
+                        task);
 
                 String pathKey = stablePathKey(summary, scope);
                 if (!seenPaths.add(region + "\n" + pathKey)) continue;
@@ -335,11 +326,11 @@ public final class RegionPathWorklist {
             task.addProperty("kind", "REGION_PATH_FLIP");
             task.addProperty("queryKey", key);
             task.addProperty("regionId", region);
-            task.add("captureGoal", scope.goal.toJson());
+            task.addProperty("goalId", string(summary, "goalId"));
+            scope.goalKind.writeToTask(task);
             task.addProperty("sourceSummaryId", string(summary, "summaryId"));
             task.addProperty("sourcePathKey", pathKey);
-            task.addProperty("sourceActivationId", string(summary,
-                    "activationId"));
+            task.addProperty("sourceTaskId", string(summary, "taskId"));
             if (scope.contract != null) {
                 task.add(OutputClosureContract.FIELD,
                         scope.contract.toJson());
@@ -361,15 +352,10 @@ public final class RegionPathWorklist {
                 if (!bool(summary, "relationallyComplete", false)) {
                     continue;
                 }
-                JsonObject activation = activations.get(string(summary,
-                        "activationId"));
-                RegionCaptureGoal goal = RegionCaptureGoal.from(
-                        activation == null ? summary : activation);
-                if (!goal.isOutputClosure() && !goal.isTargetBranch()) {
-                    continue;
-                }
+                JsonObject task = taskById.get(string(summary,
+                        "taskId"));
                 ExplorationScope scope = ExplorationScope.from(summary,
-                        activation);
+                        task);
                 List<SummaryBranchMapping> mappings =
                         branchMappings.get(summary);
                 if (mappings == null) continue;
@@ -418,15 +404,10 @@ public final class RegionPathWorklist {
                 }
                 String region = string(summary, "regionId");
                 if (region.isEmpty()) continue;
-                JsonObject activation = activations.get(string(summary,
-                        "activationId"));
-                RegionCaptureGoal goal = RegionCaptureGoal.from(
-                        activation == null ? summary : activation);
-                if (!goal.isOutputClosure() && !goal.isTargetBranch()) {
-                    continue;
-                }
+                JsonObject task = taskById.get(string(summary,
+                        "taskId"));
                 ExplorationScope scope = ExplorationScope.from(summary,
-                        activation);
+                        task);
 
                 JsonArray conditions = array(summary, "pathCondition");
                 List<SummaryBranchMapping> mappings =
@@ -498,11 +479,11 @@ public final class RegionPathWorklist {
             result.add("bounds", bounds.toJson());
             if (scopes.size() == 1) {
                 ExplorationScope scope = scopes.values().iterator().next();
+                result.addProperty("goalId", scope.goalId);
+                scope.goalKind.writeToTask(result);
                 if (scope.contract != null) {
                     result.add(OutputClosureContract.FIELD,
                             scope.contract.toJson());
-                } else {
-                    result.addProperty("captureGoal", scope.goal.kind());
                 }
             }
             result.add("gaps", GSON.toJsonTree(gaps));
@@ -524,8 +505,8 @@ public final class RegionPathWorklist {
                 String region = string(summary, "regionId");
                 if (!region.isEmpty()) inputRegions.add(region);
             }
-            for (JsonObject activation : activations.values()) {
-                String region = string(activation, "regionId");
+            for (JsonObject task : taskById.values()) {
+                String region = string(task, "regionId");
                 if (!region.isEmpty()) inputRegions.add(region);
             }
             return inputRegions.size() == 1
@@ -599,41 +580,50 @@ public final class RegionPathWorklist {
     }
 
     private static final class ExplorationScope {
-        private final RegionCaptureGoal goal;
+        private final ClosureGoalKind goalKind;
+        private final String goalId;
         private final OutputClosureContract contract;
         private final Set<String> branchSites;
         private final String identity;
 
-        private ExplorationScope(RegionCaptureGoal goal,
+        private ExplorationScope(ClosureGoalKind goalKind, String goalId,
                                  OutputClosureContract contract,
                                  Set<String> branchSites,
                                  String identity) {
-            this.goal = goal;
+            this.goalKind = goalKind;
+            this.goalId = goalId;
             this.contract = contract;
             this.branchSites = branchSites;
             this.identity = identity;
         }
 
         private static ExplorationScope from(JsonObject summary,
-                                             JsonObject activation) {
-            RegionCaptureGoal summaryGoal = summary == null ? null
-                    : RegionCaptureGoal.from(summary);
-            RegionCaptureGoal activationGoal = activation == null ? null
-                    : RegionCaptureGoal.from(activation);
-            if (summaryGoal != null && activationGoal != null
-                    && !summaryGoal.kind().equals(activationGoal.kind())) {
+                                             JsonObject executionTask) {
+            ClosureGoalKind summaryGoal = summary == null ? null
+                    : ClosureGoalKind.fromTask(summary);
+            ClosureGoalKind taskGoal = executionTask == null ? null
+                    : ClosureGoalKind.fromTask(executionTask);
+            String summaryGoalId = summary == null ? ""
+                    : string(summary, "goalId");
+            String taskGoalId = executionTask == null ? ""
+                    : string(executionTask, "goalId");
+            if (summaryGoal != null && taskGoal != null
+                    && (summaryGoal != taskGoal
+                    || !summaryGoalId.equals(taskGoalId))) {
                 throw new IllegalArgumentException(
-                        "summary and activation capture goals conflict");
+                        "summary and execution task goals conflict");
             }
-            RegionCaptureGoal goal = summaryGoal != null
-                    ? summaryGoal : activationGoal;
-            if (goal == null) {
+            ClosureGoalKind goalKind = summaryGoal != null
+                    ? summaryGoal : taskGoal;
+            String goalId = !summaryGoalId.isEmpty()
+                    ? summaryGoalId : taskGoalId;
+            if (goalKind == null || goalId.isEmpty()) {
                 throw new IllegalArgumentException(
-                        "capture goal is required");
+                        "closure goal is required");
             }
-            if (goal.isTargetBranch()) {
-                JsonObject source = activation != null
-                        ? activation : summary;
+            if (goalKind.capturesTargetReach()) {
+                JsonObject source = executionTask != null
+                        ? executionTask : summary;
                 Set<String> sites = new LinkedHashSet<>();
                 String targetMethod = string(source, "targetMethod");
                 for (JsonElement element : array(source, "branches")) {
@@ -654,23 +644,24 @@ public final class RegionPathWorklist {
                 String instance = firstNonBlank(string(source,
                         "regionInstanceId"), string(summary,
                         "regionInstanceId"));
-                return new ExplorationScope(goal, null, sites,
-                        "TARGET_BRANCH_V2\n" + region + "\n" + instance
-                                + "\n" + targetMethod);
+                return new ExplorationScope(goalKind, goalId, null, sites,
+                        "TARGET_REACH_CLOSURE_V1\n" + goalId + "\n"
+                                + region + "\n" + instance + "\n"
+                                + targetMethod);
             }
             OutputClosureContract summaryContract = decode(summary);
-            OutputClosureContract activationContract =
-                    decode(activation);
-            if (summaryContract != null && activationContract != null
+            OutputClosureContract taskContract =
+                    decode(executionTask);
+            if (summaryContract != null && taskContract != null
                     && (!summaryContract.demandKey().equals(
-                    activationContract.demandKey())
+                    taskContract.demandKey())
                     || !summaryContract.closureFingerprint().equals(
-                    activationContract.closureFingerprint()))) {
+                    taskContract.closureFingerprint()))) {
                 throw new IllegalArgumentException(
-                        "summary and activation outputClosure conflict");
+                        "summary and execution task outputClosure conflict");
             }
             OutputClosureContract contract = summaryContract != null
-                    ? summaryContract : activationContract;
+                    ? summaryContract : taskContract;
             if (contract == null) {
                 throw new IllegalArgumentException(
                         "canonical outputClosure is required");
@@ -679,8 +670,9 @@ public final class RegionPathWorklist {
                     contract.executionScope().branchSites());
             String demand = contract.demandKey();
             String fingerprint = contract.closureFingerprint();
-            return new ExplorationScope(goal, contract, sites,
-                    "OUTPUT_CLOSURE_V1\n" + demand + "\n" + fingerprint);
+            return new ExplorationScope(goalKind, goalId, contract, sites,
+                    "OUTPUT_RELATION_CLOSURE_V1\n" + goalId + "\n"
+                            + demand + "\n" + fingerprint);
         }
 
         private static OutputClosureContract decode(JsonObject value) {
@@ -767,7 +759,7 @@ public final class RegionPathWorklist {
 
     /**
      * Retains the semantic input/engine-array bijection while erasing the
-     * activation-local array id and object token allocated by one replay.
+     * task-local array id and object token allocated by one replay.
      * The id is alpha-renamed through the same table as path-condition
      * {@code _arr_str} values so a bridge remains joined to its exact load.
      */
@@ -837,7 +829,6 @@ public final class RegionPathWorklist {
                 : value.getAsJsonObject().entrySet()) {
             String key = entry.getKey().toLowerCase();
             if (key.contains("objecttoken")
-                    || key.endsWith("activationid")
                     || "entryreadobservationid".equals(key)) continue;
             result.add(entry.getKey(), stripVolatileIdentity(
                     entry.getValue()));

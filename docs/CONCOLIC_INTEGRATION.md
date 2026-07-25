@@ -85,7 +85,7 @@ symbolized.
 
 ## 4. Runtime activation and value evidence
 
-`concolic_activation_plan.jsonl` identifies a concrete region invocation and
+`concolic_region_plan.jsonl` identifies a concrete region invocation and
 its observed branches. Stable site identity is `method signature + #uN`; branch
 occurrence disambiguates loops and repeated calls.
 

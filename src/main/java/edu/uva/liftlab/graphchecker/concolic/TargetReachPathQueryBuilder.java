@@ -42,8 +42,8 @@ public final class TargetReachPathQueryBuilder {
         JsonObject manifest = ArtifactIO.readObject(arguments.pathManifest);
         if (!"CLOSED".equals(string(manifest, "state"))
                 || array(manifest, "gaps").size() != 0
-                || !"TARGET_BRANCH".equals(string(manifest,
-                "captureGoal"))) {
+                || !ClosureGoalKind.TARGET_REACH_CLOSURE.name().equals(
+                string(manifest, ClosureGoalKind.TASK_FIELD))) {
             throw new IOException(
                     "target path worklist is not completely closed");
         }
@@ -61,8 +61,11 @@ public final class TargetReachPathQueryBuilder {
         JsonObject seed = seeds.get(0);
         String region = string(seed, "regionId");
         String instance = string(seed, "regionInstanceId");
+        String goalId = string(seed, "goalId");
         if (!region.equals(string(manifest, "regionId"))
-                || region.isEmpty() || instance.isEmpty()) {
+                || !goalId.equals(string(manifest, "goalId"))
+                || region.isEmpty() || instance.isEmpty()
+                || goalId.isEmpty()) {
             throw new IOException(
                     "target seed and closed path scope do not match");
         }
@@ -75,7 +78,9 @@ public final class TargetReachPathQueryBuilder {
             if (!region.equals(string(summary, "regionId"))
                     || !instance.equals(string(summary,
                     "regionInstanceId"))
-                    || !RegionCaptureGoal.from(summary).isTargetBranch()
+                    || !goalId.equals(string(summary, "goalId"))
+                    || !ClosureGoalKind.fromTask(summary)
+                    .capturesTargetReach()
                     || !bool(summary, "relationallyComplete", false)) {
                 continue;
             }
@@ -128,9 +133,9 @@ public final class TargetReachPathQueryBuilder {
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", 1);
         result.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
-        result.addProperty("activationId", string(seed, "activationId"));
         result.addProperty("regionId", region);
         result.addProperty("regionInstanceId", instance);
+        result.addProperty("goalId", goalId);
         result.addProperty("exceptionType", arguments.exceptionType);
         result.addProperty("pathClosureState", "CLOSED");
         result.add("paths", encodedPaths);

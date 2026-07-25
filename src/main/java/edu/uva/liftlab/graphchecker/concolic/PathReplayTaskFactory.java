@@ -6,16 +6,16 @@ import com.google.gson.JsonObject;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/** Builds the executable activation for one solver-selected path replay. */
-final class ReplayActivationFactory {
-    private ReplayActivationFactory() {
+/** Builds one executable task for a solver-selected path replay. */
+final class PathReplayTaskFactory {
+    private PathReplayTaskFactory() {
     }
 
     static JsonObject create(JsonObject task, JsonObject source,
                              JsonArray assignments) {
         if (source == null) {
             throw new IllegalArgumentException(
-                    "source activation is required");
+                "source execution task is required");
         }
         if (assignments == null) {
             throw new IllegalArgumentException(
@@ -23,33 +23,30 @@ final class ReplayActivationFactory {
         }
         BranchReplayContract contract = BranchReplayContract.fromJson(
                 requiredObject(task, "replayContract"));
-        RegionCaptureGoal goal = RegionCaptureGoal.from(task);
+        ClosureGoalKind goalKind = ClosureGoalKind.fromTask(task);
         String queryKey = string(task, "queryKey");
         if (queryKey.isEmpty()) {
             throw new IllegalArgumentException("path queryKey is required");
         }
 
         JsonObject result = source.deepCopy();
-        String pathId = shortHash(queryKey);
-        String activationId = "ACT.PATH." + pathId;
-        String scheduleId = "SCHEDULE.PATH." + pathId;
-        result.addProperty("activationId", activationId);
-        result.addProperty("executionPhase", goal.isOutputClosure()
+        if (!string(task, "goalId").equals(string(source, "goalId"))) {
+            throw new IllegalArgumentException(
+                    "path task and source task goals differ");
+        }
+        String taskId = "TASK.REPLAY." + ArtifactIO.sha256(queryKey + "\n"
+                + CanonicalJson.render(assignments));
+        result.addProperty("taskId", taskId);
+        result.addProperty("executionPhase",
+                goalKind.capturesOutputRelation()
                 ? "REPLAY_OUTPUT_PATH_FLIP" : "REPLAY_TARGET_PATH_FLIP");
-        JsonObject bundle = new JsonObject();
-        bundle.addProperty("rootActivationId", activationId);
-        bundle.addProperty("scheduleId", scheduleId);
-        bundle.addProperty("role", "PRIMARY");
-        bundle.addProperty("index", 0);
-        bundle.addProperty("size", 1);
-        bundle.addProperty("selection", activationId);
-        result.add("bundle", bundle);
-        result.add("captureGoal", goal.toJson());
+        result.remove("bundle");
+        goalKind.writeToTask(result);
         result.add("modelAssignments", assignments.deepCopy());
         result.add("replayContract", contract.toJson());
         result.addProperty("pathQueryKey", queryKey);
-        result.addProperty("sourceActivationId",
-                string(task, "sourceActivationId"));
+        result.addProperty("sourceTaskId",
+                string(task, "sourceTaskId"));
         result.remove("summaryMode");
         return result;
     }
@@ -62,9 +59,5 @@ final class ReplayActivationFactory {
         result.add("modelAssignments", assignments == null
                 ? new JsonArray() : assignments.deepCopy());
         return result;
-    }
-
-    private static String shortHash(String value) {
-        return ArtifactIO.sha256(value).substring(0, 16);
     }
 }

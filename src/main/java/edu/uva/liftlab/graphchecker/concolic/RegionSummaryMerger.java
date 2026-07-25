@@ -60,7 +60,8 @@ public final class RegionSummaryMerger {
         Map<String, List<MergeInput>> groups = new LinkedHashMap<>();
         List<JsonObject> gaps = new ArrayList<>();
         for (JsonObject summary : summaries) {
-            if (!RegionCaptureGoal.from(summary).isOutputClosure()) {
+            if (!ClosureGoalKind.fromTask(summary)
+                    .capturesOutputRelation()) {
                 continue;
             }
             MergeInput input;
@@ -140,15 +141,18 @@ public final class RegionSummaryMerger {
 
         String pathState = string(pathManifest, "state");
         String pathRegion = string(pathManifest, "regionId");
+        String pathGoal = string(pathManifest, "goalId");
         boolean pathClosed = RegionPathWorklist.State.CLOSED.name().equals(
-                pathState) && region.equals(pathRegion);
+                pathState) && region.equals(pathRegion)
+                && string(first, "goalId").equals(pathGoal);
         boolean outputScopeMatches = true;
         if (!region.equals(pathRegion)) {
             gaps.add(gap(region,
                     "PATH_WORKLIST_REGION_MISMATCH:" + pathRegion));
         } else if (!pathClosed) {
             gaps.add(gap(region,
-                    "PATH_WORKLIST_NOT_CLOSED:" + pathState));
+                    "PATH_WORKLIST_NOT_CLOSED_OR_GOAL_MISMATCH:"
+                            + pathState + ":" + pathGoal));
         }
         OutputClosureContract pathContract = null;
         try {
@@ -200,7 +204,8 @@ public final class RegionSummaryMerger {
         merged.addProperty("summaryId", "SUMMARY." + region
                 + ".MERGED." + relationHash);
         merged.addProperty("regionId", region);
-        merged.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
+        merged.addProperty("goalId", string(first, "goalId"));
+        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(merged);
         OutputClosureCodec.writeTo(merged, firstInput.contract);
         merged.add("edgeBindings", mergedBindings);
         merged.add("regionRelation", relation);
@@ -227,8 +232,7 @@ public final class RegionSummaryMerger {
                 "heapEffects"}) {
             item.add(field, array(summary, field).deepCopy());
         }
-        item.addProperty("sourceActivationId", string(summary,
-                "activationId"));
+        item.addProperty("sourceTaskId", string(summary, "taskId"));
         return item;
     }
 

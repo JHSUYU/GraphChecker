@@ -79,7 +79,7 @@ fixture_variant=$(workflow_property fixture_variant false)
 fixture_package=${fixture_class%.*}
 fixture_package=${fixture_package//./\/}
 fixture_simple_class=${fixture_class##*.}
-activation_plan=$(configured_value runtime_activation_plan)
+region_plan=$(configured_value runtime_region_plan)
 target_schedule=$(configured_value schedule_output_dir)
 target_classes="${work_root}/concolic-target-classes"
 producer_campaign_root="${work_root}/producer-campaign"
@@ -97,8 +97,8 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   schedule-target         Schedule one unforced consumer target seed
   seed-target             Capture/import the unforced target seed query
   explore-target          Close target-function paths and build reach query
-  schedule-producer CH    Schedule one discovered channel's OUTPUT_CLOSURE
-  instrument CH           Instrument that producer's scheduled activation
+  schedule-producer CH    Schedule one channel's OUTPUT_RELATION_CLOSURE goal
+  instrument CH           Instrument that producer's scheduled execution goal
   replay CH [b1 b2]       Run one real custom-JDK concolic capture
   import CH               Strictly import that producer capture
   explore-producer CH     Close and merge one producer path worklist
@@ -197,9 +197,10 @@ runtime_channel_rows() {
       and (.receiverObjectId | type) == "number"
       and .receiverObjectId != 0;
 
-    . as $activations
-    | [$activations[]
-        | select(.captureGoal.kind == "OUTPUT_CLOSURE")
+    . as $plans
+    | [$plans[] as $plan
+        | $plan.closureGoals[]
+        | select(.kind == "OUTPUT_RELATION_CLOSURE")
         | .edgeBindings[]?
         | select(read_from_evidence)
       ] as $validatedEdges
@@ -210,22 +211,24 @@ runtime_channel_rows() {
     | (if ($terminalRegions | length) != 1 then
         error("runtime read-from graph has no unique terminal target region")
       else $terminalRegions[0] end) as $terminalRegion
-    | $activations[] as $activation
-    | select($activation.captureGoal.kind == "OUTPUT_CLOSURE")
-    | select($activation.admission.state == "READY")
-    | ($activation | output_demand_key) as $outputDemandKey
-    | ($activation | output_closure_fingerprint)
+    | $plans[] as $plan
+    | $plan.closureGoals[] as $goal
+    | select($goal.kind == "OUTPUT_RELATION_CLOSURE")
+    | select($goal.admission.state == "READY")
+    | ($goal + {regionId: $plan.regionId}) as $demand
+    | ($demand | output_demand_key) as $outputDemandKey
+    | ($demand | output_closure_fingerprint)
         as $outputClosureFingerprint
-    | ($activation | output_members) as $output
+    | ($demand | output_members) as $output
     | select(
         ($output.cell
             | type == "string" and length > 0))
-    | $activation.edgeBindings[]? as $edge
+    | $goal.edgeBindings[]? as $edge
     | select(
         ($edge | read_from_evidence)
         and $edge.toRegion == $terminalRegion
-        and $edge.fromRegion == $activation.regionId
-        and $edge.fromRegionInstance == $activation.regionInstanceId
+        and $edge.fromRegion == $plan.regionId
+        and $edge.fromRegionInstance == $plan.regionInstanceId
         and $edge.fromOutputCell == $output.cell
         and $edge.inputProjectionUsed == false
         and ($edge.toInputCell | type == "string" and length > 0))
@@ -238,22 +241,24 @@ runtime_channel_rows() {
         channel: $channel,
         fromCell: $output.cell,
         toCell: $edge.toInputCell,
-        producerRegion: $activation.regionId,
-        producerActivation: $activation.activationId,
+        producerRegion: $plan.regionId,
+        producerInstance: $plan.regionInstanceId,
+        producerGoal: $goal.goalId,
         outputDemandKey: $outputDemandKey,
         outputClosureFingerprint: $outputClosureFingerprint,
         targetRegion: $edge.toRegion,
         targetRegionInstance: $edge.toRegionInstance
       }
-  ' "${activation_plan}" | LC_ALL=C sort
+  ' "${region_plan}" | LC_ALL=C sort
 }
 
 producer_demand_rows() {
   runtime_channel_rows | jq -c -s '
-    sort_by(.producerActivation, .outputDemandKey,
+    sort_by(.producerInstance, .producerGoal, .outputDemandKey,
       .outputClosureFingerprint, .channel, .edgeId)
     | group_by([
-        .producerActivation,
+        .producerInstance,
+        .producerGoal,
         .outputDemandKey,
         .outputClosureFingerprint
       ])
@@ -264,13 +269,15 @@ producer_demand_rows() {
       then error("one producer demand spans conflicting runtime scopes")
       else {
         producerKey: ({
-          activationId: $rows[0].producerActivation,
+          regionInstanceId: $rows[0].producerInstance,
+          goalId: $rows[0].producerGoal,
           outputDemandKey: $rows[0].outputDemandKey,
           outputClosureFingerprint:
             $rows[0].outputClosureFingerprint
         } | tojson | @base64),
         producerRegion: $rows[0].producerRegion,
-        producerActivation: $rows[0].producerActivation,
+        producerInstance: $rows[0].producerInstance,
+        producerGoal: $rows[0].producerGoal,
         outputDemandKey: $rows[0].outputDemandKey,
         outputClosureFingerprint:
           $rows[0].outputClosureFingerprint,
@@ -287,18 +294,22 @@ producer_demand_rows() {
 validate_discovery_inputs() {
   require_command jq
   require_command grep
-  require_file "runtime activation plan" "${activation_plan}"
+  require_file "runtime region plan" "${region_plan}"
   require_file "runtime edge validations" "${runtime_edge_validations}"
   require_file "static data-flow graph" "${static_graph}"
   jq -e -s '
     length > 0
     and all(.[];
-      (.activationId | type == "string" and length > 0)
-      and (.regionId | type == "string" and length > 0)
-      and (.captureGoal.kind | type == "string" and length > 0))
-    and (([.[].activationId] | unique | length) == length)
-  ' "${activation_plan}" >/dev/null \
-    || die "runtime activation plan has missing or duplicate identities"
+      (.regionId | type == "string" and length > 0)
+      and (.regionInstanceId | type == "string" and length > 0)
+      and (.closureGoals | type == "array" and length > 0)
+      and all(.closureGoals[];
+        (.goalId | type == "string" and length > 0)
+        and (.kind == "OUTPUT_RELATION_CLOSURE"
+          or .kind == "TARGET_REACH_CLOSURE")))
+    and (([.[].regionInstanceId] | unique | length) == length)
+  ' "${region_plan}" >/dev/null \
+    || die "runtime region plan has missing or duplicate identities"
   local channels
   channels=$(runtime_channel_rows) \
     || die "could not derive local channels from runtime read-from evidence"
@@ -310,7 +321,8 @@ validate_discovery_inputs() {
       and (.fromCell | type == "string" and length > 0)
       and (.toCell | type == "string" and length > 0)
       and (.producerRegion | type == "string" and length > 0)
-      and (.producerActivation | type == "string" and length > 0)
+      and (.producerInstance | type == "string" and length > 0)
+      and (.producerGoal | type == "string" and length > 0)
       and (.outputDemandKey | type == "string" and length > 0)
       and (.outputClosureFingerprint | type == "string" and length > 0)
       and (.targetRegion | type == "string" and length > 0)
@@ -319,7 +331,8 @@ validate_discovery_inputs() {
     and (group_by(.channel | ascii_downcase) | all(.[];
       ([.[].fromCell] | unique | length) == 1
       and ([.[].producerRegion] | unique | length) == 1
-      and ([.[].producerActivation] | unique | length) == 1
+      and ([.[].producerInstance] | unique | length) == 1
+      and ([.[].producerGoal] | unique | length) == 1
       and ([.[].outputDemandKey] | unique | length) == 1
       and ([.[].outputClosureFingerprint] | unique | length) == 1))
     and (([.[].targetRegionInstance] | unique | length) == 1)
@@ -333,7 +346,8 @@ validate_discovery_inputs() {
     and all(.[];
       (.producerKey | type == "string" and length > 0)
       and (.producerRegion | type == "string" and length > 0)
-      and (.producerActivation | type == "string" and length > 0)
+      and (.producerInstance | type == "string" and length > 0)
+      and (.producerGoal | type == "string" and length > 0)
       and (.outputDemandKey | type == "string" and length > 0)
       and (.outputClosureFingerprint | type == "string" and length > 0)
       and (.ownerChannel | type == "string" and length > 0)
@@ -408,14 +422,14 @@ producer_binding() {
   local requested=$1
   local demand
   demand=$(producer_demand_for_channel "${requested}") || return $?
-  jq -er '[.producerRegion, .producerActivation] | @tsv' \
+  jq -er '[.producerRegion, .producerInstance, .producerGoal] | @tsv' \
     <<< "${demand}" \
     || die "producer demand binding is incomplete for ${requested}"
 }
 
 target_binding() {
   local target_region target_instance
-  local -a target_activations
+  local -a target_goals
   target_region=$(runtime_channel_rows | jq -er -s '
     [.[].targetRegion] | unique
     | if length == 1 then .[0] else error("ambiguous target region") end
@@ -424,18 +438,19 @@ target_binding() {
     [.[].targetRegionInstance] | unique
     | if length == 1 then .[0] else error("ambiguous target instance") end
   ') || die "runtime channels do not converge on one target instance"
-  mapfile -t target_activations < <(jq -r \
+  mapfile -t target_goals < <(jq -r \
     --arg region "${target_region}" --arg instance "${target_instance}" '
-    select(.regionId == $region
-        and .regionInstanceId == $instance
-        and .captureGoal.kind == "TARGET_BRANCH"
+    select(.regionId == $region and .regionInstanceId == $instance)
+    | . as $plan
+    | .closureGoals[]
+    | select(.kind == "TARGET_REACH_CLOSURE"
         and (.admission.state == "READY"
           or .admission.state == "DISCOVERED"))
-    | .activationId
-  ' "${activation_plan}")
-  [[ ${#target_activations[@]} -eq 1 ]] || die \
-    "expected one TARGET_BRANCH activation for ${target_instance}"
-  printf '%s\t%s\n' "${target_region}" "${target_activations[0]}"
+    | [$plan.regionInstanceId, .goalId] | @tsv
+  ' "${region_plan}")
+  [[ ${#target_goals[@]} -eq 1 ]] || die \
+    "expected one TARGET_REACH_CLOSURE goal for ${target_instance}"
+  printf '%s\t%s\n' "${target_region}" "${target_goals[0]}"
 }
 
 channel_schedule() {
@@ -452,20 +467,21 @@ channel_classes() {
     "$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')"
 }
 
-scheduled_activation() {
+scheduled_task() {
   local requested=$1
-  local channel region source_activation from_cell schedule binding
+  local channel region source_instance source_goal from_cell schedule binding
   local -a matches
   channel=$(discovered_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
-  IFS=$'\t' read -r region source_activation \
+  IFS=$'\t' read -r region source_instance source_goal \
     <<< "${binding}"
   from_cell=$(channel_value "${channel}" fromCell) || return $?
   schedule=$(channel_schedule "${channel}") || return $?
-  require_file "scheduled producer activation" \
-    "${schedule}/scheduled_activation_plan.jsonl"
+  require_file "scheduled producer task" \
+    "${schedule}/execution_task_plan.jsonl"
   mapfile -t matches < <(jq -r \
-    --arg region "${region}" --arg sourceActivation "${source_activation}" \
+    --arg region "${region}" --arg sourceInstance "${source_instance}" \
+    --arg sourceGoal "${source_goal}" \
     --arg fromCell "${from_cell}" '
     def output_members:
       if (.outputClosure | type) == "object"
@@ -482,36 +498,37 @@ scheduled_activation() {
       end;
 
     select(
-      .bundle.role == "PRIMARY"
-      and .activationId == $sourceActivation
+      .regionInstanceId == $sourceInstance
+      and .goalId == $sourceGoal
       and .regionId == $region
-      and .captureGoal.kind == "OUTPUT_CLOSURE")
+      and .goalKind == "OUTPUT_RELATION_CLOSURE")
     | select(any(output_members; .cell == $fromCell))
-    | .activationId
-  ' "${schedule}/scheduled_activation_plan.jsonl")
+    | .taskId
+  ' "${schedule}/execution_task_plan.jsonl")
   [[ ${#matches[@]} -eq 1 ]] || die \
-    "expected one scheduled PRIMARY activation for channel ${channel}"
+    "expected one scheduled task for channel ${channel}"
   printf '%s\n' "${matches[0]}"
 }
 
-scheduled_target_activation() {
-  local region source_activation binding
+scheduled_target_task() {
+  local region source_instance source_goal binding
   local -a matches
   binding=$(target_binding) || return $?
-  IFS=$'\t' read -r region source_activation <<< "${binding}"
-  require_file "scheduled target activation" \
-    "${target_schedule}/scheduled_activation_plan.jsonl"
+  IFS=$'\t' read -r region source_instance source_goal <<< "${binding}"
+  require_file "scheduled target task" \
+    "${target_schedule}/execution_task_plan.jsonl"
   mapfile -t matches < <(jq -r \
-    --arg region "${region}" --arg activation "${source_activation}" '
+    --arg region "${region}" --arg instance "${source_instance}" \
+    --arg goal "${source_goal}" '
     select(
-      .bundle.role == "PRIMARY"
-      and .regionId == $region
-      and .activationId == $activation
-      and .captureGoal.kind == "TARGET_BRANCH")
-    | .activationId
-  ' "${target_schedule}/scheduled_activation_plan.jsonl")
+      .regionId == $region
+      and .regionInstanceId == $instance
+      and .goalId == $goal
+      and .goalKind == "TARGET_REACH_CLOSURE")
+    | .taskId
+  ' "${target_schedule}/execution_task_plan.jsonl")
   [[ ${#matches[@]} -eq 1 ]] || die \
-    "expected one scheduled PRIMARY target activation; found ${#matches[@]}"
+    "expected one scheduled target task; found ${#matches[@]}"
   printf '%s\n' "${matches[0]}"
 }
 
@@ -547,124 +564,104 @@ do_trace() {
   require_directory "trace-instrumented classes" \
     "${instrumented_classes}"
   (cd "${graphchecker_dir}" && "${runner}" --config "${config}" workload)
-  require_file "runtime activations" "${activation_plan}"
+  require_file "runtime region plans" "${region_plan}"
   require_file "runtime edge validations" "${runtime_edge_validations}"
 }
 
 do_discover() {
-  local channel region activation target_region target_activation
+  local channel region instance goal target_region target_instance target_goal
   local binding
   local -a channels
   validate_discovery_inputs
   mapfile -t channels < <(discovered_channels)
-  printf 'kind\tchannel\tregion\tactivation\n'
+  printf 'kind\tchannel\tregion\tinstance\tgoal\n'
   for channel in "${channels[@]}"; do
     binding=$(producer_binding "${channel}") || return $?
-    IFS=$'\t' read -r region activation <<< "${binding}"
-    printf 'producer\t%s\t%s\t%s\n' \
-      "${channel}" "${region}" "${activation}"
+    IFS=$'\t' read -r region instance goal <<< "${binding}"
+    printf 'producer\t%s\t%s\t%s\t%s\n' \
+      "${channel}" "${region}" "${instance}" "${goal}"
   done
   binding=$(target_binding) || return $?
-  IFS=$'\t' read -r target_region target_activation <<< "${binding}"
-  printf 'target\t-\t%s\t%s\n' "${target_region}" "${target_activation}"
+  IFS=$'\t' read -r target_region target_instance target_goal <<< "${binding}"
+  printf 'target\t-\t%s\t%s\t%s\n' \
+    "${target_region}" "${target_instance}" "${target_goal}"
 }
 
 do_schedule_target() {
-  local region activation binding
+  local region instance goal binding
   validate_discovery_inputs
   binding=$(target_binding) || return $?
-  IFS=$'\t' read -r region activation <<< "${binding}"
+  IFS=$'\t' read -r region instance goal <<< "${binding}"
   (cd "${graphchecker_dir}" && "${runner}" --config "${config}" schedule \
-    --region-id "${region}" --activation-id "${activation}")
+    --region-id "${region}" --region-instance-id "${instance}" \
+    --goal-id "${goal}")
   jq -e -s 'length == 1' \
-    "${target_schedule}/scheduled_activation_plan.jsonl" >/dev/null \
-    || die "target scheduler did not emit exactly one activation"
+    "${target_schedule}/execution_task_plan.jsonl" >/dev/null \
+    || die "target scheduler did not emit exactly one task"
 }
 
 do_schedule_producer() {
   local requested=$1
   local channel
-  local region activation output binding
+  local region instance goal output binding
   validate_discovery_inputs
   channel=$(producer_owner_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
-  IFS=$'\t' read -r region activation <<< "${binding}"
+  IFS=$'\t' read -r region instance goal <<< "${binding}"
   output=$(channel_schedule "${channel}") || return $?
   (cd "${graphchecker_dir}" && \
     CAUSYNTH_SCHEDULE_OUTPUT_DIR="${output}" \
     "${runner}" --config "${config}" schedule \
-      --region-id "${region}" --activation-id "${activation}" \
+      --region-id "${region}" --region-instance-id "${instance}" \
+      --goal-id "${goal}" \
       --capture-only true --multiple-per-region true)
 }
 
 do_instrument() {
   local requested=$1
-  local channel schedule classes activation
+  local channel schedule classes task
   validate_discovery_inputs
   channel=$(producer_owner_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   classes=$(channel_classes "${channel}") || return $?
-  activation=$(scheduled_activation "${channel}") || return $?
-  instrument_plan "${schedule}/scheduled_activation_plan.jsonl" \
-    "${activation}" "${classes}"
+  task=$(scheduled_task "${channel}") || return $?
+  instrument_plan "${schedule}/execution_task_plan.jsonl" \
+    "${task}" "${classes}"
 }
 
 instrument_plan() {
   local plan=$1
-  local selection=$2
+  local task=$2
   local classes=$3
-  local selected="${selection}"
-  local select_all=false
-  require_file "concolic activation plan" "${plan}"
-  [[ -s "${plan}" ]] || die "concolic activation plan is empty: ${plan}"
-  if plan_requires_all "${plan}"; then
-    select_all=true
-    selected=""
-  elif [[ "${selected}" == "ALL" ]]; then
-    die "ALL selection requires bundle.selection=ALL plan rows: ${plan}"
-  fi
-  [[ "${select_all}" == "true" || -n "${selected}" ]] \
-    || die "exact activation selection is empty for non-bundle plan: ${plan}"
-  if [[ "${select_all}" == "true" ]]; then
-    (cd "${graphchecker_dir}" && \
-      env -u CAUSYNTH_CONCOLIC_ACTIVATION_ID \
-      CAUSYNTH_INSTRUMENTED_CLASSES_DIR="${classes}" \
-      CAUSYNTH_INSTRUMENT_CONCOLIC=true \
-      CAUSYNTH_CONCOLIC_ACTIVATION_PLAN="${plan}" \
-      "${runner}" --config "${config}" analyze)
-  else
-    (cd "${graphchecker_dir}" && \
-      CAUSYNTH_INSTRUMENTED_CLASSES_DIR="${classes}" \
-      CAUSYNTH_INSTRUMENT_CONCOLIC=true \
-      CAUSYNTH_CONCOLIC_ACTIVATION_PLAN="${plan}" \
-      CAUSYNTH_CONCOLIC_ACTIVATION_ID="${selected}" \
-      "${runner}" --config "${config}" analyze)
-  fi
-}
-
-plan_requires_all() {
-  local plan=$1
-  require_command jq
-  jq -e -s 'any(.[]; .bundle.selection == "ALL")' \
-    "${plan}" >/dev/null
+  require_file "concolic execution task plan" "${plan}"
+  [[ -s "${plan}" ]] || die "concolic execution task plan is empty: ${plan}"
+  jq -e -s --arg task "${task}" '
+    length == 1 and .[0].taskId == $task
+  ' "${plan}" >/dev/null \
+    || die "task plan is not the requested singleton ${task}: ${plan}"
+  (cd "${graphchecker_dir}" && \
+    CAUSYNTH_INSTRUMENTED_CLASSES_DIR="${classes}" \
+    CAUSYNTH_INSTRUMENT_CONCOLIC=true \
+    CAUSYNTH_CONCOLIC_TASK_PLAN="${plan}" \
+    CAUSYNTH_CONCOLIC_TASK_ID="${task}" \
+    "${runner}" --config "${config}" analyze)
 }
 
 run_custom_plan() {
   local plan=$1
-  local selection=$2
+  local task=$2
   local classes=$3
   local results=$4
   local b1=$5
   local b2=$6
   local accept_nonzero=$7
   local worker_dir=${8:-}
-  local jdk java_path selected replay_status select_all=false
+  local jdk java_path replay_status
   local resolved_library_path="" java_library_path=""
-  local -a java_env worker_jvm_args selection_args
+  local -a java_env worker_jvm_args
   java_env=()
   worker_jvm_args=()
-  selection_args=()
-  require_file "concolic activation plan" "${plan}"
+  require_file "concolic execution task plan" "${plan}"
   require_directory "concolic fixture classes" "${classes}"
   [[ ! -e "${results}" ]] || die "capture output already exists: ${results}"
   mkdir -p "$(dirname "${results}")"
@@ -682,15 +679,10 @@ run_custom_plan() {
     java_library_path="${resolved_library_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
     java_env+=(LD_LIBRARY_PATH="${java_library_path}")
   fi
-  selected="${selection}"
-  if plan_requires_all "${plan}"; then
-    select_all=true
-    selected=""
-  elif [[ "${selected}" == "ALL" ]]; then
-    die "ALL selection requires bundle.selection=ALL plan rows: ${plan}"
-  fi
-  [[ "${select_all}" == "true" || -n "${selected}" ]] \
-    || die "exact activation selection is empty for non-bundle plan: ${plan}"
+  jq -e -s --arg task "${task}" '
+    length == 1 and .[0].taskId == $task
+  ' "${plan}" >/dev/null \
+    || die "task plan is not the requested singleton ${task}: ${plan}"
 
   local -a java_args fixture_variant_args
   fixture_variant_args=()
@@ -709,17 +701,12 @@ run_custom_plan() {
       -Dcausynth.fixture.variant="${fixture_variant}"
     )
   fi
-  if [[ "${select_all}" != "true" ]]; then
-    selection_args+=(
-      -Dcausynth.concolic.activation.id="${selected}"
-    )
-  fi
   java_args=(
     "${worker_jvm_args[@]}"
     -Xint
     -Dcausynth.trace.test="${trace_test}"
-    -Dcausynth.concolic.activation.plan="${plan}"
-    "${selection_args[@]}"
+    -Dcausynth.concolic.task.plan="${plan}"
+    -Dcausynth.concolic.task.id="${task}"
     -Dcausynth.concolic.results="${results}"
     "${fixture_variant_args[@]}"
     -cp "${classes}:${graphchecker_jar}"
@@ -727,7 +714,7 @@ run_custom_plan() {
   )
   if env -u CAUSYNTH_TRACE_OUTPUT_DIR \
       "${java_env[@]}" "${java_path}" -version >/dev/null 2>&1; then
-    if (cd "${graphchecker_dir}" && env -u CAUSYNTH_CONCOLIC_ACTIVATION_ID \
+    if (cd "${graphchecker_dir}" && env -u CAUSYNTH_CONCOLIC_TASK_ID \
         -u CAUSYNTH_TRACE_OUTPUT_DIR \
         "${java_env[@]}" \
         "${java_path}" "${java_args[@]}"); then
@@ -759,27 +746,10 @@ run_custom_plan() {
     die "custom-JDK replay failed with exit ${replay_status}: ${results}"
   fi
   if [[ "${replay_status}" -ne 0 ]]; then
-    if [[ "${select_all}" == "true" ]]; then
-      local -a primary_activations
-      mapfile -t primary_activations < <(jq -r '
-        select(.bundle.role == "PRIMARY") | .activationId
-      ' "${plan}")
-      [[ ${#primary_activations[@]} -eq 1 ]] \
-        || die "nonzero bundle replay requires one PRIMARY row"
-      jq -e -s --arg activation "${primary_activations[0]}" '
-        [.[] | select(.activationId == $activation)] | length == 1
-      ' "${results}" >/dev/null \
-        || die "nonzero replay emitted no raw PRIMARY target row"
-    else
-      jq -e -s --arg activation "${selected}" '
-        [.[] | select(.activationId == $activation)] | length == 1
-      ' "${plan}" >/dev/null \
-        || die "nonzero exact replay selection is not unique in its plan"
-      jq -e -s --arg activation "${selected}" '
-        [.[] | select(.activationId == $activation)] | length == 1
-      ' "${results}" >/dev/null \
-        || die "nonzero exact replay emitted no selected raw result row"
-    fi
+    jq -e -s --arg task "${task}" '
+      [.[] | select(.taskId == $task)] | length == 1
+    ' "${results}" >/dev/null \
+      || die "nonzero replay emitted no selected raw task result"
     echo "[three-thread-rpc] accepted expected nonzero replay exit ${replay_status}; selected raw evidence exists"
   fi
 }
@@ -788,15 +758,15 @@ run_custom_java() {
   local requested=$1
   local b1=$2
   local b2=$3
-  local channel schedule classes activation results
+  local channel schedule classes task results
   validate_discovery_inputs
   channel=$(producer_owner_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   classes=$(channel_classes "${channel}") || return $?
-  activation=$(scheduled_activation "${channel}") || return $?
+  task=$(scheduled_task "${channel}") || return $?
   results="${schedule}/concolic_region_results.jsonl"
-  run_custom_plan "${schedule}/scheduled_activation_plan.jsonl" \
-    "${activation}" "${classes}" "${results}" "${b1}" "${b2}" false
+  run_custom_plan "${schedule}/execution_task_plan.jsonl" \
+    "${task}" "${classes}" "${results}" "${b1}" "${b2}" false
 }
 
 do_import() {
@@ -806,8 +776,8 @@ do_import() {
   validate_discovery_inputs
   channel=$(producer_owner_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
-  scheduled_activation "${channel}" >/dev/null
-  import_plan "${schedule}/scheduled_activation_plan.jsonl" \
+  scheduled_task "${channel}" >/dev/null
+  import_plan "${schedule}/execution_task_plan.jsonl" \
     "${schedule}/concolic_region_results.jsonl" \
     "${schedule}/concolic_region_summaries.jsonl" "${schedule}"
 }
@@ -817,12 +787,12 @@ import_plan() {
   local results=$2
   local summaries=$3
   local output_dir=$4
-  require_file "import activation plan" "${plan}"
+  require_file "import execution task plan" "${plan}"
   [[ -s "${results}" ]] || die "raw concolic result is missing or empty: ${results}"
   mkdir -p "${output_dir}"
   (cd "${graphchecker_dir}" && \
     CAUSYNTH_RAW_RESULTS="${results}" \
-    CAUSYNTH_IMPORT_ACTIVATION_PLAN="${plan}" \
+    CAUSYNTH_IMPORT_TASK_PLAN="${plan}" \
     CAUSYNTH_IMPORTED_SUMMARIES="${summaries}" \
     CAUSYNTH_IMPORT_DIAGNOSTICS="${output_dir}/concolic_import_diagnostics.jsonl" \
     "${runner}" --config "${config}" import)
@@ -938,12 +908,12 @@ producer_campaign_directory() {
 run_path_task() {
   local query_key=$1
   local worklist=$2
-  local activations=$3
+  local execution_tasks=$3
   local classes=$4
   local task_dir=$5
   local z3=$6
   local solver_timeout=$7
-  local solver_status solver_outcome replay_activation raw imported
+  local solver_status solver_outcome replay_task raw imported
   local replay_verification
 
   mkdir -p "${task_dir}/tmp"
@@ -951,7 +921,7 @@ run_path_task() {
   run_graphchecker_main \
     edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipSolver \
     --worklist "${worklist}" \
-    --activations "${activations}" \
+    --task-plan "${execution_tasks}" \
     --query-key "${query_key}" \
     --output-dir "${task_dir}" \
     --z3 "${z3}" \
@@ -983,36 +953,40 @@ run_path_task() {
 
   [[ "${solver_outcome}" == "SAT_MODEL_READY" ]] \
     || die "producer path flip is not solver-backed"
-  replay_activation=$(jq -er -s '
-    if length == 1 then .[0].activationId
-    else error("expected one exact replay activation")
+  replay_task=$(jq -er -s '
+    if length == 1 then .[0].taskId
+    else error("expected one exact replay task")
     end
-  ' "${task_dir}/activation_plan.jsonl") \
-    || die "producer path flip has no exact replay activation"
+  ' "${task_dir}/execution_task_plan.jsonl") \
+    || die "producer path flip has no exact replay task"
 
   raw="${task_dir}/concolic_region_results.jsonl"
   imported="${task_dir}/concolic_region_summaries.jsonl"
-  run_custom_plan "${task_dir}/activation_plan.jsonl" \
-    "${replay_activation}" "${classes}" "${raw}" false false true \
+  run_custom_plan "${task_dir}/execution_task_plan.jsonl" \
+    "${replay_task}" "${classes}" "${raw}" false false true \
     "${task_dir}"
-  import_plan "${task_dir}/activation_plan.jsonl" "${raw}" \
+  import_plan "${task_dir}/execution_task_plan.jsonl" "${raw}" \
     "${imported}" "${task_dir}"
   jq -e -c -s \
     --slurpfile task "${task_dir}/replay_validation_plan.json" \
-    --slurpfile activation "${task_dir}/activation_plan.jsonl" \
+    --slurpfile executionTask "${task_dir}/execution_task_plan.jsonl" \
     --slurpfile raw "${raw}" '
     if length == 1
       and ($task | length) == 1
-      and ($activation | length) == 1
+      and ($executionTask | length) == 1
       and ($raw | length) == 1
       and .[0].relationallyComplete == true
-      and .[0].activationId == $activation[0].activationId
+      and .[0].taskId == $executionTask[0].taskId
+      and .[0].regionInstanceId == $executionTask[0].regionInstanceId
+      and .[0].goalId == $executionTask[0].goalId
       and .[0].regionId == $task[0].regionId
-      and $raw[0].activationId == $activation[0].activationId
+      and $raw[0].regionInstanceId == $executionTask[0].regionInstanceId
+      and $raw[0].taskId == $executionTask[0].taskId
+      and $raw[0].goalId == $executionTask[0].goalId
       and $raw[0].regionId == $task[0].regionId
       and $raw[0].pathQueryKey == $task[0].queryKey
-      and $activation[0].pathQueryKey == $task[0].queryKey
-      and ($task[0].captureGoal.kind != "OUTPUT_CLOSURE"
+      and $executionTask[0].pathQueryKey == $task[0].queryKey
+      and ($task[0].goalKind != "OUTPUT_RELATION_CLOSURE"
         or (.[0].normalExit == true
           and (.[0].outputExpressions | keys | sort)
             == (.[0].outputClosure.members
@@ -1022,8 +996,10 @@ run_path_task() {
       kind: "PATH_EXPLORATION_RECORD",
       queryKey: $task[0].queryKey,
       regionId: $task[0].regionId,
-      activationId: $activation[0].activationId,
-      status: (if $task[0].captureGoal.kind == "OUTPUT_CLOSURE"
+      taskId: $executionTask[0].taskId,
+      regionInstanceId: $executionTask[0].regionInstanceId,
+      goalId: $executionTask[0].goalId,
+      status: (if $task[0].goalKind == "OUTPUT_RELATION_CLOSURE"
         then "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
         else "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY"
         end)
@@ -1100,17 +1076,17 @@ publish_path_wave() {
   local wave_dir=$1
   local state_dir=$2
   local summaries=$3
-  local activations=$4
+  local execution_tasks=$4
   local raw_results=$5
   local records=$6
   local task_dir
-  local -a task_dirs summary_inputs activation_inputs raw_inputs record_inputs
+  local -a task_dirs summary_inputs task_inputs raw_inputs record_inputs
 
   mapfile -t task_dirs < <(find "${wave_dir}" -mindepth 1 -maxdepth 1 \
     -type d -name 'task-*' | LC_ALL=C sort)
   [[ ${#task_dirs[@]} -gt 0 ]] || die "path wave has no task directories"
   summary_inputs=("${summaries}")
-  activation_inputs=("${activations}")
+  task_inputs=("${execution_tasks}")
   raw_inputs=("${raw_results}")
   record_inputs=("${records}")
 
@@ -1118,12 +1094,12 @@ publish_path_wave() {
     require_file "path exploration record" \
       "${task_dir}/exploration_record.jsonl"
     record_inputs+=("${task_dir}/exploration_record.jsonl")
-    if [[ -s "${task_dir}/activation_plan.jsonl" ]]; then
+    if [[ -s "${task_dir}/execution_task_plan.jsonl" ]]; then
       require_file "path replay raw result" \
         "${task_dir}/concolic_region_results.jsonl"
       require_file "path replay imported summary" \
         "${task_dir}/concolic_region_summaries.jsonl"
-      activation_inputs+=("${task_dir}/activation_plan.jsonl")
+      task_inputs+=("${task_dir}/execution_task_plan.jsonl")
       raw_inputs+=("${task_dir}/concolic_region_results.jsonl")
       summary_inputs+=("${task_dir}/concolic_region_summaries.jsonl")
     fi
@@ -1131,14 +1107,14 @@ publish_path_wave() {
 
   combine_jsonl_unique summaryId "${state_dir}/next_summaries.jsonl" \
     "${summary_inputs[@]}"
-  combine_jsonl_unique activationId "${state_dir}/next_activations.jsonl" \
-    "${activation_inputs[@]}"
-  combine_jsonl_unique activationId "${state_dir}/next_raw_results.jsonl" \
+  combine_jsonl_unique taskId "${state_dir}/next_execution_tasks.jsonl" \
+    "${task_inputs[@]}"
+  combine_jsonl_unique taskId "${state_dir}/next_raw_results.jsonl" \
     "${raw_inputs[@]}"
   combine_jsonl_unique queryKey "${state_dir}/next_records.jsonl" \
     "${record_inputs[@]}"
   mv -f "${state_dir}/next_summaries.jsonl" "${summaries}"
-  mv -f "${state_dir}/next_activations.jsonl" "${activations}"
+  mv -f "${state_dir}/next_execution_tasks.jsonl" "${execution_tasks}"
   mv -f "${state_dir}/next_raw_results.jsonl" "${raw_results}"
   mv -f "${state_dir}/next_records.jsonl" "${records}"
 }
@@ -1146,10 +1122,11 @@ publish_path_wave() {
 explore_region_paths() {
   local label=$1
   local region=$2
-  local schedule=$3
-  local classes=$4
-  local campaign=$5
-  local summaries activations raw_results records state_dir planner_dir
+  local goal=$3
+  local schedule=$4
+  local classes=$5
+  local campaign=$6
+  local summaries execution_tasks raw_results records state_dir planner_dir
   local z3 solver_timeout planner_status query_key iteration jobs task_dir
   local wave_limit
   local bound_spec bound_property bound_option bound_value
@@ -1163,15 +1140,15 @@ explore_region_paths() {
   state_dir="${campaign}/.state"
   mkdir -p "${state_dir}"
   summaries="${campaign}/observed_path_summaries.jsonl"
-  activations="${state_dir}/observed_activation_plan.jsonl"
+  execution_tasks="${state_dir}/observed_execution_tasks.jsonl"
   raw_results="${campaign}/raw_results.jsonl"
   records="${campaign}/path_exploration_records.jsonl"
   : >"${records}"
   combine_jsonl_unique summaryId "${summaries}" \
     "${schedule}/concolic_region_summaries.jsonl"
-  combine_jsonl_unique activationId "${activations}" \
-    "${schedule}/scheduled_activation_plan.jsonl"
-  combine_jsonl_unique activationId "${raw_results}" \
+  combine_jsonl_unique taskId "${execution_tasks}" \
+    "${schedule}/execution_task_plan.jsonl"
+  combine_jsonl_unique taskId "${raw_results}" \
     "${schedule}/concolic_region_results.jsonl"
   z3=$(configured_value z3_bin) || return $?
   solver_timeout=$(configured_value solver_timeout_ms) || return $?
@@ -1201,10 +1178,11 @@ explore_region_paths() {
     run_graphchecker_main \
       edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner \
       --summaries "${summaries}" \
-      --activations "${activations}" \
+      --task-plan "${execution_tasks}" \
       --records "${records}" \
       --output-dir "${planner_dir}" \
       --region-id "${region}" \
+      --goal-id "${goal}" \
       "${planner_bound_args[@]}"
     planner_status=$?
     set -e
@@ -1247,7 +1225,7 @@ explore_region_paths() {
         set -euo pipefail
         run_path_task "${query_key}" \
           "${planner_dir}/region_path_worklist.jsonl" \
-          "${activations}" "${classes}" "${task_dir}" "${z3}" \
+          "${execution_tasks}" "${classes}" "${task_dir}" "${z3}" \
           "${solver_timeout}"
       ) >"${task_dir}/stdout.log" 2>"${task_dir}/stderr.log" &
       worker_pids+=("$!")
@@ -1257,7 +1235,7 @@ explore_region_paths() {
       die "${label} path wave ${iteration} failed; inspect ${planner_dir}"
     fi
     publish_path_wave "${planner_dir}" "${state_dir}" "${summaries}" \
-      "${activations}" "${raw_results}" "${records}"
+      "${execution_tasks}" "${raw_results}" "${records}"
     discard_successful_iteration "${campaign}"
     iteration=$((iteration + 1))
   done
@@ -1266,16 +1244,16 @@ explore_region_paths() {
 
 do_explore_producer() {
   local requested=$1
-  local channel schedule classes campaign region binding
+  local channel schedule classes campaign region instance goal binding
   local summaries
   validate_discovery_inputs
   channel=$(producer_owner_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
-  IFS=$'\t' read -r region _ <<< "${binding}"
+  IFS=$'\t' read -r region instance goal <<< "${binding}"
   schedule=$(channel_schedule "${channel}") || return $?
   classes=$(channel_classes "${channel}") || return $?
   campaign=$(producer_campaign_directory "${channel}") || return $?
-  explore_region_paths "producer ${channel}" "${region}" "${schedule}" \
+  explore_region_paths "producer ${channel}" "${region}" "${goal}" "${schedule}" \
     "${classes}" "${campaign}"
   summaries="${campaign}/observed_path_summaries.jsonl"
 
@@ -1296,12 +1274,12 @@ do_explore_producer() {
 }
 
 do_explore_target() {
-  local binding region campaign exception_type
+  local binding region instance goal campaign exception_type
   validate_discovery_inputs
   binding=$(target_binding) || return $?
-  IFS=$'\t' read -r region _ <<< "${binding}"
+  IFS=$'\t' read -r region instance goal <<< "${binding}"
   campaign="${target_campaign_root}"
-  explore_region_paths "target" "${region}" "${target_schedule}" \
+  explore_region_paths "target" "${region}" "${goal}" "${target_schedule}" \
     "${target_classes}" "${campaign}"
   exception_type=$(jq -er '
     .exception | select(type == "string" and length > 0)
@@ -1384,7 +1362,7 @@ run_producers_parallel() {
 }
 
 do_candidate_compose() {
-  local target_region target_activation binding channel campaign
+  local target_region target_instance target_goal binding channel campaign
   local producer_binding_row producer_region producer_summary
   local compose_summaries
   local -a channels bounded_args merged_inputs
@@ -1396,7 +1374,7 @@ do_candidate_compose() {
     || die "candidate output already exists: ${candidate_root}"
   mkdir -p "${candidate_root}"
   binding=$(target_binding) || return $?
-  IFS=$'\t' read -r target_region target_activation <<< "${binding}"
+  IFS=$'\t' read -r target_region target_instance target_goal <<< "${binding}"
   mapfile -t channels < <(discovered_producer_channels | LC_ALL=C sort)
   [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
   bounded_args=()
@@ -1431,7 +1409,7 @@ do_candidate_compose() {
     CAUSYNTH_COMPOSITION_MANIFEST="${candidate_root}/candidate_composition_manifest.json" \
     CAUSYNTH_RELATIONSHIP_CANDIDATES="${candidate_root}/symbolic_relationship_candidates.json" \
     CAUSYNTH_FATAL_REGION="${target_region}" \
-    CAUSYNTH_FATAL_ACTIVATION_ID="${target_activation}" \
+    CAUSYNTH_FATAL_REGION_INSTANCE_ID="${target_instance}" \
     "${runner}" --config "${config}" compose "${bounded_args[@]}")
   jq -e '
     .schemaVersion == 2
@@ -1495,38 +1473,45 @@ do_candidate_solve() {
 }
 
 do_seed_target() {
-  local activation region binding summary
+  local instance goal task region binding summary
   validate_discovery_inputs
-  activation=$(scheduled_target_activation) || return $?
+  task=$(scheduled_target_task) || return $?
   binding=$(target_binding) || return $?
-  IFS=$'\t' read -r region _ <<< "${binding}"
-  instrument_plan "${target_schedule}/scheduled_activation_plan.jsonl" \
-    "${activation}" "${target_classes}"
-  run_custom_plan "${target_schedule}/scheduled_activation_plan.jsonl" \
-    "${activation}" "${target_classes}" \
+  IFS=$'\t' read -r region instance goal <<< "${binding}"
+  instrument_plan "${target_schedule}/execution_task_plan.jsonl" \
+    "${task}" "${target_classes}"
+  run_custom_plan "${target_schedule}/execution_task_plan.jsonl" \
+    "${task}" "${target_classes}" \
     "${target_schedule}/concolic_region_results.jsonl" false false false
-  import_plan "${target_schedule}/scheduled_activation_plan.jsonl" \
+  import_plan "${target_schedule}/execution_task_plan.jsonl" \
     "${target_schedule}/concolic_region_results.jsonl" \
     "${target_schedule}/concolic_region_summaries.jsonl" \
     "${target_schedule}"
   summary="${target_schedule}/concolic_region_summaries.jsonl"
-  if ! jq -e -s --arg region "${region}" --arg activation "${activation}" '
+  if ! jq -e -s --arg region "${region}" --arg task "${task}" \
+      --arg instance "${instance}" \
+      --arg goal "${goal}" '
       length == 1
       and .[0].regionId == $region
-      and .[0].activationId == $activation
+      and .[0].regionInstanceId == $instance
+      and .[0].taskId == $task
+      and .[0].goalId == $goal
       and .[0].relationallyComplete == true
-      and .[0].captureGoal.kind == "TARGET_BRANCH"
+      and .[0].goalKind == "TARGET_REACH_CLOSURE"
     ' "${summary}" >/dev/null; then
     die "target seed import is not one valid target-branch observation"
   fi
   (cd "${graphchecker_dir}" && \
     CAUSYNTH_SCHEDULE_SUMMARIES="${summary}" \
     "${runner}" --config "${config}" schedule \
-      --region-id "${region}" --activation-id "${activation}")
-  if ! jq -e -s --arg region "${region}" --arg activation "${activation}" '
+      --region-id "${region}" --region-instance-id "${instance}" \
+      --goal-id "${goal}")
+  if ! jq -e -s --arg region "${region}" --arg instance "${instance}" \
+      --arg goal "${goal}" '
       length == 1
       and .[0].regionId == $region
-      and .[0].activationId == $activation
+      and .[0].regionInstanceId == $instance
+      and .[0].goalId == $goal
       and .[0].schemaVersion == 1
       and .[0].kind == "TARGET_BRANCH_SOLVER_QUERY"
       and .[0].readyForSolver == true
