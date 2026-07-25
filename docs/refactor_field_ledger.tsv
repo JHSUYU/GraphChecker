@@ -1,0 +1,111 @@
+area	field	writer	production_readers	shell_readers	derivation	disposition	pr
+analysis-result	seeds	SeedBackwardStaticAnalyzer	none	none	none	DELETE	1
+analysis-result	cells	SeedBackwardStaticAnalyzer	none	none	none	DELETE	1
+analysis-result	symbolicModels	SymbolicRegionAssemblyStage	none	none	none	DELETE	1
+analysis-result	automaticDerivationBoundary	CausynthPipeline	none	none	none	DELETE	1
+analysis-result	slices.strategy	SeedBackwardStaticAnalyzer	none	none	none	DELETE	1
+analysis-result	slices.candidateClassCount	SeedBackwardStaticAnalyzer	none	none	none	DELETE	1
+analysis-result	slices.rpcMappingCount	SeedBackwardStaticAnalyzer	none	none	none	DELETE	1
+analysis-result	slices.static-index-counts	SeedBackwardStaticAnalyzer	none	none	none	DELETE	1
+analysis-result	slices.projected-pass-counts	SeedBackwardStaticAnalyzer	none	none	none	DELETE	1
+analysis-result	slices.staticAnalysisBudget	SeedBackwardStaticAnalyzer	none	none	none	DELETE	1
+analysis-result	slices.symbolic-plan-summary	SymbolicPlanningStage	none	none	none	DELETE	1
+analysis-result	slices.symbolic-region-summary	SymbolicRegionAssemblyStage	none	none	none	DELETE	1
+analysis-result	slices.trace-instrumentation-counts	CausynthPipeline	none	none	none	DELETE	1
+analysis-result	slices.concolic-hook-counts	CausynthPipeline	none	none	none	DELETE	1
+analysis-result	slices.concolic-root-selection	CausynthPipeline	CausynthPipeline.selectedBoundedOutputClosureCoverageReady	none	typed InstrumentationResult	REPLACE_AND_DELETE	1
+analysis-result	slices.coverage-authority	CausynthPipeline	none	none	selected coverage result	DELETE	1
+analysis-result	slices.automaticDerivationBoundary	CausynthPipeline	none	none	none	DELETE	1
+symbolic-plan	requiredModels	SymbolicExecutionPlanBuilder	SymbolicRegionPlanner.models	none	no execution consumer	DELETE	1
+symbolic-region	models	SymbolicRegionPlanner	none	none	none	DELETE	1
+symbolic-region	candidateRelation	SeedBackwardStaticAnalyzer,SymbolicRegionPlanner	none	none	none	DELETE	1
+branch-policy	sourceEdgeIds	SymbolicRegionPlanner	none	matrix shape checks only	canonical edge table IDs	DELETE	1
+scheduler-result	jobs	ConcolicScheduler	internal size/exit only	none	scheduledPrimaryCount	DELETE	1
+scheduler-result	mergePlan	ConcolicScheduler	none	none	none	DELETE	1
+scheduler-job	workloadKind	ConcolicScheduler	none	none	none	DELETE	1
+scheduler-job	selectionReason	ConcolicScheduler	none	none	none	DELETE	1
+scheduler-job	captureReady	ConcolicScheduler	none	none	scheduled activation admission	DELETE	1
+scheduler-job	materializations	ConcolicScheduler	none	none	scheduled activation materializations	DELETE	1
+scheduler-job	edgeBindings	ConcolicScheduler	none	none	outputClosure/scheduled activation	DELETE	1
+raw-result	runtimeThread	ConcolicRegionRuntime	none	none	none	DELETE	1
+raw-result	runtimeThreadId	ConcolicRegionRuntime	none	none	none	DELETE	1
+raw-result	concretePrimitiveOutput	ConcolicRegionRuntime	none	none	output captures/engine summary	DELETE	1
+raw-result	durationNanos	ConcolicRegionRuntime	none	none	none	DELETE	1
+raw-result	test	ConcolicRegionRuntime	none	none	activation identity	DELETE	1
+raw-result	invocationOrdinal	ConcolicRegionRuntime	none	none	activation identity	DELETE	1
+raw-result	branchReplayValidation	ConcolicRegionRuntime	none	none	unresolvedInputs plus independent replay verifier	DELETE_FIELD_KEEP_VALIDATION	1
+scheduler-binding	objectIdentityRequired=false	ConcolicScheduler	none	none	evidence kind	DELETE	1
+scheduler-binding	discoveredExecutionId	ConcolicScheduler	none	none	none	DELETE	1
+scheduler-binding	discoveredExecutionIds	ConcolicScheduler	none	none	none	DELETE	1
+worklist-task	status=PENDING_SOLVE	RegionPathWorklist	none	none	task presence means pending	DELETE	1
+worklist-task	dynamicIdsExcludedFromQueryKey	RegionPathWorklist	none	none	query-key algorithm	DELETE	1
+worklist-task	rootMethod	RegionPathWorklist	none	none	source activation	DELETE	1
+worklist-task	regionInstanceId	RegionPathWorklist	none	none	outputClosure producer/source activation	DELETE	1
+worklist-task	rootCallId	RegionPathWorklist	none	none	outputClosure producer/source activation	DELETE	1
+worklist-task	outputDemandKey	RegionPathWorklist	none	none	outputClosure.demandKey	DELETE_TASK_MIRROR	1
+worklist-task	outputClosureFingerprint	RegionPathWorklist	none	none	outputClosure.closureFingerprint	DELETE_TASK_MIRROR	1
+worklist-task	engineArrayInputBindings	RegionPathWorklist	none	none	source summary/activation	DELETE_TASK_COPY	1
+worklist-manifest	outputDemandKey	RegionPathWorklist	RegionSummaryMerger	run.sh,matrix	outputClosure.demandKey	KEEP_UNTIL_PR5	5
+worklist-manifest	outputClosureFingerprint	RegionPathWorklist	RegionSummaryMerger	run.sh,matrix	outputClosure.closureFingerprint	KEEP_UNTIL_PR5	5
+composer-manifest	caseProjectionCatalogComplete	ConcolicSmtComposer	composition readiness	none	not safely derivable before typed CoverageReport	KEEP_REPLACE	5
+relationship	status=UNVERIFIED_CANDIDATE	ConcolicSmtComposer	none	none	trustState=CANDIDATE_ONLY	DELETE	1
+region-relation	caseCount	RegionSummaryMerger	ConcolicSmtComposer	matrix	cases.length	DELETE_AND_UPDATE_READERS	1
+region-relation	guardSemantics	RegionSummaryMerger	none	matrix	kind/schema contract	DELETE_AND_UPDATE_SHELL	1
+region-relation	mergeSemantics	RegionSummaryMerger	none	none	kind/schema contract	DELETE	1
+region-relation	coverageSemantics	RegionSummaryMerger	none	none	kind/schema contract	DELETE	1
+merge-manifest	diagnosticCount	RegionSummaryMerger	none	none	diagnostics.length	DELETE	1
+merge-manifest	status	RegionSummaryMerger	none	none	complete/gaps	DELETE	1
+merge-manifest	semanticAuthority	RegionSummaryMerger	none	none	kind/schema contract	DELETE	1
+merge-manifest	domainSemanticAdapterAllowed=false	RegionSummaryMerger	none	none	new-version invariant	DELETE	1
+method-facts	id	SymbolicExecutionPlanBuilder	SymbolicRegionPlanner	none	ordered method identity	DELETE	2
+method-facts	requiresSymbolicExecution	SymbolicExecutionPlanBuilder	SymbolicRegionPlanner	none	classification	DELETE	2
+method-facts	reason	SymbolicExecutionPlanBuilder	none	none	none	DELETE	2
+method-facts	edgeCount	SymbolicExecutionPlanBuilder	none	none	none	DELETE	2
+method-facts	heapInputs	SymbolicExecutionPlanBuilder	none	none	symbolicInputs	DELETE	2
+method-facts	environmentInputs	SymbolicExecutionPlanBuilder	none	none	symbolicInputs	DELETE	2
+method-facts	guards	SymbolicExecutionPlanBuilder	none	none	siteIds/edges	DELETE	2
+method-facts	exceptions	SymbolicExecutionPlanBuilder	none	none	edges	DELETE	2
+method-facts	transferKinds	SymbolicExecutionPlanBuilder	none	none	edges	DELETE	2
+method-facts	possibleCallees	SymbolicExecutionPlanBuilder	none	none	graph index	DELETE	2
+method-facts	runtimeObservedCallees	SymbolicExecutionPlanBuilder	none	none	graph index	DELETE	2
+method-facts	truncated	SymbolicExecutionPlanBuilder	none	none	none	DELETE	2
+method-facts	precision	SymbolicExecutionPlanBuilder	none	none	kind/schema	DELETE	2
+output-slice	causalEdges	SymbolicRegionPlanner	SymbolicRegionAssemblyStage,RuntimeRegionPlanner	none	canonical edge table by causalEdgeIds	REPLACE_AND_DELETE	2
+target-attestation	seedMode	CausynthPipeline	run.sh	run.sh	kind/schema	DELETE_AND_UPDATE_READERS	2
+target-attestation	seedException	CausynthPipeline,SeedBackwardStaticAnalyzer	TargetReachPathQueryBuilder	run.sh	exception	DELETE_DUPLICATE_ONLY	2
+target-attestation	count=1	CausynthPipeline	none	matrix	singleton artifact	DELETE	2
+target-attestation	methods=[method]	CausynthPipeline	none	matrix	method	DELETE	2
+static-edge	mappingOnly	static analyzer/planner	RuntimeRegionPlanner,Composer	matrix	semanticMode	CUTOVER	3
+static-edge	semanticAssertionsAllowed	static analyzer/planner	Composer	matrix	semanticMode	CUTOVER	3
+static-edge	eligibleForAutomaticDerivation	static analyzer/planner	planner/composer	matrix	semanticMode	CUTOVER	3
+static-edge	eligibleForAutomaticSmt	static analyzer/planner	Composer	matrix	semanticMode	CUTOVER	3
+static-edge	direction=backward_provenance	static analyzer	none	none	kind/schema	DELETE	3
+activation	replayable	RuntimeRegionPlanner	Scheduler/runtime	run.sh	admission	CUTOVER	3
+activation	boundaryReady	RuntimeRegionPlanner	Scheduler	matrix	admission	CUTOVER	3
+activation	symbolicReady	RuntimeRegionPlanner	Scheduler	run.sh,matrix	admission	CUTOVER	3
+activation	schedulerReady	ConcolicScheduler	Runtime/Importer	none	admission	CUTOVER	3
+activation	runtimePathEvidenceComplete	RuntimeRegionPlanner	Scheduler	matrix	admission	CUTOVER	3
+activation	pathSignatureTruncated	RuntimeRegionPlanner	Scheduler	matrix	admission.blockers	CUTOVER	3
+activation	containedCallTreeTruncated	RuntimeRegionPlanner	Scheduler	matrix	admission.blockers	CUTOVER	3
+activation	runtimeGaps	RuntimeRegionPlanner	Scheduler	matrix	admission.blockers	CUTOVER	3
+activation	replayMode	RuntimeRegionPlanner	none	matrix	admission.mode	CUTOVER	3
+trace	timeNanos	CausynthTraceRecorder	RuntimeRegionPlanner/tests	none	event order sequence	DELETE_AFTER_INDEX_AUDIT	4
+trace	test	CausynthTraceRecorder	RuntimeRegionPlanner	none	run-level context	CUTOVER	4
+trace	process	CausynthTraceRecorder	RuntimeRegionPlanner	none	run-level context	CUTOVER	4
+trace	threadName	CausynthTraceRecorder	RuntimeRegionPlanner	none	thread catalog	CUTOVER	4
+trace	tid	CausynthTraceRecorder	RuntimeRegionPlanner	none	thread catalog	CUTOVER	4
+trace	hasOutcome	CausynthTraceRecorder	RuntimeRegionPlanner	none	optional outcome	CUTOVER	4
+trace	hasSuccessorIndex	CausynthTraceRecorder	RuntimeRegionPlanner	none	optional successorIndex	CUTOVER	4
+artifact-ref	sizeBytes	result builders	matrix/hash validators	none	path+sha256	DELETE_AND_UPDATE_READERS	5
+correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
+correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-
+correctness	transformerObligations	static planner	Runtime/Importer	matrix	not derivable	KEEP	-
+correctness	sourceActivationId	RegionPathWorklist	solver/verifier	none	not derivable	KEEP	-
+correctness	dynamicFieldBindings	Runtime/Importer	worklist/replay/composer	none	not derivable	KEEP	-
+correctness	branchReplayContract	Scheduler/worklist	runtime/importer/verifier	none	not derivable	KEEP	-
+correctness	solverPathContext	worklist	solver/composer	none	not derivable	KEEP	-
+correctness	writerEventSeq/readSeq	RuntimeRegionPlanner	Scheduler/Composer	matrix	not derivable	KEEP	-
+correctness	objectIdentity/fingerprint	RuntimeRegionPlanner	Scheduler/Composer	matrix	not derivable	KEEP	-
+correctness	failClosedGaps	all stages	next stage/run.sh	run.sh,matrix	not derivable	KEEP_AND_UNIFY	5
+correctness	CANDIDATE_ONLY	Composer/result builder	final consumers	matrix	not derivable	KEEP	-
+correctness	artifactSha256	result builder	final consumers	matrix	not derivable	KEEP	-
