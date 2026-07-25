@@ -404,6 +404,43 @@ public class ConcolicSummaryImporterTest {
         }
     }
 
+    @Test
+    public void importsNoWritePathAsExactFieldFrameCondition()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            MapFixture imported = importExactFieldAssignmentCaptureFixture(
+                    folder.getRoot().toPath(), "NORMAL", true, true,
+                    "<example.State: int value>",
+                    symbol("unused-write-expression", "I"),
+                    "FRAME_CONDITION");
+
+            assertTrue(imported.diagnostics, imported.summary.get(
+                    "relationallyComplete").getAsBoolean());
+            JsonObject expression = imported.summary
+                    .getAsJsonObject("outputExpressions")
+                    .getAsJsonObject("REGION.FIELD.out.0");
+            assertEquals("SymbolExpression",
+                    expression.get("_type").getAsString());
+            assertEquals("REGION.FIELD.in.0.value",
+                    expression.get("_exp").getAsString());
+
+            MapFixture executedButMissingCapture =
+                    importExactFieldAssignmentCaptureFixture(
+                            folder.getRoot().toPath().resolve(
+                                    "executed-without-capture"),
+                            "NORMAL", true, true,
+                            "<example.State: int value>",
+                            symbol("unused-write-expression", "I"),
+                            "FRAME_CONDITION_EXECUTED");
+            assertFalse(executedButMissingCapture.summary.get(
+                    "relationallyComplete").getAsBoolean());
+        } finally {
+            folder.delete();
+        }
+    }
+
 
 
 
@@ -3086,6 +3123,7 @@ public class ConcolicSummaryImporterTest {
                 "CAUSAL_MAP_OBSERVATION".equals(guardMode);
         boolean nullGuardWithUnusedInput =
                 "EXACT_NULL_WITH_UNUSED_INPUT".equals(guardMode);
+        boolean frameCondition = guardMode.startsWith("FRAME_CONDITION");
         boolean exactVmGuard = !"NONE".equals(guardMode)
                 && !causalMapObservation;
         boolean projectedDischarge = expression == null
@@ -3225,10 +3263,28 @@ public class ConcolicSummaryImporterTest {
         activation.add("requestedOutputCapture", singletonObject(capture));
         JsonObject input = new JsonObject();
         input.addProperty("symbol", "REGION.FIELD.in.0");
-        input.addProperty("cell", method + ".param0:"
-                + (projectedDischarge ? "example.Snapshot"
-                : "java.lang.String"));
-        input.addProperty("location", "ARGUMENT");
+        if (frameCondition) {
+            input.addProperty("cell", field);
+            input.addProperty("sourceKind", "HEAP_PRESTATE");
+            input.addProperty("location", "RECEIVER_FIELD");
+            input.addProperty("field", field);
+            input.add("fieldPath", singletonString("value"));
+            input.addProperty("frameConditionAuthority",
+                    "RUNTIME_UNIQUE_ROOT_TO_OUTPUT_OWNER_FIELD_PATH");
+            JsonObject heapBinding = new JsonObject();
+            heapBinding.addProperty("inputPort", "REGION.FIELD.in.0");
+            heapBinding.addProperty("outputPort", "REGION.FIELD.out.0");
+            heapBinding.addProperty("cell", field);
+            heapBinding.addProperty("bindingAuthority",
+                    "STATIC_CELL_IDENTITY_PLUS_RUNTIME_READ_FROM");
+            activation.add("heapStateBindings",
+                    singletonObject(heapBinding));
+        } else {
+            input.addProperty("cell", method + ".param0:"
+                    + (projectedDischarge ? "example.Snapshot"
+                    : "java.lang.String"));
+            input.addProperty("location", "ARGUMENT");
+        }
         JsonArray symbolize = singletonObject(input);
         if (nullGuardWithUnusedInput) {
             JsonObject unused = new JsonObject();
@@ -3341,11 +3397,22 @@ public class ConcolicSummaryImporterTest {
                     + "field-assignment expression capture failed");
         }
         raw.add("unresolvedInputs", unresolvedInputs);
-        raw.add("symbolizedInputs", projectedDischarge
+        raw.add("symbolizedInputs", frameCondition
+                ? singletonString("REGION.FIELD.in.0.value")
+                : projectedDischarge
                 ? new JsonArray()
                 : singletonString("REGION.FIELD.in.0"));
         raw.add("rootOutputExpression", constant("Y_L_NULL", "L"));
-        raw.add("outputCaptures", singletonObject(observed));
+        raw.add("outputCaptures", frameCondition
+                ? new JsonArray() : singletonObject(observed));
+        if (frameCondition) {
+            JsonObject executionCounts = new JsonObject();
+            executionCounts.addProperty(
+                    "REGION.FIELD.out.0.capture.0",
+                    "FRAME_CONDITION_EXECUTED".equals(guardMode)
+                            ? 1 : 0);
+            raw.add("outputCaptureExecutionCounts", executionCounts);
+        }
         if (exactVmGuard || projectedDischarge) {
             JsonArray runtimeHeapObservations = new JsonArray();
             if (projectedDischarge) {

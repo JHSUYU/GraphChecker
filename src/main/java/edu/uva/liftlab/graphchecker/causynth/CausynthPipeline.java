@@ -768,66 +768,81 @@ public final class CausynthPipeline {
             ConcolicOutputCaptureSelection selection,
             ConcolicRegionRefs refs) {
         for (OutputCaptureTarget target : selection.targets()) {
+            SootMethod method;
             try {
-                SootMethod method = Scene.v().getMethod(
-                        target.instrumentedMethod());
-                if (method == null || !method.isConcrete()) {
-                    continue;
-                }
-                Body body = method.retrieveActiveBody();
-                Unit unit = originalUnit(body, target.unitIndex);
-                if (target.isFieldAssignmentRhs()) {
-                    instrumentFieldAssignmentOutputCapture(body, unit,
-                            target, refs);
-                    continue;
-                }
-                if (!(unit instanceof Stmt)
-                        || !((Stmt) unit).containsInvokeExpr()) {
-                    continue;
-                }
-                Stmt stmt = (Stmt) unit;
-                InvokeExpr invoke = stmt.getInvokeExpr();
-                if (!target.calleeMethod.equals(
-                        invoke.getMethodRef().getSignature())
-                        || target.argumentIndex < 0
-                        || target.argumentIndex >= invoke.getArgCount()) {
-                    continue;
-                }
-                Value argument = invoke.getArg(target.argumentIndex);
-                List<Unit> before = new ArrayList<>();
-                // Box while symbolic propagation is still enabled.  Capture
-                // boxes are always fresh: Wrapper.valueOf may return a JVM
-                // cache singleton, which cannot safely own an activation-
-                // local symbolic shadow.
-                Value objectValue = boxedCaptureValue(body, argument, before);
-                before.add(Jimple.v().newInvokeStmt(
-                        Jimple.v().newStaticInvokeExpr(
-                                refs.pauseObservation)));
-                Value primitiveValue = primitiveValueString(body, argument,
-                        before);
-                before.add(Jimple.v().newInvokeStmt(
-                        Jimple.v().newStaticInvokeExpr(
-                                refs.recordOutputCapture,
-                                StringConstant.v(target.callerMethod),
-                                IntConstant.v(target.unitIndex),
-                                StringConstant.v(target.siteId),
-                                StringConstant.v(target.calleeMethod),
-                                IntConstant.v(target.argumentIndex),
-                                StringConstant.v(target.outputPort),
-                                StringConstant.v(target.outputCell),
-                                StringConstant.v(target.captureBindingId),
-                                IntConstant.v(target.occurrence),
-                                objectValue, primitiveValue)));
-                before.add(Jimple.v().newInvokeStmt(
-                        Jimple.v().newStaticInvokeExpr(
-                                refs.resumeObservation)));
-                insertBeforeSequence(body, stmt, before);
-            } catch (RuntimeException exception) {
-                LOG.debug("Skipping {} concolic output capture for {}#u{}",
-                        target.captureKind, target.instrumentedMethod(),
-                        target.unitIndex, exception);
+                method = Scene.v().getMethod(target.instrumentedMethod());
+            } catch (RuntimeException unavailable) {
+                throw outputCaptureInstrumentationFailure(target,
+                        "METHOD_UNAVAILABLE", unavailable);
             }
+            if (method == null || !method.isConcrete()) {
+                throw outputCaptureInstrumentationFailure(target,
+                        "METHOD_NOT_CONCRETE", null);
+            }
+            Body body = method.retrieveActiveBody();
+            Unit unit = originalUnit(body, target.unitIndex);
+            if (unit == null) {
+                throw outputCaptureInstrumentationFailure(target,
+                        "UNIT_NOT_FOUND", null);
+            }
+            if (target.isFieldAssignmentRhs()) {
+                instrumentFieldAssignmentOutputCapture(body, unit,
+                        target, refs);
+                continue;
+            }
+            if (!(unit instanceof Stmt)
+                    || !((Stmt) unit).containsInvokeExpr()) {
+                throw outputCaptureInstrumentationFailure(target,
+                        "INVOKE_NOT_FOUND", null);
+            }
+            Stmt stmt = (Stmt) unit;
+            InvokeExpr invoke = stmt.getInvokeExpr();
+            if (!target.calleeMethod.equals(
+                    invoke.getMethodRef().getSignature())
+                    || target.argumentIndex < 0
+                    || target.argumentIndex >= invoke.getArgCount()) {
+                throw outputCaptureInstrumentationFailure(target,
+                        "CALL_ARGUMENT_ENDPOINT_MISMATCH", null);
+            }
+            Value argument = invoke.getArg(target.argumentIndex);
+            List<Unit> before = new ArrayList<>();
+            // Box while symbolic propagation is still enabled.  Capture
+            // boxes are always fresh: Wrapper.valueOf may return a JVM
+            // cache singleton, which cannot safely own an activation-local
+            // symbolic shadow.
+            Value objectValue = boxedCaptureValue(body, argument, before);
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.pauseObservation)));
+            Value primitiveValue = primitiveValueString(body, argument,
+                    before);
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.recordOutputCapture,
+                            StringConstant.v(target.callerMethod),
+                            IntConstant.v(target.unitIndex),
+                            StringConstant.v(target.siteId),
+                            StringConstant.v(target.calleeMethod),
+                            IntConstant.v(target.argumentIndex),
+                            StringConstant.v(target.outputPort),
+                            StringConstant.v(target.outputCell),
+                            StringConstant.v(target.captureBindingId),
+                            IntConstant.v(target.occurrence),
+                            objectValue, primitiveValue)));
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.resumeObservation)));
+            insertBeforeSequence(body, stmt, before);
         }
+    }
+
+    private static IllegalStateException outputCaptureInstrumentationFailure(
+            OutputCaptureTarget target, String reason, Throwable cause) {
+        String detail = "OUTPUT_CAPTURE_" + reason + ": "
+                + target.captureBindingId + " at "
+                + target.instrumentedMethod() + "#u" + target.unitIndex;
+        return cause == null ? new IllegalStateException(detail)
+                : new IllegalStateException(detail, cause);
     }
 
     /**
@@ -841,13 +856,20 @@ public final class CausynthPipeline {
     private void instrumentFieldAssignmentOutputCapture(
             Body body, Unit unit, OutputCaptureTarget target,
             ConcolicRegionRefs refs) {
-        if (!(unit instanceof AssignStmt)) return;
+        if (!(unit instanceof AssignStmt)) {
+            throw outputCaptureInstrumentationFailure(target,
+                    "FIELD_ASSIGNMENT_NOT_FOUND", null);
+        }
         AssignStmt assignment = (AssignStmt) unit;
-        if (!(assignment.getLeftOp() instanceof InstanceFieldRef)) return;
+        if (!(assignment.getLeftOp() instanceof InstanceFieldRef)) {
+            throw outputCaptureInstrumentationFailure(target,
+                    "INSTANCE_FIELD_LHS_NOT_FOUND", null);
+        }
         InstanceFieldRef field = (InstanceFieldRef) assignment.getLeftOp();
         if (!target.fieldSignature.equals(
                 field.getFieldRef().getSignature())) {
-            return;
+            throw outputCaptureInstrumentationFailure(target,
+                    "FIELD_SIGNATURE_MISMATCH", null);
         }
 
         Value rhs = assignment.getRightOp();

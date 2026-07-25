@@ -3599,6 +3599,8 @@ public final class ConcolicRegionRuntime {
         result.add("engineArrayInputBindings",
                 active.engineArrayInputBindingsJson());
         result.add("outputCaptures", GSON.toJsonTree(active.outputCaptures));
+        result.add("outputCaptureExecutionCounts",
+                active.outputCaptureExecutionCounts());
         result.add("runtimeApproximations",
                 GSON.toJsonTree(active.runtimeApproximations));
         JsonArray finalFields = new JsonArray();
@@ -3683,6 +3685,11 @@ public final class ConcolicRegionRuntime {
             // the field-access hook. Looking them up on an unrelated region
             // root is incorrect and creates unresolved heap ports.
             if (!"RECEIVER_FIELD".equals(action.location)) {
+                continue;
+            }
+            if (!action.fieldPath.isEmpty()) {
+                symbolizeFieldPath(active, action, active.receiver,
+                        action.fieldPath, api);
                 continue;
             }
             String fieldName = runtimeFieldName(action.field, action.cell);
@@ -6482,6 +6489,18 @@ public final class ConcolicRegionRuntime {
             int occurrence = previous == null ? 1 : previous + 1;
             outputCaptureOccurrences.put(key, occurrence);
             return occurrence;
+        }
+
+        private JsonObject outputCaptureExecutionCounts() {
+            JsonObject result = new JsonObject();
+            for (OutputCaptureRequest request
+                    : activation.outputCaptures) {
+                Integer count = outputCaptureOccurrences.get(
+                        request.captureBindingId);
+                result.addProperty(request.captureBindingId,
+                        count == null ? 0 : count);
+            }
+            return result;
         }
 
         private void addUnresolvedOnce(String detail) {

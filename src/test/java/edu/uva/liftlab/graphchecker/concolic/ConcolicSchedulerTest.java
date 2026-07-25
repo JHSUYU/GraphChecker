@@ -60,7 +60,7 @@ public class ConcolicSchedulerTest {
             ConcolicScheduler.Result result =
                     ConcolicScheduler.schedule(arguments);
 
-            assertEquals(1, result.scheduledPrimaryCount);
+            assertEquals(1, result.executionTasks.size());
             JsonObject scheduled = result.executionTasks.get(0);
             assertFalse(scheduled.has("activationId"));
             assertEquals("REGION.11@test#call7",
@@ -134,7 +134,7 @@ public class ConcolicSchedulerTest {
                             StandardCharsets.UTF_8));
             ConcolicScheduler.Result missingNestedSlice =
                     ConcolicScheduler.schedule(arguments);
-            assertEquals(0, missingNestedSlice.scheduledPrimaryCount);
+            assertEquals(0, missingNestedSlice.executionTasks.size());
             assertEquals("BLOCKED", admissionState(
                     blocked.executionTasks.get(0)));
 
@@ -183,70 +183,6 @@ public class ConcolicSchedulerTest {
 
 
     @Test
-    public void explicitJointOutputClosureCompilesOnlyMemberUnion() {
-        JsonObject activation = explicitJointActivation();
-
-        JsonObject prepared = ConcolicScheduler.prepareOutputCapture(
-                activation, Collections.<JsonObject>emptyList());
-
-        assertEquals("EXECUTABLE", admissionState(prepared));
-        assertTrue(prepared.has(OutputClosureContract.FIELD));
-        assertFalse(prepared.has("requestedOutput"));
-        assertFalse(prepared.has("requestedOutputSlice"));
-        assertFalse(prepared.has("requestedOutputCapture"));
-        assertFalse(prepared.has("outputs"));
-        assertEquals(2, prepared.getAsJsonArray("symbolize").size());
-        assertEquals("REGION.1.in.x", prepared.getAsJsonArray("symbolize")
-                .get(0).getAsJsonObject().get("symbol").getAsString());
-        assertEquals("REGION.1.in.y", prepared.getAsJsonArray("symbolize")
-                .get(1).getAsJsonObject().get("symbol").getAsString());
-        assertEquals(2, prepared.getAsJsonArray("branches").size());
-        assertEquals(2, prepared.getAsJsonArray("materializations").size());
-    }
-
-    @Test
-    public void explicitEmptyExecutionUnionNeverFallsBackToWholeRegion() {
-        JsonObject activation = explicitJointActivation();
-        JsonObject envelope = activation.getAsJsonObject(
-                OutputClosureContract.FIELD);
-        for (JsonElement element : envelope.getAsJsonArray("members")) {
-            JsonObject slice = element.getAsJsonObject()
-                    .getAsJsonObject("slice");
-            slice.add("inputPorts", new JsonArray());
-            slice.add("sites", new JsonArray());
-            slice.add("staticSites", new JsonArray());
-            slice.add("methods", new JsonArray());
-            slice.add("causalEdgeIds", new JsonArray());
-        }
-
-        JsonObject prepared = ConcolicScheduler.prepareOutputCapture(
-                activation, Collections.<JsonObject>emptyList());
-
-        assertEquals("EXECUTABLE", admissionState(prepared));
-        assertEquals(0, prepared.getAsJsonArray("symbolize").size());
-        assertEquals(0, prepared.getAsJsonArray("branches").size());
-        assertEquals(0, prepared.getAsJsonArray("materializations").size());
-    }
-
-    @Test
-    public void oneIncompleteJointMemberClosesWholeActivation() {
-        JsonObject activation = explicitJointActivation();
-        activation.getAsJsonObject(OutputClosureContract.FIELD)
-                .getAsJsonArray("members").get(1).getAsJsonObject()
-                .getAsJsonObject("slice").addProperty("complete", false);
-
-        JsonObject prepared = ConcolicScheduler.prepareOutputCapture(
-                activation, Collections.<JsonObject>emptyList());
-
-        assertEquals("BLOCKED", admissionState(prepared));
-        assertEquals(2, prepared.getAsJsonObject(
-                OutputClosureContract.FIELD).getAsJsonArray("members")
-                .size());
-    }
-
-
-
-    @Test
     public void scheduledExplicitJointClosureNeverPersistsLegacyMirrors()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -269,7 +205,7 @@ public class ConcolicSchedulerTest {
             ConcolicScheduler.Result result =
                     ConcolicScheduler.schedule(arguments);
 
-            assertEquals(1, result.scheduledPrimaryCount);
+            assertEquals(1, result.executionTasks.size());
             JsonObject scheduled = result.executionTasks.get(0);
             assertTrue(scheduled.has(OutputClosureContract.FIELD));
             assertFalse(scheduled.has("requestedOutput"));
@@ -316,7 +252,7 @@ public class ConcolicSchedulerTest {
                             "--output-dir", fixture.output.toString(),
                             "--max-jobs", "1"}));
 
-            assertEquals(1, result.scheduledPrimaryCount);
+            assertEquals(1, result.executionTasks.size());
             assertEquals(1, result.queries.size());
             JsonObject query = result.queries.get(0);
             assertFalse(query.has("activationId"));

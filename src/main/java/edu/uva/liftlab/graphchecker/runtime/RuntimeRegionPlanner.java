@@ -251,7 +251,6 @@ final class RuntimeRegionPlanner {
                         "rootSelector", rootSelector(root, ordinal,
                                 ordinalWithinContext,
                                 rootArgumentSelector),
-                        "rootCallId", root.callId,
                         "targetMethod", region.anchorMethod,
                         "closureGoals", closureGoals,
                         "_plannerBaseExecution", baseExecution);
@@ -598,6 +597,28 @@ final class RuntimeRegionPlanner {
                     "sourceKind", port.sourceKind,
                     "projection", port.projection,
                     "observed", false);
+            if ("HEAP_PRESTATE".equals(port.sourceKind)) {
+                FramePrestatePath frame = framePrestatePath(
+                        root, port.cell, fields);
+                if (frame.complete()) {
+                    observation.put("observed", true);
+                    observation.put("location", "RECEIVER_FIELD");
+                    observation.put("field", frame.field.signature());
+                    observation.put("fieldPath",
+                            new ArrayList<>(frame.path));
+                    observation.put("leafFieldSignature",
+                            frame.field.signature());
+                    observation.put("frameConditionAuthority",
+                            "RUNTIME_UNIQUE_ROOT_TO_OUTPUT_OWNER_FIELD_PATH");
+                    observation.put("receiverObjectId", root.objectId);
+                } else {
+                    observation.put("location", "REGION_LIVE_IN");
+                    observation.put("fieldBindingGap",
+                            "MISSING_UNIQUE_FRAME_PRESTATE_FIELD_PATH");
+                }
+                result.add(observation);
+                continue;
+            }
             int parameter = parameterIndex(port.cell);
             String staticInputMethod = methodInCell(port.cell);
             boolean rootArgument = parameter >= 0
@@ -726,6 +747,90 @@ final class RuntimeRegionPlanner {
             result.add(observation);
         }
         return result;
+    }
+
+    /**
+     * Resolves the requested field's concrete owner back to the selected
+     * region receiver.  Discovery already records reference-valued getfield
+     * edges and the exact putfield receiver; one unique bounded path is
+     * sufficient to materialize the entry value before any region code runs.
+     */
+    private static FramePrestatePath framePrestatePath(
+            MethodEvent root, String outputCell,
+            List<FieldAccessEvent> fields) {
+        FieldCell requested = fieldCell(outputCell);
+        if (root == null || root.objectId == 0
+                || !requested.declaredSignature
+                || !primitiveType(requested.type)) {
+            return FramePrestatePath.incomplete();
+        }
+
+        Set<Integer> owners = new LinkedHashSet<>();
+        long firstWrite = Long.MAX_VALUE;
+        for (FieldAccessEvent event : values(fields)) {
+            if ("FIELD_WRITE".equals(event.kind)
+                    && event.receiverObjectId != 0
+                    && sameField(requested, fieldCell(event.field))) {
+                owners.add(event.receiverObjectId);
+                firstWrite = Math.min(firstWrite, event.seq);
+            }
+        }
+        if (owners.size() != 1) {
+            return FramePrestatePath.incomplete();
+        }
+        int targetOwner = owners.iterator().next();
+        List<String> ownerPath = targetOwner == root.objectId
+                ? Collections.<String>emptyList()
+                : uniqueObjectFieldPath(root.objectId, targetOwner,
+                firstWrite, fields);
+        if (ownerPath == null) {
+            return FramePrestatePath.incomplete();
+        }
+        List<String> path = new ArrayList<>(ownerPath);
+        path.add(requested.name);
+        return new FramePrestatePath(requested, path);
+    }
+
+    private static List<String> uniqueObjectFieldPath(
+            int rootObjectId, int targetObjectId, long beforeSeq,
+            List<FieldAccessEvent> fields) {
+        List<ObjectPathState> queue = new ArrayList<>();
+        queue.add(new ObjectPathState(rootObjectId,
+                Collections.<String>emptyList(),
+                Collections.singleton(rootObjectId)));
+        Set<String> matches = new LinkedHashSet<>();
+        List<String> selected = null;
+        for (int cursor = 0; cursor < queue.size(); cursor++) {
+            ObjectPathState state = queue.get(cursor);
+            if (state.path.size() >= 4) {
+                continue;
+            }
+            for (FieldAccessEvent event : values(fields)) {
+                FieldCell field = fieldCell(event.field);
+                if (!"FIELD_READ".equals(event.kind)
+                        || event.seq >= beforeSeq
+                        || event.receiverObjectId != state.objectId
+                        || event.valueObjectId == 0
+                        || !field.declaredSignature
+                        || state.visited.contains(event.valueObjectId)) {
+                    continue;
+                }
+                List<String> path = new ArrayList<>(state.path);
+                path.add(field.name);
+                Set<Integer> visited = new LinkedHashSet<>(state.visited);
+                visited.add(event.valueObjectId);
+                if (event.valueObjectId == targetObjectId) {
+                    String key = joinPath(path);
+                    if (matches.add(key)) {
+                        selected = path;
+                    }
+                } else {
+                    queue.add(new ObjectPathState(event.valueObjectId,
+                            path, visited));
+                }
+            }
+        }
+        return matches.size() == 1 ? selected : null;
     }
 
     private static String materializableFieldLocation(StaticPort port) {
@@ -1008,7 +1113,9 @@ final class RuntimeRegionPlanner {
                     "fieldEventIdentityAuthority",
                     "accessMethod", "accessUnitIndex", "accessSiteId",
                     "accessSiteAuthority",
-                    "accessorInvocationId", "accessorRuntimeType");
+                    "accessorInvocationId", "accessorRuntimeType",
+                    "fieldPath", "leafFieldSignature",
+                    "frameConditionAuthority", "receiverObjectId");
             if ("HEAP_OBJECT_FIELD".equals(action.get("location"))) {
                 FieldCell observedField = fieldCell(
                         string(observation.get("field")));
@@ -1543,6 +1650,9 @@ final class RuntimeRegionPlanner {
         if ("RECEIVER_FIELD".equals(port.sourceKind)) {
             return "RECEIVER_FIELD";
         }
+        if ("HEAP_PRESTATE".equals(port.sourceKind)) {
+            return "RECEIVER_FIELD";
+        }
         if ("SHARED_HEAP".equals(port.sourceKind)) {
             return "HEAP_OBJECT_FIELD";
         }
@@ -1984,10 +2094,10 @@ final class RuntimeRegionPlanner {
         return values == null || values.isEmpty() ? null : values.get(0);
     }
 
-    /** Rebuilds activation execution inputs from the promoted demand set. */
+    /** Rebuilds region-plan execution inputs from the promoted demand set. */
     private static void refreshPromotedConcreteInputRows(
             List<InstanceEvidence> evidence, Result result) {
-        Map<String, Map<String, Object>> activations = rowsByInstanceId(
+        Map<String, Map<String, Object>> plansByInstance = rowsByInstanceId(
                 result.regionPlans);
         for (InstanceEvidence instance : evidence) {
             if (!instance.concreteDemandSlice.externalInputPromoted) {
@@ -2020,7 +2130,7 @@ final class RuntimeRegionPlanner {
                     && instance.runtimePathEvidenceComplete
                     && symbolizeReady;
 
-            Map<String, Object> activation = activations.get(
+            Map<String, Object> activation = plansByInstance.get(
                     instance.instanceId);
             Map<String, Object> baseExecution =
                     plannerBaseExecution(activation);
@@ -4730,11 +4840,29 @@ final class RuntimeRegionPlanner {
             return portFor(inputs, endpoint, false);
         }
 
+        private StaticPort frameInputFor(String outputCell) {
+            StaticPort selected = null;
+            for (StaticPort input : inputs) {
+                if (!"HEAP_PRESTATE".equals(input.sourceKind)
+                        || !outputCell.equals(input.cell)) {
+                    continue;
+                }
+                if (selected != null) {
+                    return null;
+                }
+                selected = input;
+            }
+            return selected;
+        }
+
         private StaticPort uniqueDemandFrontierPort(
                 String cell, Set<String> observedMethods,
                 String runtimeRootMethod) {
             StaticPort selected = null;
             for (StaticPort input : inputs) {
+                if ("HEAP_PRESTATE".equals(input.sourceKind)) {
+                    continue;
+                }
                 if (!cell.equals(input.cell)) {
                     continue;
                 }
@@ -5160,6 +5288,12 @@ final class RuntimeRegionPlanner {
                     failureDirected = true;
                 } else if (!output.cell.isEmpty()) {
                     seeds.add(output.cell);
+                    StaticPort frameInput = region.outputSlices.containsKey(
+                            output.portId) ? region.frameInputFor(
+                            output.cell) : null;
+                    if (frameInput != null) {
+                        result.inputPortIds.add(frameInput.portId);
+                    }
                 }
             }
             for (BranchPolicy branch : region.branches) {
@@ -7901,6 +8035,38 @@ final class RuntimeRegionPlanner {
                 result.put("fieldPathLeafDeclarations", declarations);
             }
             return result;
+        }
+    }
+
+    private static final class FramePrestatePath {
+        private final FieldCell field;
+        private final List<String> path;
+
+        private FramePrestatePath(FieldCell field, List<String> path) {
+            this.field = field;
+            this.path = new ArrayList<>(path);
+        }
+
+        private static FramePrestatePath incomplete() {
+            return new FramePrestatePath(FieldCell.unresolved(),
+                    Collections.<String>emptyList());
+        }
+
+        private boolean complete() {
+            return field.declaredSignature && !path.isEmpty();
+        }
+    }
+
+    private static final class ObjectPathState {
+        private final int objectId;
+        private final List<String> path;
+        private final Set<Integer> visited;
+
+        private ObjectPathState(int objectId, List<String> path,
+                                Set<Integer> visited) {
+            this.objectId = objectId;
+            this.path = new ArrayList<>(path);
+            this.visited = new LinkedHashSet<>(visited);
         }
     }
 

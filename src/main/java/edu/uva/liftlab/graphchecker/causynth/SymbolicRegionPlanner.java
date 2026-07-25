@@ -1450,6 +1450,11 @@ final class SymbolicRegionPlanner {
                         && !protocolReturnOutput) {
                     continue;
                 }
+                Map<String, Object> framePrestatePort = heapStateOutput
+                        && primitiveJavaType(cellJavaType(outputCell))
+                        ? ensureFramePrestatePort(region, outputCell,
+                        inputPorts)
+                        : null;
 
                 RegionDraft slice = outputSlice(region, outputCell);
                 List<ContainerElementFieldCandidate> containerCandidates =
@@ -1703,6 +1708,41 @@ final class SymbolicRegionPlanner {
                         inputBindings.add(inputBinding);
                     }
                 }
+                if (framePrestatePort != null) {
+                    String framePortId = string(framePrestatePort.get(
+                            "portId"));
+                    selectedPorts.add(framePortId);
+                    Map<String, Object> frameBinding = null;
+                    for (Map<String, Object> binding : inputBindings) {
+                        if (outputCell.equals(string(binding.get(
+                                "dependencyCell")))
+                                && framePortId.equals(string(binding.get(
+                                "inputPort")))) {
+                            frameBinding = binding;
+                            break;
+                        }
+                    }
+                    if (frameBinding == null) {
+                        frameBinding = object(
+                                "dependencyCell", outputCell,
+                                "inputPort", framePortId,
+                                "bindingAuthority",
+                                "EXACT_HEAP_PRESTATE_FRAME_CONDITION",
+                                "dependencyMethods",
+                                Collections.singletonList(region.rootMethod));
+                        inputBindings.add(frameBinding);
+                    } else {
+                        frameBinding.put("bindingAuthority",
+                                "EXACT_HEAP_PRESTATE_FRAME_CONDITION");
+                        Set<String> frameMethods = new LinkedHashSet<>(
+                                strings(frameBinding.get(
+                                        "dependencyMethods")));
+                        frameMethods.add(region.rootMethod);
+                        frameBinding.put("dependencyMethods",
+                                sorted(frameMethods));
+                    }
+                    frameBinding.put("frameConditionInput", true);
+                }
 
                 Set<String> sites = new LinkedHashSet<>();
                 for (Map<String, Object> edge : slice.causalEdges) {
@@ -1785,6 +1825,52 @@ final class SymbolicRegionPlanner {
                 result.add(outputSlice);
             }
             return result;
+        }
+
+        /**
+         * A scalar heap output has an entry-state value even when the selected
+         * path executes no putfield.  Reuse an exact same-cell input when one
+         * exists; otherwise add one ordinary input port.  Runtime planning
+         * later binds this port to one concrete root-to-owner field path.
+         */
+        private Map<String, Object> ensureFramePrestatePort(
+                RegionDraft region, String outputCell,
+                List<Map<String, Object>> inputPorts) {
+            Map<String, Object> exact = null;
+            for (Map<String, Object> input : inputPorts) {
+                if (!outputCell.equals(string(input.get("cell")))) {
+                    continue;
+                }
+                if (exact != null) {
+                    return null;
+                }
+                exact = input;
+            }
+            if (exact == null) {
+                if (inputPorts.size() >= MAX_INPUT_PORTS_WITH_OUTPUT_SLICE_PROMOTIONS) {
+                    return null;
+                }
+                exact = object(
+                        "portId", region.regionId + ".in."
+                                + inputPorts.size(),
+                        "cell", outputCell,
+                        "javaType", cellJavaType(outputCell),
+                        "projection", "value");
+                inputPorts.add(exact);
+            }
+            exact.put("sourceKind", "HEAP_PRESTATE");
+            exact.put("selectionReason",
+                    "REQUESTED_OUTPUT_FRAME_CONDITION");
+            exact.put("frameConditionInput", true);
+            return exact;
+        }
+
+        private boolean primitiveJavaType(String type) {
+            String value = string(type);
+            return "boolean".equals(value) || "byte".equals(value)
+                    || "short".equals(value) || "char".equals(value)
+                    || "int".equals(value) || "long".equals(value)
+                    || "float".equals(value) || "double".equals(value);
         }
 
         /**

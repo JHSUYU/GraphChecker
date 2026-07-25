@@ -70,7 +70,7 @@ public final class ConcolicScheduler {
     public static void main(String[] args) throws Exception {
         Arguments arguments = Arguments.parse(args);
         Result result = schedule(arguments);
-        if (result.scheduledPrimaryCount == 0) {
+        if (result.executionTasks.isEmpty()) {
             System.exit(2);
         }
     }
@@ -109,7 +109,7 @@ public final class ConcolicScheduler {
         Result result = new Result();
         Set<String> selectedRegions = new LinkedHashSet<>();
         for (Candidate candidate : candidates) {
-            if (result.scheduledPrimaryCount >= arguments.maxJobs) {
+            if (result.executionTasks.size() >= arguments.maxJobs) {
                 break;
             }
             if (!arguments.allowMultipleJobsPerRegion
@@ -151,7 +151,6 @@ public final class ConcolicScheduler {
                 result.queries.add(query);
             }
             result.executionTasks.add(executionTask);
-            result.scheduledPrimaryCount++;
         }
 
         writeJsonl(arguments.outputDirectory.resolve(
@@ -162,55 +161,6 @@ public final class ConcolicScheduler {
                             "branch_queries.jsonl"),
                     result.queries);
         }
-        return result;
-    }
-
-    /**
-     * Converts one discovered output-closure goal into an executable,
-     * scheduler-authorized capture plan.  Campaign execution uses exactly the
-     * same definition-site resolver as ordinary scheduling.
-     */
-    public static JsonObject prepareOutputCapture(
-            JsonObject activation, List<JsonObject> staticGraph) {
-        if (staticGraph == null) {
-            throw new IllegalArgumentException(
-                    "static data-flow graph is required");
-        }
-        JsonObject result = activation == null
-                ? new JsonObject() : activation.deepCopy();
-        ClosureGoalKind goalKind = ClosureGoalKind.fromTask(result);
-        boolean canonicalOutputClosure = goalKind.capturesOutputRelation()
-                && result.has(OutputClosureContract.FIELD);
-        OutputClosureContract outputClosure = canonicalOutputClosure
-                ? OutputClosureCodec.decode(result) : null;
-        if (outputClosure != null) {
-            result = compileOutputClosure(result, outputClosure);
-        }
-        DefinitionIndex definitions = DefinitionIndex.from(staticGraph);
-        Set<String> definitionMethods =
-                result.has("runtimeDefinitionMethods")
-                        ? runtimeDefinitionMethods(result)
-                        : Collections.<String>emptySet();
-        MaterializationPlan materialization = materializationPlan(result,
-                definitions, definitionMethods,
-                outputClosure);
-        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(result);
-        result.remove("modelAssignments");
-        boolean outputCaptureReady = outputClosure != null
-                && outputClosureMembersReady(outputClosure);
-        boolean schedulerReady = materialization.ready
-                && outputCaptureReady
-                && (outputClosure == null
-                || executionScopeReady(result, outputClosure,
-                definitions, definitionMethods));
-        result.addProperty("executionPhase", "CAPTURE_OUTPUT_PATH");
-        result.add("concreteFallbacks",
-                materialization.concreteFallbacks.deepCopy());
-        result.add("materializations", materialization.actions.deepCopy());
-        if (canonicalOutputClosure) {
-            OutputClosureCodec.writeTo(result, outputClosure);
-        }
-        compactExecutionTask(result, schedulerReady);
         return result;
     }
 
@@ -2164,7 +2114,6 @@ public final class ConcolicScheduler {
     public static final class Result {
         public final List<JsonObject> executionTasks = new ArrayList<>();
         public final List<JsonObject> queries = new ArrayList<>();
-        public int scheduledPrimaryCount;
     }
 
     public static final class Arguments {

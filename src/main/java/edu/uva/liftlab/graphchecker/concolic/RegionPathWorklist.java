@@ -6,7 +6,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
@@ -688,34 +687,6 @@ public final class RegionPathWorklist {
                 || "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY".equals(status);
     }
 
-    private static String canonical(JsonElement value) {
-        if (value == null || value.isJsonNull()) return "null";
-        if (value.isJsonPrimitive()) {
-            JsonPrimitive primitive = value.getAsJsonPrimitive();
-            return GSON.toJson(primitive);
-        }
-        if (value.isJsonArray()) {
-            StringBuilder result = new StringBuilder("[");
-            boolean first = true;
-            for (JsonElement element : value.getAsJsonArray()) {
-                if (!first) result.append(',');
-                first = false;
-                result.append(canonical(element));
-            }
-            return result.append(']').toString();
-        }
-        JsonObject object = value.getAsJsonObject();
-        StringBuilder result = new StringBuilder("{");
-        boolean first = true;
-        for (String key : new TreeSet<>(object.keySet())) {
-            if (!first) result.append(',');
-            first = false;
-            result.append(GSON.toJson(key)).append(':')
-                    .append(canonical(object.get(key)));
-        }
-        return result.append('}').toString();
-    }
-
     private static String stableDynamicBindings(JsonObject summary,
                                                 AlphaNormalizer alpha) {
         List<String> bindings = new ArrayList<>();
@@ -748,7 +719,7 @@ public final class RegionPathWorklist {
                     alpha));
         }
         Collections.sort(bindings);
-        return canonical(GSON.toJsonTree(bindings));
+        return CanonicalJson.render(GSON.toJsonTree(bindings));
     }
 
     private static String stableRuntimeBindings(JsonObject summary,
@@ -775,7 +746,8 @@ public final class RegionPathWorklist {
             @Override
             public int compare(JsonElement left, JsonElement right) {
                 if (!left.isJsonObject() || !right.isJsonObject()) {
-                    return canonical(left).compareTo(canonical(right));
+                    return CanonicalJson.render(left).compareTo(
+                            CanonicalJson.render(right));
                 }
                 JsonObject l = left.getAsJsonObject();
                 JsonObject r = right.getAsJsonObject();
@@ -804,7 +776,7 @@ public final class RegionPathWorklist {
             bindings.add(alphaCanonical(stable, alpha));
         }
         Collections.sort(bindings);
-        return canonical(GSON.toJsonTree(bindings));
+        return CanonicalJson.render(GSON.toJsonTree(bindings));
     }
 
     private static void copyStable(JsonObject from, JsonObject to,

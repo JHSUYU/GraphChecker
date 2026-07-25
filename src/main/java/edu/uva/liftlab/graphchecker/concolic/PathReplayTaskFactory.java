@@ -40,14 +40,12 @@ final class PathReplayTaskFactory {
         result.addProperty("executionPhase",
                 goalKind.capturesOutputRelation()
                 ? "REPLAY_OUTPUT_PATH_FLIP" : "REPLAY_TARGET_PATH_FLIP");
-        result.remove("bundle");
         goalKind.writeToTask(result);
         result.add("modelAssignments", assignments.deepCopy());
         result.add("replayContract", contract.toJson());
         result.addProperty("pathQueryKey", queryKey);
         result.addProperty("sourceTaskId",
                 string(task, "sourceTaskId"));
-        result.remove("summaryMode");
         return result;
     }
 

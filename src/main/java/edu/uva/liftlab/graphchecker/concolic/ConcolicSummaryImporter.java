@@ -995,7 +995,7 @@ public final class ConcolicSummaryImporter {
         }
 
         outputIssues.addAll(observedCaptureBijectionIssues(
-                raw, OutputClosureCodec.captures(contract)));
+                raw, executionTask, contract));
         OutputExpressionExtraction output =
                 new OutputExpressionExtraction(expressions,
                         outputComplete && outputIssues.isEmpty(),
@@ -1007,8 +1007,21 @@ public final class ConcolicSummaryImporter {
     }
 
     private static List<String> observedCaptureBijectionIssues(
-            JsonObject raw, JsonArray requests) {
+            JsonObject raw, JsonObject executionTask,
+            OutputClosureContract contract) {
         List<String> issues = new ArrayList<>();
+        JsonArray requests = new JsonArray();
+        for (OutputClosureContract.Member member : contract.members()) {
+            OutputMemberAnalysis analysis = new OutputMemberAnalysis(
+                    executionTask, contract, member);
+            if (frameConditionDischarge(raw, analysis,
+                    member.portId()).complete) {
+                continue;
+            }
+            for (JsonElement request : member.captures()) {
+                requests.add(request.deepCopy());
+            }
+        }
         JsonArray observed = array(raw, "outputCaptures");
         if (observed.size() != requests.size()) {
             issues.add("OUTPUT_CAPTURE_CARDINALITY_MISMATCH:"
@@ -1221,13 +1234,18 @@ public final class ConcolicSummaryImporter {
                 }
             }
         }
-        if (matches.size() != 1) {
+        FrameConditionDischarge frame = fieldAssignment
+                && matches.isEmpty()
+                ? frameConditionDischarge(raw, analysis, requestedPort)
+                : FrameConditionDischarge.notApplicable();
+        if (matches.size() != 1 && !frame.complete) {
             issues.add(matches.isEmpty()
                     ? "MISSING_EXACT_OUTPUT_EXPRESSION_CAPTURE"
                     : "AMBIGUOUS_EXACT_OUTPUT_EXPRESSION_CAPTURE:"
                     + matches.size());
         }
-        JsonElement expression = matches.size() == 1
+        JsonElement expression = frame.complete ? frame.expression
+                : matches.size() == 1
                 ? matches.get(0).get("expression") : null;
         ProjectedFieldOutputDischarge projectedFieldDischarge =
                 fieldAssignment && matches.size() == 1
@@ -1302,7 +1320,9 @@ public final class ConcolicSummaryImporter {
         }
         String authority;
         if (fieldAssignment) {
-            authority = projectedFieldDischarge.complete
+            authority = frame.complete
+                    ? frame.authority
+                    : projectedFieldDischarge.complete
                     ? projectedFieldDischarge.authority
                     : guardedConstant
                     ? "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_PATH_GUARD"
@@ -1312,6 +1332,115 @@ public final class ConcolicSummaryImporter {
         }
         return new OutputExpressionExtraction(expressions,
                 issues.isEmpty(), issues, authority);
+    }
+
+    /**
+     * A normal path that executes none of the exactly instrumented putfield
+     * captures preserves the field's entry value.  The task must bind the
+     * requested output to one same-cell prestate input, and that input must
+     * have been symbolized on the runtime-proven receiver path.
+     */
+    private static FrameConditionDischarge frameConditionDischarge(
+            JsonObject raw, OutputMemberAnalysis analysis,
+            String requestedPort) {
+        if (!"NORMAL".equals(string(raw, "exitKind"))
+                || requestedPort.isEmpty()) {
+            return FrameConditionDischarge.notApplicable();
+        }
+        JsonObject executionCounts = object(raw,
+                "outputCaptureExecutionCounts");
+        if (executionCounts == null) {
+            return FrameConditionDischarge.notApplicable();
+        }
+        int observedCaptures = 0;
+        for (JsonElement requestElement : analysis.captures()) {
+            if (!requestElement.isJsonObject()) continue;
+            JsonObject request = requestElement.getAsJsonObject();
+            String bindingId = string(request, "captureBindingId");
+            JsonElement count = executionCounts.get(bindingId);
+            if (bindingId.isEmpty() || count == null
+                    || !count.isJsonPrimitive()
+                    || !count.getAsJsonPrimitive().isNumber()
+                    || count.getAsInt() != 0) {
+                return FrameConditionDischarge.notApplicable();
+            }
+            for (JsonElement captureElement : array(raw,
+                    "outputCaptures")) {
+                if (captureElement.isJsonObject()
+                        && exactOutputCaptureMatch(request,
+                        captureElement.getAsJsonObject())) {
+                    observedCaptures++;
+                }
+            }
+        }
+        if (observedCaptures != 0) {
+            return FrameConditionDischarge.notApplicable();
+        }
+        JsonObject output = analysis.output();
+        String outputCell = string(output, "cell");
+        String inputPort = "";
+        int bindings = 0;
+        for (JsonElement element : array(analysis.executionTask,
+                "heapStateBindings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject binding = element.getAsJsonObject();
+            if (requestedPort.equals(string(binding, "outputPort"))
+                    && outputCell.equals(string(binding, "cell"))) {
+                inputPort = string(binding, "inputPort");
+                bindings++;
+            }
+        }
+        if (bindings != 1 || inputPort.isEmpty()
+                || countString(analysis.slice().get("inputPorts"),
+                inputPort) != 1) {
+            return FrameConditionDischarge.notApplicable();
+        }
+
+        int actions = 0;
+        for (JsonElement element : array(analysis.executionTask,
+                "symbolize")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject action = element.getAsJsonObject();
+            if (inputPort.equals(string(action, "symbol"))
+                    && "HEAP_PRESTATE".equals(string(action,
+                    "sourceKind"))
+                    && "RECEIVER_FIELD".equals(string(action,
+                    "location"))
+                    && !string(action,
+                    "frameConditionAuthority").isEmpty()) {
+                actions++;
+            }
+        }
+        if (actions != 1) {
+            return FrameConditionDischarge.notApplicable();
+        }
+
+        String rawSymbol = "";
+        int symbols = 0;
+        for (String candidate : primitiveStrings(array(raw,
+                "symbolizedInputs"))) {
+            if (candidate.equals(inputPort)
+                    || candidate.startsWith(inputPort + ".")) {
+                rawSymbol = candidate;
+                symbols++;
+            }
+        }
+        if (symbols != 1) {
+            return FrameConditionDischarge.notApplicable();
+        }
+
+        String descriptor = firstNonBlank(
+                string(output, "javaTypeDescriptor"),
+                javaTypeDescriptor(declaredFieldType(outputCell)));
+        if (descriptor.isEmpty()) {
+            return FrameConditionDischarge.notApplicable();
+        }
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "SymbolExpression");
+        expression.addProperty("_java_type", descriptor);
+        expression.addProperty("_exp", rawSymbol);
+        return new FrameConditionDischarge(expression,
+                "EXACT_HEAP_PRESTATE_FRAME_CONDITION", true);
     }
 
     /**
@@ -1598,6 +1727,24 @@ public final class ConcolicSummaryImporter {
             this.inputPort = inputPort;
             this.dependencyCell = dependencyCell;
             this.fieldPath = new ArrayList<>(fieldPath);
+        }
+    }
+
+    private static final class FrameConditionDischarge {
+        private final JsonObject expression;
+        private final String authority;
+        private final boolean complete;
+
+        private FrameConditionDischarge(JsonObject expression,
+                                        String authority,
+                                        boolean complete) {
+            this.expression = expression;
+            this.authority = authority;
+            this.complete = complete;
+        }
+
+        private static FrameConditionDischarge notApplicable() {
+            return new FrameConditionDischarge(null, "", false);
         }
     }
 

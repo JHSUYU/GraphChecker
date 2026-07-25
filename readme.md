@@ -698,6 +698,19 @@ exit/exception observation 参与 closure completeness，不能伪造成普通 o
 worklist 只枚举影响 output 最终值、是否写入、最后一次写入、正常出口或异常出口的 branch；
 与 closure 无关的 branch 不进入 frontier。
 
+primitive instance-field 的 frame condition 使用现有 relation contract，不另建 frame
+subsystem：静态 output slice 加一个与 output cell 完全相同的 `HEAP_PRESTATE` input；
+runtime discovery 通过精确 putfield receiver identity 和引用型 getfield event，求得唯一
+bounded `region root -> ... -> field` 路径；custom JDK 在 region 入口 symbolize 该真实字段。
+所有 output capture hook 必须在 instrumentation 阶段精确安装，否则任务直接失败并报告
+`captureBindingId + method#unit`；runtime 同时为每个 binding 写一个实际 hook execution
+count。因此某条正常 execution 中该 member 的 execution count 与 capture 数都为零时，
+Importer 才可用已 symbolized 的 same-cell prestate 生成
+`field_out = field_in`；存在 capture 时仍以最后一次精确 assignment RHS 为准。这里复用
+`heapStateBindings`、slice input admission 和原有 PathQuery，不增加 runtime attestation
+hash、双重 capture ledger 或 fallback。reference/container output 继续走既有 identity、
+heap-effect 和 Map/array transformer contract，不能被 primitive frame 规则猜测替代。
+
 同一次 invocation 中被同一个 downstream demand 共同使用的 `outX/outY` 属于一个 joint
 `OUTPUT_RELATION` goal。每个 task 原子捕获完整 output set，每个 relation case 使用同一
 guard/case selector；任一 member 缺 capture 或 proof，整个 joint goal fail closed。不能把

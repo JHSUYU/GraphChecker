@@ -322,7 +322,9 @@ public class RuntimeRegionPlannerTest {
             assertEquals("READY", admissionState(outputGoal));
             assertFalse(outputGoal.containsKey(
                     "requestedOutputSliceComplete"));
-            assertEquals(11L, writerEnvelope.get("rootCallId"));
+            assertFalse(writerEnvelope.containsKey("rootCallId"));
+            assertTrue(String.valueOf(writerEnvelope.get(
+                    "regionInstanceId")).endsWith("#call11"));
             assertEquals(1, ((List<?>) outputGoal.get(
                     "edgeBindings")).size());
             assertCanonicalOutputOnly(outputGoal);
@@ -1952,9 +1954,9 @@ public class RuntimeRegionPlannerTest {
     private static Map<String, Object> activationForRootCall(
             RuntimeRegionPlanner.Result result, long rootCallId) {
         for (Map<String, Object> activation : result.regionPlans) {
-            Object value = activation.get("rootCallId");
-            if (value instanceof Number
-                    && ((Number) value).longValue() == rootCallId) {
+            String instanceId = String.valueOf(activation.get(
+                    "regionInstanceId"));
+            if (instanceId.endsWith("#call" + rootCallId)) {
                 return activation;
             }
         }
