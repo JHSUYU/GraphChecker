@@ -1512,6 +1512,21 @@ solver 遗留的 V2 reader，修复后 `containers` 与 `unreachable-parity` 的
 replay、merge 和 compose 全链路。61k–69k 仍是后续净删除目标，不把尚未实现的行数
 写成完成结果。
 
+截至 `0c1f9dda`，下一批 current-schema 镜像清理也已完成。Scheduler 不再构造和打印
+无人读取的 summary；随 summary 唯一消费者一起删除了全局 `UnionFind`/
+`equalityClasses`，而每个 activation 的 witness-bearing equality closure 仍在
+`contextFor()` 中按 canonical relation 构造。Solver、Runtime、Importer、Worklist、
+Merger 与 Composer 中只用于展示的计数、固定 authority、code-position 和重复 identity
+镜像同步删除；solver status/SMT hash/model assignment、完整 branch/VM attestation、
+canonical observation/binding ID、object identity、read-from 和所有 fail-closed gap
+保持不变。PMD 审计只剩一个已核对为真实 comparator 读取的 `TargetBranch.branchIndex`
+误报，57 项快速回归通过。
+
+手写生产 Java 现为 77,812 行，相对 81,581 行冻结基线累计净减 3,769 行。隔离干净
+worktree 的 13-fixture 并行真实 custom-JDK/Z3 矩阵再次零失败，保持 6
+`SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T073029Z.1308684`。
+
 ### 明确不能删除
 
 必须保留：
