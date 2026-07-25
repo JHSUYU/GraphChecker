@@ -146,7 +146,7 @@ validate_composition_common() {
     and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
     and (.gaps | type == "array" and length == 0)
-    and ((.resolvedProducerKeys // []) | length) > 0
+    and ((.includedSummaries // []) | length) > 0
     and ((.resolvedEdgeBindings // []) | length) > 0
     and ((.caseProjectionCatalog // []) | type) == "array"
     and ((.caseProjectionCatalog // []) | length) > 0
@@ -915,7 +915,6 @@ validate_compound_target_artifacts() {
     .fatalConstraintAuthority
       == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
     and (.includedSummaries | length) == 2
-    and (.resolvedProducerKeys | length) == 6
     and (.resolvedEdgeBindings | length) == 6
     and ([.resolvedEdgeBindings[]] | unique | length) == 6
     and all(.resolvedEdgeBindings[];
@@ -1062,8 +1061,7 @@ validate_semantic_profile() {
         || die "dependent-scalar composition moved away from the annotated target"
       jq -e "${output_closure_helpers}"'
         . as $root
-        | (.resolvedProducerKeys | length) == 2
-        and (.resolvedEdgeBindings | length) == 2
+        | (.resolvedEdgeBindings | length) == 2
         and ([.resolvedEdgeBindings[]] | unique | length) == 2
         and all(.resolvedEdgeBindings[];
           type == "string" and length > 0)
@@ -1101,8 +1099,7 @@ validate_semantic_profile() {
       ' "${reach_report}" >/dev/null \
         || die "containers lost its Boolean/int existential reach profile"
       jq -e '
-        (.resolvedProducerKeys | length) == 2
-        and (.includedSummaries | length) == 2
+        (.includedSummaries | length) == 2
         and (.caseProjectionCatalog | length) >= 4
         and all(.caseProjectionCatalog[];
           (.bindings | length) >= 1
@@ -1137,8 +1134,7 @@ validate_semantic_profile() {
       ' "${reach_report}" >/dev/null \
         || die "unreachable-parity was not proved unreachable for all roots"
       jq -e '
-        (.resolvedProducerKeys | length) == 2
-        and (.includedSummaries | length) == 2
+        (.includedSummaries | length) == 2
         and (.caseProjectionCatalog | length) > 4
         and all(.caseProjectionCatalog[];
           (.bindings | length) == 3

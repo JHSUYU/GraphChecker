@@ -242,18 +242,8 @@ final class ConcolicInstrumentationSelections {
                 || !"HEAP_EFFECT_STATE_TRANSFORMER".equals(jsonString(slice,
                 "captureDischargeAuthority"))
                 || inputPort.isEmpty()
-                || !outputPort.equals(jsonString(slice,
-                "captureDischargeOutputPort"))
-                || !outputCell.equals(jsonString(slice,
-                "captureDischargeOutputCell"))
                 || !jsonBoolean(slice,
-                "requestedStateTransformerContractComplete", false)
-                || intValue(slice.get(
-                "requestedStateTransformerContractVersion"), -1) != 1
-                || !outputPort.equals(jsonString(slice,
-                "requestedStateTransformerContractOutputPort"))
-                || !outputCell.equals(jsonString(slice,
-                "requestedStateTransformerContractOutputCell"))) {
+                "requestedStateTransformerContractComplete", false)) {
             return false;
         }
 

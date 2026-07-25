@@ -1644,6 +1644,29 @@ custom-JDK/Z3 baseline 通过。对应里程碑 `89fde48a` 的隔离干净 workt
 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
 `target/robustness-matrix-logs/20260725T132252Z.2990822`。
 
+下一批并行收敛 static、runtime 与 Composer 三条链，但仍只保留一个 canonical
+事实源。静态 region port 现在由 Planner 一次性写入 `javaType`，Composer 与 Boolean
+extractor 删除 `symbol`、`declaredType` 和从 cell 再猜类型的 fallback。Transformer
+contract 的 output port/cell 由外层 output slice 唯一给出，固定 version/applicable/
+authority 也已退休；obligation、target cell、causal edge 和 complete/issues 继续作为
+heap correctness gate。Runtime output slice 只写唯一 `complete` 与实际 issue/obligation/
+capture 集合，不再镜像 structural、truncation 和 refinement 布尔。
+
+Runtime raw result 删除了 CALL_ARGUMENT 上无人消费的 concrete class，以及已在顶层
+canonical observation ledger 中出现的 per-capture Map projection 副本；object identity、
+expression、field-flow 与 fail-closed observation 仍完整保留。Composer manifest 删除零生产
+reader 的 `resolvedProducerKeys`，relationship row 只保留 Boolean discovery 实际读取的
+kind/roles，公式继续由 named SMT assertion 唯一承载。Boolean truth table 已穷举所有
+`2^N` Boolean root valuation，因此删除了随后重复证明同一 DNF 的额外 Z3 process；
+任何 unknown 仍产生 gap 并 fail closed。Manifest 仍以 SHA 绑定 SMT、static regions、
+fatal query、summaries 和 relationship artifact，Boolean report 通过该 trust-root manifest
+引用它们。
+
+该批手写生产 Java 为 74,753 行，相对 81,581 行冻结基线累计净减 6,828 行。
+57 项快速回归、PMD、shell 语法与真实 custom-JDK/Z3 baseline 均通过；baseline 仍为
+`SAT/REACHABLE`，所有 composition/worklist/importer gap 均为空。隔离干净 worktree 的
+13-fixture 门禁在本里程碑 commit 后执行并记录。
+
 ### 明确不能删除
 
 必须保留：

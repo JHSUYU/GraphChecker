@@ -1,6 +1,13 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.artifact;
+import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -23,7 +30,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -41,13 +47,6 @@ import java.util.regex.Pattern;
 public final class BooleanReachConditionExtractor {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
-    private static final Pattern FIELD_CELL = Pattern.compile(
-            "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$");
-    private static final Pattern RETURN_CELL = Pattern.compile(
-            "^<[^:]+:\\s+([^<>\\s]+)\\s+[^<>\\s(]+\\([^>]*\\)>"
-                    + "\\.return(?:#.*)?$");
-    private static final Pattern PARAMETER_CELL = Pattern.compile(
-            ">\\.param[0-9]+:([^#]+)(?:#.*)?$");
     private static final Pattern SAFE_SMT_ATOM = Pattern.compile(
             "[A-Za-z_~!@$%^&*+=<>.?/][A-Za-z0-9_~!@$%^&*+\\-=<>.?/]*");
     private BooleanReachConditionExtractor() {
@@ -55,11 +54,11 @@ public final class BooleanReachConditionExtractor {
 
     public static void main(String[] argv) throws Exception {
         Arguments arguments = Arguments.parse(argv);
-        JsonObject manifest = readJson(arguments.manifest);
+        JsonObject manifest = ArtifactIO.readObject(arguments.manifest);
         Path relationshipsPath = arguments.relationships;
         String smt = ArtifactIO.readText(arguments.smt);
-        JsonObject relationships = readJson(relationshipsPath);
-        List<JsonObject> regions = readJsonl(arguments.regions);
+        JsonObject relationships = ArtifactIO.readObject(relationshipsPath);
+        List<JsonObject> regions = ArtifactIO.readJsonl(arguments.regions);
         validateArtifactBindings(arguments.smt, arguments.regions,
                 relationshipsPath, manifest);
         Z3Solver solver = new Z3Solver(arguments.z3,
@@ -68,12 +67,8 @@ public final class BooleanReachConditionExtractor {
                 relationships, solver,
                 arguments.maxInputs, arguments.maxValuations);
         JsonObject report = extraction.report;
-        report.add("composedSmtArtifact", artifact(arguments.smt));
         report.add("compositionManifestArtifact",
                 artifact(arguments.manifest));
-        report.add("staticRegionsArtifact", artifact(arguments.regions));
-        report.add("relationshipCandidatesArtifact",
-                artifact(relationshipsPath));
         report.add("solverArtifact", solver.artifact());
         ArtifactIO.replace(arguments.output, GSON.toJson(report)
                 + System.lineSeparator());
@@ -130,7 +125,6 @@ public final class BooleanReachConditionExtractor {
         List<Valuation> valuations = new ArrayList<>();
         JsonArray valuationRows = new JsonArray();
         int satisfying = 0;
-        int unsatisfying = 0;
         int solverErrors = 0;
         int count = (int) valuationCount;
         for (int ordinal = 0; ordinal < count; ordinal++) {
@@ -142,9 +136,7 @@ public final class BooleanReachConditionExtractor {
             JsonObject row = valuation.toJson(inputs);
             if ("sat".equals(result.status)) {
                 satisfying++;
-            } else if ("unsat".equals(result.status)) {
-                unsatisfying++;
-            } else {
+            } else if (!"unsat".equals(result.status)) {
                 row.addProperty("solverOutput", result.output);
                 solverErrors++;
             }
@@ -154,22 +146,11 @@ public final class BooleanReachConditionExtractor {
         Dnf dnf = Dnf.from(inputs, valuations);
         report.add("valuations", valuationRows);
 
-        String implicationStatus = "not_checked";
-        String implicationOutput = "";
-        if (solverErrors == 0) {
-            SolverResult proof = solver.check(domainBase
-                    + "(assert (not " + dnf.formula + "))"
-                    + System.lineSeparator() + "(check-sat)"
-                    + System.lineSeparator());
-            implicationStatus = proof.status;
-            implicationOutput = proof.output;
-        }
-        boolean complete = solverErrors == 0
-                && "unsat".equals(implicationStatus)
-                && satisfying + unsatisfying == valuationCount;
-        boolean truthTableDecided = solverErrors == 0
-                && satisfying + unsatisfying == valuationCount;
-        String reachability = !truthTableDecided
+        // Every Boolean assignment was queried above; the DNF is built from
+        // exactly the SAT rows.  A second "base implies DNF" solver call only
+        // rechecks that exhaustive table and adds no admission evidence.
+        boolean complete = solverErrors == 0;
+        String reachability = !complete
                 ? "UNKNOWN" : satisfying > 0
                 ? "REACHABLE" : "UNREACHABLE";
         JsonObject reachCondition = dnf.toJson();
@@ -179,11 +160,6 @@ public final class BooleanReachConditionExtractor {
         if (solverErrors > 0) {
             resultGaps.add("UNDECIDED_SOLVER_VALUATIONS:"
                     + solverErrors);
-        }
-        if (!"unsat".equals(implicationStatus)) {
-            resultGaps.add("BASE_DOES_NOT_PROVE_DNF:"
-                    + implicationStatus + ":"
-                    + firstNonBlank(implicationOutput));
         }
         report.add("gaps", resultGaps);
         report.addProperty("state", complete
@@ -623,8 +599,7 @@ public final class BooleanReachConditionExtractor {
                     "z3"));
             this.version = validateVersion(this.executable,
                     this.timeoutMillis);
-            this.artifact = BooleanReachConditionExtractor.artifact(
-                    this.executable);
+            this.artifact = ArtifactIO.artifact(this.executable);
             this.artifact.addProperty("version", version);
         }
 
@@ -979,7 +954,7 @@ public final class BooleanReachConditionExtractor {
         private static PortCatalog from(List<JsonObject> regions,
                                         List<String> gaps) {
             PortCatalog result = new PortCatalog();
-            for (JsonObject region : safe(regions)) {
+            for (JsonObject region : regions) {
                 String regionId = string(region, "regionId");
                 for (JsonElement element : array(region,
                         "symbolicInputs")) {
@@ -996,15 +971,13 @@ public final class BooleanReachConditionExtractor {
 
         private void add(String regionId, JsonObject row, boolean input,
                          List<String> gaps) {
-            String id = firstNonBlank(string(row, "portId"),
-                    string(row, "symbol"));
+            String id = string(row, "portId");
             if (id.isEmpty()) {
                 gaps.add("STATIC_PORT_WITHOUT_ID:" + regionId);
                 return;
             }
             String cell = string(row, "cell");
-            String javaType = firstNonBlank(string(row, "javaType"),
-                    string(row, "declaredType"), cellJavaType(cell));
+            String javaType = string(row, "javaType");
             PortInfo value = new PortInfo(id, regionId, cell, javaType,
                     input);
             Map<String, PortInfo> own = input ? inputs : outputs;
@@ -1130,15 +1103,6 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    static JsonObject artifact(Path path) throws IOException {
-        byte[] bytes = Files.readAllBytes(path);
-        JsonObject result = new JsonObject();
-        result.addProperty("path", path.toAbsolutePath().normalize()
-                .toString());
-        result.addProperty("sha256", ArtifactIO.sha256(bytes));
-        return result;
-    }
-
     /**
      * Rejects cross-wired CLI artifacts before any solver process starts.
      * The composer manifest is the trust root: it fingerprints the exact SMT,
@@ -1177,24 +1141,6 @@ public final class BooleanReachConditionExtractor {
         return Paths.get(value).toAbsolutePath().normalize().toString();
     }
 
-    private static JsonObject readJson(Path path) throws IOException {
-        return ArtifactIO.readObject(path);
-    }
-
-    private static List<JsonObject> readJsonl(Path path) throws IOException {
-        return ArtifactIO.readJsonl(path);
-    }
-
-    private static String cellJavaType(String cell) {
-        String value = firstNonBlank(cell).trim();
-        Matcher parameter = PARAMETER_CELL.matcher(value);
-        if (parameter.find()) return parameter.group(1).trim();
-        Matcher field = FIELD_CELL.matcher(value);
-        if (field.matches()) return field.group(1).trim();
-        Matcher returned = RETURN_CELL.matcher(value);
-        return returned.matches() ? returned.group(1).trim() : "";
-    }
-
     private static String smtName(String value) {
         String normalized = firstNonBlank(value, "anonymous")
                 .replaceAll("[^A-Za-z0-9_]", "_");
@@ -1223,52 +1169,4 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    private static Path sibling(Path path, String name) {
-        Path parent = path.toAbsolutePath().getParent();
-        return parent == null ? Paths.get(name) : parent.resolve(name);
-    }
-
-    private static JsonArray array(JsonObject object, String key) {
-        JsonElement value = object == null ? null : object.get(key);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
-    }
-
-    private static JsonObject object(JsonObject object, String key) {
-        JsonElement value = object == null ? null : object.get(key);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    private static String string(JsonObject object, String key) {
-        JsonElement value = object == null ? null : object.get(key);
-        return value != null && value.isJsonPrimitive()
-                ? value.getAsString() : "";
-    }
-
-    private static int integer(JsonObject object, String key,
-                               int fallback) {
-        try {
-            JsonElement value = object == null ? null : object.get(key);
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsInt() : fallback;
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.trim().isEmpty()) {
-                    return value.trim();
-                }
-            }
-        }
-        return "";
-    }
-
-    private static <T> List<T> safe(List<T> values) {
-        return values == null ? Collections.<T>emptyList() : values;
-    }
 }

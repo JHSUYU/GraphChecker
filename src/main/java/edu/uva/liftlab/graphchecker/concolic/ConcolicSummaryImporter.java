@@ -1394,13 +1394,9 @@ public final class ConcolicSummaryImporter {
         JsonObject slice = analysis.slice();
         if (!nestedOutputSliceContractComplete(slice)
                 || !bool(slice,
-                "requestedStateTransformerContractApplicable", false)
-                || !bool(slice,
                 "requestedStateTransformerContractComplete", false)
                 || array(slice,
-                "requestedStateTransformerContractIssues").size() != 0
-                || !bool(slice, "structuralComplete", false)
-                || bool(slice, "truncated", true)) {
+                "requestedStateTransformerContractIssues").size() != 0) {
             return ProjectedFieldOutputDischarge.notApplicable();
         }
 
@@ -2008,19 +2004,8 @@ public final class ConcolicSummaryImporter {
                 exactObligation = true;
             }
         }
-        boolean exactContract = integer(slice,
-                "requestedStateTransformerContractVersion", -1) == 1
-                && bool(slice,
-                "requestedStateTransformerContractApplicable", false)
-                && bool(slice,
+        boolean exactContract = bool(slice,
                 "requestedStateTransformerContractComplete", false)
-                && requestedPort.equals(string(slice,
-                "requestedStateTransformerContractOutputPort"))
-                && requestedCell.equals(string(slice,
-                "requestedStateTransformerContractOutputCell"))
-                && "STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1".equals(
-                string(slice,
-                        "requestedStateTransformerContractAuthority"))
                 && array(slice,
                 "requestedStateTransformerContractIssues").size() == 0;
         if (!exactContract || !exactObligation) {
@@ -3550,19 +3535,8 @@ public final class ConcolicSummaryImporter {
             String requestedPort, String requestedCell) {
         JsonObject slice = analysis.slice();
         if (!nestedOutputSliceContractComplete(slice)
-                || integer(slice,
-                "requestedStateTransformerContractVersion", -1) != 1
-                || !bool(slice,
-                "requestedStateTransformerContractApplicable", false)
                 || !bool(slice,
                 "requestedStateTransformerContractComplete", false)
-                || !requestedPort.equals(string(slice,
-                "requestedStateTransformerContractOutputPort"))
-                || !requestedCell.equals(string(slice,
-                "requestedStateTransformerContractOutputCell"))
-                || !"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1".equals(
-                string(slice,
-                        "requestedStateTransformerContractAuthority"))
                 || array(slice,
                 "requestedStateTransformerContractIssues").size() != 0) {
             return false;
@@ -3843,8 +3817,8 @@ public final class ConcolicSummaryImporter {
             return "";
         }
         JsonObject requested = analysis.output();
-        String outputPort = string(slice, "captureDischargeOutputPort");
-        String outputCell = string(slice, "captureDischargeOutputCell");
+        String outputPort = string(requested, "portId");
+        String outputCell = string(requested, "cell");
         String inputPort = string(slice, "captureDischargeInputPort");
         if (!"HEAP_EFFECT_STATE_TRANSFORMER".equals(string(slice,
                 "captureDischargeAuthority"))
@@ -3854,26 +3828,13 @@ public final class ConcolicSummaryImporter {
                 || !"HEAP_STATE".equals(string(requested, "kind"))
                 || outputPort.isEmpty() || outputCell.isEmpty()
                 || inputPort.isEmpty()
-                || !outputPort.equals(string(requested, "portId"))
-                || !outputCell.equals(string(requested, "cell"))
                 || !outputPort.equals(string(slice, "outputPort"))
                 || !outputCell.equals(string(slice, "outputCell"))
                 || !supportedMapStateField(outputCell)) {
             return "MALFORMED_HEAP_EFFECT_CAPTURE_DISCHARGE";
         }
-        if (integer(slice, "requestedStateTransformerContractVersion", -1)
-                != 1
-                || !bool(slice,
-                "requestedStateTransformerContractApplicable", false)
-                || !bool(slice,
+        if (!bool(slice,
                 "requestedStateTransformerContractComplete", false)
-                || !outputPort.equals(string(slice,
-                "requestedStateTransformerContractOutputPort"))
-                || !outputCell.equals(string(slice,
-                "requestedStateTransformerContractOutputCell"))
-                || !"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1".equals(
-                string(slice,
-                        "requestedStateTransformerContractAuthority"))
                 || array(slice,
                 "requestedStateTransformerContractIssues").size() != 0) {
             return "INCOMPLETE_HEAP_EFFECT_TRANSFORMER_CONTRACT";
@@ -3987,8 +3948,6 @@ public final class ConcolicSummaryImporter {
         JsonObject slice = analysis.slice();
         if (requestedCell.isEmpty()
                 || !nestedOutputSliceContractComplete(slice)
-                || !bool(slice, "structuralComplete", false)
-                || bool(slice, "truncated", true)
                 || requestedOutputMayBeMapState(requestedCell, slice)) {
             return false;
         }
@@ -6880,8 +6839,6 @@ public final class ConcolicSummaryImporter {
         if (!baseField.isEmpty()) projectedPath.add(baseField);
         projectedPath.addAll(projectedFieldPath(cell));
         if (!nestedOutputSliceContractComplete(slice)
-                || !bool(slice, "structuralComplete", false)
-                || bool(slice, "truncated", true)
                 || countString(slice.get("inputPorts"), base) != 1
                 || countString(slice.get("methods"), accessMethod) != 1
                 || !"FIELD_ACCESS".equals(string(action, "bindingMode"))
@@ -7201,7 +7158,7 @@ public final class ConcolicSummaryImporter {
 
         String requestedPort = string(requestedOutput, "portId");
         String requestedCell = string(requestedOutput, "cell");
-        if (!slice.has("requestedStateTransformerContractVersion")) {
+        if (!slice.has("requestedStateTransformerContractComplete")) {
             return StaticHeapTransformerCoverage.invalidContract(
                     "MISSING_REQUESTED_STATE_TRANSFORMER_CONTRACT");
         }
@@ -7245,19 +7202,8 @@ public final class ConcolicSummaryImporter {
             }
         }
         {
-            boolean headerValid = integer(slice,
-                    "requestedStateTransformerContractVersion", -1) == 1
-                    && bool(slice,
-                    "requestedStateTransformerContractApplicable", false)
-                    && bool(slice,
+            boolean headerValid = bool(slice,
                     "requestedStateTransformerContractComplete", false)
-                    && "STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1".equals(
-                    string(slice,
-                            "requestedStateTransformerContractAuthority"))
-                    && requestedPort.equals(string(slice,
-                    "requestedStateTransformerContractOutputPort"))
-                    && requestedCell.equals(string(slice,
-                    "requestedStateTransformerContractOutputCell"))
                     && array(slice,
                     "requestedStateTransformerContractIssues").size() == 0
                     && array(slice,

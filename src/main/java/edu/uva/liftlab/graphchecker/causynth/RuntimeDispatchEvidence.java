@@ -29,18 +29,13 @@ import java.util.Set;
  */
 final class RuntimeDispatchEvidence {
     private final String source;
-    private final Map<String, RuntimeDispatchObservation> observations;
-    private final int rowCount;
-    private final int rejectedRowCount;
+    private final Map<String, Set<String>> calleesByCallsite;
 
     private RuntimeDispatchEvidence(
             String source,
-            Map<String, RuntimeDispatchObservation> observations,
-            int rowCount, int rejectedRowCount) {
+            Map<String, Set<String>> calleesByCallsite) {
         this.source = source;
-        this.observations = observations;
-        this.rowCount = rowCount;
-        this.rejectedRowCount = rejectedRowCount;
+        this.calleesByCallsite = calleesByCallsite;
     }
 
     static RuntimeDispatchEvidence fromConfiguration() throws IOException {
@@ -48,18 +43,15 @@ final class RuntimeDispatchEvidence {
                 System.getProperty("causynth.runtime.call.edges"),
                 System.getenv("CAUSYNTH_RUNTIME_CALL_EDGES")));
         if (configured.isEmpty()) {
-            return new RuntimeDispatchEvidence("", new LinkedHashMap<>(),
-                    0, 0);
+            return new RuntimeDispatchEvidence("", new LinkedHashMap<>());
         }
         Path path = Paths.get(configured).toAbsolutePath().normalize();
         if (!Files.isRegularFile(path)) {
             throw new IOException("Runtime call-edge evidence not found: "
                     + path);
         }
-        Map<String, RuntimeDispatchObservation> observations =
+        Map<String, Set<String>> calleesByCallsite =
                 new LinkedHashMap<>();
-        int rows = 0;
-        int rejected = 0;
         try (BufferedReader reader = Files.newBufferedReader(path,
                 StandardCharsets.UTF_8)) {
             String line;
@@ -68,17 +60,14 @@ final class RuntimeDispatchEvidence {
                 if (trimmed.isEmpty()) {
                     continue;
                 }
-                rows++;
                 JsonObject row;
                 try {
                     JsonElement parsed = JsonParser.parseString(trimmed);
                     if (!parsed.isJsonObject()) {
-                        rejected++;
                         continue;
                     }
                     row = parsed.getAsJsonObject();
                 } catch (RuntimeException malformed) {
-                    rejected++;
                     continue;
                 }
                 String event = jsonString(row, "event");
@@ -92,40 +81,23 @@ final class RuntimeDispatchEvidence {
                         || caller.isEmpty() || siteId.isEmpty()
                         || declared.isEmpty() || actual.isEmpty()
                         || !siteId.startsWith(caller + "#u")) {
-                    rejected++;
                     continue;
                 }
                 String key = key(caller, siteId, declared);
-                RuntimeDispatchObservation observation =
-                        observations.computeIfAbsent(key,
-                                ignored -> new RuntimeDispatchObservation(
-                                        caller, siteId, declared));
-                observation.actualCallees.add(actual);
+                calleesByCallsite.computeIfAbsent(key,
+                        ignored -> new LinkedHashSet<>()).add(actual);
             }
         }
-        return new RuntimeDispatchEvidence(path.toString(), observations,
-                rows, rejected);
+        return new RuntimeDispatchEvidence(path.toString(),
+                calleesByCallsite);
     }
 
-    RuntimeDispatchObservation lookup(String caller, String siteId,
-                                      String declared) {
-        return observations.get(key(caller, siteId, declared));
-    }
-
-    boolean configured() {
-        return !source.isEmpty();
+    Set<String> lookup(String caller, String siteId, String declared) {
+        return calleesByCallsite.get(key(caller, siteId, declared));
     }
 
     String source() {
         return source;
-    }
-
-    int rowCount() {
-        return rowCount;
-    }
-
-    int rejectedRowCount() {
-        return rejectedRowCount;
     }
 
     private static String key(String caller, String siteId,
@@ -162,72 +134,45 @@ final class RuntimeDispatchEvidence {
     }
 }
 
-final class RuntimeDispatchObservation {
-    final String caller;
-    final String siteId;
-    final String declaredCallee;
-    final Set<String> actualCallees = new LinkedHashSet<>();
-
-    RuntimeDispatchObservation(String caller, String siteId,
-                               String declaredCallee) {
-        this.caller = caller;
-        this.siteId = siteId;
-        this.declaredCallee = declaredCallee;
-    }
-}
-
 final class RuntimeDispatchSelection {
     final String siteId;
     final List<String> targets;
-    final Set<String> actualCallees;
     final String source;
-    final String reason;
-    final boolean runtimeSelected;
+    final boolean blocked;
 
     private RuntimeDispatchSelection(String siteId,
                                      Collection<String> targets,
-                                     Collection<String> actualCallees,
-                                     String source, String reason,
-                                     boolean runtimeSelected) {
+                                     String source,
+                                     boolean blocked) {
         this.siteId = value(siteId);
         this.targets = new ArrayList<>(targets);
-        this.actualCallees = new LinkedHashSet<>(actualCallees);
         this.source = value(source);
-        this.reason = value(reason);
-        this.runtimeSelected = runtimeSelected;
+        this.blocked = blocked;
     }
 
     static RuntimeDispatchSelection staticFallback(
             String siteId, Collection<String> targets) {
-        return new RuntimeDispatchSelection(siteId, targets,
-                Collections.emptySet(), "", "", false);
+        return new RuntimeDispatchSelection(siteId, targets, "",
+                false);
     }
 
     static RuntimeDispatchSelection runtimeUnique(
             String siteId, String target, String source) {
         return new RuntimeDispatchSelection(siteId,
-                Collections.singletonList(target),
-                Collections.singleton(target), source, "", true);
+                Collections.singletonList(target), source, false);
     }
 
-    static RuntimeDispatchSelection blocked(
-            String siteId, Collection<String> actualCallees,
-            String reason) {
+    static RuntimeDispatchSelection blocked(String siteId) {
         return new RuntimeDispatchSelection(siteId,
-                Collections.emptyList(), actualCallees, "", reason, true);
-    }
-
-    RuntimeDispatchSelection withReason(String updatedReason) {
-        return new RuntimeDispatchSelection(siteId, targets, actualCallees,
-                source, updatedReason, runtimeSelected);
+                Collections.emptyList(), "", true);
     }
 
     boolean unique() {
-        return runtimeSelected && reason.isEmpty() && targets.size() == 1;
+        return !blocked && !source.isEmpty() && targets.size() == 1;
     }
 
     boolean blocked() {
-        return !reason.isEmpty();
+        return blocked;
     }
 
     private static String value(Object candidate) {

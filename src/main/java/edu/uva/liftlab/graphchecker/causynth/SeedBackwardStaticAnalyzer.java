@@ -76,6 +76,19 @@ final class SeedBackwardStaticAnalyzer {
     private static final int MAX_METHOD_CALLERS_PER_METHOD = 200;
     private static final int MAX_FIELD_WRITERS_PER_FIELD = 80;
     private static final int MAX_FIELD_PATH_DEPTH = 4;
+    private static final Pattern LOCAL_NAME_PATTERN =
+            Pattern.compile("[$]?[A-Za-z_][A-Za-z0-9_]*");
+    private static final Pattern CAST_LOCAL_PATTERN =
+            Pattern.compile("\\)\\s*([$]?[A-Za-z_][A-Za-z0-9_]*)$");
+    private static final Pattern INVOKE_BASE_PATTERN = Pattern.compile(
+            "(?:virtualinvoke|interfaceinvoke|specialinvoke)\\s+"
+                    + "([$]?[A-Za-z_][A-Za-z0-9_]*)\\.<");
+    private static final Pattern CONSTRUCTOR_PARAMETER_PATTERN =
+            Pattern.compile(">\\.param(\\d+):");
+    private static final Pattern FIELD_PATTERN =
+            Pattern.compile("<[^:]+:\\s+.+\\s+[^\\s()]+>");
+    private static final Pattern METHOD_SIGNATURE_PATTERN = Pattern.compile(
+            "<([^:]+):\\s+(.+)\\s+([^\\s(]+)\\((.*)\\)>");
     private final CausynthTargetContext target;
     private final int maxMethods;
     private final int maxEdges;
@@ -105,10 +118,6 @@ final class SeedBackwardStaticAnalyzer {
     private final Set<String> expandedFieldWriterFields = new LinkedHashSet<>();
     private final Set<String> expandedConstructorCallees = new LinkedHashSet<>();
     private final Set<String> expandedMethodCallerKeys = new LinkedHashSet<>();
-    private final Set<String> truncatedFieldWriterIndexFields =
-            new LinkedHashSet<>();
-    private final Set<String> truncatedMethodCallerIndexMethods =
-            new LinkedHashSet<>();
     private int discoveredExceptionSeedCount;
     private final Map<String, Boolean> receiverProjectionWriteSummary =
             new LinkedHashMap<>();
@@ -126,10 +135,6 @@ final class SeedBackwardStaticAnalyzer {
     private final RuntimeDispatchEvidence runtimeDispatchEvidence;
     private final Set<String> runtimeRecursiveMethods =
             new LinkedHashSet<>();
-    private final Set<String> runtimeSelectedDispatchSites =
-            new LinkedHashSet<>();
-    private final Map<String, String> blockedRuntimeDispatchSites =
-            new LinkedHashMap<>();
     private final List<Map<String, Object>> edges = new ArrayList<>();
     private boolean globalStaticIndexBuilt;
     private int edgeCounter;
@@ -284,29 +289,7 @@ final class SeedBackwardStaticAnalyzer {
 
         result.edges.addAll(edges);
         result.traceMethods.addAll(collectTraceMethods());
-        addStaticAnalysisBudgetSummary(result);
         return result;
-    }
-
-    private void addStaticAnalysisBudgetSummary(
-            CausynthAnalysisResult result) {
-        boolean methodCapReached = selectedMethods.size() >= maxMethods;
-        boolean edgeCapReached = edges.size() >= maxEdges;
-        Map<String, Object> budget = object(
-                "authority",
-                "JVM_SYSTEM_PROPERTY_WITH_POSITIVE_DEFAULT_V1",
-                "maxMethodsProperty", MAX_METHODS_PROPERTY,
-                "maxEdgesProperty", MAX_EDGES_PROPERTY,
-                "maxMethods", maxMethods,
-                "maxEdges", maxEdges,
-                "selectedMethodCount", selectedMethods.size(),
-                "emittedEdgeCount", edges.size(),
-                "methodCapReached", methodCapReached,
-                "edgeCapReached", edgeCapReached,
-                "capReached", methodCapReached || edgeCapReached,
-                "complete", !methodCapReached && !edgeCapReached);
-        result.symbolicCoverage.put("staticAnalysisBudget",
-                new LinkedHashMap<>(budget));
     }
 
     private void finishSeedDiscovery() {
@@ -318,15 +301,10 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    private List<Map<String, Object>> collectTraceMethods() {
+    private List<String> collectTraceMethods() {
         List<String> methods = new ArrayList<>(selectedMethods);
         Collections.sort(methods);
-        List<Map<String, Object>> rows = new ArrayList<>();
-        int index = 0;
-        for (String method : methods) {
-            rows.add(object("id", "TM." + index++, "method", method));
-        }
-        return rows;
+        return methods;
     }
 
     private Set<String> findCandidateClasses() {
@@ -754,11 +732,10 @@ final class SeedBackwardStaticAnalyzer {
             return null;
         }
         String trimmed = value.trim();
-        if (trimmed.matches("[$]?[A-Za-z_][A-Za-z0-9_]*")) {
+        if (LOCAL_NAME_PATTERN.matcher(trimmed).matches()) {
             return trimmed;
         }
-        Matcher cast = Pattern.compile("\\)\\s*([$]?[A-Za-z_][A-Za-z0-9_]*)$")
-                .matcher(trimmed);
+        Matcher cast = CAST_LOCAL_PATTERN.matcher(trimmed);
         if (trimmed.startsWith("(") && cast.find()) {
             return cast.group(1);
         }
@@ -766,8 +743,7 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private String invokeBaseLocal(String unitText) {
-        Matcher matcher = Pattern.compile("(?:virtualinvoke|interfaceinvoke|specialinvoke)\\s+"
-                + "([$]?[A-Za-z_][A-Za-z0-9_]*)\\.<").matcher(unitText);
+        Matcher matcher = INVOKE_BASE_PATTERN.matcher(unitText);
         if (matcher.find()) {
             return matcher.group(1);
         }
@@ -1536,7 +1512,7 @@ final class SeedBackwardStaticAnalyzer {
                 || !isApplicationClassName(sig.owner)) {
             return null;
         }
-        Matcher matcher = Pattern.compile(">\\.param(\\d+):").matcher(node);
+        Matcher matcher = CONSTRUCTOR_PARAMETER_PATTERN.matcher(node);
         if (!matcher.find()) {
             return null;
         }
@@ -1605,8 +1581,6 @@ final class SeedBackwardStaticAnalyzer {
                 .computeIfAbsent(write.field, ignored -> new ArrayList<>());
         if (writers.size() < MAX_FIELD_WRITERS_PER_FIELD) {
             writers.add(write);
-        } else {
-            truncatedFieldWriterIndexFields.add(write.field);
         }
     }
 
@@ -1629,8 +1603,6 @@ final class SeedBackwardStaticAnalyzer {
                 .computeIfAbsent(callsite.callee, ignored -> new ArrayList<>());
         if (callsites.size() < MAX_METHOD_CALLERS_PER_METHOD) {
             callsites.add(callsite);
-        } else {
-            truncatedMethodCallerIndexMethods.add(callsite.callee);
         }
     }
 
@@ -1822,8 +1794,7 @@ final class SeedBackwardStaticAnalyzer {
         if (parseMethodSig(value) != null) {
             return false;
         }
-        return Pattern.compile("<[^:]+:\\s+.+\\s+[^\\s()]+>")
-                .matcher(value).matches();
+        return FIELD_PATTERN.matcher(value).matches();
     }
 
     private boolean isApplicationField(String value) {
@@ -1921,9 +1892,7 @@ final class SeedBackwardStaticAnalyzer {
         if (expandableCallee && runtimeRecursiveCaller
                 && selectedMethods.contains(callee.raw)
                 && !calleeRelevant.isEmpty()) {
-            admitRuntimeRecursiveMethod(callee.raw,
-                    stableSiteId(callerMethod, fact.unitIndex,
-                            "runtime_recursive_call"));
+            admitRuntimeRecursiveMethod(callee.raw);
         }
         changed |= processRpcInvoke(callerMethod, fact, callee, defs, actuals,
                 callerRelevant);
@@ -3114,12 +3083,10 @@ final class SeedBackwardStaticAnalyzer {
                 runtimeDispatchSelection(callerMethod, fact, callee,
                         targetMethods);
         if (runtimeSelection.blocked()) {
-            blockRuntimeDispatch(runtimeSelection);
             return false;
         }
         if (runtimeSelection.unique()) {
             targetMethods = runtimeSelection.targets;
-            runtimeSelectedDispatchSites.add(runtimeSelection.siteId);
         } else {
             targetMethods = CausynthPipeline.conservativeDispatchTargets(
                     targetMethods);
@@ -3127,9 +3094,6 @@ final class SeedBackwardStaticAnalyzer {
         if (!runtimeSelection.unique()
                 && targetMethods.size()
                 > MAX_DISPATCH_TARGETS_PER_CALL) {
-            blockRuntimeDispatch(runtimeSelection.withReason(
-                    "STATIC_DISPATCH_TARGET_LIMIT_EXCEEDED:"
-                            + targetMethods.size()));
             return false;
         }
         boolean changed = false;
@@ -3146,10 +3110,7 @@ final class SeedBackwardStaticAnalyzer {
                 continue;
             }
             if (runtimeSelection.unique()) {
-                if (!admitRuntimeRecursiveMethod(targetMethod,
-                        runtimeSelection.siteId)) {
-                    blockRuntimeDispatch(runtimeSelection.withReason(
-                            "RUNTIME_RECURSIVE_METHOD_LIMIT_EXCEEDED"));
+                if (!admitRuntimeRecursiveMethod(targetMethod)) {
                     continue;
                 }
             } else if (selectedMethods.size() < maxMethods) {
@@ -3254,58 +3215,39 @@ final class SeedBackwardStaticAnalyzer {
             List<String> staticTargets) {
         String siteId = stableSiteId(callerMethod,
                 fact == null ? -1 : fact.unitIndex, "dispatch");
-        RuntimeDispatchObservation observation =
+        Set<String> actualCallees =
                 runtimeDispatchEvidence.lookup(callerMethod, siteId,
                         callee == null ? "" : callee.raw);
-        if (observation == null) {
+        if (actualCallees == null) {
             return RuntimeDispatchSelection.staticFallback(siteId,
                     staticTargets);
         }
-        if (observation.actualCallees.size() != 1) {
-            return RuntimeDispatchSelection.blocked(siteId,
-                    observation.actualCallees,
-                    "AMBIGUOUS_RUNTIME_ACTUAL_CALLEE");
+        if (actualCallees.size() != 1) {
+            return RuntimeDispatchSelection.blocked(siteId);
         }
-        String actual = observation.actualCallees.iterator().next();
+        String actual = actualCallees.iterator().next();
         if (!staticTargets.contains(actual)) {
-            return RuntimeDispatchSelection.blocked(siteId,
-                    observation.actualCallees,
-                    "RUNTIME_ACTUAL_CALLEE_OUTSIDE_STATIC_HIERARCHY");
+            return RuntimeDispatchSelection.blocked(siteId);
         }
         return RuntimeDispatchSelection.runtimeUnique(siteId, actual,
                 runtimeDispatchEvidence.source());
     }
 
-    private void blockRuntimeDispatch(RuntimeDispatchSelection selection) {
-        if (selection == null || !selection.blocked()) {
-            return;
-        }
-        blockedRuntimeDispatchSites.put(selection.siteId,
-                selection.reason + ":" + selection.actualCallees);
-    }
-
-    private boolean admitRuntimeRecursiveMethod(String method,
-                                                 String siteId) {
+    private boolean admitRuntimeRecursiveMethod(String method) {
         if (runtimeRecursiveMethods.contains(method)) {
             return true;
         }
         if (runtimeRecursiveMethods.size()
                 >= MAX_RUNTIME_RECURSIVE_METHODS) {
-            blockedRuntimeDispatchSites.put(siteId,
-                    "RUNTIME_RECURSIVE_METHOD_LIMIT_EXCEEDED:" + method);
             return false;
         }
         SootMethod sootMethod = methodsBySignature.get(method);
         if (sootMethod == null || !sootMethod.isConcrete()) {
-            blockedRuntimeDispatchSites.put(siteId,
-                    "RUNTIME_ACTUAL_CALLEE_BODY_UNAVAILABLE:" + method);
             return false;
         }
         runtimeRecursiveMethods.add(method);
         selectedMethods.add(method);
         if (!factsByMethod.containsKey(method) && !loadMethod(sootMethod)) {
-            blockedRuntimeDispatchSites.put(siteId,
-                    "RUNTIME_ACTUAL_CALLEE_BODY_UNREADABLE:" + method);
             return false;
         }
         return true;
@@ -3540,7 +3482,6 @@ final class SeedBackwardStaticAnalyzer {
                                 callsite.fact, sourceSig,
                                 resolveDispatchTargets(sourceSig));
                 if (runtimeSelection.blocked()) {
-                    blockRuntimeDispatch(runtimeSelection);
                     continue;
                 }
                 if (runtimeSelection.unique()
@@ -3548,13 +3489,9 @@ final class SeedBackwardStaticAnalyzer {
                         targetMethod)) {
                     continue;
                 }
-                if (runtimeSelection.unique()) {
-                    runtimeSelectedDispatchSites.add(
-                            runtimeSelection.siteId);
-                    if (!admitRuntimeRecursiveMethod(targetMethod,
-                            runtimeSelection.siteId)) {
-                        continue;
-                    }
+                if (runtimeSelection.unique()
+                        && !admitRuntimeRecursiveMethod(targetMethod)) {
+                    continue;
                 }
                 int edgeStart = edges.size();
                 SootMethod callerMethod = methodsBySignature.get(callsite.method);
@@ -4877,8 +4814,7 @@ final class SeedBackwardStaticAnalyzer {
         if (raw == null || !raw.startsWith("<")) {
             return null;
         }
-        Matcher matcher = Pattern.compile("<([^:]+):\\s+(.+)\\s+([^\\s(]+)\\((.*)\\)>")
-                .matcher(raw);
+        Matcher matcher = METHOD_SIGNATURE_PATTERN.matcher(raw);
         if (!matcher.find()) {
             return null;
         }

@@ -9,13 +9,13 @@ public final class JsonFields {
     private JsonFields() {
     }
 
-    static JsonArray array(JsonObject object, String field) {
+    public static JsonArray array(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
         return value != null && value.isJsonArray()
                 ? value.getAsJsonArray() : new JsonArray();
     }
 
-    static JsonObject object(JsonObject object, String field) {
+    public static JsonObject object(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
         return value != null && value.isJsonObject()
                 ? value.getAsJsonObject() : new JsonObject();
@@ -63,7 +63,7 @@ public final class JsonFields {
         }
     }
 
-    static String firstNonBlank(String... values) {
+    public static String firstNonBlank(String... values) {
         if (values != null) {
             for (String value : values) {
                 if (value != null && !value.trim().isEmpty()) {

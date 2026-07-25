@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -152,6 +153,26 @@ final class ArtifactIO {
 
     static String sha256(byte[] value) {
         return hex(digest().digest(value == null ? new byte[0] : value));
+    }
+
+    static JsonObject artifact(Path path) throws IOException {
+        if (path == null || !Files.isRegularFile(path)) {
+            throw new IOException("Artifact input not found: " + path);
+        }
+        return artifact(path, Files.readAllBytes(path));
+    }
+
+    static JsonObject artifact(Path path, byte[] bytes) {
+        JsonObject result = new JsonObject();
+        result.addProperty("path", path.toAbsolutePath().normalize()
+                .toString());
+        result.addProperty("sha256", sha256(bytes));
+        return result;
+    }
+
+    static Path sibling(Path path, String name) {
+        Path parent = path.toAbsolutePath().getParent();
+        return parent == null ? Paths.get(name) : parent.resolve(name);
     }
 
     private static byte[] utf8(String value) {

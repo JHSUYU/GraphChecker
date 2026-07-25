@@ -159,8 +159,7 @@ public final class CausynthPipeline {
         int richMethodCount = 0;
         int callSiteCount = 0;
         int branchCount = 0;
-        for (Map<String, Object> methodRow : result.traceMethods) {
-            String signature = String.valueOf(methodRow.get("method"));
+        for (String signature : result.traceMethods) {
             try {
                 SootMethod method = Scene.v().getMethod(signature);
                 if (method == null || !method.isConcrete() || method.isConstructor()) {

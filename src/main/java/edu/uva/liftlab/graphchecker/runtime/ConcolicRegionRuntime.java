@@ -47,6 +47,15 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+
 /**
  * Runtime bridge injected at symbolic-region roots for the second (concolic)
  * unit-test execution.
@@ -2477,12 +2486,12 @@ public final class ConcolicRegionRuntime {
             JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return "";
         JsonObject object = expression.getAsJsonObject();
-        if (!"ConstExpr".equals(jsonString(object, "_type"))) return "";
-        String encoded = jsonString(object, "_exp");
+        if (!"ConstExpr".equals(string(object, "_type"))) return "";
+        String encoded = string(object, "_exp");
         if (!encoded.startsWith("Y_") || encoded.length() < 4
                 || encoded.charAt(3) != '_') return "";
         char kind = encoded.charAt(2);
-        String type = jsonString(object, "_java_type").replace('.', '/');
+        String type = string(object, "_java_type").replace('.', '/');
         char declared;
         if ("java/lang/Boolean".equals(type)) declared = 'Z';
         else if ("java/lang/Byte".equals(type)) declared = 'B';
@@ -2546,22 +2555,22 @@ public final class ConcolicRegionRuntime {
             return "";
         }
         JsonObject object = expression.getAsJsonObject();
-        if ("ConstExpr".equals(jsonString(object, "_type"))) {
-            String encoded = jsonString(object, "_exp");
+        if ("ConstExpr".equals(string(object, "_type"))) {
+            String encoded = string(object, "_exp");
             if (encoded.length() < 4 || !encoded.startsWith("Y_")
                     || encoded.charAt(3) != '_') {
                 return "";
             }
             char kind = encoded.charAt(2);
-            char declared = immutableKeyKind(jsonString(object,
+            char declared = immutableKeyKind(string(object,
                     "_java_type"));
             if (declared == 0 || declared != kind) return "";
             return canonicalImmutableKey(kind, encoded.substring(4));
         }
-        if (!"CONCRETE_RUNTIME_VALUE".equals(jsonString(object, "kind"))) {
+        if (!"CONCRETE_RUNTIME_VALUE".equals(string(object, "kind"))) {
             return "";
         }
-        char kind = immutableKeyKind(jsonString(object, "valueType"));
+        char kind = immutableKeyKind(string(object, "valueType"));
         JsonElement value = object.get("value");
         if (kind == 0 || value == null || value.isJsonNull()
                 || !value.isJsonPrimitive()) {
@@ -2666,10 +2675,10 @@ public final class ConcolicRegionRuntime {
                         || expression.isJsonNull() ? null : expression,
                         integer(envelope, "schemaVersion", -1),
                         bool(envelope, "active", false),
-                        jsonString(envelope, "kind"),
+                        string(envelope, "kind"),
                         bool(envelope, "symbolic", false),
-                        jsonString(envelope, "expressionAuthority"),
-                        jsonString(envelope, "javaTypeDescriptor"));
+                        string(envelope, "expressionAuthority"),
+                        string(envelope, "javaTypeDescriptor"));
             }
         }
         return new EngineExpressionCapture(parsed, -1, false, "", false,
@@ -2829,8 +2838,6 @@ public final class ConcolicRegionRuntime {
         row.addProperty("occurrence", occurrence);
         row.addProperty("captureAuthority",
                 "ACTIVE_TOKEN_EXACT_ORIGINAL_CALL_ARGUMENT");
-        row.addProperty("concreteValueClass", value == null
-                ? "null" : value.getClass().getName());
         row.addProperty("concretePrimitiveValue", safe(primitiveValue));
         EngineApi api = engine();
         boolean paused = false;
@@ -2843,19 +2850,14 @@ public final class ConcolicRegionRuntime {
             if (expression == null || expression.isJsonNull()) {
                 throw new IllegalStateException("custom VM returned no "
                         + "expression for captured output value "
-                        + row.get("concreteValueClass").getAsString());
+                        + (value == null
+                        ? "null" : value.getClass().getName()));
             }
             row.add("expression", expression);
             captured.addEvidence(row);
             row.addProperty("expressionCaptured", true);
-            JsonArray projectionVerifications =
-                    active.verifyMapProjectionOutput(outputPort, outputCell,
-                            value,
-                            "ACTIVE_TOKEN_EXACT_ORIGINAL_CALL_ARGUMENT");
-            if (projectionVerifications.size() > 0) {
-                row.add("mapValueElementProjectionVerifications",
-                        projectionVerifications);
-            }
+            active.verifyMapProjectionOutput(outputPort, outputCell, value,
+                    "ACTIVE_TOKEN_EXACT_ORIGINAL_CALL_ARGUMENT");
         } catch (Throwable throwable) {
             row.addProperty("expressionCaptured", false);
             row.addProperty("expressionError", rootCause(throwable));
@@ -2924,14 +2926,9 @@ public final class ConcolicRegionRuntime {
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             row.addProperty("objectTokenScope",
                     active.activation.activationId);
-            JsonArray projectionVerifications =
-                    active.verifyMapProjectionOutput(outputPort, outputCell,
-                            assignedValue,
-                            "ACTIVE_TOKEN_EXACT_POST_INSTANCE_FIELD_ASSIGNMENT");
-            if (projectionVerifications.size() > 0) {
-                row.add("mapValueElementProjectionVerifications",
-                        projectionVerifications);
-            }
+            active.verifyMapProjectionOutput(outputPort, outputCell,
+                    assignedValue,
+                    "ACTIVE_TOKEN_EXACT_POST_INSTANCE_FIELD_ASSIGNMENT");
             ExactFieldObservation observation = observeExactField(
                     fieldOwner, request.fieldSignature);
             row.addProperty("declaredFieldOwnerVerified",
@@ -3700,19 +3697,10 @@ public final class ConcolicRegionRuntime {
         // If isolation failed before metadata construction, add the minimum
         // identity only after cleanup has removed the symbolic VM context.
         if (!result.has("event")) {
-            result.addProperty("event", "CONCOLIC_REGION_RESULT");
-            result.addProperty("schemaVersion", 1);
-            result.addProperty("activationId", active.activation.activationId);
-            result.addProperty("regionId", active.activation.regionId);
-            result.addProperty("exitKind", exitKind);
-            result.addProperty("exceptionType", safe(exceptionType));
-            addActivationReplayEvidence(result, active.activation);
+            addResultIdentity(result, active, "SYMBOLIC_CONCOLIC",
+                    exitKind, exceptionType);
         }
-        if (!result.has("runtimeHeapObservations")) {
-            result.add("runtimeHeapObservations",
-                    active.runtimeHeapObservationsJson());
-        }
-        appendResult(result);
+        appendCompletedResult(result, active);
     }
 
     private static void populateCompletedResult(
@@ -3720,14 +3708,8 @@ public final class ConcolicRegionRuntime {
             String exitKind, String exceptionType, Object output,
             boolean symbolicInputs) {
         active.verifyRootMapProjectionOutputs(output, exitKind);
-        result.addProperty("event", "CONCOLIC_REGION_RESULT");
-        result.addProperty("schemaVersion", 1);
-        result.addProperty("executionMode", executionMode);
-        result.addProperty("activationId", active.activation.activationId);
-        result.addProperty("regionId", active.activation.regionId);
-        addActivationReplayEvidence(result, active.activation);
-        result.addProperty("exitKind", exitKind);
-        result.addProperty("exceptionType", safe(exceptionType));
+        addResultIdentity(result, active, executionMode, exitKind,
+                exceptionType);
         if (output instanceof Throwable) {
             result.add("exceptionChain", exceptionChain((Throwable) output));
         }
@@ -3794,21 +3776,23 @@ public final class ConcolicRegionRuntime {
             releaseConcreteReplay();
         }
         if (!result.has("event")) {
-            result.addProperty("event", "CONCOLIC_REGION_RESULT");
-            result.addProperty("schemaVersion", 1);
-            result.addProperty("executionMode", "CONCRETE_REPLAY_ONLY");
-            result.addProperty("activationId",
-                    active.activation.activationId);
-            result.addProperty("regionId", active.activation.regionId);
-            result.addProperty("exitKind", exitKind);
-            result.addProperty("exceptionType", safe(exceptionType));
-            addActivationReplayEvidence(result, active.activation);
+            addResultIdentity(result, active, "CONCRETE_REPLAY_ONLY",
+                    exitKind, exceptionType);
         }
-        if (!result.has("runtimeHeapObservations")) {
-            result.add("runtimeHeapObservations",
-                    active.runtimeHeapObservationsJson());
-        }
-        appendResult(result);
+        appendCompletedResult(result, active);
+    }
+
+    private static void addResultIdentity(
+            JsonObject result, ActiveRegion active, String executionMode,
+            String exitKind, String exceptionType) {
+        result.addProperty("event", "CONCOLIC_REGION_RESULT");
+        result.addProperty("schemaVersion", 1);
+        result.addProperty("executionMode", executionMode);
+        result.addProperty("activationId", active.activation.activationId);
+        result.addProperty("regionId", active.activation.regionId);
+        result.addProperty("exitKind", exitKind);
+        result.addProperty("exceptionType", safe(exceptionType));
+        addActivationReplayEvidence(result, active.activation);
     }
 
     private static void addActivationReplayEvidence(
@@ -3817,6 +3801,15 @@ public final class ConcolicRegionRuntime {
         if (!activation.pathQueryKey.isEmpty()) {
             result.addProperty("pathQueryKey", activation.pathQueryKey);
         }
+    }
+
+    private static void appendCompletedResult(
+            JsonObject result, ActiveRegion active) {
+        if (!result.has("runtimeHeapObservations")) {
+            result.add("runtimeHeapObservations",
+                    active.runtimeHeapObservationsJson());
+        }
+        appendResult(result);
     }
 
     private static void symbolizeReceiverFields(ActiveRegion active, EngineApi api) {
@@ -4363,42 +4356,6 @@ public final class ConcolicRegionRuntime {
         return safe(type).trim().replace('/', '.');
     }
 
-    private static String javaTypeDescriptor(String javaType) {
-        String value = safe(javaType).trim();
-        if (value.isEmpty()) return "";
-        if (value.startsWith("[")) {
-            return value.replace('.', '/');
-        }
-        int dimensions = 0;
-        while (value.endsWith("[]")) {
-            dimensions++;
-            value = value.substring(0, value.length() - 2).trim();
-        }
-        String base;
-        if (value.length() == 1 && "ZBCSIJFDV".contains(value)) {
-            base = value;
-        } else if ("boolean".equals(value)) base = "Z";
-        else if ("byte".equals(value)) base = "B";
-        else if ("char".equals(value)) base = "C";
-        else if ("short".equals(value)) base = "S";
-        else if ("int".equals(value)) base = "I";
-        else if ("long".equals(value)) base = "J";
-        else if ("float".equals(value)) base = "F";
-        else if ("double".equals(value)) base = "D";
-        else if ("void".equals(value)) base = "V";
-        else if (value.startsWith("L") && value.endsWith(";")) {
-            base = "L" + value.substring(1, value.length() - 1)
-                    .replace('.', '/') + ";";
-        } else {
-            base = "L" + value.replace('.', '/') + ";";
-        }
-        StringBuilder descriptor = new StringBuilder();
-        for (int index = 0; index < dimensions; index++) {
-            descriptor.append('[');
-        }
-        return descriptor.append(base).toString();
-    }
-
     private static String reflectionDescriptor(Class<?> type) {
         if (type == null) return "";
         if (type.isArray()) return type.getName().replace('.', '/');
@@ -4673,7 +4630,7 @@ public final class ConcolicRegionRuntime {
         if (condition == null || !condition.isJsonObject()) {
             return "";
         }
-        return jsonString(condition.getAsJsonObject(), "_code_position");
+        return string(condition.getAsJsonObject(), "_code_position");
     }
 
     static boolean branchConditionMatches(String expression, boolean outcome,
@@ -4682,7 +4639,7 @@ public final class ConcolicRegionRuntime {
             return false;
         }
         JsonObject object = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(jsonString(object, "_type"))) {
+        if (!"BinaryExpression".equals(string(object, "_type"))) {
             Boolean requiredValue = booleanValueRequiredByZeroBranch(
                     expression, outcome);
             Boolean representedValue = representedBooleanValue(object);
@@ -4696,7 +4653,7 @@ public final class ConcolicRegionRuntime {
         String declared = matcher.group(1);
         String expected = outcome ? declared
                 : BranchPredicateAlgebra.complementOperator(declared);
-        String observed = jsonString(object, "_op");
+        String observed = string(object, "_op");
         if (!observedOperatorImpliesBranch(expected, observed,
                 safe(expression).matches(".*\\bnull\\b.*"))) {
             return false;
@@ -4743,10 +4700,10 @@ public final class ConcolicRegionRuntime {
      * the exact String predicate lowering in both SMT encoders.
      */
     private static Boolean representedBooleanValue(JsonObject condition) {
-        if (!"OpStrExpression".equals(jsonString(condition, "_type"))) {
+        if (!"OpStrExpression".equals(string(condition, "_type"))) {
             return null;
         }
-        String operation = jsonString(condition, "_name");
+        String operation = string(condition, "_name");
         int expectedArity;
         if ("isEmpty".equals(operation)) {
             expectedArity = 1;
@@ -4794,7 +4751,7 @@ public final class ConcolicRegionRuntime {
             return condition;
         }
         JsonObject original = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(jsonString(original, "_type"))) {
+        if (!"BinaryExpression".equals(string(original, "_type"))) {
             return condition;
         }
         Matcher matcher = BRANCH_OPERATOR.matcher(safe(expression));
@@ -4804,7 +4761,7 @@ public final class ConcolicRegionRuntime {
         String expected = outcome ? matcher.group(1)
                 : BranchPredicateAlgebra.complementOperator(
                 matcher.group(1));
-        String observed = jsonString(original, "_op");
+        String observed = string(original, "_op");
         if (!observedOperatorImpliesBranch(expected, observed,
                 safe(expression).matches(".*\\bnull\\b.*"))
                 || expected.equals(observed)) {
@@ -4817,7 +4774,7 @@ public final class ConcolicRegionRuntime {
 
     private static String binaryOperator(JsonElement condition) {
         return condition != null && condition.isJsonObject()
-                ? jsonString(condition.getAsJsonObject(), "_op") : "";
+                ? string(condition.getAsJsonObject(), "_op") : "";
     }
 
     private static boolean symbolicNull(JsonElement element) {
@@ -4825,20 +4782,8 @@ public final class ConcolicRegionRuntime {
             return false;
         }
         JsonObject object = element.getAsJsonObject();
-        return "SymbolExpression".equals(jsonString(object, "_type"))
-                && "N".equals(jsonString(object, "_exp"));
-    }
-
-    private static String jsonString(JsonObject object, String member) {
-        JsonElement value = object == null ? null : object.get(member);
-        return value == null || value.isJsonNull()
-                ? "" : value.getAsString();
-    }
-
-    private static JsonObject jsonObject(JsonObject object, String member) {
-        JsonElement value = object == null ? null : object.get(member);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
+        return "SymbolExpression".equals(string(object, "_type"))
+                && "N".equals(string(object, "_exp"));
     }
 
     private static Configuration configuration() {
@@ -4972,17 +4917,6 @@ public final class ConcolicRegionRuntime {
             current = current.getCause();
         }
         return result;
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.trim().isEmpty()) {
-                    return value.trim();
-                }
-            }
-        }
-        return "";
     }
 
     private static String safe(String value) {
@@ -7036,10 +6970,9 @@ public final class ConcolicRegionRuntime {
             }
         }
 
-        private JsonArray verifyMapProjectionOutput(
+        private void verifyMapProjectionOutput(
                 String outputPort, String outputCell, Object candidate,
                 String authority) {
-            JsonArray rows = new JsonArray();
             for (MapProjectionSnapshot snapshot
                     : mapProjectionSnapshots.values()) {
                 if (snapshot.specs.isEmpty()) continue;
@@ -7050,7 +6983,6 @@ public final class ConcolicRegionRuntime {
                 }
                 JsonObject row = snapshot.verifyOutput(this, candidate,
                         authority, true);
-                rows.add(row);
                 mapProjectionObservations.add(row);
                 if (!snapshot.complete
                         || !snapshot.outputIdentityVerified) {
@@ -7059,7 +6991,6 @@ public final class ConcolicRegionRuntime {
                             "output identity validation incomplete"));
                 }
             }
-            return rows;
         }
 
         private void verifyRootMapProjectionOutputs(Object rootOutput,
@@ -7629,7 +7560,7 @@ public final class ConcolicRegionRuntime {
                         && "null".equals(strictString(row,
                         "concreteValueClass"))
                         && assignment.target.toString().equals(
-                        jsonObject(row, "target").toString())) {
+                        object(row, "target").toString())) {
                     matches++;
                 }
             }
@@ -9487,7 +9418,7 @@ public final class ConcolicRegionRuntime {
                     "nullableStringEncodingAuthority");
             this.referenceNullnessEncodingAuthority = string(json,
                     "referenceNullnessEncodingAuthority");
-            this.target = copyJsonTree(jsonObject(json, "target"));
+            this.target = copyJsonTree(object(json, "target"));
             this.targetActionSha256 = sha256Json(this.target);
             for (JsonElement element : array(json,
                     "materializationPath")) {
@@ -10482,7 +10413,7 @@ public final class ConcolicRegionRuntime {
         private boolean modelAssignmentKeysUnique = true;
 
         private Activation(JsonObject json) {
-            JsonObject rootSelector = jsonObject(json, "rootSelector");
+            JsonObject rootSelector = object(json, "rootSelector");
             this.activationId = string(json, "activationId");
             this.regionId = string(json, "regionId");
             this.test = string(json, "test");
@@ -10494,7 +10425,7 @@ public final class ConcolicRegionRuntime {
                     rootSelector);
             this.replayable = admissionExecutable(json);
             this.requiresAllSelection = "ALL".equals(string(
-                    jsonObject(json, "bundle"), "selection"));
+                    object(json, "bundle"), "selection"));
             this.concreteReplayOnly = bool(json, "concreteReplayOnly", false);
             this.observationOnlyReplay = bool(json,
                     "observationOnlyReplay", false);
@@ -11122,49 +11053,6 @@ public final class ConcolicRegionRuntime {
         return value != null && value.isJsonObject()
                 && "EXECUTABLE".equals(string(value.getAsJsonObject(),
                 "state"));
-    }
-
-    private static String string(JsonObject object, String field) {
-        JsonElement value = object.get(field);
-        return value == null || value.isJsonNull() ? "" : value.getAsString();
-    }
-
-    private static int integer(JsonObject object, String field, int fallback) {
-        JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject object, String field,
-                                    long fallback) {
-        JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static boolean bool(JsonObject object, String field,
-                                boolean fallback) {
-        JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static JsonArray array(JsonObject object, String field) {
-        JsonElement value = object.get(field);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
     }
 
     private static String strictString(JsonObject object, String field) {

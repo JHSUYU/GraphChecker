@@ -6935,16 +6935,12 @@ final class RuntimeRegionPlanner {
                 inputAliasCanonicalizations = new ArrayList<>();
         private final List<String> inputAliasCanonicalizationIssues =
                 new ArrayList<>();
-        private int requestedStateTransformerContractVersion;
-        private boolean requestedStateTransformerContractApplicable;
-        private String requestedStateTransformerContractOutputPort = "";
-        private String requestedStateTransformerContractOutputCell = "";
+        private boolean requestedStateTransformerContractPresent;
         private final List<Map<String, Object>>
                 requestedStateTransformerObligations = new ArrayList<>();
         private final List<String> requestedStateTransformerContractIssues =
                 new ArrayList<>();
         private boolean requestedStateTransformerContractComplete;
-        private String requestedStateTransformerContractAuthority = "";
         private final List<Map<String, Object>> heapInitializers =
                 new ArrayList<>();
         private final List<Map<String, Object>> captureBindings =
@@ -7057,15 +7053,8 @@ final class RuntimeRegionPlanner {
             for (String edge : jsonObjectArray(json, "causalEdges")) {
                 slice.causalEdges.add(causalEdgeReference(edge));
             }
-            slice.requestedStateTransformerContractVersion = jsonInt(json,
-                    "requestedStateTransformerContractVersion", 0);
-            slice.requestedStateTransformerContractApplicable = jsonBoolean(
-                    json, "requestedStateTransformerContractApplicable",
-                    false);
-            slice.requestedStateTransformerContractOutputPort = jsonString(
-                    json, "requestedStateTransformerContractOutputPort");
-            slice.requestedStateTransformerContractOutputCell = jsonString(
-                    json, "requestedStateTransformerContractOutputCell");
+            slice.requestedStateTransformerContractPresent = jsonHasField(
+                    json, "requestedStateTransformerContractComplete");
             for (String obligation : jsonObjectArray(json,
                     "requestedStateTransformerObligations")) {
                 slice.requestedStateTransformerObligations.add(object(
@@ -7085,8 +7074,6 @@ final class RuntimeRegionPlanner {
             slice.requestedStateTransformerContractComplete = jsonBoolean(
                     json, "requestedStateTransformerContractComplete",
                     false);
-            slice.requestedStateTransformerContractAuthority = jsonString(
-                    json, "requestedStateTransformerContractAuthority");
             for (String initializer : jsonObjectArray(json,
                     "heapInitializers")) {
                 slice.heapInitializers.add(object(
@@ -7165,16 +7152,8 @@ final class RuntimeRegionPlanner {
                     "causalCellBudgetTruncated", false);
             slice.structuralIssues.addAll(jsonStringArray(json,
                     "truncationReasons"));
-            // New static artifacts state this fact explicitly.  For older
-            // non-truncated artifacts, a non-empty exact causal-edge ledger
-            // is the strongest recoverable structural fact; every other
-            // completion component is recomputed independently below.
             slice.structuralComplete = jsonBoolean(json,
-                    "structuralComplete", !slice.regionTruncated
-                            && !slice.sliceTruncated
-                            && !slice.methodBudgetTruncated
-                            && !slice.causalCellBudgetTruncated
-                            && !slice.causalEdgeIds.isEmpty());
+                    "structuralComplete", false);
             slice.unresolvedInputProvenanceComplete =
                     slice.validateUnresolvedInputProvenance();
             return slice;
@@ -7589,20 +7568,12 @@ final class RuntimeRegionPlanner {
             refined.captureBindingsRequired = captureBindingsRequired;
             refined.captureBindingsComplete = captureBindingsComplete;
             refined.captureBindingIssues.addAll(captureBindingIssues);
-            refined.requestedStateTransformerContractVersion =
-                    requestedStateTransformerContractVersion;
-            refined.requestedStateTransformerContractApplicable =
-                    requestedStateTransformerContractApplicable;
-            refined.requestedStateTransformerContractOutputPort =
-                    requestedStateTransformerContractOutputPort;
-            refined.requestedStateTransformerContractOutputCell =
-                    requestedStateTransformerContractOutputCell;
+            refined.requestedStateTransformerContractPresent =
+                    requestedStateTransformerContractPresent;
             refined.requestedStateTransformerContractIssues.addAll(
                     requestedStateTransformerContractIssues);
             refined.requestedStateTransformerContractComplete =
                     requestedStateTransformerContractComplete;
-            refined.requestedStateTransformerContractAuthority =
-                    requestedStateTransformerContractAuthority;
 
             // The semantic backward slice is the region boundary authority.
             // Runtime evidence selects one path through that declared slice;
@@ -7695,18 +7666,11 @@ final class RuntimeRegionPlanner {
                         binding.get("dependencyMethods"));
                 boolean retain = !filtersAlternatives
                         || intersects(bindingMethods, observed);
-                if (filtersAlternatives && bindingMethods.isEmpty()) {
-                    // Old artifacts lack dependency-method provenance.  Keep
-                    // the input conservatively, but do not report a complete
-                    // runtime refinement.
-                    retain = true;
-                    refined.runtimeRefinementComplete = false;
-                }
                 String port = string(binding.get("inputPort"));
                 if (retain) {
                     Map<String, Object> retained = new LinkedHashMap<>(
                             binding);
-                    if (requestedStateTransformerContractVersion > 0
+                    if (requestedStateTransformerContractPresent
                             && retained.containsKey(
                             "requestedStateTransformerSinkSites")) {
                         Set<String> sinks = stringSet(retained.get(
@@ -7888,7 +7852,7 @@ final class RuntimeRegionPlanner {
             refineRuntimeCapture(refined, evidence, observed,
                     retainedBindings, retainedPorts);
             boolean transformerContractReady =
-                    !requestedStateTransformerContractApplicable
+                    !requestedStateTransformerContractPresent
                             || refined.requestedStateTransformerContractComplete;
             refined.complete = refined.structuralComplete
                     && refined.runtimeRefinementComplete
@@ -8014,17 +7978,10 @@ final class RuntimeRegionPlanner {
          */
         private boolean runtimeRefinedTransformerContractComplete(
                 boolean staticContractLedgerComplete) {
-            if (!requestedStateTransformerContractApplicable) {
+            if (!requestedStateTransformerContractPresent) {
                 return false;
             }
             if (!staticContractLedgerComplete
-                    || requestedStateTransformerContractVersion != 1
-                    || !outputPort.equals(
-                    requestedStateTransformerContractOutputPort)
-                    || !outputCell.equals(
-                    requestedStateTransformerContractOutputCell)
-                    || !"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1"
-                    .equals(requestedStateTransformerContractAuthority)
                     || !requestedStateTransformerContractIssues.isEmpty()
                     || requestedStateTransformerObligations.isEmpty()) {
                 return false;
@@ -8292,15 +8249,8 @@ final class RuntimeRegionPlanner {
         private String heapEffectCaptureDischargeInput(
                 List<Map<String, Object>> retainedBindings,
                 Set<String> retainedPorts) {
-            if (requestedStateTransformerContractVersion != 1
-                    || !requestedStateTransformerContractApplicable
+            if (!requestedStateTransformerContractPresent
                     || !requestedStateTransformerContractComplete
-                    || !outputPort.equals(
-                    requestedStateTransformerContractOutputPort)
-                    || !outputCell.equals(
-                    requestedStateTransformerContractOutputCell)
-                    || !"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1"
-                    .equals(requestedStateTransformerContractAuthority)
                     || requestedStateTransformerObligations.isEmpty()
                     || !supportedMapStateCell(outputCell)) {
                 return "";
@@ -8368,8 +8318,6 @@ final class RuntimeRegionPlanner {
                     inputAliasCanonicalizations,
                     "inputAliasCanonicalizationIssues",
                     inputAliasCanonicalizationIssues,
-                    "inputAliasCanonicalizationComplete",
-                    inputAliasCanonicalizationIssues.isEmpty(),
                     "methods", new ArrayList<>(methods),
                     "sites", new ArrayList<>(sites),
                     "causalEdgeIds", causalEdgeIds,
@@ -8383,51 +8331,24 @@ final class RuntimeRegionPlanner {
                     captureDischargedByHeapEffectTransformer,
                     "captureDischargeInputPort",
                     captureDischargeInputPort,
-                    "captureDischargeOutputPort", outputPort,
-                    "captureDischargeOutputCell", outputCell,
                     "captureDischargeAuthority",
                     captureDischargeAuthority,
                     "containerElementFieldBindings",
                     containerElementFieldBindings,
                     "unresolvedInputs", unresolvedInputs,
                     "unresolvedInputDetails", unresolvedInputDetails,
-                    "unresolvedInputProvenanceComplete",
-                    unresolvedInputProvenanceComplete,
-                    "structuralComplete", structuralComplete,
-                    "regionTruncated", regionTruncated,
-                    "truncated", sliceTruncated,
-                    "methodBudgetTruncated", methodBudgetTruncated,
-                    "causalCellBudgetTruncated",
-                    causalCellBudgetTruncated,
                     "truncationReasons", structuralIssues,
                     "complete", complete,
                     "selection", selection);
-            if (requestedStateTransformerContractVersion > 0) {
-                result.put("requestedStateTransformerContractVersion",
-                        requestedStateTransformerContractVersion);
-                result.put("requestedStateTransformerContractApplicable",
-                        requestedStateTransformerContractApplicable);
-                result.put("requestedStateTransformerContractOutputPort",
-                        requestedStateTransformerContractOutputPort);
-                result.put("requestedStateTransformerContractOutputCell",
-                        requestedStateTransformerContractOutputCell);
+            if (requestedStateTransformerContractPresent) {
                 result.put("requestedStateTransformerObligations",
                         requestedStateTransformerObligations);
                 result.put("requestedStateTransformerContractIssues",
                         requestedStateTransformerContractIssues);
                 result.put("requestedStateTransformerContractComplete",
                         requestedStateTransformerContractComplete);
-                result.put("requestedStateTransformerContractAuthority",
-                        requestedStateTransformerContractAuthority);
             }
-            if (runtimeRefined) {
-                result.put("runtimeRefined", true);
-                result.put("runtimeRefinementAuthority",
-                        "OBSERVED_REGION_CALL_TREE_AND_STATIC_DEPENDENCY_METHOD_PROVENANCE");
-                result.put("runtimeRefinementComplete",
-                        runtimeRefinementComplete);
-                result.put("staticSites", new ArrayList<>(staticSites));
-            }
+            result.put("staticSites", new ArrayList<>(staticSites));
             return result;
         }
     }

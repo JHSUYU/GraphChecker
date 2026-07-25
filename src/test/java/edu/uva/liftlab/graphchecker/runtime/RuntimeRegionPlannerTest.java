@@ -145,10 +145,12 @@ public class RuntimeRegionPlannerTest {
                     + "\"symbolicInputs\":[{"
                     + "\"portId\":\"REGION.W.in.0\","
                     + "\"cell\":\"" + field + "\","
+                    + "\"javaType\":\"java.util.Map\","
                     + "\"sourceKind\":\"SHARED_HEAP\","
                     + "\"projection\":\"field:entries\"}],"
                     + "\"outputs\":[{\"portId\":\"REGION.W.out.0\","
                     + "\"cell\":\"" + field + "\","
+                    + "\"javaType\":\"java.util.Map\","
                     + "\"kind\":\"HEAP_STATE\"}],"
                     + "\"outputSlices\":[{"
                     + "\"outputPort\":\"REGION.W.out.0\","
@@ -194,12 +196,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"transferKind\":\"HEAP_WRITE\","
                     + "\"kind\":\"field_mutation\","
                     + "\"invoke\":\"<java.util.Iterator: void remove()>\"}],"
-                    + "\"requestedStateTransformerContractVersion\":1,"
-                    + "\"requestedStateTransformerContractApplicable\":true,"
-                    + "\"requestedStateTransformerContractOutputPort\":"
-                    + "\"REGION.W.out.0\","
-                    + "\"requestedStateTransformerContractOutputCell\":"
-                    + "\"" + field + "\","
                     + "\"requestedStateTransformerObligations\":[{"
                     + "\"siteId\":\"" + updater + "#u15\","
                     + "\"method\":\"" + updater + "\","
@@ -210,8 +206,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"authority\":\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL\"}],"
                     + "\"requestedStateTransformerContractIssues\":[],"
                     + "\"requestedStateTransformerContractComplete\":true,"
-                    + "\"requestedStateTransformerContractAuthority\":"
-                    + "\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1\","
                     + "\"heapInitializers\":[{"
                     + "\"initializerId\":\"STATIC_INIT.REGION.W.0\","
                     + "\"kind\":\"FRESH_DEFAULT_CONSTRUCTED_OBJECT\","
@@ -248,6 +242,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"bindingKind\":\"field_write\","
                     + "\"bindingAuthority\":\"STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_RHS\","
                     + "\"occurrence\":0}],"
+                    + "\"structuralComplete\":true,"
                     + "\"complete\":true,"
                     + "\"selection\":"
                     + "\"REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE\"}],"
@@ -260,6 +255,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"symbolicInputs\":[{"
                     + "\"portId\":\"REGION.R.in.0\","
                     + "\"cell\":\"" + field + "\","
+                    + "\"javaType\":\"java.util.Map\","
                     + "\"sourceKind\":\"SHARED_HEAP\","
                     + "\"projection\":\"field:entries\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
@@ -366,7 +362,7 @@ public class RuntimeRegionPlannerTest {
                     .contains("FRESH_DEFAULT_CONSTRUCTED_OBJECT"));
             assertEquals(2, ((List<?>) retainedSlice.get(
                     "causalEdgeIds")).size());
-            assertEquals(1, retainedSlice.get(
+            assertFalse(retainedSlice.containsKey(
                     "requestedStateTransformerContractVersion"));
             assertEquals(true, retainedSlice.get(
                     "requestedStateTransformerContractComplete"));
@@ -695,11 +691,9 @@ public class RuntimeRegionPlannerTest {
             assertEquals(1, ((java.util.List<?>) output.get(
                     "heapStateBindings")).size());
             assertEquals(true, slice.get("complete"));
-            assertEquals(true, slice.get("structuralComplete"));
-            assertEquals(true, slice.get("runtimeRefinementComplete"));
-            assertEquals("OBSERVED_REGION_CALL_TREE_AND_STATIC_DEPENDENCY_"
-                            + "METHOD_PROVENANCE",
-                    slice.get("runtimeRefinementAuthority"));
+            assertFalse(slice.containsKey("structuralComplete"));
+            assertFalse(slice.containsKey("runtimeRefinementComplete"));
+            assertFalse(slice.containsKey("runtimeRefinementAuthority"));
             assertEquals(Arrays.asList("REGION.W.in.0", "REGION.W.in.1"),
                     slice.get("inputPorts"));
             assertTrue(String.valueOf(slice.get("sites")).contains(

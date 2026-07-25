@@ -208,3 +208,17 @@ trace-internal	duplicated JSON object/string serialization	CausynthTraceRecorder
 instrumentation-selection	four activation-plan JSONL scans	CausynthPipeline	local stage only	none	single immutable InstrumentationPlan parse	CONSOLIDATE_AND_DELETE	6+
 production-api	orphan output member factory and unused planner constant	OutputClosureContract/RuntimeRegionPlanner	none	none	no production/test callers	DELETE	6+
 runtime-trace	repeated regex extraction of every field	CausynthTraceRecorder offline aggregator	local stage only	none	single Gson JsonObject parse per row	CONSOLIDATE_AND_DELETE	6+
+static-coverage	staticAnalysisBudget	SeedBackwardStaticAnalyzer	none	none	actual bounded worklist gates and canonical collections	DELETE	6+
+analysis-result	traceMethods row id/map	SeedBackwardStaticAnalyzer	CausynthPipeline	none	ordered method signature list	CONSOLIDATE_AND_DELETE	6+
+static-output-slice	requestedStateTransformerContractVersion/applicable/outputPort/outputCell/authority	SymbolicRegionPlanner	RuntimeRegionPlanner/Importer/InstrumentationSelections	none	outer slice output identity plus obligations/issues/complete	DELETE_AND_UPDATE_READERS	6+
+runtime-output-slice	captureDischargeOutputPort/captureDischargeOutputCell	RuntimeRegionPlanner	ConcolicSummaryImporter	none	requested output member identity	DELETE_AND_UPDATE_READER	6+
+runtime-output-slice	structural/truncation/refinement completion mirrors	RuntimeRegionPlanner	ConcolicSummaryImporter/tests	none	complete plus actual issues/truncationReasons/staticSites	DELETE_AND_UPDATE_READERS	6+
+static-port	missing canonical javaType	SymbolicRegionPlanner	Composer/Boolean extractor	none	writer-derived javaType	WRITE_CANONICAL_AND_DELETE_READER_FALLBACK	6+
+raw-result	outputCaptures.callArgument.concreteValueClass	ConcolicRegionRuntime	none	none	expression error carries runtime class when needed	DELETE	6+
+raw-result	outputCaptures.mapValueElementProjectionVerifications	ConcolicRegionRuntime	none	none	top-level mapValueElementProjectionObservations	DELETE_DUPLICATE	6+
+composer-manifest	resolvedProducerKeys	ConcolicSmtComposer	none	run_robustness_matrix.sh	includedSummaries plus resolvedEdgeBindings	DELETE_AND_UPDATE_READER	6+
+relationship-candidate	formula/required=false/fixed provenance	ConcolicSmtComposer	none	none	named SMT assertion plus kind/roles	DELETE_DUPLICATE	6+
+boolean-report	composedSmt/staticRegions/relationship artifact refs	BooleanReachConditionExtractor	none	none	compositionManifestArtifact trust root	DELETE_DUPLICATE_KEEP_TRANSITIVE_SHA	6+
+boolean-solver	redundant base-implies-exhaustive-DNF query	BooleanReachConditionExtractor	none	none	all 2^N decided valuation rows	DELETE_DUPLICATE_QUERY	6+
+runtime-dispatch	unread row/rejected counts and blocked-site mirrors	RuntimeDispatchEvidence/SeedBackwardStaticAnalyzer	none	none	canonical callsite-to-callee set and fail-closed selection	DELETE	6+
+concolic-internal	duplicated runtime JSON accessors/type descriptor/result append	ConcolicRegionRuntime	local stage only	none	JsonFields/JavaPrimitiveSmtSemantics/single append helper	CONSOLIDATE_AND_DELETE	6+

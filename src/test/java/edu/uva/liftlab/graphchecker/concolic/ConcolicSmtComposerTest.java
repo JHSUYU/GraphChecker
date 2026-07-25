@@ -47,7 +47,8 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
 
-            assertTrue(candidateReady(result.manifest));
+            assertTrue(result.manifest.toString(),
+                    candidateReady(result.manifest));
             assertEquals(0, result.manifest.getAsJsonArray(
                     "gaps").size());
             assertTrue(result.smtLib.contains("(map_put "));
@@ -89,7 +90,8 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
 
-            assertTrue(candidateReady(result.manifest));
+            assertTrue(result.manifest.toString(),
+                    candidateReady(result.manifest));
             assertTrue(result.smtLib.contains(
                     "region_case_selector_partition_REGION_P"));
             assertTrue(result.smtLib.contains("(=>"));
@@ -264,8 +266,6 @@ public class ConcolicSmtComposerTest {
             assertTrue(result.manifest.toString(), candidateReady(result.manifest));
             assertEquals(1, result.manifest.getAsJsonArray(
                     "includedSummaries").size());
-            assertEquals(6, result.manifest.getAsJsonArray(
-                    "resolvedProducerKeys").size());
             assertEquals("CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1",
                     result.manifest.get("fatalConstraintAuthority")
                             .getAsString());
@@ -847,7 +847,32 @@ public class ConcolicSmtComposerTest {
         JsonObject result = new JsonObject();
         result.addProperty("portId", portId);
         result.addProperty("cell", cell);
+        result.addProperty("javaType", cellType(cell));
         return result;
+    }
+
+    private static String cellType(String cell) {
+        String declaration = cell.substring(cell.indexOf(':') + 1,
+                cell.lastIndexOf('>')).trim();
+        return declaration.substring(0, declaration.lastIndexOf(' '));
+    }
+
+    private static String canonicalRegions(String jsonl) {
+        StringBuilder result = new StringBuilder();
+        for (String line : jsonl.split("\\n")) {
+            if (line.isEmpty()) continue;
+            JsonObject region = JsonParser.parseString(line)
+                    .getAsJsonObject();
+            for (String field : new String[]{"symbolicInputs", "outputs"}) {
+                for (JsonElement element : region.getAsJsonArray(field)) {
+                    JsonObject port = element.getAsJsonObject();
+                    port.addProperty("javaType",
+                            cellType(port.get("cell").getAsString()));
+                }
+            }
+            result.append(region).append('\n');
+        }
+        return result.toString();
     }
 
     private static JsonObject region(String regionId, String javaType,
@@ -2120,7 +2145,8 @@ public class ConcolicSmtComposerTest {
                 + "\"symbolicInputs\":[{\"portId\":\"REGION.D.in.0\","
                 + "\"cell\":\"<example.Store: java.util.Map state>\"}],"
                 + "\"outputs\":[]}\n";
-        Files.write(fixture.regions, regions.getBytes(StandardCharsets.UTF_8));
+        Files.write(fixture.regions, canonicalRegions(regions).getBytes(
+                StandardCharsets.UTF_8));
 
         String context = "{\"regionInstanceId\":"
                 + "\"REGION.F@fixture#call2\","

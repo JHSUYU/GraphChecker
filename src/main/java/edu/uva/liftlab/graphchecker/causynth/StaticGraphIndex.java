@@ -6,13 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Immutable, input-order-preserving views over finalized static edge rows.
- *
- * <p>Rows are intentionally not validated or deduplicated here. In
- * particular, an edge id can identify several rows; callers that require a
- * unique witness must check the returned list themselves.</p>
- */
+/** Input-order-preserving indexes over finalized static edge rows. */
 final class StaticGraphIndex {
     private final List<Map<String, Object>> edges;
     private final Map<String, List<Map<String, Object>>> byMethod;
@@ -21,7 +15,7 @@ final class StaticGraphIndex {
     private final Map<String, List<Map<String, Object>>> byId;
 
     StaticGraphIndex(List<Map<String, Object>> source) {
-        edges = Collections.unmodifiableList(new ArrayList<>(source));
+        edges = source;
         byMethod = index("method");
         incoming = index("toCell");
         outgoing = index("fromCell");
@@ -54,9 +48,7 @@ final class StaticGraphIndex {
             result.computeIfAbsent(key(edge, field),
                     ignored -> new ArrayList<>()).add(edge);
         }
-        result.replaceAll((ignored, rows) ->
-                Collections.unmodifiableList(rows));
-        return Collections.unmodifiableMap(result);
+        return result;
     }
 
     private static String key(Map<String, Object> edge, String field) {

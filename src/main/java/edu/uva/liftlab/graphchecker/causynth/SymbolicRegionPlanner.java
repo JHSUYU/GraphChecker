@@ -73,6 +73,11 @@ final class SymbolicRegionPlanner {
                     + "(?:#field:.*)?$");
     private static final Pattern PARAMETER_TYPE_PATTERN = Pattern.compile(
             "\\.param\\d+:([^#]+)(?:#field:.*)?$");
+    private static final Pattern FIELD_CELL_TYPE_PATTERN = Pattern.compile(
+            "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$");
+    private static final Pattern RETURN_CELL_TYPE_PATTERN = Pattern.compile(
+            "^<[^:]+:\\s+([^<>\\s]+)\\s+[^<>\\s(]+\\([^>]*\\)>"
+                    + "\\.return(?:#.*)?$");
     private static final Pattern CAST_LOCAL_PATTERN = Pattern.compile(
             "^\\([^)]*\\)\\s*([$]?[A-Za-z_][A-Za-z0-9_]*)$");
     private static final Pattern GLOBAL_FIELD_LEAF_PATTERN = Pattern.compile(
@@ -110,17 +115,17 @@ final class SymbolicRegionPlanner {
     /** Only the method facts consumed while constructing region contracts. */
     private static final class MethodFacts {
         private final String method;
-        private final String classification;
+        private final boolean symbolicExecution;
         private final List<String> symbolicInputs;
         private final List<String> outputs;
         private final List<String> siteIds;
 
-        private MethodFacts(String method, String classification,
+        private MethodFacts(String method, boolean symbolicExecution,
                             Collection<String> symbolicInputs,
                             Collection<String> outputs,
                             Collection<String> siteIds) {
             this.method = method;
-            this.classification = classification;
+            this.symbolicExecution = symbolicExecution;
             this.symbolicInputs = sorted(symbolicInputs);
             this.outputs = sorted(outputs);
             this.siteIds = sorted(siteIds);
@@ -131,7 +136,6 @@ final class SymbolicRegionPlanner {
         private final String method;
         private final Set<String> inputs = new LinkedHashSet<>();
         private final Set<String> defined = new LinkedHashSet<>();
-        private final Set<String> outputs = new LinkedHashSet<>();
         private final Set<String> heapInputs = new LinkedHashSet<>();
         private final Set<String> environmentInputs = new LinkedHashSet<>();
         private final Set<String> transferKinds = new LinkedHashSet<>();
@@ -150,7 +154,6 @@ final class SymbolicRegionPlanner {
             if (!from.isEmpty()) inputs.add(from);
             if (!to.isEmpty()) {
                 defined.add(to);
-                outputs.add(to);
             }
             if (!transfer.isEmpty()) transferKinds.add(transfer);
             String site = string(edge.get("siteId"));
@@ -183,31 +186,24 @@ final class SymbolicRegionPlanner {
             }
             liveIns.addAll(heapInputs);
             liveIns.addAll(environmentInputs);
-            return new MethodFacts(method, classification(), liveIns,
-                    outputs, siteIds);
+            return new MethodFacts(method, requiresSymbolicExecution(),
+                    liveIns, defined, siteIds);
         }
 
-        private String classification() {
-            if (transferKinds.contains("COMPUTE") || hasGuard || hasException
+        private boolean requiresSymbolicExecution() {
+            return transferKinds.contains("COMPUTE") || hasGuard || hasException
                     || transferKinds.contains("HEAP_WRITE")
                     || transferKinds.contains("MODEL_TRANSFORM")
                     || transferKinds.contains("PROTOCOL_TRANSFER")
                     || transferKinds.contains("CONSTRUCT")
                     || transferKinds.contains("UNKNOWN")
                     || transferKinds.contains("HEAP_LOOKUP")
-                    && (hasGuard || hasException)) {
-                return "SYMBOLIC_EXECUTION";
-            }
-            if (transferKinds.contains("HEAP_LOOKUP")
-                    || transferKinds.contains("DYNAMIC_DISPATCH")) {
-                return "ROUTE_SUMMARY";
-            }
-            return "FUNCTION_PASS";
+                    && (hasGuard || hasException);
         }
 
         private static boolean declaredField(String value) {
             return value != null
-                    && value.matches("<[^:]+:\\s+.+\\s+[^\\s()]+>");
+                    && DECLARED_FIELD_PATTERN.matcher(value).matches();
         }
     }
 
@@ -348,46 +344,29 @@ final class SymbolicRegionPlanner {
     }
 
     private static final class RequestedStateTransformerContract {
-        private final String outputPort;
-        private final String outputCell;
         private final List<Map<String, Object>> obligations;
         private final List<String> issues;
         private final boolean complete;
-        private final boolean applicable;
 
         private RequestedStateTransformerContract(
-                String outputPort, String outputCell,
                 List<Map<String, Object>> obligations,
-                List<String> issues, boolean complete,
-                boolean applicable) {
-            this.outputPort = outputPort;
-            this.outputCell = outputCell;
+                List<String> issues, boolean complete) {
             this.obligations = obligations;
             this.issues = issues;
             this.complete = complete;
-            this.applicable = applicable;
         }
 
         private static RequestedStateTransformerContract notApplicable() {
-            return new RequestedStateTransformerContract("", "",
+            return new RequestedStateTransformerContract(
                     Collections.<Map<String, Object>>emptyList(),
-                    Collections.<String>emptyList(), true, false);
+                    Collections.<String>emptyList(), true);
         }
 
         private Map<String, Object> toMap() {
             return object(
-                    "requestedStateTransformerContractVersion", 1,
-                    "requestedStateTransformerContractApplicable",
-                    applicable,
-                    "requestedStateTransformerContractOutputPort",
-                    outputPort,
-                    "requestedStateTransformerContractOutputCell",
-                    outputCell,
                     "requestedStateTransformerObligations", obligations,
                     "requestedStateTransformerContractIssues", issues,
-                    "requestedStateTransformerContractComplete", complete,
-                    "requestedStateTransformerContractAuthority",
-                    "STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1");
+                    "requestedStateTransformerContractComplete", complete);
         }
     }
 
@@ -457,11 +436,9 @@ final class SymbolicRegionPlanner {
                 dynamicDispatchTargetsByCallerSite = new LinkedHashMap<>();
         private final Set<String> overlappingWriterAnchors =
                 new LinkedHashSet<>();
-        private final Set<String> boundaryCallPairs = new LinkedHashSet<>();
         private final Set<String> anchorMethods = new LinkedHashSet<>();
         private Planner(List<Map<String, Object>> edges) {
-            graph = new StaticGraphIndex(edges == null
-                    ? Collections.emptyList() : edges);
+            graph = new StaticGraphIndex(edges);
             Map<String, MethodFactsBuilder> builders = new LinkedHashMap<>();
             for (Map<String, Object> edge : graph.edges()) {
                 String method = string(edge.get("method"));
@@ -483,8 +460,7 @@ final class SymbolicRegionPlanner {
             if (anchors.isEmpty()) {
                 for (Map.Entry<String, MethodFacts> entry
                         : factsByMethod.entrySet()) {
-                    if ("SYMBOLIC_EXECUTION".equals(
-                            entry.getValue().classification)) {
+                    if (entry.getValue().symbolicExecution) {
                         anchors.add(entry.getKey());
                     }
                 }
@@ -498,12 +474,10 @@ final class SymbolicRegionPlanner {
             for (String anchor : anchors) {
                 queuedAnchorStates.add(anchor + "\nNORMAL");
             }
-            Set<String> expandedAnchors = new LinkedHashSet<>();
             Deque<String> anchorQueue = new ArrayDeque<>(anchors);
             int regionIndex = 0;
             while (!anchorQueue.isEmpty() && regionIndex < MAX_REGIONS) {
                 String anchor = anchorQueue.removeFirst();
-                expandedAnchors.add(anchor);
                 for (RegionDraft draft : buildRegions(anchor)) {
                     if (draft.methods.isEmpty()) {
                         continue;
@@ -851,10 +825,10 @@ final class SymbolicRegionPlanner {
                 String method = string(edge.get("method"));
                 String transfer = string(edge.get("transferKind"));
                 String kind = string(edge.get("kind"));
-                if ("SEED".equals(transfer) || lower(kind).contains("seed")) {
-                    if (factsByMethod.containsKey(method)) {
-                        anchorMethods.add(method);
-                    }
+                if (("SEED".equals(transfer)
+                        || lower(kind).contains("seed"))
+                        && factsByMethod.containsKey(method)) {
+                    anchorMethods.add(method);
                 }
 
                 String callee = string(edge.get("invoke"));
@@ -867,9 +841,7 @@ final class SymbolicRegionPlanner {
                         || !factsByMethod.containsKey(callee)) {
                     continue;
                 }
-                String pair = pair(method, callee);
                 if (isBoundary(edge)) {
-                    boundaryCallPairs.add(pair);
                     continue;
                 }
                 if ("DYNAMIC_DISPATCH".equals(transfer)) {
@@ -1478,6 +1450,7 @@ final class SymbolicRegionPlanner {
                 Map<String, Object> port = object(
                         "portId", draft.regionId + ".in." + inputIndex++,
                         "cell", input,
+                        "javaType", cellJavaType(input),
                         "sourceKind", sourceKind(input, draft.rootMethod),
                         "selectionReason", inputSelection.selectionReasons.get(input),
                         "projection", projection(input));
@@ -1514,6 +1487,7 @@ final class SymbolicRegionPlanner {
                 Map<String, Object> port = object(
                         "portId", draft.regionId + ".out." + outputIndex++,
                         "cell", output,
+                        "javaType", cellJavaType(output),
                         "kind", outputKind(output, draft.anchorMethod));
                 if (prioritySeedOutputs.contains(output)) {
                     port.put("mandatory", true);
@@ -1671,7 +1645,7 @@ final class SymbolicRegionPlanner {
                 RequestedStateTransformerContract transformerContract =
                         heapStateOutput
                                 ? requestedStateTransformerContract(slice,
-                                string(output.get("portId")), outputCell)
+                                outputCell)
                                 : RequestedStateTransformerContract
                                 .notApplicable();
                 Set<String> candidates = new LinkedHashSet<>();
@@ -1767,6 +1741,7 @@ final class SymbolicRegionPlanner {
                             Map<String, Object> promotedPort = object(
                                     "portId", portId,
                                     "cell", input,
+                                    "javaType", cellJavaType(input),
                                     "sourceKind", sourceKind(input,
                                             region.rootMethod),
                                     "selectionReason",
@@ -2832,7 +2807,7 @@ final class SymbolicRegionPlanner {
             List<String> issues = new ArrayList<>();
             FieldSignature field = fieldSignature(outputCell);
             if (field == null || outputPort.isEmpty()
-                    || !contract.applicable || !contract.complete) {
+                    || !contract.complete) {
                 issues.add("INCOMPLETE_REQUESTED_FIELD_TRANSFORMER_CONTRACT");
             }
             Map<String, Map<String, Object>> obligationsBySite =
@@ -4124,14 +4099,13 @@ final class SymbolicRegionPlanner {
          */
         private RequestedStateTransformerContract
         requestedStateTransformerContract(RegionDraft slice,
-                                          String outputPort,
                                           String outputCell) {
             Map<String, Map<String, Object>> obligations =
                     new LinkedHashMap<>();
             List<String> issues = new ArrayList<>();
             String outputField = semanticFieldKey(outputCell,
                     slice.rootMethod);
-            if (outputPort.isEmpty() || outputCell.isEmpty()
+            if (outputCell.isEmpty()
                     || outputField.isEmpty()) {
                 issues.add("REQUESTED_HEAP_OUTPUT_HAS_NO_EXACT_FIELD_IDENTITY");
             }
@@ -4199,8 +4173,8 @@ final class SymbolicRegionPlanner {
             }
             Collections.sort(issues);
             boolean complete = !slice.truncated && issues.isEmpty();
-            return new RequestedStateTransformerContract(outputPort,
-                    outputCell, ordered, issues, complete, true);
+            return new RequestedStateTransformerContract(
+                    ordered, issues, complete);
         }
 
         /**
@@ -5441,6 +5415,20 @@ final class SymbolicRegionPlanner {
         private String parameterType(String cell) {
             Matcher parameter = PARAMETER_TYPE_PATTERN.matcher(string(cell));
             return parameter.find() ? parameter.group(1).trim() : "";
+        }
+
+        private String cellJavaType(String cell) {
+            String value = string(cell);
+            Matcher parameter = PARAMETER_TYPE_PATTERN.matcher(value);
+            if (parameter.find()) {
+                return parameter.group(1).trim();
+            }
+            Matcher field = FIELD_CELL_TYPE_PATTERN.matcher(value);
+            if (field.matches()) {
+                return field.group(1).trim();
+            }
+            Matcher returned = RETURN_CELL_TYPE_PATTERN.matcher(value);
+            return returned.matches() ? returned.group(1).trim() : "";
         }
 
         private List<String> orderedMethods(Collection<String> methods,
@@ -8184,10 +8172,6 @@ final class SymbolicRegionPlanner {
 
     private static boolean globalFieldCell(String value) {
         return looksLikeField(value) && methodForCell(value).isEmpty();
-    }
-
-    private static String pair(String from, String to) {
-        return from + "\n" + to;
     }
 
     private static String joinSorted(Collection<String> values) {
