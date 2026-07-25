@@ -273,9 +273,8 @@ validate_multitype_producer_artifacts() {
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "observedPathCount", "gaps",
+        "state", "bounds", "gaps",
         "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
   ' "${path_closures[@]}" >/dev/null \
@@ -397,12 +396,10 @@ validate_dependent_scalar_artifacts() {
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "observedPathCount", "gaps",
+        "state", "bounds", "gaps",
         "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
-    and ([.[].observedPathCount] | sort) == [2, 6]
   ' "${path_closures[@]}" >/dev/null \
     || die "dependent-scalar producer path closure is incomplete"
 
@@ -470,9 +467,8 @@ validate_container_producer_artifacts() {
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and .observedPathCount >= 2
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "observedPathCount", "gaps",
+        "state", "bounds", "gaps",
         "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
   ' "${path_closures[@]}" >/dev/null \
@@ -576,12 +572,8 @@ validate_container_producer_artifacts() {
       and .aliasBindingCount == 1
       and .aliasBindingAuthorities
         == ["UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN"]
-      and .runtimeCutAuthority
-        == "BASE_READ_BEFORE_LEAF_READ_WITH_NO_INTERVENING_LEAF_WRITE_V1"
       and .baseFieldEventSeq > 0
-      and .baseFieldCallId > 0
       and .canonicalLeafFieldEventSeq > 0
-      and .canonicalLeafFieldCallId > 0
       and .baseFieldEventSeq < .canonicalLeafFieldEventSeq
       and .complete == true)
     and ([$outputSlice.inputAliasCanonicalizations[]
@@ -658,8 +650,7 @@ validate_unreachable_parity_producer_artifacts() {
       and .kind == "REGION_PATH_WORKLIST"
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
-      and (.gaps | length) == 0
-      and .observedPathCount > 2)
+      and (.gaps | length) == 0)
   ' "${path_closures[@]}" >/dev/null \
     || die "unreachable-parity producer path closure is incomplete"
 
@@ -761,8 +752,7 @@ validate_scalar_unsat_producer_artifacts() {
     length == 2
     and all(.[];
       .state == "CLOSED"
-      and (.gaps | length) == 0
-      and .observedPathCount > 1)
+      and (.gaps | length) == 0)
   ' "${path_closures[@]}" >/dev/null \
     || die "${label} producer path closure is incomplete"
 
@@ -836,18 +826,15 @@ validate_compound_target_artifacts() {
     and .state == "CLOSED"
     and .captureGoal == "TARGET_BRANCH"
     and (.gaps | length) == 0
-    and .observedPathCount > 2
   ' "${target_closure}" >/dev/null \
     || die "${label} target-function path worklist is incomplete"
 
-  jq -e --arg expectation "${expected_reached}" \
-    --slurpfile closure "${target_closure}" '
+  jq -e --arg expectation "${expected_reached}" '
     .kind == "TARGET_REACH_PATH_SET_QUERY"
     and .pathClosureState == "CLOSED"
     and .constraintAuthority
       == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
     and .readyForSolver == true
-    and .observedPathCount == $closure[0].observedPathCount
     and (if $expectation == "positive"
       then (.paths | length) > 1
         and all(.paths[];
@@ -895,8 +882,7 @@ validate_compound_target_artifacts() {
     length == 2
     and all(.[];
       .state == "CLOSED"
-      and (.gaps | length) == 0
-      and .observedPathCount == 2)
+      and (.gaps | length) == 0)
   ' "${producer_closures[@]}" >/dev/null \
     || die "${label} producer path closure is incomplete"
   jq -e -s "${output_closure_helpers}"'

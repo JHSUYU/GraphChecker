@@ -772,12 +772,11 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    private boolean processMethod(String method) {
+    private void processMethod(String method) {
         List<Fact> facts = factsByMethod.get(method);
         if (facts == null) {
-            return false;
+            return;
         }
-        boolean changed = false;
         Set<String> relevant = relevant(method);
         MethodSig methodSig = parseMethodSig(method);
         for (Fact fact : facts) {
@@ -793,7 +792,7 @@ final class SeedBackwardStaticAnalyzer {
             boolean defExactHit = exactIntersects(relevant, defs);
             boolean defProjectionHit = projectionIntersects(relevant, defs);
             if (!defExactHit && defProjectionHit) {
-                changed |= promoteArrayContainerForProjectedElementRead(
+                promoteArrayContainerForProjectedElementRead(
                         method, fact, relevant);
             }
             boolean defHit = defExactHit || defProjectionHit;
@@ -806,46 +805,43 @@ final class SeedBackwardStaticAnalyzer {
                         if (ignoreNode(def) || ignoreNode(use)) {
                             continue;
                         }
-                        if (addEdge("local_def_use", use, def, method, fact,
-                                "Jimple use/field/argument flows to def")) {
-                            changed = true;
-                        }
+                        addEdge("local_def_use", use, def, method, fact,
+                                "Jimple use/field/argument flows to def");
                     }
                 }
                 if (defExactHit) {
                     for (String use : uses) {
-                        changed |= relevant.add(use);
+                        relevant.add(use);
                     }
                 }
                 if (useHit) {
                     for (String def : defs) {
-                        changed |= relevant.add(def);
+                        relevant.add(def);
                     }
                 }
             }
 
             if (defExactHit) {
-                changed |= processRequiredPathGuards(method, fact, defs,
+                processRequiredPathGuards(method, fact, defs,
                         relevant);
             }
 
             if (fact.isBranch && useExactHit) {
                 for (String use : uses) {
-                    changed |= addEdge("guard_dependency", use, factNode(fact),
+                    addEdge("guard_dependency", use, factNode(fact),
                             method, fact, "branch consumes relevant value");
                 }
             }
             if (fact.isThrow && useExactHit) {
                 for (String use : uses) {
-                    changed |= addEdge("throw_dependency", use, factNode(fact),
+                    addEdge("throw_dependency", use, factNode(fact),
                             method, fact, "throw consumes relevant value");
                 }
             }
-            changed |= processFieldReads(method, fact, defs, relevant);
-            changed |= processFieldWrites(method, facts, fact, relevant);
-            changed |= processInvoke(method, fact, defs, relevant);
+            processFieldReads(method, fact, defs, relevant);
+            processFieldWrites(method, facts, fact, relevant);
+            processInvoke(method, fact, defs, relevant);
         }
-        return changed;
     }
 
     /**
@@ -1146,15 +1142,14 @@ final class SeedBackwardStaticAnalyzer {
         return changed;
     }
 
-    private boolean expandFieldWriters(String method) {
+    private void expandFieldWriters(String method) {
         List<String> fields = relevant(method).stream()
                 .filter(this::isApplicationField)
                 .collect(Collectors.toList());
         if (fields.isEmpty()) {
-            return false;
+            return;
         }
         buildGlobalStaticIndex();
-        boolean changed = false;
         for (String field : fields) {
             if (!expandedFieldWriterFields.add(field)) {
                 continue;
@@ -1171,8 +1166,8 @@ final class SeedBackwardStaticAnalyzer {
                     break;
                 }
                 SootMethod writerMethod = methodsBySignature.get(writer.method);
-                if (writerMethod != null && loadMethod(writerMethod)) {
-                    changed = true;
+                if (writerMethod != null) {
+                    loadMethod(writerMethod);
                 }
                 Set<String> writerRelevant = relevant(writer.method);
                 writerRelevant.add(writer.field);
@@ -1188,20 +1183,17 @@ final class SeedBackwardStaticAnalyzer {
                     if (ignoreNode(source)) {
                         continue;
                     }
-                    if (addEdge(writer.kind, source, writer.field, writer.method,
-                            writer.fact, writer.evidence)) {
-                        changed = true;
-                    }
+                    addEdge(writer.kind, source, writer.field, writer.method,
+                            writer.fact, writer.evidence);
                     if (canOpenFieldFromPlainValue(source)) {
-                        changed |= writerRelevant.add(source);
+                        writerRelevant.add(source);
                     }
                 }
             }
         }
-        return changed;
     }
 
-    private boolean expandConstructorCallers(String method) {
+    private void expandConstructorCallers(String method) {
         List<ConstructorParam> params = relevant(method).stream()
                 .map(this::constructorParam)
                 .filter(param -> param != null)
@@ -1209,10 +1201,9 @@ final class SeedBackwardStaticAnalyzer {
         String thisNode = methodThisNode(method);
         Set<String> thisProjectionSuffixes = projectionSuffixesForBase(method, thisNode);
         if (params.isEmpty() && thisProjectionSuffixes.isEmpty()) {
-            return false;
+            return;
         }
         buildGlobalStaticIndex();
-        boolean changed = false;
         Set<String> constructorsToExpand = new LinkedHashSet<>();
         for (ConstructorParam param : params) {
             constructorsToExpand.add(param.constructor);
@@ -1228,7 +1219,7 @@ final class SeedBackwardStaticAnalyzer {
             }
             if (constructor.equals(method)) {
                 for (ConstructorCallsite callsite : callsites) {
-                    changed |= expandConstructorReceiverFields(method, thisNode,
+                    expandConstructorReceiverFields(method, thisNode,
                             thisProjectionSuffixes, callsite);
                 }
             }
@@ -1258,27 +1249,24 @@ final class SeedBackwardStaticAnalyzer {
                     continue;
                 }
                 SootMethod callerMethod = methodsBySignature.get(callsite.method);
-                if (callerMethod != null && loadMethod(callerMethod)) {
-                    changed = true;
+                if (callerMethod != null) {
+                    loadMethod(callerMethod);
                 }
-                if (addEdge("constructor_caller_argument", actual, param.formal,
+                addEdge("constructor_caller_argument", actual, param.formal,
                         callsite.method, callsite.fact,
-                        "constructor caller actual reaches relevant constructor formal")) {
-                    changed = true;
-                }
-                changed |= relevant(callsite.method).add(actual);
-                changed |= selectedMethods.add(callsite.method);
+                        "constructor caller actual reaches relevant constructor formal");
+                relevant(callsite.method).add(actual);
+                selectedMethods.add(callsite.method);
             }
         }
-        return changed;
     }
 
-    private boolean expandMethodCallers(String method) {
+    private void expandMethodCallers(String method) {
         MethodSig callee = parseMethodSig(method);
         if (callee == null || "<init>".equals(callee.name)
                 || "<clinit>".equals(callee.name)
                 || !isApplicationClassName(callee.owner)) {
-            return false;
+            return;
         }
         Set<String> calleeRelevant = relevant(method);
         String thisNode = methodThisNode(method);
@@ -1298,16 +1286,15 @@ final class SeedBackwardStaticAnalyzer {
             }
         }
         if (relevantParams.isEmpty() && !thisRelevant && !returnRelevant) {
-            return false;
+            return;
         }
 
         buildGlobalStaticIndex();
         List<MethodCallsite> callsites = methodCallersByCallee.get(method);
         if (callsites == null || callsites.isEmpty()) {
-            return false;
+            return;
         }
 
-        boolean changed = false;
         int count = 0;
         for (MethodCallsite callsite : callsites) {
             if (count++ >= MAX_METHOD_CALLERS_PER_METHOD
@@ -1316,8 +1303,8 @@ final class SeedBackwardStaticAnalyzer {
                 break;
             }
             SootMethod callerMethod = methodsBySignature.get(callsite.method);
-            if (callerMethod != null && loadMethod(callerMethod)) {
-                changed = true;
+            if (callerMethod != null) {
+                loadMethod(callerMethod);
             }
             Set<String> callerRelevant = relevant(callsite.method);
             for (int index : relevantParams) {
@@ -1329,36 +1316,33 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 String actual = callsite.actuals.get(index);
                 if (ignoreNode(actual)) {
-                    changed |= addTypedLiteralCallerArgument(callee,
+                    addTypedLiteralCallerArgument(callee,
                             index, callsite);
                     if (isTypedLiteralArgument(callsite.fact, index,
                             callee.params.get(index))) {
-                        changed |= selectedMethods.add(callsite.method);
+                        selectedMethods.add(callsite.method);
                     }
                     continue;
                 }
-                if (addEdge("method_caller_argument", actual,
+                addEdge("method_caller_argument", actual,
                         formalParam(callee, index), callsite.method, callsite.fact,
-                        "method caller actual reaches relevant callee formal")) {
-                    changed = true;
-                }
-                changed |= callerRelevant.add(actual);
-                changed |= selectedMethods.add(callsite.method);
+                        "method caller actual reaches relevant callee formal");
+                callerRelevant.add(actual);
+                selectedMethods.add(callsite.method);
             }
-            changed |= addReceiverFieldEffectPathGuards(method,
+            addReceiverFieldEffectPathGuards(method,
                     callsite, callerRelevant);
             if (thisRelevant) {
-                changed |= expandMethodReceiverFields(method, thisNode,
+                expandMethodReceiverFields(method, thisNode,
                         thisProjectionSuffixes, callsite);
             }
             if (returnRelevant) {
-                changed |= expandCallerReturn("method_caller_return",
+                expandCallerReturn("method_caller_return",
                         returnNode, callsite.defs, callsite.method,
                         callsite.fact, callerRelevant,
                         "method caller receives relevant callee return");
             }
         }
-        return changed;
     }
 
     /**
@@ -3332,23 +3316,22 @@ final class SeedBackwardStaticAnalyzer {
                 || className.endsWith("PB"));
     }
 
-    private boolean expandCallers(String calleeMethod) {
+    private void expandCallers(String calleeMethod) {
         if (!isExpandableMethod(calleeMethod)) {
-            return false;
+            return;
         }
         List<Fact> callers = callersByCallee.get(calleeMethod);
         if (callers == null) {
-            return false;
+            return;
         }
         MethodSig callee = parseMethodSig(calleeMethod);
         if (callee == null) {
-            return false;
+            return;
         }
         Set<String> calleeRelevant = relevant(calleeMethod);
         String returnNode = callee.raw + ".return";
         boolean returnRelevant = calleeRelevant.contains(returnNode)
                 || containsProjection(calleeRelevant, returnNode);
-        boolean changed = false;
         for (Fact caller : callers) {
             if (selectedMethods.size() >= maxMethods) {
                 break;
@@ -3366,37 +3349,33 @@ final class SeedBackwardStaticAnalyzer {
                 if (ignoreNode(actual)) {
                     continue;
                 }
-                if (addEdge("caller_argument", actual, formal, caller.method, caller,
-                        "caller actual reaches relevant callee formal")) {
-                    changed = true;
-                }
-                changed |= callerRelevant.add(actual);
-                changed |= selectedMethods.add(caller.method);
+                addEdge("caller_argument", actual, formal, caller.method,
+                        caller, "caller actual reaches relevant callee formal");
+                callerRelevant.add(actual);
+                selectedMethods.add(caller.method);
             }
             if (returnRelevant) {
                 List<String> defs = canonicalList(caller.method, caller.defs);
-                changed |= expandCallerReturn("caller_return", returnNode,
+                expandCallerReturn("caller_return", returnNode,
                         defs, caller.method, caller, callerRelevant,
                         "caller receives relevant callee return");
             }
         }
-        return changed;
     }
 
-    private boolean expandRpcCallers(String targetMethod) {
+    private void expandRpcCallers(String targetMethod) {
         List<RpcTarget> sources = rpcSourcesByTarget.get(targetMethod);
         if (sources == null || sources.isEmpty()) {
-            return false;
+            return;
         }
         MethodSig targetSig = parseMethodSig(targetMethod);
         if (targetSig == null) {
-            return false;
+            return;
         }
         Set<String> targetRelevant = relevant(targetMethod);
         String returnNode = targetMethod + ".return";
         boolean returnRelevant = targetRelevant.contains(returnNode)
                 || containsProjection(targetRelevant, returnNode);
-        boolean changed = false;
         buildGlobalStaticIndex();
         for (RpcTarget source : sources) {
             List<MethodCallsite> callsites = methodCallersByCallee
@@ -3409,8 +3388,8 @@ final class SeedBackwardStaticAnalyzer {
                     break;
                 }
                 SootMethod callerMethod = methodsBySignature.get(callsite.method);
-                if (callerMethod != null && loadMethod(callerMethod)) {
-                    changed = true;
+                if (callerMethod != null) {
+                    loadMethod(callerMethod);
                 }
                 Set<String> callerRelevant = relevant(callsite.method);
                 List<String> actuals = callsite.actuals;
@@ -3425,33 +3404,30 @@ final class SeedBackwardStaticAnalyzer {
                     if (ignoreNode(actual)) {
                         continue;
                     }
-                    if (addEdge("rpc_caller_argument", actual, formal,
+                    addEdge("rpc_caller_argument", actual, formal,
                             callsite.method, callsite.fact,
-                            "RPC caller actual reaches discovered server-side formal")) {
-                        changed = true;
-                    }
-                    changed |= callerRelevant.add(actual);
-                    changed |= selectedMethods.add(callsite.method);
+                            "RPC caller actual reaches discovered server-side formal");
+                    callerRelevant.add(actual);
+                    selectedMethods.add(callsite.method);
                 }
                 if (returnRelevant) {
-                    changed |= expandCallerReturn("rpc_caller_return",
+                    expandCallerReturn("rpc_caller_return",
                             returnNode, callsite.defs, callsite.method,
                             callsite.fact, callerRelevant,
                             "RPC caller receives relevant server-side return");
                 }
             }
         }
-        return changed;
     }
 
-    private boolean expandDispatchCallers(String targetMethod) {
+    private void expandDispatchCallers(String targetMethod) {
         List<String> sourceMethods = resolveDispatchSources(targetMethod);
         if (sourceMethods.isEmpty()) {
-            return false;
+            return;
         }
         MethodSig targetSig = parseMethodSig(targetMethod);
         if (targetSig == null) {
-            return false;
+            return;
         }
         Set<String> targetRelevant = relevant(targetMethod);
         String returnNode = targetMethod + ".return";
@@ -3463,7 +3439,6 @@ final class SeedBackwardStaticAnalyzer {
         boolean targetThisRelevant = targetThis != null
                 && (targetRelevant.contains(targetThis)
                 || !targetThisProjectionSuffixes.isEmpty());
-        boolean changed = false;
         buildGlobalStaticIndex();
         for (String sourceMethod : sourceMethods) {
             List<MethodCallsite> callsites = methodCallersByCallee.get(sourceMethod);
@@ -3495,8 +3470,8 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 int edgeStart = edges.size();
                 SootMethod callerMethod = methodsBySignature.get(callsite.method);
-                if (callerMethod != null && loadMethod(callerMethod)) {
-                    changed = true;
+                if (callerMethod != null) {
+                    loadMethod(callerMethod);
                 }
                 Set<String> callerRelevant = relevant(callsite.method);
                 List<String> actuals = callsite.actuals;
@@ -3511,22 +3486,20 @@ final class SeedBackwardStaticAnalyzer {
                     if (ignoreNode(actual)) {
                         continue;
                     }
-                    if (addEdge("dispatch_caller_argument", actual, formal,
+                    addEdge("dispatch_caller_argument", actual, formal,
                             callsite.method, callsite.fact,
-                            "interface/virtual caller actual reaches concrete formal")) {
-                        changed = true;
-                    }
-                    changed |= callerRelevant.add(actual);
-                    changed |= selectedMethods.add(callsite.method);
+                            "interface/virtual caller actual reaches concrete formal");
+                    callerRelevant.add(actual);
+                    selectedMethods.add(callsite.method);
                 }
                 if (returnRelevant) {
-                    changed |= expandCallerReturn("dispatch_caller_return",
+                    expandCallerReturn("dispatch_caller_return",
                             returnNode, callsite.defs, callsite.method,
                             callsite.fact, callerRelevant,
                             "interface/virtual caller receives relevant concrete return");
                 }
                 if (targetThisRelevant) {
-                    changed |= expandDispatchReceiverFields(targetMethod,
+                    expandDispatchReceiverFields(targetMethod,
                             targetThis, targetThisProjectionSuffixes,
                             callsite);
                 }
@@ -3537,7 +3510,6 @@ final class SeedBackwardStaticAnalyzer {
                 }
             }
         }
-        return changed;
     }
 
     private boolean expandCallerReturn(String kind, String returnNode,

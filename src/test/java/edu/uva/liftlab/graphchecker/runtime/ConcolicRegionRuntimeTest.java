@@ -1131,8 +1131,6 @@ public class ConcolicRegionRuntimeTest {
                 JsonParser.parseString("[\"EDGE.MAP.FIELD\","
                         + "\"EDGE.MAP.VALUES\",\"EDGE.TO.ARRAY\","
                         + "\"EDGE.OUTPUT.FIELD\"]"));
-        declaration.addProperty("recursiveElementProjectionComposable",
-                false);
         declaration.addProperty("complete", true);
         return declaration;
     }

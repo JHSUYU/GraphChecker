@@ -3657,8 +3657,6 @@ public class ConcolicSummaryImporterTest {
                         + "OUTPUT_INDEX_IDENTITY");
         declaration.add("projectionProofCausalEdgeIds",
                 singletonString("EDGE.MAP.TO.ARRAY"));
-        declaration.addProperty("recursiveElementProjectionComposable",
-                true);
         declaration.addProperty("complete", true);
 
         JsonObject activation = new JsonObject();

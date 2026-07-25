@@ -1052,7 +1052,7 @@ report_path_worklist_failure() {
   echo "  manifest: ${manifest}" >&2
   echo "  worklist: ${worklist}" >&2
   jq -r '
-    "  state=\(.state) observedPaths=\(.observedPathCount)",
+    "  state=\(.state)",
     (.gaps[]?
       | "  blocking-gap kind=\(.kind) reason=\(.reason) site=\(.siteId) occurrence=\(.occurrence) path=\(.pathKey)"),
     (.deferredObservations[]?
@@ -1151,7 +1151,7 @@ explore_region_paths() {
   local campaign=$5
   local summaries activations raw_results records state_dir planner_dir
   local z3 solver_timeout planner_status query_key iteration jobs task_dir
-  local observed_paths max_paths remaining_paths wave_limit
+  local wave_limit
   local bound_spec bound_property bound_option bound_value
   local -a planner_bound_args=() wave_query_keys=() worker_pids=()
   require_file "${label} seed summary" \
@@ -1230,19 +1230,7 @@ explore_region_paths() {
     jq -e '.state == "PENDING"' \
       "${planner_dir}/region_path_manifest.json" >/dev/null \
       || die "${label} path planner emitted neither pending nor closed state"
-    observed_paths=$(jq -er '.observedPathCount' \
-      "${planner_dir}/region_path_manifest.json")
-    max_paths=$(jq -er '.bounds.maxPathsPerRegion' \
-      "${planner_dir}/region_path_manifest.json")
-    remaining_paths=$((max_paths - observed_paths))
-    if (( remaining_paths <= 0 )); then
-      report_path_worklist_failure "${planner_dir}"
-      die "${label} path bound reached with pending work; inspect ${planner_dir}/region_path_manifest.json"
-    fi
     wave_limit=${jobs}
-    if (( wave_limit > remaining_paths )); then
-      wave_limit=${remaining_paths}
-    fi
     mapfile -t wave_query_keys < <(jq -r -s \
       --argjson limit "${wave_limit}" '
       sort_by(.queryKey) | .[0:$limit][] | .queryKey

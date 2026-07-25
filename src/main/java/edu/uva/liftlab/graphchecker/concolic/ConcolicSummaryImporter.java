@@ -3487,7 +3487,7 @@ public final class ConcolicSummaryImporter {
                     requestedPort, requestedCell)
                     || !mapImplementationMatchesMutation(record, mutation)
                     || !exactRequestedMapTransformer(analysis, mutation,
-                    requestedPort, requestedCell)
+                    requestedCell)
                     || !stableMapInputAtExit(raw, record)) {
                 continue;
             }
@@ -3532,7 +3532,7 @@ public final class ConcolicSummaryImporter {
 
     private static boolean exactRequestedMapTransformer(
             OutputMemberAnalysis analysis, HeapMutation mutation,
-            String requestedPort, String requestedCell) {
+            String requestedCell) {
         JsonObject slice = analysis.slice();
         if (!nestedOutputSliceContractComplete(slice)
                 || !bool(slice,
@@ -5146,9 +5146,7 @@ public final class ConcolicSummaryImporter {
                 && declaredOwner.equals(normalizeContainerType(
                 declaredFieldOwner(signature)))
                 && declaredType.equals(normalizeContainerType(
-                fieldJavaType(signature)))
-                && bool(declaration,
-                "recursiveElementProjectionComposable", false);
+                fieldJavaType(signature)));
 
         List<JsonObject> mapActions = new ArrayList<>();
         for (JsonElement element : runtimeMaterializationActions(

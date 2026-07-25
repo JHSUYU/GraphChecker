@@ -9,7 +9,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -18,7 +18,6 @@ import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -100,7 +99,6 @@ public final class TargetReachPathQueryBuilder {
 
             JsonObject path = new JsonObject();
             String pathKey = RegionPathWorklist.stablePathKey(summary);
-            path.addProperty("pathKey", pathKey);
             path.addProperty("summaryId", string(summary, "summaryId"));
             path.add("constraints",
                     array(summary, "pathCondition").deepCopy());
@@ -125,10 +123,12 @@ public final class TargetReachPathQueryBuilder {
             }
         }
 
-        List<JsonObject> paths = new ArrayList<>(pathsByKey.values());
-        paths.sort(Comparator.comparing(value -> string(value, "pathKey")));
+        List<String> pathKeys = new ArrayList<>(pathsByKey.keySet());
+        Collections.sort(pathKeys);
         JsonArray encodedPaths = new JsonArray();
-        for (JsonObject path : paths) encodedPaths.add(path);
+        for (String pathKey : pathKeys) {
+            encodedPaths.add(pathsByKey.get(pathKey));
+        }
 
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", 1);
@@ -138,8 +138,6 @@ public final class TargetReachPathQueryBuilder {
         result.addProperty("regionInstanceId", instance);
         result.addProperty("exceptionType", arguments.exceptionType);
         result.addProperty("pathClosureState", "CLOSED");
-        result.addProperty("observedPathCount",
-                integer(manifest, "observedPathCount", 0));
         result.add("paths", encodedPaths);
         result.add("seedReplayContract",
                 object(seed, "replayContract").deepCopy());

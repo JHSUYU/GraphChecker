@@ -74,7 +74,7 @@ public final class ConcolicConstraintSolver {
         String smt = encoder.finish();
         JsonObject record = baseRecord(task);
         record.addProperty("solver", "Z3_SMT2");
-        record.addProperty("solverInputHash", ArtifactIO.sha256(smt));
+        record.addProperty("solverInputHash", sha256(smt));
         record.add("unsupported", GSON.toJsonTree(encoder.unsupported));
         if (!encoder.unsupported.isEmpty()) {
             record.addProperty("status", "UNSUPPORTED");
@@ -90,7 +90,6 @@ public final class ConcolicConstraintSolver {
                     "INVALID_DYNAMIC_FIELD_BINDING_REGISTRY");
             record.add("dynamicFieldBindingProblems",
                     GSON.toJsonTree(dynamicBindings.problems));
-            record.addProperty("solverInvoked", false);
             return new Result(record, smt, new JsonArray());
         }
 
@@ -111,8 +110,6 @@ public final class ConcolicConstraintSolver {
                 }
             }
         }
-        record.add("flipConditionSymbols",
-                GSON.toJsonTree(targetSymbols));
         if (!unmaterializableTargetSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
@@ -123,7 +120,6 @@ public final class ConcolicConstraintSolver {
                 record.add("dynamicBindingResolutionGaps",
                         GSON.toJsonTree(targetResolutionGaps));
             }
-            record.addProperty("solverInvoked", false);
             return new Result(record, smt, new JsonArray());
         }
 
@@ -162,7 +158,6 @@ public final class ConcolicConstraintSolver {
                 record.add("dynamicBindingResolutionGaps",
                         GSON.toJsonTree(controlledResolutionGaps));
             }
-            record.addProperty("solverInvoked", false);
             return new Result(record, smt, new JsonArray());
         }
 
@@ -183,9 +178,6 @@ public final class ConcolicConstraintSolver {
         Path executable = z3 == null ? Paths.get("z3") : z3;
         SolverOutput output = run(executable, smt,
                 Math.max(1L, timeoutMillis));
-        record.addProperty("solverExitCode", output.exitCode);
-        record.addProperty("solverInvoked", true);
-        record.addProperty("solverTimedOut", output.timedOut);
         record.addProperty("solverStderr", output.stderr.trim());
         if (output.timedOut) {
             record.addProperty("status", "SOLVER_ERROR");
@@ -1372,16 +1364,6 @@ public final class ConcolicConstraintSolver {
                         .floatingPointBitsToJavaLiteral(value, descriptor);
                 if (decoded == null) continue;
                 assignment.addProperty("valueType", "REAL");
-                assignment.addProperty("floatingPointFormat", descriptor);
-                assignment.addProperty("modelNaNSymbol", nanModelName);
-                assignment.addProperty("modelIsNaN", isNaN);
-                if (isNaN) {
-                    assignment.addProperty("nanReplayAuthority",
-                            "SMT_FP_IS_NAN_TO_JAVA_CANONICAL_NAN_V1");
-                } else {
-                    assignment.addProperty("modelBitSymbol", modelName);
-                    assignment.addProperty("modelIeeeBits", value);
-                }
                 assignment.addProperty("value", decoded);
             } else if (sort == Sort.STRING
                     && "true".equals(stringNullValue)) {
@@ -2063,11 +2045,6 @@ public final class ConcolicConstraintSolver {
             copy(raw, assignment, "fieldPath");
             assignment.addProperty("dynamicFieldBindingKind",
                     string(raw, "kind"));
-            JsonObject selector = new JsonObject();
-            selector.addProperty("materializationSiteId",
-                    materializationSiteId);
-            selector.addProperty("materializationOccurrence",
-                    materializationOccurrence);
             if (isContainerElement()) {
                 JsonObject runtime = object(raw, "containerSelector");
                 JsonObject container = new JsonObject();
@@ -2079,7 +2056,6 @@ public final class ConcolicConstraintSolver {
                     copy(runtime, container, member);
                 }
                 assignment.add("containerSelector", container.deepCopy());
-                selector.add("containerSelector", container);
                 assignment.addProperty("containerReplayRebindingAuthority",
                         CONTAINER_REPLAY_REBINDING_AUTHORITY);
                 assignment.addProperty(
@@ -2093,11 +2069,7 @@ public final class ConcolicConstraintSolver {
                 assignment.addProperty("dynamicReplayRebindingAuthority",
                         FRESH_MAP_ENTRY_REBINDING_AUTHORITY);
                 assignment.addProperty("sourceEntrySelectorRetained", false);
-                selector.addProperty("replayRebindingAuthority",
-                        FRESH_MAP_ENTRY_REBINDING_AUTHORITY);
-                selector.addProperty("sourceEntrySelectorRetained", false);
             }
-            assignment.add("dynamicSelector", selector);
         }
 
         private static void copy(JsonObject from, JsonObject to,
@@ -2149,8 +2121,7 @@ public final class ConcolicConstraintSolver {
         }
         String stdout = readAll(process.getInputStream());
         String stderr = readAll(process.getErrorStream());
-        return new SolverOutput(finished ? process.exitValue() : -1,
-                !finished, stdout, stderr);
+        return new SolverOutput(!finished, stdout, stderr);
     }
 
     private static String readAll(InputStream stream) throws IOException {
@@ -2164,14 +2135,11 @@ public final class ConcolicConstraintSolver {
     }
 
     private static final class SolverOutput {
-        private final int exitCode;
         private final boolean timedOut;
         private final String stdout;
         private final String stderr;
 
-        private SolverOutput(int exitCode, boolean timedOut, String stdout,
-                             String stderr) {
-            this.exitCode = exitCode;
+        private SolverOutput(boolean timedOut, String stdout, String stderr) {
             this.timedOut = timedOut;
             this.stdout = stdout;
             this.stderr = stderr;

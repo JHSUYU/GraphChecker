@@ -1669,6 +1669,26 @@ fatal query、summaries 和 relationship artifact，Boolean report 通过该 tru
 保持 6 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
 `target/robustness-matrix-logs/20260725T134650Z.3220406`。
 
+下一批把“一个事实多次表示、一个 payload 多层重复验证”继续收敛为唯一语义载体。
+ReplayValidator 从约一千行缩到只负责 activation-local dynamic selector、fresh
+Map.Entry 与 container token rebinding；普通 schema、model assignment、branch 和
+output-closure 验证只在 Importer artifact boundary 做一次。Worklist 不再持久化
+`observedPathCount`，target path 不再持久化重复 `pathKey`，merge manifest 只写 typed
+`gaps`，唯一完成 gate 仍是 relation 的 `relationallyComplete`。
+
+Scheduler/Solver 同时删除了可由 admission、status、value type 和 canonical selector
+推导的 readiness、调用状态、退出码、浮点格式与 nested selector 副本。Runtime Planner
+删除旧 frozen-static-accessor artifact fallback；新 schema 必须提供 canonical static
+port metadata，缺失时直接拒绝，不猜历史产物。runtime alias、field-path 与 map
+projection 中的固定 authority/计数/ready 镜像也已退休，但 event sequence、对象身份、
+field path、selector、causal edge、capture 与所有 admission blocker 均保留。
+
+该批手写生产 Java 为 73,822 行，相对 81,581 行冻结基线累计净减 7,759 行；本批净删
+931 行生产代码。57 项快速回归、PMD、shell 语法与真实 custom-JDK/Z3 baseline 均通过；
+baseline producer worklist 正常闭合，Composer/Importer 无 gap，Z3 仍报告
+`SAT/REACHABLE`。完整 13-fixture 矩阵只在里程碑 commit 的隔离干净 worktree 上记录，
+不得用主 worktree 的用户 fixture 修改冒充 release gate。
+
 ### 明确不能删除
 
 必须保留：

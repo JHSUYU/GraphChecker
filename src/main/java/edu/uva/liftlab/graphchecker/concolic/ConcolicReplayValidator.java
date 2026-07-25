@@ -6,20 +6,21 @@ import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.LinkedHashSet;
-import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
- * Checks replay-model materialization and fresh dynamic selector rebinding.
- * Branch witness admission belongs to {@link ConcolicSummaryImporter}.
+ * Proves the two joins whose identities are created by the replay JVM.
+ *
+ * <p>The importer owns generic model-assignment, branch, output-closure and
+ * dynamic-binding schema admission. This class only joins a planned static
+ * selector to one applied selector and then to one activation-local runtime
+ * binding.</p>
  */
 public final class ConcolicReplayValidator {
     private static final String FRESH_MAP_ENTRY_REBINDING_AUTHORITY =
@@ -32,316 +33,195 @@ public final class ConcolicReplayValidator {
     private ConcolicReplayValidator() {
     }
 
-    /**
-     * Validates only replay-local dynamic selector rebinding. Generic model,
-     * branch and output-closure admission belongs to the importer.
-     */
     static List<String> validateDynamicRebindings(
             JsonObject task, JsonObject rawResult,
             JsonObject importedSummary) {
+        JsonArray planned = array(task, "modelAssignments");
+        JsonArray applied = array(rawResult, "modelAssignmentsApplied");
+        JsonArray rawBindings = array(rawResult, "dynamicFieldBindings");
+        String activationId = string(rawResult, "activationId");
+        boolean imported = importedSummary != null;
         List<String> failures = new ArrayList<>();
-        String appliedActivationId = string(rawResult, "activationId");
-        JsonArray plannedRows = array(task, "modelAssignments");
-        JsonArray appliedRows = array(rawResult,
-                "modelAssignmentsApplied");
-        DynamicAssignmentSet planned = DynamicAssignmentSet.from(
-                plannedRows, "PLANNED", firstNonBlank(string(task,
-                        "sourceActivationId"), string(task,
-                        "activationId")));
-        DynamicAssignmentSet applied = DynamicAssignmentSet.from(
-                appliedRows, "APPLIED", appliedActivationId);
-        for (String problem : planned.problems) {
-            failures.add("INVALID_PLANNED_MODEL_ASSIGNMENT:" + problem);
-        }
-        for (String problem : applied.problems) {
-            failures.add("INVALID_APPLIED_MODEL_ASSIGNMENT:" + problem);
-        }
-        if (planned.dynamicCount != applied.dynamicCount) {
+
+        if (dynamicCount(planned) != dynamicCount(applied)) {
             failures.add("DYNAMIC_MODEL_ASSIGNMENT_COUNT_MISMATCH");
         }
-
-        List<String> freshRebindingProblems =
-                validateFreshMapEntryRebindings(plannedRows, appliedRows,
-                        array(rawResult, "dynamicFieldBindings"),
-                        importedSummary == null ? new JsonArray()
-                                : importedFreshEntryFieldBindings(
-                                importedSummary),
-                        importedSummary != null);
-        for (String problem : freshRebindingProblems) {
-            failures.add("FRESH_MAP_ENTRY_REBINDING_INVALID:" + problem);
-        }
-
-        List<String> containerRebindingProblems =
-                validateContainerRebindings(plannedRows, appliedRows,
-                        array(rawResult, "dynamicFieldBindings"),
-                        importedSummary == null ? new JsonArray()
-                                : array(importedSummary,
-                                "dynamicFieldBindings"),
-                        importedSummary != null, appliedActivationId);
-        for (String problem : containerRebindingProblems) {
-            failures.add("CONTAINER_REPLAY_REBINDING_INVALID:" + problem);
-        }
+        addFailures(failures, "FRESH_MAP_ENTRY_REBINDING_INVALID:",
+                validateFreshMapEntryRebindings(planned, applied,
+                        rawBindings, imported
+                                ? importedFreshEntryBindings(importedSummary)
+                                : new JsonArray(), imported));
+        addFailures(failures, "CONTAINER_REPLAY_REBINDING_INVALID:",
+                validateContainerRebindings(planned, applied, rawBindings,
+                        imported ? array(importedSummary,
+                                "dynamicFieldBindings") : new JsonArray(),
+                        imported, activationId));
         return failures;
     }
 
-    private static final class DynamicAssignmentSet {
-        private final Set<String> identities = new LinkedHashSet<>();
-        private final List<String> problems = new ArrayList<>();
-        private int dynamicCount;
-
-        private static DynamicAssignmentSet from(JsonArray assignments,
-                                                 String source,
-                                                 String activationId) {
-            DynamicAssignmentSet result = new DynamicAssignmentSet();
-            java.util.Map<String, Integer> mapKeyIndices =
-                    new java.util.LinkedHashMap<>();
-            java.util.Map<String, String> mapIndexKeys =
-                    new java.util.LinkedHashMap<>();
-            for (int index = 0; index < assignments.size(); index++) {
-                JsonElement element = assignments.get(index);
-                if (!element.isJsonObject()) {
-                    continue;
-                }
-                JsonObject assignment = element.getAsJsonObject();
-                boolean dynamic = !string(assignment,
-                        "dynamicBindingId").isEmpty();
-                if (!dynamic) continue;
-                result.dynamicCount++;
-                List<String> validation = validateDynamicAssignment(
-                        assignment, activationId, source);
-                for (String problem : validation) {
-                    result.problems.add(source + "_" + index + ":"
-                            + problem);
-                }
-                if (!validation.isEmpty()) continue;
-                JsonObject mapSelector = object(assignment,
-                        "mapProjectionSelector");
-                if (dynamic && mapSelector.size() > 0) {
-                    String group = string(mapSelector, "mapInputPort")
-                            + "\u0000" + string(mapSelector, "outputPort")
-                            + "\u0000" + string(mapSelector, "outputCell")
-                            + "\u0000" + string(mapSelector,
-                            "mapProjectionOperation");
-                    String stableKey = stableImmutableMapKeySelector(
-                            mapSelector.get("expectedMapKey"));
-                    int outputIndex = integer(mapSelector,
-                            "outputIndex", -1);
-                    Integer previousIndex = mapKeyIndices.put(group
-                            + "\u0000" + stableKey, outputIndex);
-                    String previousKey = mapIndexKeys.put(group + "\u0000"
-                            + outputIndex, stableKey);
-                    if (previousIndex != null
-                            && previousIndex.intValue() != outputIndex
-                            || previousKey != null
-                            && !previousKey.equals(stableKey)) {
-                        result.problems.add(source + "_" + index
-                                + ":MAP_PROJECTION_KEY_INDEX_NOT_BIJECTIVE");
-                        continue;
-                    }
-                }
-                String identity = assignmentIdentity(assignment);
-                if (!result.identities.add(identity)) {
-                    result.problems.add(source + "_" + index
-                            + ":DUPLICATE_MODEL_ASSIGNMENT");
-                }
-            }
-            return result;
-        }
+    private static void addFailures(List<String> target, String prefix,
+                                    List<String> failures) {
+        for (String failure : failures) target.add(prefix + failure);
     }
 
-    private static void validateMapEntrySelector(JsonObject assignment,
-                                                 String source,
-                                                 List<String> result) {
-        boolean freshRebinding = freshMapEntryRebinding(assignment);
-        if (!freshRebinding) {
-            JsonElement key = selectorKey(assignment);
-            String authority = selectorAuthority(assignment);
-            if (key == null || key.isJsonNull()) {
-                result.add("MISSING_EXPECTED_ENTRY_KEY");
+    private static int dynamicCount(JsonArray assignments) {
+        int count = 0;
+        for (JsonElement element : assignments) {
+            if (element.isJsonObject() && !string(
+                    element.getAsJsonObject(), "dynamicBindingId").isEmpty()) {
+                count++;
             }
-            if (authority.isEmpty()) {
-                result.add("MISSING_EXPECTED_ENTRY_KEY_AUTHORITY");
-            }
-            return;
         }
-
-        if (bool(assignment, "sourceEntrySelectorRetained", true)) {
-            result.add("FRESH_REBIND_RETAINS_SOURCE_ENTRY_SELECTOR");
-        }
-        if (assignment.has("expectedEntryKey")
-                || assignment.has("expectedEntryKeyAuthority")) {
-            result.add("FRESH_REBIND_HAS_SEED_EXPECTED_KEY");
-        }
-        if ("PLANNED".equals(source)) {
-            if (assignment.has("entryReadObservationId")
-                    || assignment.has("keyExpression")
-                    || assignment.has("keyExpressionAuthority")) {
-                result.add("PLANNED_FRESH_REBIND_HAS_SEED_SELECTOR");
-            }
-            return;
-        }
-
-        JsonElement key = assignment.get("keyExpression");
-        if (key == null || !key.isJsonObject()
-                || string(assignment, "keyExpressionAuthority").isEmpty()
-                || string(assignment, "entryReadObservationId").isEmpty()) {
-            result.add("APPLIED_FRESH_ENTRY_SELECTOR_INCOMPLETE");
-        }
-        if (!bool(assignment, "freshEntrySelectorCaptured", false)) {
-            result.add("APPLIED_FRESH_ENTRY_SELECTOR_NOT_CAPTURED");
-        }
-        if (bool(assignment, "sameSeedEntryClaimed", true)) {
-            result.add("APPLIED_FRESH_REBIND_CLAIMS_SEED_ENTRY_IDENTITY");
-        }
+        return count;
     }
 
-    private static boolean freshMapEntryRebinding(JsonObject assignment) {
+    private static boolean freshMapEntry(JsonObject assignment) {
         return FRESH_MAP_ENTRY_REBINDING_AUTHORITY.equals(string(assignment,
                 "dynamicReplayRebindingAuthority"));
     }
 
-    private static int freshMapEntryRebindingCount(JsonArray assignments) {
-        int result = 0;
+    private static boolean container(JsonObject assignment) {
+        return CONTAINER_REPLAY_REBINDING_AUTHORITY.equals(string(assignment,
+                "containerReplayRebindingAuthority"));
+    }
+
+    private static int count(JsonArray assignments, boolean fresh) {
+        int count = 0;
         for (JsonElement element : assignments) {
-            if (element.isJsonObject() && freshMapEntryRebinding(
-                    element.getAsJsonObject())) result++;
+            if (!element.isJsonObject()) continue;
+            JsonObject assignment = element.getAsJsonObject();
+            if (fresh ? freshMapEntry(assignment) : container(assignment)) {
+                count++;
+            }
         }
-        return result;
+        return count;
     }
 
     /**
-     * Joins a static replay selector to the entry selector captured in the
-     * replay JVM.  No seed key or object token participates in this join.
+     * A fresh Map.Entry has no cross-execution key identity. The plan carries
+     * only its static field site; the applied row supplies the key captured by
+     * this replay activation.
      */
     private static List<String> validateFreshMapEntryRebindings(
             JsonArray planned, JsonArray applied, JsonArray rawBindings,
-            JsonArray importedBindings, boolean importedSummaryPresent) {
-        List<String> problems = new ArrayList<>();
-        int plannedCount = freshMapEntryRebindingCount(planned);
-        int appliedCount = freshMapEntryRebindingCount(applied);
-        if (plannedCount != appliedCount) {
-            problems.add("PLANNED_APPLIED_REBIND_COUNT_MISMATCH");
+            JsonArray importedBindings, boolean imported) {
+        List<String> failures = new ArrayList<>();
+        if (count(planned, true) != count(applied, true)) {
+            failures.add("PLANNED_APPLIED_REBIND_COUNT_MISMATCH");
         }
         for (int index = 0; index < planned.size(); index++) {
             JsonElement element = planned.get(index);
             if (!element.isJsonObject()
-                    || !freshMapEntryRebinding(element.getAsJsonObject())) {
+                    || !freshMapEntry(element.getAsJsonObject())) {
                 continue;
             }
             JsonObject plan = element.getAsJsonObject();
-            if (containsMember(plan, "expectedEntryKey")
-                    || containsMember(plan, "expectedEntryKeyAuthority")
-                    || containsMember(plan, "entryReadObservationId")
-                    || containsMember(plan, "keyExpression")
-                    || containsMember(plan, "keyExpressionAuthority")) {
-                problems.add("PLAN_" + index
+            if (bool(plan, "sourceEntrySelectorRetained", true)
+                    || plan.has("expectedEntryKey")
+                    || plan.has("expectedEntryKeyAuthority")
+                    || plan.has("entryReadObservationId")
+                    || plan.has("keyExpression")
+                    || plan.has("keyExpressionAuthority")) {
+                failures.add("PLAN_" + index
                         + "_CONTAINS_SEED_ENTRY_SELECTOR");
                 continue;
             }
-            List<JsonObject> appliedMatches = matchingStaticRebindings(
-                    applied, plan);
+            List<JsonObject> appliedMatches =
+                    freshAssignments(applied, plan);
             if (appliedMatches.size() != 1) {
-                problems.add("PLAN_" + index
-                        + (appliedMatches.isEmpty()
-                        ? "_NO_EXACT_APPLIED_REBIND"
-                        : "_AMBIGUOUS_APPLIED_REBIND"));
+                failures.add(matchFailure(index, appliedMatches,
+                        "APPLIED_REBIND"));
                 continue;
             }
             JsonObject appliedRow = appliedMatches.get(0);
-            List<JsonObject> rawMatches = matchingFreshBindings(rawBindings,
-                    appliedRow, true);
-            if (rawMatches.size() != 1) {
-                problems.add("PLAN_" + index + (rawMatches.isEmpty()
-                        ? "_NO_EXACT_FRESH_RAW_BINDING"
-                        : "_AMBIGUOUS_FRESH_RAW_BINDING"));
+            String witnessProblem = freshAppliedProblem(appliedRow);
+            if (!witnessProblem.isEmpty()) {
+                failures.add("PLAN_" + index + "_" + witnessProblem);
                 continue;
             }
-            if (importedSummaryPresent) {
-                List<JsonObject> importedMatches = matchingFreshBindings(
+            List<JsonObject> rawMatches = freshBindings(rawBindings,
+                    appliedRow, true);
+            if (rawMatches.size() != 1) {
+                failures.add(matchFailure(index, rawMatches,
+                        "FRESH_RAW_BINDING"));
+                continue;
+            }
+            if (imported) {
+                List<JsonObject> importedMatches = freshBindings(
                         importedBindings, appliedRow, false);
                 if (importedMatches.size() != 1) {
-                    problems.add("PLAN_" + index
-                            + (importedMatches.isEmpty()
-                            ? "_NO_EXACT_FRESH_IMPORTED_BINDING"
-                            : "_AMBIGUOUS_FRESH_IMPORTED_BINDING"));
+                    failures.add(matchFailure(index, importedMatches,
+                            "FRESH_IMPORTED_BINDING"));
                 }
             }
         }
-        return problems;
+        return failures;
     }
 
-    private static List<JsonObject> matchingStaticRebindings(
-            JsonArray assignments, JsonObject expected) {
-        List<JsonObject> result = new ArrayList<>();
+    private static String freshAppliedProblem(JsonObject assignment) {
+        if (bool(assignment, "sourceEntrySelectorRetained", true)
+                || assignment.has("expectedEntryKey")
+                || assignment.has("expectedEntryKeyAuthority")
+                || bool(assignment, "sameSeedEntryClaimed", true)) {
+            return "APPLIED_FRESH_REBIND_CARRIES_SEED_IDENTITY";
+        }
+        JsonElement key = assignment.get("keyExpression");
+        if (key == null || !key.isJsonObject()
+                || string(assignment, "entryReadObservationId").isEmpty()
+                || string(assignment, "keyExpressionAuthority").isEmpty()
+                || !bool(assignment, "freshEntrySelectorCaptured", false)) {
+            return "APPLIED_FRESH_ENTRY_SELECTOR_INCOMPLETE";
+        }
+        return "";
+    }
+
+    private static List<JsonObject> freshAssignments(
+            JsonArray assignments, JsonObject plan) {
+        List<JsonObject> matches = new ArrayList<>();
         for (JsonElement element : assignments) {
             if (!element.isJsonObject()) continue;
             JsonObject candidate = element.getAsJsonObject();
-            if (freshMapEntryRebinding(candidate)
-                    && same(candidate, expected, "engineSymbol")
-                    && same(candidate, expected, "inputSymbol")
-                    && same(candidate, expected, "baseInputSymbol")
-                    && same(candidate, expected, "dynamicBindingId")
-                    && same(candidate, expected, "dynamicFieldSymbol")
-                    && same(candidate, expected, "materializationSiteId")
-                    && integer(candidate, "materializationOccurrence", -1)
-                    == integer(expected, "materializationOccurrence", -2)
-                    && CanonicalJson.render(array(candidate,
-                    "materializationPath"))
-                    .equals(CanonicalJson.render(array(expected,
-                            "materializationPath")))) {
-                result.add(candidate);
+            if (freshMapEntry(candidate)
+                    && sameAssignmentSite(candidate, plan)) {
+                matches.add(candidate);
             }
         }
-        return result;
+        return matches;
     }
 
-    private static List<JsonObject> matchingFreshBindings(
+    private static List<JsonObject> freshBindings(
             JsonArray bindings, JsonObject applied, boolean raw) {
-        List<JsonObject> result = new ArrayList<>();
+        List<JsonObject> matches = new ArrayList<>();
+        String authority = raw
+                ? "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
+                + "FIELD_SITE_OCCURRENCE"
+                : "RUNTIME_DYNAMIC_FIELD_INSTANCE_EXACT_EXPRESSION_AND_"
+                + "ENTRY_VALUE_TOKEN_JOIN";
         for (JsonElement element : bindings) {
             if (!element.isJsonObject()) continue;
             JsonObject binding = element.getAsJsonObject();
-            String expectedKind = "DYNAMIC_MAP_ENTRY_FIELD_BINDING";
-            String expectedAuthority = raw
-                    ? "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
-                    + "FIELD_SITE_OCCURRENCE"
-                    : "RUNTIME_DYNAMIC_FIELD_INSTANCE_EXACT_EXPRESSION_AND_"
-                    + "ENTRY_VALUE_TOKEN_JOIN";
-            if (!expectedKind.equals(string(binding, "kind"))
-                    || !expectedAuthority.equals(string(binding,
-                    "authority"))
-                    || raw && !bool(binding, "complete", false)
-                    || !same(binding, applied, "baseInputSymbol")
-                    || !same(binding, applied, "dynamicBindingId")
-                    || !same(binding, applied, "dynamicFieldSymbol")
-                    || !same(binding, applied, "materializationSiteId")
-                    || integer(binding, "materializationOccurrence", -1)
-                    != integer(applied, "materializationOccurrence", -2)
-                    || !CanonicalJson.render(array(binding,
-                    "fieldPath")).equals(CanonicalJson.render(array(applied,
-                    "materializationPath")))
-                    || !same(binding, applied, "entryReadObservationId")
-                    || !same(binding, applied, "keyExpressionAuthority")
-                    || binding.get("keyExpression") == null
-                    || applied.get("keyExpression") == null
-                    || !binding.get("keyExpression").equals(
-                    applied.get("keyExpression"))) {
-                continue;
+            JsonElement expectedKey = applied.get("keyExpression");
+            if ("DYNAMIC_MAP_ENTRY_FIELD_BINDING".equals(string(binding,
+                    "kind"))
+                    && authority.equals(string(binding, "authority"))
+                    && (!raw || bool(binding, "complete", false))
+                    && sameBindingSite(binding, applied)
+                    && same(binding, applied, "entryReadObservationId")
+                    && same(binding, applied, "keyExpressionAuthority")
+                    && expectedKey != null
+                    && expectedKey.equals(binding.get("keyExpression"))) {
+                matches.add(binding);
             }
-            result.add(binding);
         }
-        return result;
+        return matches;
     }
 
     /**
-     * The summary-level dynamicFieldBindings array preserves the raw runtime
-     * declaration.  The importer-certified semantic join lives under the
-     * exact complete MAP_ENTRY_READ observation; only those nested rows are
-     * eligible to validate a fresh cross-execution entry rebinding.
+     * Imported fresh-entry bindings are eligible only under the complete
+     * MAP_ENTRY_READ observation that certified their replay-local key join.
      */
-    private static JsonArray importedFreshEntryFieldBindings(
-            JsonObject summary) {
-        JsonArray result = new JsonArray();
+    private static JsonArray importedFreshEntryBindings(JsonObject summary) {
+        JsonArray bindings = new JsonArray();
         for (JsonElement element : array(summary, "heapObservations")) {
             if (!element.isJsonObject()) continue;
             JsonObject observation = element.getAsJsonObject();
@@ -353,127 +233,146 @@ public final class ConcolicReplayValidator {
             }
             for (JsonElement bindingElement : array(observation,
                     "entryFieldBindings")) {
-                if (!bindingElement.isJsonObject()) continue;
-                JsonObject binding = bindingElement.getAsJsonObject();
-                if (observationId.equals(string(binding,
+                if (bindingElement.isJsonObject()
+                        && observationId.equals(string(
+                        bindingElement.getAsJsonObject(),
                         "entryReadObservationId"))) {
-                    result.add(binding);
+                    bindings.add(bindingElement);
                 }
             }
         }
-        return result;
-    }
-
-    private static boolean containerReplayRebinding(
-            JsonObject assignment) {
-        return CONTAINER_REPLAY_REBINDING_AUTHORITY.equals(string(
-                assignment, "containerReplayRebindingAuthority"));
-    }
-
-    private static int containerReplayRebindingCount(
-            JsonArray assignments) {
-        int result = 0;
-        for (JsonElement element : assignments) {
-            if (element.isJsonObject() && containerReplayRebinding(
-                    element.getAsJsonObject())) {
-                result++;
-            }
-        }
-        return result;
+        return bindings;
     }
 
     /**
-     * Joins a stable array selector in the solver plan to the fresh
-     * activation-local object identities observed by the replay JVM.  Object
-     * token numbers are never compared to the source execution; only the
-     * static selector tuple crosses that boundary.
+     * A container plan crosses executions by stable array selector only.
+     * Object tokens must be newly supplied by the replay activation.
      */
     private static List<String> validateContainerRebindings(
             JsonArray planned, JsonArray applied, JsonArray rawBindings,
-            JsonArray importedBindings, boolean importedSummaryPresent,
-            String replayActivationId) {
-        List<String> problems = new ArrayList<>();
-        int plannedCount = containerReplayRebindingCount(planned);
-        int appliedCount = containerReplayRebindingCount(applied);
-        if (plannedCount != appliedCount) {
-            problems.add("PLANNED_APPLIED_REBIND_COUNT_MISMATCH");
+            JsonArray importedBindings, boolean imported,
+            String activationId) {
+        List<String> failures = new ArrayList<>();
+        if (count(planned, false) != count(applied, false)) {
+            failures.add("PLANNED_APPLIED_REBIND_COUNT_MISMATCH");
         }
         for (int index = 0; index < planned.size(); index++) {
             JsonElement element = planned.get(index);
             if (!element.isJsonObject()
-                    || !containerReplayRebinding(
-                    element.getAsJsonObject())) {
+                    || !container(element.getAsJsonObject())) {
                 continue;
             }
             JsonObject plan = element.getAsJsonObject();
+            if (containerPlanCarriesRuntimeIdentity(plan)) {
+                failures.add("PLAN_" + index
+                        + "_CONTAINS_RUNTIME_CONTAINER_IDENTITY");
+                continue;
+            }
             List<JsonObject> appliedMatches =
-                    matchingStableContainerAssignments(applied, plan);
+                    containerAssignments(applied, plan);
             if (appliedMatches.size() != 1) {
-                problems.add("PLAN_" + index
-                        + (appliedMatches.isEmpty()
-                        ? "_NO_EXACT_APPLIED_REBIND"
-                        : "_AMBIGUOUS_APPLIED_REBIND"));
+                failures.add(matchFailure(index, appliedMatches,
+                        "APPLIED_REBIND"));
                 continue;
             }
             JsonObject appliedRow = appliedMatches.get(0);
-            List<JsonObject> rawMatches = matchingRuntimeContainerBindings(
-                    rawBindings, appliedRow, replayActivationId);
-            if (rawMatches.size() != 1) {
-                problems.add("PLAN_" + index
-                        + (rawMatches.isEmpty()
-                        ? "_NO_EXACT_FRESH_RAW_CONTAINER_BINDING"
-                        : "_AMBIGUOUS_FRESH_RAW_CONTAINER_BINDING"));
+            String witnessProblem = containerAppliedProblem(appliedRow,
+                    activationId);
+            if (!witnessProblem.isEmpty()) {
+                failures.add("PLAN_" + index + "_" + witnessProblem);
                 continue;
             }
-            if (importedSummaryPresent) {
-                List<JsonObject> importedMatches =
-                        matchingRuntimeContainerBindings(importedBindings,
-                                appliedRow, replayActivationId);
+            List<JsonObject> rawMatches = containerBindings(rawBindings,
+                    appliedRow, activationId);
+            if (rawMatches.size() != 1) {
+                failures.add(matchFailure(index, rawMatches,
+                        "FRESH_RAW_CONTAINER_BINDING"));
+                continue;
+            }
+            if (imported) {
+                List<JsonObject> importedMatches = containerBindings(
+                        importedBindings, appliedRow, activationId);
                 if (importedMatches.size() != 1) {
-                    problems.add("PLAN_" + index
-                            + (importedMatches.isEmpty()
-                            ? "_NO_EXACT_FRESH_IMPORTED_CONTAINER_BINDING"
-                            : "_AMBIGUOUS_FRESH_IMPORTED_CONTAINER_BINDING"));
+                    failures.add(matchFailure(index, importedMatches,
+                            "FRESH_IMPORTED_CONTAINER_BINDING"));
                 }
             }
         }
-        return problems;
+        return failures;
     }
 
-    private static List<JsonObject> matchingStableContainerAssignments(
-            JsonArray assignments, JsonObject expected) {
-        List<JsonObject> result = new ArrayList<>();
+    private static boolean containerPlanCarriesRuntimeIdentity(
+            JsonObject plan) {
+        if (bool(plan, "sourceContainerObjectTokensRetained", true)
+                || plan.has("sameSourceContainerIdentityClaimed")
+                || plan.has("currentContainerSelectorCaptured")) {
+            return true;
+        }
+        JsonObject selector = object(plan, "containerSelector");
+        for (String member : new String[]{"resolvedFromSelectorAuthority",
+                "containerObjectToken", "elementObjectToken",
+                "objectTokenAuthority", "objectTokenScope",
+                "containerObservationLocation", "authority", "complete"}) {
+            if (selector.has(member)) return true;
+        }
+        return false;
+    }
+
+    private static String containerAppliedProblem(
+            JsonObject assignment, String activationId) {
+        JsonObject selector = object(assignment, "containerSelector");
+        if (longInteger(selector, "containerObjectToken", 0L) <= 0L
+                || longInteger(selector, "elementObjectToken", 0L) <= 0L) {
+            return "INVALID_CONTAINER_OBJECT_TOKEN";
+        }
+        if (activationId.isEmpty()
+                || !activationId.equals(string(selector,
+                "objectTokenScope"))
+                || !"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
+                string(selector, "objectTokenAuthority"))) {
+            return "INVALID_CONTAINER_OBJECT_TOKEN_SCOPE";
+        }
+        String resolution = string(selector,
+                "resolvedFromSelectorAuthority");
+        if (!("EXACT_ARRAY_INDEX".equals(resolution)
+                || "DISCOVER_UNIQUE_IDENTITY_INDEX".equals(resolution))) {
+            return "INVALID_CONTAINER_RESOLUTION_AUTHORITY";
+        }
+        if (!"EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_ACTIVATION_LOCAL_"
+                .concat("ELEMENT_IDENTITY").equals(string(selector,
+                        "authority"))
+                || !bool(selector, "complete", false)
+                || bool(assignment,
+                "sameSourceContainerIdentityClaimed", true)
+                || !bool(assignment,
+                "currentContainerSelectorCaptured", false)) {
+            return "INCOMPLETE_CONTAINER_SELECTOR_AUTHORITY";
+        }
+        return "";
+    }
+
+    private static List<JsonObject> containerAssignments(
+            JsonArray assignments, JsonObject plan) {
+        List<JsonObject> matches = new ArrayList<>();
         for (JsonElement element : assignments) {
             if (!element.isJsonObject()) continue;
             JsonObject candidate = element.getAsJsonObject();
-            if (containerReplayRebinding(candidate)
-                    && same(candidate, expected, "engineSymbol")
-                    && same(candidate, expected, "inputSymbol")
-                    && same(candidate, expected, "baseInputSymbol")
-                    && same(candidate, expected, "valueType")
-                    && same(candidate, expected, "value")
-                    && same(candidate, expected, "authority")
-                    && same(candidate, expected, "dynamicBindingId")
-                    && same(candidate, expected, "dynamicFieldSymbol")
-                    && same(candidate, expected,
-                    "materializationSiteId")
-                    && integer(candidate, "materializationOccurrence", -1)
-                    == integer(expected, "materializationOccurrence", -2)
-                    && CanonicalJson.render(array(candidate,
-                    "materializationPath"))
-                    .equals(CanonicalJson.render(array(expected,
-                            "materializationPath")))
+            if (container(candidate)
+                    && sameAssignmentSite(candidate, plan)
+                    && same(candidate, plan, "valueType")
+                    && same(candidate, plan, "value")
+                    && same(candidate, plan, "authority")
                     && sameStableContainerSelector(object(candidate,
-                    "containerSelector"), object(expected,
+                    "containerSelector"), object(plan,
                     "containerSelector"))) {
-                result.add(candidate);
+                matches.add(candidate);
             }
         }
-        return result;
+        return matches;
     }
 
-    private static boolean sameStableContainerSelector(JsonObject left,
-                                                       JsonObject right) {
+    private static boolean sameStableContainerSelector(
+            JsonObject left, JsonObject right) {
         for (String member : new String[]{"kind", "bindingId",
                 "containerInputPort", "containerInputCell",
                 "selectorAuthority", "declaredFieldOwnerClass",
@@ -486,61 +385,61 @@ public final class ConcolicReplayValidator {
                 == integer(right, "elementOccurrence", -2);
     }
 
-    private static JsonObject stableContainerSelector(
-            JsonObject selector) {
-        JsonObject result = new JsonObject();
-        for (String member : new String[]{"kind", "bindingId",
-                "containerInputPort", "containerInputCell",
-                "selectorAuthority", "elementIndex",
-                "elementOccurrence", "declaredFieldOwnerClass",
-                "declaredFieldType"}) {
-            JsonElement value = selector.get(member);
-            if (value != null) result.add(member, value.deepCopy());
-        }
-        return result;
-    }
-
-    private static List<JsonObject> matchingRuntimeContainerBindings(
+    private static List<JsonObject> containerBindings(
             JsonArray bindings, JsonObject applied,
-            String replayActivationId) {
-        List<JsonObject> result = new ArrayList<>();
+            String activationId) {
+        List<JsonObject> matches = new ArrayList<>();
         JsonObject expectedSelector = object(applied,
                 "containerSelector");
         for (JsonElement element : bindings) {
             if (!element.isJsonObject()) continue;
             JsonObject binding = element.getAsJsonObject();
             JsonObject selector = object(binding, "containerSelector");
-            long elementToken = longInteger(selector,
-                    "elementObjectToken", 0L);
             String scope = string(selector, "objectTokenScope");
-            if (integer(binding, "schemaVersion", -1) != 3
-                    || !"DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
+            if (integer(binding, "schemaVersion", -1) == 3
+                    && "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
                     string(binding, "kind"))
-                    || !"ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_"
+                    && "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_"
                     .concat("IDENTITY_AND_STABLE_FIELD_SITE_OCCURRENCE")
                     .equals(string(binding, "authority"))
-                    || !bool(binding, "complete", false)
-                    || !same(binding, applied, "baseInputSymbol")
-                    || !same(binding, applied, "dynamicBindingId")
-                    || !same(binding, applied, "dynamicFieldSymbol")
-                    || !same(binding, applied, "materializationSiteId")
-                    || integer(binding, "materializationOccurrence", -1)
-                    != integer(applied, "materializationOccurrence", -2)
-                    || !CanonicalJson.render(array(binding,
-                    "fieldPath")).equals(CanonicalJson.render(array(applied,
-                    "materializationPath")))
-                    || !selector.equals(expectedSelector)
-                    || replayActivationId.isEmpty()
-                    || !replayActivationId.equals(scope)
-                    || !scope.equals(string(binding, "objectTokenScope"))
-                    || !"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN"
+                    && bool(binding, "complete", false)
+                    && sameBindingSite(binding, applied)
+                    && selector.equals(expectedSelector)
+                    && !activationId.isEmpty()
+                    && activationId.equals(scope)
+                    && scope.equals(string(binding, "objectTokenScope"))
+                    && "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN"
                     .equals(string(binding, "objectTokenAuthority"))
-                    || elementToken <= 0L) {
-                continue;
+                    && longInteger(selector,
+                    "elementObjectToken", 0L) > 0L) {
+                matches.add(binding);
             }
-            result.add(binding);
         }
-        return result;
+        return matches;
+    }
+
+    private static boolean sameAssignmentSite(
+            JsonObject left, JsonObject right) {
+        return same(left, right, "engineSymbol")
+                && same(left, right, "inputSymbol")
+                && sameBindingSite(left, right);
+    }
+
+    private static boolean sameBindingSite(
+            JsonObject left, JsonObject right) {
+        return same(left, right, "baseInputSymbol")
+                && same(left, right, "dynamicBindingId")
+                && same(left, right, "dynamicFieldSymbol")
+                && same(left, right, "materializationSiteId")
+                && integer(left, "materializationOccurrence", -1)
+                == integer(right, "materializationOccurrence", -2)
+                && array(left, pathField(left)).equals(array(right,
+                pathField(right)));
+    }
+
+    private static String pathField(JsonObject value) {
+        return value.has("fieldPath") ? "fieldPath"
+                : "materializationPath";
     }
 
     private static boolean same(JsonObject left, JsonObject right,
@@ -548,462 +447,9 @@ public final class ConcolicReplayValidator {
         return string(left, member).equals(string(right, member));
     }
 
-    private static boolean containsMember(JsonElement value, String member) {
-        if (value == null || value.isJsonNull() || value.isJsonPrimitive()) {
-            return false;
-        }
-        if (value.isJsonArray()) {
-            for (JsonElement element : value.getAsJsonArray()) {
-                if (containsMember(element, member)) return true;
-            }
-            return false;
-        }
-        JsonObject object = value.getAsJsonObject();
-        if (object.has(member)) return true;
-        for (java.util.Map.Entry<String, JsonElement> entry
-                : object.entrySet()) {
-            if (containsMember(entry.getValue(), member)) return true;
-        }
-        return false;
+    private static String matchFailure(
+            int index, List<JsonObject> matches, String subject) {
+        return "PLAN_" + index + (matches.isEmpty()
+                ? "_NO_EXACT_" : "_AMBIGUOUS_") + subject;
     }
-
-    private static List<String> validateDynamicAssignment(
-            JsonObject assignment, String activationId, String source) {
-        List<String> result = new ArrayList<>();
-        String bindingId = string(assignment, "dynamicBindingId");
-        String base = string(assignment, "baseInputSymbol");
-        String dynamic = string(assignment, "dynamicFieldSymbol");
-        String engine = string(assignment, "engineSymbol");
-        String input = string(assignment, "inputSymbol");
-        String site = string(assignment, "materializationSiteId");
-        int occurrence = integer(assignment, "materializationOccurrence",
-                -1);
-        JsonObject containerSelector = object(assignment,
-                "containerSelector");
-        JsonObject mapProjectionSelector = object(assignment,
-                "mapProjectionSelector");
-        boolean mapProjection = mapProjectionSelector.size() > 0
-                || "DYNAMIC_MAP_VALUE_OUTPUT_ARRAY_ELEMENT_FIELD_BINDING"
-                .equals(string(assignment, "dynamicFieldBindingKind"));
-        boolean container = containerSelector.size() > 0
-                || "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
-                string(assignment, "dynamicFieldBindingKind"))
-                || containerReplayRebinding(assignment);
-        if (base.isEmpty()) result.add("MISSING_BASE_INPUT_SYMBOL");
-        if (dynamic.isEmpty()) result.add("MISSING_DYNAMIC_FIELD_SYMBOL");
-        if (engine.isEmpty()) result.add("MISSING_ENGINE_SYMBOL");
-        if (site.isEmpty()) result.add("MISSING_MATERIALIZATION_SITE");
-        if (occurrence < 1) {
-            result.add("INVALID_MATERIALIZATION_OCCURRENCE");
-        }
-        if (mapProjection) {
-            validateMapProjectionSelector(mapProjectionSelector,
-                    occurrence, activationId, result);
-            if (assignment.has("expectedEntryKey")
-                    || assignment.has("containerSelector")) {
-                result.add("MAP_PROJECTION_HAS_FOREIGN_SELECTOR");
-            }
-        } else if (container) {
-            validateContainerSelector(assignment, containerSelector,
-                    occurrence, activationId, source, result);
-        } else {
-            validateMapEntrySelector(assignment, source, result);
-        }
-        if (!dynamic.isEmpty()
-                && !bindingId.equals("DYNAMIC_FIELD:" + dynamic)) {
-            result.add("BINDING_ID_DYNAMIC_SYMBOL_MISMATCH");
-        }
-        if (!base.isEmpty() && !base.equals(input)) {
-            result.add("WRONG_INPUT_OWNER");
-        }
-        if (!dynamic.isEmpty() && !exactEngineSymbol(engine, dynamic)) {
-            result.add("ENGINE_DYNAMIC_SYMBOL_MISMATCH");
-        }
-        return result;
-    }
-
-    private static void validateContainerSelector(JsonObject assignment,
-                                                  JsonObject selector,
-                                                  int occurrence,
-                                                  String activationId,
-                                                  String source,
-                                                  List<String> result) {
-        if (selector.size() == 0) {
-            result.add("MISSING_CONTAINER_SELECTOR");
-            return;
-        }
-        if (!"ARRAY_INDEX".equals(string(selector, "kind"))) {
-            result.add("WRONG_CONTAINER_SELECTOR_KIND");
-        }
-        if (string(selector, "bindingId").isEmpty()) {
-            result.add("MISSING_CONTAINER_BINDING_ID");
-        }
-        if (string(selector, "containerInputPort").isEmpty()
-                || string(selector, "containerInputCell").isEmpty()) {
-            result.add("MISSING_CONTAINER_ENDPOINT");
-        }
-        if (!"EXACT_ARRAY_INDEX".equals(string(selector,
-                "selectorAuthority"))) {
-            result.add("NON_EXACT_CONTAINER_SELECTOR");
-        }
-        if (integer(selector, "elementIndex", -1) < 0) {
-            result.add("INVALID_CONTAINER_ELEMENT_INDEX");
-        }
-        int elementOccurrence = integer(selector, "elementOccurrence", -1);
-        if (elementOccurrence < 1 || elementOccurrence != occurrence) {
-            result.add("CONTAINER_OCCURRENCE_MISMATCH");
-        }
-        if (string(selector, "declaredFieldOwnerClass").isEmpty()) {
-            result.add("MISSING_DECLARED_FIELD_OWNER");
-        }
-        if (string(selector, "declaredFieldType").isEmpty()) {
-            result.add("MISSING_DECLARED_FIELD_TYPE");
-        }
-        if (!CONTAINER_REPLAY_REBINDING_AUTHORITY.equals(string(
-                assignment, "containerReplayRebindingAuthority"))) {
-            result.add("INVALID_CONTAINER_REPLAY_REBINDING_AUTHORITY");
-        }
-        if (bool(assignment, "sourceContainerObjectTokensRetained", true)) {
-            result.add("SOURCE_CONTAINER_OBJECT_TOKENS_RETAINED");
-        }
-        if ("PLANNED".equals(source)) {
-            for (String runtimeMember : new String[]{
-                    "resolvedFromSelectorAuthority",
-                    "containerObjectToken", "elementObjectToken",
-                    "objectTokenAuthority", "objectTokenScope",
-                    "containerObservationLocation"}) {
-                if (containsMember(assignment, runtimeMember)) {
-                    result.add("PLANNED_CONTAINER_HAS_RUNTIME_MEMBER:"
-                            + runtimeMember);
-                }
-            }
-            for (String runtimeClaim : new String[]{"authority",
-                    "complete"}) {
-                if (selector.has(runtimeClaim)) {
-                    result.add("PLANNED_CONTAINER_HAS_RUNTIME_MEMBER:"
-                            + runtimeClaim);
-                }
-            }
-            if (assignment.has("sameSourceContainerIdentityClaimed")
-                    || assignment.has("currentContainerSelectorCaptured")) {
-                result.add("PLANNED_CONTAINER_HAS_APPLIED_REBIND_WITNESS");
-            }
-            return;
-        }
-        if (longInteger(selector, "containerObjectToken", 0L) <= 0L
-                || longInteger(selector, "elementObjectToken", 0L) <= 0L) {
-            result.add("INVALID_CONTAINER_OBJECT_TOKEN");
-        }
-        String tokenScope = string(selector, "objectTokenScope");
-        if (!"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
-                string(selector, "objectTokenAuthority"))
-                || activationId.isEmpty()
-                || !activationId.equals(tokenScope)) {
-            result.add("INVALID_CONTAINER_OBJECT_TOKEN_SCOPE");
-        }
-        if (!("EXACT_ARRAY_INDEX".equals(string(selector,
-                "resolvedFromSelectorAuthority"))
-                || "DISCOVER_UNIQUE_IDENTITY_INDEX".equals(string(selector,
-                "resolvedFromSelectorAuthority")))) {
-            result.add("INVALID_CONTAINER_RESOLUTION_AUTHORITY");
-        }
-        if (!"EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_ACTIVATION_LOCAL_"
-                .concat("ELEMENT_IDENTITY").equals(string(selector,
-                        "authority"))
-                || !bool(selector, "complete", false)) {
-            result.add("INCOMPLETE_CONTAINER_SELECTOR_AUTHORITY");
-        }
-        if (bool(assignment, "sameSourceContainerIdentityClaimed", true)) {
-            result.add("APPLIED_CONTAINER_CLAIMS_SOURCE_IDENTITY");
-        }
-        if (!bool(assignment, "currentContainerSelectorCaptured", false)) {
-            result.add("APPLIED_CURRENT_CONTAINER_SELECTOR_NOT_CAPTURED");
-        }
-    }
-
-    private static void validateMapProjectionSelector(
-            JsonObject selector, int occurrence, String activationId,
-            List<String> result) {
-        if (selector.size() == 0) {
-            result.add("MISSING_MAP_PROJECTION_SELECTOR");
-            return;
-        }
-        if (!"MAP_OUTPUT_ARRAY_INDEX".equals(string(selector, "kind"))) {
-            result.add("WRONG_MAP_PROJECTION_SELECTOR_KIND");
-        }
-        if (string(selector, "bindingId").isEmpty()) {
-            result.add("MISSING_MAP_PROJECTION_BINDING_ID");
-        }
-        if (string(selector, "mapInputPort").isEmpty()
-                || string(selector, "mapInputCell").isEmpty()
-                || string(selector, "outputPort").isEmpty()
-                || string(selector, "outputCell").isEmpty()) {
-            result.add("MISSING_MAP_PROJECTION_ENDPOINT");
-        }
-        String operation = string(selector, "mapProjectionOperation");
-        if (!("MAP_VALUES_VIEW".equals(operation)
-                || "MAP_KEY_SET_VIEW".equals(operation))) {
-            result.add("UNSUPPORTED_MAP_PROJECTION_OPERATION");
-        }
-        int index = integer(selector, "outputIndex", -1);
-        int elementOccurrence = integer(selector,
-                "elementOccurrence", -1);
-        if (index < 0 || elementOccurrence != index + 1
-                || elementOccurrence != occurrence) {
-            result.add("MAP_PROJECTION_INDEX_OCCURRENCE_MISMATCH");
-        }
-        if (string(selector, "declaredFieldOwnerClass").isEmpty()
-                || string(selector, "declaredFieldType").isEmpty()
-                || string(selector, "declaredFieldSignature").isEmpty()) {
-            result.add("MISSING_MAP_PROJECTION_DECLARED_FIELD");
-        }
-        long mapToken = longInteger(selector, "mapObjectToken", 0L);
-        long elementToken = longInteger(selector,
-                "elementObjectToken", 0L);
-        long outputToken = longInteger(selector,
-                "outputArrayObjectToken", 0L);
-        if (mapToken <= 0L || elementToken <= 0L || outputToken <= 0L) {
-            result.add("INVALID_MAP_PROJECTION_OBJECT_TOKEN");
-        }
-        if (mapToken == elementToken || mapToken == outputToken
-                || elementToken == outputToken) {
-            result.add("NON_DISTINCT_MAP_PROJECTION_OBJECT_TOKEN");
-        }
-        String scope = string(selector, "objectTokenScope");
-        if (!"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
-                string(selector, "objectTokenAuthority"))
-                || activationId.isEmpty() || !activationId.equals(scope)) {
-            result.add("INVALID_MAP_PROJECTION_OBJECT_TOKEN_SCOPE");
-        }
-        if (!"NONE".equals(string(selector,
-                "crossExecutionOrdinalAuthority"))) {
-            result.add("INVALID_MAP_PROJECTION_CROSS_EXECUTION_AUTHORITY");
-        }
-        if (!"IMMUTABLE_MAP_ENTRY_KEY_AND_SAME_OUTPUT_INDEX_WITH_EXACT_"
-                .concat("OUTPUT_IDENTITY").equals(string(selector,
-                        "authority"))) {
-            result.add("INVALID_MAP_PROJECTION_SELECTOR_AUTHORITY");
-        }
-        if (!exactImmutableMapKey(selector.get("expectedMapKey"))
-                || !"CONCRETE_IMMUTABLE_MAP_ENTRY_KEY_AT_ENTRYSET_SNAPSHOT"
-                .equals(string(selector, "expectedMapKeyAuthority"))) {
-            result.add("INVALID_MAP_PROJECTION_EXPECTED_KEY");
-        }
-        if (!"ENTRYSET_AND_MAP_VIEW_TO_ARRAY_SAME_EXECUTION_POSITIONAL_"
-                .concat("REFERENCE_EQUALITY").equals(string(selector,
-                        "sourceOutputIndexAuthority"))
-                || !"IMMUTABLE_MAP_KEY_LOOKUP_THEN_SAME_OUTPUT_INDEX_AND_"
-                .concat("EXACT_OUTPUT_IDENTITY").equals(string(selector,
-                        "replaySelectionAuthority"))) {
-            result.add("INVALID_MAP_PROJECTION_KEYED_REPLAY_AUTHORITY");
-        }
-        String outputAuthority = string(selector,
-                "outputVerificationAuthority");
-        boolean exactOutputAuthority =
-                "ACTIVE_REGION_ROOT_RETURN_EXACT_PROJECTED_FIELD".equals(
-                        outputAuthority)
-                || "ACTIVE_TOKEN_EXACT_ORIGINAL_CALL_ARGUMENT".equals(
-                        outputAuthority)
-                || "ACTIVE_TOKEN_EXACT_POST_INSTANCE_FIELD_ASSIGNMENT"
-                .equals(outputAuthority);
-        if (!bool(selector, "outputIdentityVerified", false)
-                || !exactOutputAuthority
-                || !bool(selector, "complete", false)) {
-            result.add("INCOMPLETE_MAP_PROJECTION_OUTPUT_IDENTITY");
-        }
-        boolean sourceScopePresent = selector.has("sourceObjectTokenScope")
-                && !string(selector, "sourceObjectTokenScope").isEmpty();
-        boolean rebindingPresent = selector.has(
-                "replayScopeRebindingAuthority")
-                && !string(selector,
-                "replayScopeRebindingAuthority").isEmpty();
-        if (!sourceScopePresent || !rebindingPresent
-                || !"SOURCE_CASE_SELECTOR_VALIDATED_THEN_REPLAY_"
-                .concat("ACTIVATION_SCOPE_REBOUND_TOKENS_NOT_COMPARED_"
-                        + "ACROSS_EXECUTIONS").equals(string(selector,
-                        "replayScopeRebindingAuthority"))) {
-            result.add("INVALID_MAP_PROJECTION_REPLAY_SCOPE_REBINDING");
-        }
-    }
-
-    private static boolean exactImmutableMapKey(JsonElement element) {
-        if (element == null || !element.isJsonObject()) return false;
-        JsonObject expression = element.getAsJsonObject();
-        if (!"ConstExpr".equals(string(expression, "_type"))) return false;
-        String encoded = string(expression, "_exp");
-        if (!encoded.startsWith("Y_") || encoded.length() < 4
-                || encoded.charAt(3) != '_') return false;
-        char kind = encoded.charAt(2);
-        if (kind != immutableKeyKind(string(expression, "_java_type"))) {
-            return false;
-        }
-        String payload = encoded.substring(4);
-        try {
-            java.math.BigInteger integer;
-            switch (kind) {
-                case 'Z':
-                    return "0".equals(payload) || "1".equals(payload);
-                case 'B':
-                    integer = new java.math.BigInteger(payload);
-                    return integer.toString().equals(payload)
-                            && integer.compareTo(java.math.BigInteger.valueOf(
-                            Byte.MIN_VALUE)) >= 0
-                            && integer.compareTo(java.math.BigInteger.valueOf(
-                            Byte.MAX_VALUE)) <= 0;
-                case 'C':
-                    integer = new java.math.BigInteger(payload);
-                    return integer.toString().equals(payload)
-                            && integer.signum() >= 0
-                            && integer.compareTo(java.math.BigInteger.valueOf(
-                            Character.MAX_VALUE)) <= 0;
-                case 'S':
-                    integer = new java.math.BigInteger(payload);
-                    return integer.toString().equals(payload)
-                            && integer.compareTo(java.math.BigInteger.valueOf(
-                            Short.MIN_VALUE)) >= 0
-                            && integer.compareTo(java.math.BigInteger.valueOf(
-                            Short.MAX_VALUE)) <= 0;
-                case 'I':
-                    integer = new java.math.BigInteger(payload);
-                    return integer.toString().equals(payload)
-                            && integer.compareTo(java.math.BigInteger.valueOf(
-                            Integer.MIN_VALUE)) >= 0
-                            && integer.compareTo(java.math.BigInteger.valueOf(
-                            Integer.MAX_VALUE)) <= 0;
-                case 'J':
-                    integer = new java.math.BigInteger(payload);
-                    return integer.toString().equals(payload)
-                            && integer.compareTo(java.math.BigInteger.valueOf(
-                            Long.MIN_VALUE)) >= 0
-                            && integer.compareTo(java.math.BigInteger.valueOf(
-                            Long.MAX_VALUE)) <= 0;
-                case 'L':
-                    return true;
-                default:
-                    return false;
-            }
-        } catch (RuntimeException malformed) {
-            return false;
-        }
-    }
-
-    private static char immutableKeyKind(String javaType) {
-        String value = javaType == null ? ""
-                : javaType.replace('.', '/');
-        if ("java/lang/Boolean".equals(value)) return 'Z';
-        if ("java/lang/Byte".equals(value)) return 'B';
-        if ("java/lang/Character".equals(value)) return 'C';
-        if ("java/lang/Short".equals(value)) return 'S';
-        if ("java/lang/Integer".equals(value)) return 'I';
-        if ("java/lang/Long".equals(value)) return 'J';
-        if ("java/lang/String".equals(value)) return 'L';
-        return 0;
-    }
-
-    private static String stableImmutableMapKeySelector(
-            JsonElement element) {
-        if (!exactImmutableMapKey(element)) return "";
-        String raw = string(element.getAsJsonObject(), "_exp");
-        String value = raw.substring(4);
-        return raw.charAt(2) + ":" + value.length() + ":" + value;
-    }
-
-    private static String assignmentIdentity(JsonObject assignment) {
-        StringBuilder value = new StringBuilder();
-        boolean dynamic = !string(assignment,
-                "dynamicBindingId").isEmpty();
-        identityComponent(value, dynamic ? "DYNAMIC" : "DIRECT");
-        identityComponent(value, string(assignment, "engineSymbol"));
-        identityComponent(value, string(assignment, "inputSymbol"));
-        identityComponent(value, string(assignment, "baseInputSymbol"));
-        identityComponent(value, string(assignment, "valueType"));
-        identityComponent(value, string(assignment, "value"));
-        identityComponent(value, string(assignment, "authority"));
-        identityComponent(value, string(assignment, "modelOperation"));
-        identityComponent(value, CanonicalJson.render(array(assignment,
-                "materializationPath")));
-        identityComponent(value, string(assignment, "dynamicBindingId"));
-        identityComponent(value, string(assignment, "dynamicFieldSymbol"));
-        identityComponent(value, string(assignment,
-                "materializationSiteId"));
-        identityComponent(value, String.valueOf(integer(assignment,
-                "materializationOccurrence", -1)));
-        JsonObject container = object(assignment, "containerSelector");
-        JsonObject mapProjection = object(assignment,
-                "mapProjectionSelector");
-        if (mapProjection.size() > 0) {
-            identityComponent(value, "MAP_OUTPUT_ARRAY_INDEX");
-            identityComponent(value, CanonicalJson.render(mapProjection));
-        } else if (container.size() > 0) {
-            identityComponent(value, "ARRAY_INDEX");
-            // Runtime object tokens and their scope are replay-local.  The
-            // stable selector is the cross-execution identity; a separate
-            // join validates the applied selector against the fresh raw
-            // binding before admission.
-            identityComponent(value, CanonicalJson.render(
-                    stableContainerSelector(container)));
-            identityComponent(value, string(assignment,
-                    "containerReplayRebindingAuthority"));
-        } else {
-            if (freshMapEntryRebinding(assignment)) {
-                // Planned and applied rows intentionally differ in their key:
-                // only the applied row may contain the selector captured in
-                // the replay JVM.  Static base/site/occurrence identity above
-                // plus this explicit authority is the comparison key; a
-                // separate raw-binding join validates the fresh selector.
-                identityComponent(value, "MAP_ENTRY_FRESH_REBIND");
-                identityComponent(value,
-                        FRESH_MAP_ENTRY_REBINDING_AUTHORITY);
-            } else {
-                identityComponent(value, "MAP_ENTRY_KEY");
-                identityComponent(value, CanonicalJson.render(
-                        selectorKey(assignment)));
-                identityComponent(value, selectorAuthority(assignment));
-            }
-        }
-        return value.toString();
-    }
-
-    private static JsonElement selectorKey(JsonObject assignment) {
-        JsonElement expected = assignment.get("expectedEntryKey");
-        return expected != null ? expected : assignment.get("keyExpression");
-    }
-
-    private static String selectorAuthority(JsonObject assignment) {
-        return firstNonBlank(string(assignment,
-                "expectedEntryKeyAuthority"), string(assignment,
-                "keyExpressionAuthority"));
-    }
-
-    private static boolean exactEngineSymbol(String engine,
-                                             String dynamic) {
-        if (engine == null || dynamic == null || dynamic.isEmpty()) {
-            return false;
-        }
-        if (engine.equals(dynamic)) return true;
-        if (engine.length() <= 10 || engine.charAt(0) != 'M'
-                || engine.charAt(1) != '_'
-                || "ZCBSIFJDL".indexOf(engine.charAt(2)) < 0
-                || !engine.startsWith("_field_", 3)) {
-            return false;
-        }
-        String payload = engine.substring(10);
-        if (payload.equals(dynamic)) return true;
-        String boundary = dynamic + "_";
-        return payload.startsWith(boundary)
-                && legalVmOwnerSuffix(payload.substring(boundary.length()));
-    }
-
-    private static boolean legalVmOwnerSuffix(String suffix) {
-        return suffix != null && suffix.matches(
-                "[A-Za-z_$][A-Za-z0-9_$]*"
-                        + "(?:/[A-Za-z_$][A-Za-z0-9_$]*)*");
-    }
-
-    private static void identityComponent(StringBuilder result,
-                                          String value) {
-        String safe = value == null ? "" : value;
-        result.append(safe.length()).append(':').append(safe).append('|');
-    }
-
 }

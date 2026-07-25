@@ -136,9 +136,9 @@ public final class ConcolicScheduler {
             JsonObject scheduledActivation = candidate.activation.deepCopy();
             mergePlan.attachOutboundValueEqualityBindings(
                     scheduledActivation, candidate.outputContract);
-            JsonObject captured = candidate.outputClosure ? null
+            JsonObject captured = candidate.outputContract != null ? null
                     : exactTargetSummary(candidate, summaries);
-            String executionPhase = candidate.outputClosure
+            String executionPhase = candidate.outputContract != null
                     ? "CAPTURE_OUTPUT_PATH"
                     : arguments.captureOnly
                     ? "CAPTURE_ONLY"
@@ -154,14 +154,14 @@ public final class ConcolicScheduler {
                     materialization.actions.deepCopy());
             scheduledActivation.add("concreteFallbacks",
                     materialization.concreteFallbacks.deepCopy());
-            if (candidate.outputClosure) {
+            if (candidate.outputContract != null) {
                 OutputClosureCodec.writeTo(scheduledActivation,
                         candidate.outputContract);
             }
             compactScheduledActivation(scheduledActivation,
                     materialization.ready);
 
-            if (captured != null && !candidate.outputClosure) {
+            if (captured != null && candidate.outputContract == null) {
                 JsonObject query = branchQuery(candidate, captured,
                         mergePlan);
                 result.queries.add(query);
@@ -384,8 +384,7 @@ public final class ConcolicScheduler {
             if (region == null || activationId.isEmpty()) {
                 continue;
             }
-            JsonObject activation = operationalActivation(
-                    discoveredActivation);
+            JsonObject activation = discoveredActivation;
             if (!admissionReplayable(activation)) {
                 continue;
             }
@@ -513,11 +512,6 @@ public final class ConcolicScheduler {
         return "CALL_ARGUMENT".equals(kind)
                 && "RUNTIME_EXACT_CALL_ARGUMENT_OCCURRENCE".equals(authority)
                 && integer(capture, "runtimeInvocationId", 0) > 0;
-    }
-
-    /** Canonicalizes unstable default object identity in thread names. */
-    private static JsonObject operationalActivation(JsonObject discovered) {
-        return discovered;
     }
 
     /** Compiles the contract union needed by execution, without mirrors. */
@@ -2366,7 +2360,6 @@ public final class ConcolicScheduler {
         private final Region region;
         private final TargetBranch target;
         private final boolean directed;
-        private final boolean outputClosure;
         private final OutputClosureContract outputContract;
         private final MaterializationPlan materialization;
 
@@ -2380,8 +2373,7 @@ public final class ConcolicScheduler {
             this.region = region;
             this.target = target;
             this.outputContract = outputContract;
-            this.outputClosure = outputContract != null;
-            this.directed = this.outputClosure || !hasRequiredWitness;
+            this.directed = outputContract != null || !hasRequiredWitness;
             this.materialization = materialization;
         }
     }

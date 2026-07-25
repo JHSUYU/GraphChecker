@@ -214,7 +214,17 @@ public final class RegionPathWorklist {
                 if (tasks.size() >= bounds.maxTasks) break;
             }
 
-            JsonObject manifest = manifest(seenPaths.size(),
+            int remainingPathSlots = bounds.maxPathsPerRegion
+                    - seenPaths.size();
+            if (!tasks.isEmpty() && remainingPathSlots <= 0) {
+                gap("BOUND_REACHED", "MAX_PATHS_PER_REGION",
+                        manifestRegionId(observedRegions),
+                        "", "", -1);
+            } else if (tasks.size() > remainingPathSlots) {
+                tasks.subList(remainingPathSlots, tasks.size()).clear();
+            }
+
+            JsonObject manifest = manifest(!seenPaths.isEmpty(),
                     observedRegions, observedScopes);
             return new Result(tasks, manifest);
         }
@@ -448,7 +458,7 @@ public final class RegionPathWorklist {
             }
         }
 
-        private JsonObject manifest(int observedPathCount,
+        private JsonObject manifest(boolean hasObservedPath,
                                     Set<String> observedRegions,
                                     Map<String, ExplorationScope> scopes) {
             String regionId = manifestRegionId(observedRegions);
@@ -457,7 +467,7 @@ public final class RegionPathWorklist {
                         "REGION_PATH_WORKLIST_REQUIRES_ONE_REGION",
                         "", "", "", -1);
             }
-            if (observedPathCount == 0) {
+            if (!hasObservedPath) {
                 gap("NO_OBSERVED_PATH_SEED",
                         "REGION_PATH_SEED_REQUIRED",
                         regionId, "", "", -1);
@@ -478,7 +488,7 @@ public final class RegionPathWorklist {
                 }
             }
 
-            State state = observedPathCount == 0
+            State state = !hasObservedPath
                     ? State.NOT_STARTED
                     : !gaps.isEmpty()
                     ? State.GAPPED
@@ -489,7 +499,6 @@ public final class RegionPathWorklist {
             result.addProperty("regionId", regionId);
             result.addProperty("state", state.name());
             result.add("bounds", bounds.toJson());
-            result.addProperty("observedPathCount", observedPathCount);
             if (scopes.size() == 1) {
                 ExplorationScope scope = scopes.values().iterator().next();
                 if (scope.contract != null) {
@@ -648,12 +657,9 @@ public final class RegionPathWorklist {
                 String instance = firstNonBlank(string(source,
                         "regionInstanceId"), string(summary,
                         "regionInstanceId"));
-                String rootMethod = firstNonBlank(string(object(source,
-                                "rootSelector"), "method"),
-                        string(summary, "rootMethod"));
                 return new ExplorationScope(goal, null, sites,
-                        "TARGET_BRANCH_V1\n" + region + "\n" + instance
-                                + "\n" + targetMethod + "\n" + rootMethod);
+                        "TARGET_BRANCH_V2\n" + region + "\n" + instance
+                                + "\n" + targetMethod);
             }
             OutputClosureContract summaryContract = decode(summary);
             OutputClosureContract activationContract =
@@ -974,7 +980,6 @@ public final class RegionPathWorklist {
             if (value == null || !value.isJsonObject()) return;
             JsonObject object = value.getAsJsonObject();
             addPort(string(object, "portId"));
-            addPort(string(object, "symbol"));
             addPort(string(object, "inputPort"));
             addPort(string(object, "outputPort"));
         }

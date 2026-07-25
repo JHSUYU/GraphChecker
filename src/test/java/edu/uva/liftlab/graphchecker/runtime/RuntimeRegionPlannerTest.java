@@ -414,7 +414,7 @@ public class RuntimeRegionPlannerTest {
             assertFalse(missingEdge.activations.get(2).containsKey(
                     "outputClosure"));
             assertTrue(String.valueOf(missingEdge.activations.get(2).get(
-                    "outputClosureIssues")).contains(
+                    "admission")).contains(
                     "OUTPUT_MEMBER_INCOMPLETE"));
         } finally {
             folder.delete();
@@ -478,7 +478,7 @@ public class RuntimeRegionPlannerTest {
         assertFalse(rejected.containsKey("outputClosure"));
         assertFalse(rejected.containsKey("requestedOutput"));
         assertFalse(rejected.containsKey("requestedOutputSlice"));
-        assertTrue(String.valueOf(rejected.get("outputClosureIssues"))
+        assertTrue(String.valueOf(rejected.get("admission"))
                 .contains("OUTPUT_MEMBER_INCOMPLETE:REGION.P.out.y"));
         assertEquals(3, ((List<?>) rejected.get("edgeBindings")).size());
 

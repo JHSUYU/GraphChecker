@@ -56,26 +56,50 @@ public class ConcolicReplayValidatorTest {
     }
 
     @Test
+    public void rejectsFreshMapPlanThatCarriesSeedKey() {
+        JsonObject planned = freshMapAssignment();
+        planned.add("expectedEntryKey", integerKey(7));
+
+        List<String> failures =
+                ConcolicReplayValidator.validateDynamicRebindings(
+                        task(array(planned)),
+                        raw(new JsonArray(), new JsonArray()), null);
+
+        assertTrue(failures.toString(), failures.toString().contains(
+                "CONTAINS_SEED_ENTRY_SELECTOR"));
+    }
+
+    @Test
+    public void rejectsMissingAppliedDynamicAssignment() {
+        List<String> failures =
+                ConcolicReplayValidator.validateDynamicRebindings(
+                        task(array(freshMapAssignment())),
+                        raw(new JsonArray(), new JsonArray()), null);
+
+        assertTrue(failures.toString(), failures.toString().contains(
+                "DYNAMIC_MODEL_ASSIGNMENT_COUNT_MISMATCH"));
+    }
+
+    @Test
+    public void acceptsContainerReboundInReplayActivation() {
+        JsonObject planned = containerAssignment();
+        JsonObject applied = replayedContainer(planned, "ACT.REPLAY");
+        JsonObject binding = containerBinding(applied);
+        JsonObject summary = new JsonObject();
+        summary.add("dynamicFieldBindings", array(binding.deepCopy()));
+
+        List<String> failures =
+                ConcolicReplayValidator.validateDynamicRebindings(
+                        task(array(planned)),
+                        raw(array(applied), array(binding)), summary);
+
+        assertTrue(failures.toString(), failures.isEmpty());
+    }
+
+    @Test
     public void rejectsContainerTokenOutsideReplayActivation() {
         JsonObject planned = containerAssignment();
-        JsonObject applied = planned.deepCopy();
-        applied.remove("solverSymbol");
-        JsonObject selector = applied.getAsJsonObject("containerSelector");
-        selector.addProperty("resolvedFromSelectorAuthority",
-                "EXACT_ARRAY_INDEX");
-        selector.addProperty("containerObjectToken", 301L);
-        selector.addProperty("elementObjectToken", 302L);
-        selector.addProperty("objectTokenAuthority",
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        selector.addProperty("objectTokenScope", "ACT.WRONG");
-        selector.addProperty("containerObservationLocation",
-                "EXACT_CONSUMED_LEAF_OBSERVATION");
-        selector.addProperty("authority",
-                "EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_"
-                        + "ACTIVATION_LOCAL_ELEMENT_IDENTITY");
-        selector.addProperty("complete", true);
-        applied.addProperty("sameSourceContainerIdentityClaimed", false);
-        applied.addProperty("currentContainerSelectorCaptured", true);
+        JsonObject applied = replayedContainer(planned, "ACT.WRONG");
         JsonObject binding = containerBinding(applied);
         JsonObject summary = new JsonObject();
         summary.add("dynamicFieldBindings", array(binding.deepCopy()));
@@ -88,6 +112,29 @@ public class ConcolicReplayValidatorTest {
         assertFalse(failures.toString(), failures.isEmpty());
         assertTrue(failures.toString(), failures.toString().contains(
                 "INVALID_CONTAINER_OBJECT_TOKEN_SCOPE"));
+    }
+
+    private static JsonObject replayedContainer(
+            JsonObject planned, String tokenScope) {
+        JsonObject applied = planned.deepCopy();
+        applied.remove("solverSymbol");
+        JsonObject selector = applied.getAsJsonObject("containerSelector");
+        selector.addProperty("resolvedFromSelectorAuthority",
+                "EXACT_ARRAY_INDEX");
+        selector.addProperty("containerObjectToken", 301L);
+        selector.addProperty("elementObjectToken", 302L);
+        selector.addProperty("objectTokenAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
+        selector.addProperty("objectTokenScope", tokenScope);
+        selector.addProperty("containerObservationLocation",
+                "EXACT_CONSUMED_LEAF_OBSERVATION");
+        selector.addProperty("authority",
+                "EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_"
+                        + "ACTIVATION_LOCAL_ELEMENT_IDENTITY");
+        selector.addProperty("complete", true);
+        applied.addProperty("sameSourceContainerIdentityClaimed", false);
+        applied.addProperty("currentContainerSelectorCaptured", true);
+        return applied;
     }
 
     private static JsonObject task(JsonArray assignments) {

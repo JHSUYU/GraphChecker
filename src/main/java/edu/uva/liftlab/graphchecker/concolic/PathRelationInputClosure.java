@@ -46,16 +46,14 @@ final class PathRelationInputClosure {
         }
 
         JsonObject uniqueAction = null;
-        int actionCount = 0;
         for (JsonElement element : runtimeActions(activation)) {
             if (!element.isJsonObject()) continue;
             JsonObject action = element.getAsJsonObject();
             if (!inputPort.equals(string(action, "symbol"))) continue;
-            actionCount++;
+            if (uniqueAction != null) return null;
             uniqueAction = action;
         }
-        if (actionCount != 1 || uniqueAction == null
-                || !bool(uniqueAction, "lazy", false)) {
+        if (uniqueAction == null || !bool(uniqueAction, "lazy", false)) {
             return null;
         }
 

@@ -222,3 +222,18 @@ boolean-report	composedSmt/staticRegions/relationship artifact refs	BooleanReach
 boolean-solver	redundant base-implies-exhaustive-DNF query	BooleanReachConditionExtractor	none	none	all 2^N decided valuation rows	DELETE_DUPLICATE_QUERY	6+
 runtime-dispatch	unread row/rejected counts and blocked-site mirrors	RuntimeDispatchEvidence/SeedBackwardStaticAnalyzer	none	none	canonical callsite-to-callee set and fail-closed selection	DELETE	6+
 concolic-internal	duplicated runtime JSON accessors/type descriptor/result append	ConcolicRegionRuntime	local stage only	none	JsonFields/JavaPrimitiveSmtSemantics/single append helper	CONSOLIDATE_AND_DELETE	6+
+static-worklist	boolean changed return plumbing	SeedBackwardStaticAnalyzer	caller dirty-set bookkeeping	none	expansion methods already mutate the canonical dirty set and budgets	DELETE_REDUNDANT_RETURN	6+
+scheduler-internal	operationalActivation/Candidate.outputClosure readiness mirrors	ConcolicScheduler	quota/filter logic	none	canonical activation admission and outputClosure object	DELETE	6+
+solver-result	solverInvoked/solverExitCode/solverTimedOut/flipConditionSymbols	ConcolicConstraintSolver	tests only	none	status/reason/stderr, SMT hash and modelAssignments	DELETE_AND_UPDATE_TEST	6+
+solver-result	floating-point replay format/NaN/bit mirrors	ConcolicConstraintSolver	none	none	valueType/value plus canonical target Java type	DELETE	6+
+solver-result	dynamicSelector nested copy	ConcolicConstraintSolver	ConcolicRegionRuntime	none	canonical top-level selector fields	DELETE_DUPLICATE	6+
+path-worklist	observedPathCount	RegionPathWorklist	run.sh/matrix	none	observedPaths.length and CLOSED state	DELETE_AND_UPDATE_READERS	6+
+target-query	pathKey/observedPathCount	TargetReachPathQueryBuilder	RegionPathWorklist/run.sh/matrix	none	full canonical path hash remains internal; paths.length is canonical	DELETE_AND_UPDATE_READERS	6+
+merge-manifest	diagnostics/complete	RegionSummaryMerger	run.sh/matrix	none	typed gaps plus relation.relationallyComplete	DELETE_AND_UPDATE_READERS	6+
+runtime-output-slice	outputClosureIssues	RuntimeRegionPlanner	Scheduler/tests	none	admission.blockers and outputClosure.complete	DELETE_DUPLICATE	6+
+runtime-alias-proof	runtimeCutAuthority/baseCallId/canonicalBaseCallId	RuntimeRegionPlanner	Scheduler/matrix	none	typed evidence plus writerEventSeq/readerEventSeq and object identity	DELETE_AND_UPDATE_READERS	6+
+activation-binding	containerInputAliasSourcePort/containerInputAliasAuthority	RuntimeRegionPlanner	none	none	canonical source input binding and dynamicFieldBindings	DELETE	6+
+activation-binding	fieldPathSourceCells/fieldPathBindingAuthority/javaTypeAuthority	RuntimeRegionPlanner	none	none	canonical fieldPath, source bindings and javaType	DELETE	6+
+map-projection	capture-ready/issues/recursive-composable mirrors	RuntimeRegionPlanner	ConcolicSummaryImporter/tests	none	complete, causal IDs, selector/field/output evidence and admission blockers	DELETE_AND_UPDATE_READERS	6+
+runtime-planner	frozen static accessor input fallback	RuntimeRegionPlanner	none	none	current static port metadata is mandatory and canonical	DELETE_FALLBACK	6+
+replay-admission	generic schema/model/map/closure projection validation	ConcolicReplayValidator	ConcolicSummaryImporter	none	Importer validates canonical raw row once; ReplayValidator keeps only dynamic rebinding joins	DELETE_DUPLICATE_KEEP_DYNAMIC_REBINDING	6+
