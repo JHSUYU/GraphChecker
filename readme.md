@@ -2133,8 +2133,15 @@ Boolean reach extractor 不再分别把 nested field 的中间 owner 类型当�
 只在 relation 真正消费点执行一次 admission，Scheduler 不再把
 `runtimeDefinitionMethods` 泄漏到 execution task，也不再重复 deep-copy/rewrite 已由
 goal projection 携带的 `goalKind` 和 `outputClosure`；同一 target goal 的多个 branch
-共享一份不可变 materialization plan。当前手写生产 Java 为 68,850 行；快速回归为
-68 项并全部通过。
+共享一份不可变 materialization plan。
+
+下一批删除 static fact 的未读 carrier/扫描，让 RPC mapping 直接保存 canonical method
+signature；Runtime Planner 对强制的 frozen static graph 采用唯一严格 reader，删除
+“部分读入后再下沉 gap”的半有效 catalog 状态，并合并事件排序与 readiness 扫描；
+Importer 只信任 canonical `InputActionCatalog` 和 versioned output closure，不再重复读取
+static region input schema，也不再保留缺 `captureBindingId`/`captureKind` 的旧 fallback。
+坏静态图现在在读取边界给出明确异常，而不会继续产生貌似可执行的 activation。当前手写
+生产 Java 为 68,654 行；快速回归为 68 项并全部通过。
 
 ### 明确不能删除
 

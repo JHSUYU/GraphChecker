@@ -250,7 +250,7 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             EngineArrayInputBindingExtraction engineArrayBindings =
-                    engineArrayInputBindings(executionTask, region,
+                    engineArrayInputBindings(executionTask,
                             enginePathCondition, pathCondition, evidence);
             RelationalExtraction relational = relationalExtraction(
                     raw, normalization, executionTask, outputContract, region,
@@ -415,7 +415,7 @@ public final class ConcolicSummaryImporter {
      * silently replacing the input that was actually symbolized by the VM.
      */
     private static EngineArrayInputBindingExtraction
-    engineArrayInputBindings(JsonObject executionTask, JsonObject region,
+    engineArrayInputBindings(JsonObject executionTask,
                              JsonArray enginePathCondition,
                              JsonArray normalizedPathCondition,
                              EvidenceIndex evidence) {
@@ -452,39 +452,18 @@ public final class ConcolicSummaryImporter {
                     issues);
         }
 
-        Map<String, List<JsonObject>> regionInputs = new LinkedHashMap<>();
-        for (JsonElement element : array(region, "symbolicInputs")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject input = element.getAsJsonObject();
-            String port = firstNonBlank(string(input, "portId"),
-                    string(input, "symbol"));
-            if (port.isEmpty()) continue;
-            List<JsonObject> values = regionInputs.get(port);
-            if (values == null) {
-                values = new ArrayList<>();
-                regionInputs.put(port, values);
-            }
-            values.add(input);
-        }
-        Map<String, Integer> observedInputCounts = new LinkedHashMap<>();
         for (JsonElement element : evidence.rawSymbolizedInputs) {
             if (!element.isJsonPrimitive()
                     || !element.getAsJsonPrimitive().isString()) {
                 issues.add(new EngineArrayInputBindingIssue(
                         "MALFORMED_SYMBOLIZED_INPUT_FOR_ENGINE_ARRAY",
                         GSON.toJson(element)));
-                continue;
             }
-            String port = element.getAsString();
-            Integer count = observedInputCounts.get(port);
-            observedInputCounts.put(port, count == null ? 1 : count + 1);
         }
 
         List<JsonObject> admitted = new ArrayList<>();
         Set<String> rowIds = new LinkedHashSet<>();
-        Map<String, String> portToId = new LinkedHashMap<>();
-        Map<String, String> idToPort = new LinkedHashMap<>();
-        Map<String, Long> idToToken = new LinkedHashMap<>();
+        Set<String> rowPorts = new LinkedHashSet<>();
         JsonArray records = declared.getAsJsonArray();
         for (int ordinal = 0; ordinal < records.size(); ordinal++) {
             JsonElement element = records.get(ordinal);
@@ -538,7 +517,7 @@ public final class ConcolicSummaryImporter {
             } else {
                 JsonObject action = actions.get(0);
                 String actionDescriptor = javaTypeDescriptor(
-                        inputActionJavaType(action));
+                        string(action, "javaType"));
                 if (!cell.equals(string(action, "cell"))) {
                     rowIssues.add("INPUT_ACTION_CELL_MISMATCH");
                 }
@@ -546,25 +525,8 @@ public final class ConcolicSummaryImporter {
                     rowIssues.add("INPUT_ACTION_TYPE_MISMATCH");
                 }
             }
-            if (!Integer.valueOf(1).equals(observedInputCounts.get(port))) {
+            if (countString(evidence.rawSymbolizedInputs, port) != 1) {
                 rowIssues.add("EXACT_INPUT_SYMBOLIZATION_NOT_OBSERVED_ONCE");
-            }
-            if (!regionInputs.isEmpty()) {
-                List<JsonObject> schemas = regionInputs.get(port);
-                if (schemas == null || schemas.size() != 1) {
-                    rowIssues.add("REGION_INPUT_SCHEMA_NOT_UNIQUE");
-                } else {
-                    JsonObject schema = schemas.get(0);
-                    String schemaCell = string(schema, "cell");
-                    String schemaType = firstNonBlank(string(schema,
-                            "javaType"), string(schema, "declaredType"),
-                            inputCellJavaType(schemaCell));
-                    if (!cell.equals(schemaCell)
-                            || !descriptor.equals(javaTypeDescriptor(
-                            schemaType))) {
-                        rowIssues.add("REGION_INPUT_SCHEMA_MISMATCH");
-                    }
-                }
             }
             validateEngineArrayValueExpression(row, descriptor,
                     engineArrayId, rowIssues);
@@ -572,18 +534,8 @@ public final class ConcolicSummaryImporter {
             if (!rowIds.add(engineArrayId)) {
                 rowIssues.add("ENGINE_ARRAY_ID_DUPLICATE");
             }
-            String previousId = portToId.put(port, engineArrayId);
-            if (previousId != null && !previousId.equals(engineArrayId)) {
-                rowIssues.add("INPUT_PORT_TO_ENGINE_ARRAY_ID_NOT_FUNCTIONAL");
-            }
-            String previousPort = idToPort.put(engineArrayId, port);
-            if (previousPort != null && !previousPort.equals(port)) {
-                rowIssues.add("ENGINE_ARRAY_ID_TO_INPUT_PORT_NOT_FUNCTIONAL");
-            }
-            Long previousToken = idToToken.put(engineArrayId, objectToken);
-            if (previousToken != null && previousToken.longValue()
-                    != objectToken) {
-                rowIssues.add("ENGINE_ARRAY_ID_TO_TOKEN_NOT_FUNCTIONAL");
+            if (!rowPorts.add(port)) {
+                rowIssues.add("INPUT_PORT_DUPLICATE");
             }
             if (rowIssues.isEmpty()) {
                 JsonObject normalized = new JsonObject();
@@ -617,14 +569,11 @@ public final class ConcolicSummaryImporter {
                         "MISSING_ENGINE_ARRAY_INPUT_BINDING", id));
             }
         }
-        Collections.sort(admitted, new Comparator<JsonObject>() {
-            @Override
-            public int compare(JsonObject left, JsonObject right) {
-                int port = string(left, "inputPort").compareTo(
-                        string(right, "inputPort"));
-                return port != 0 ? port : string(left, "engineArrayId")
-                        .compareTo(string(right, "engineArrayId"));
-            }
+        Collections.sort(admitted, (left, right) -> {
+            int port = string(left, "inputPort").compareTo(
+                    string(right, "inputPort"));
+            return port != 0 ? port : string(left, "engineArrayId")
+                    .compareTo(string(right, "engineArrayId"));
         });
         JsonArray normalized = new JsonArray();
         for (JsonObject row : admitted) normalized.add(row);
@@ -704,25 +653,6 @@ public final class ConcolicSummaryImporter {
                 issues.add("ARRAY_VALUE_ELEMENT_INVALID:" + ordinal);
             }
         }
-    }
-
-    private static String inputActionJavaType(JsonObject action) {
-        String explicit = firstNonBlank(string(action, "javaType"),
-                string(action, "declaredType"),
-                string(action, "inputJavaType"));
-        if (!explicit.isEmpty()) return explicit;
-        String field = fieldJavaType(string(action, "field"));
-        return !field.isEmpty() ? field
-                : inputCellJavaType(string(action, "cell"));
-    }
-
-    private static String inputCellJavaType(String cell) {
-        String fieldOrReturn = fieldJavaType(cell);
-        if (!fieldOrReturn.isEmpty()) return fieldOrReturn;
-        Matcher parameter = Pattern.compile(
-                "\\.param[0-9]+:([^#]+)(?:#.*)?$").matcher(
-                cell == null ? "" : cell);
-        return parameter.find() ? parameter.group(1).trim() : "";
     }
 
     private static ArrayEventCatalog arrayEvents(JsonElement value) {
@@ -871,17 +801,8 @@ public final class ConcolicSummaryImporter {
         }
 
         private List<JsonObject> captureCandidates(JsonObject request) {
-            String bindingId = string(request, "captureBindingId");
-            if (!bindingId.isEmpty()) {
-                return values(capturesByBinding, bindingId);
-            }
-            List<JsonObject> all = new ArrayList<>();
-            for (JsonElement element : outputCaptures) {
-                if (element.isJsonObject()) {
-                    all.add(element.getAsJsonObject());
-                }
-            }
-            return all;
+            return values(capturesByBinding,
+                    string(request, "captureBindingId"));
         }
 
         private List<JsonObject> actions(String symbol) {
@@ -1338,8 +1259,7 @@ public final class ConcolicSummaryImporter {
     }
 
     private static String outputCaptureKind(JsonObject capture) {
-        return firstNonBlank(string(capture, "captureKind"),
-                "CALL_ARGUMENT");
+        return string(capture, "captureKind");
     }
 
     private static OutputExpressionExtraction exactOutputCaptureExpressions(

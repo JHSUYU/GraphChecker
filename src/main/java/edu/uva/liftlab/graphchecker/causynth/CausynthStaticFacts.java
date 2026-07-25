@@ -33,42 +33,6 @@ final class CausynthStaticFacts {
     private CausynthStaticFacts() {
     }
 
-    static final class RpcTarget {
-        final String sourceSignature;
-        final String targetSignature;
-        final String kind;
-
-        RpcTarget(String sourceSignature, String targetSignature,
-                  String kind) {
-            this.sourceSignature = sourceSignature;
-            this.targetSignature = targetSignature;
-            this.kind = kind;
-        }
-    }
-
-    static final class CallbackRegistration {
-        final String handlerCell;
-        final String implementationCell;
-        final String implementationMethod;
-
-        CallbackRegistration(String handlerCell, String implementationCell,
-                             String implementationMethod) {
-            this.handlerCell = handlerCell;
-            this.implementationCell = implementationCell;
-            this.implementationMethod = implementationMethod;
-        }
-    }
-
-    static final class MappedEndpoint {
-        final String method;
-        final String cell;
-
-        MappedEndpoint(String method, String cell) {
-            this.method = method;
-            this.cell = cell;
-        }
-    }
-
     static final class FieldWrite {
         final String method;
         final String field;
@@ -149,16 +113,14 @@ final class CausynthStaticFacts {
 
     static final class ExceptionGuard {
         final Fact fact;
-        final String condition;
         final Boolean requiredOutcome;
         final List<Integer> reachingSuccessorIndices;
         final CausynthBranchShape branchShape;
 
-        ExceptionGuard(Fact fact, String condition, Boolean requiredOutcome,
+        ExceptionGuard(Fact fact, Boolean requiredOutcome,
                        List<Integer> reachingSuccessorIndices,
                        CausynthBranchShape branchShape) {
             this.fact = fact;
-            this.condition = condition;
             this.requiredOutcome = requiredOutcome;
             this.reachingSuccessorIndices = reachingSuccessorIndices;
             this.branchShape = branchShape;
@@ -174,7 +136,6 @@ final class CausynthStaticFacts {
         final String unitText;
         final List<String> defs;
         final List<String> uses;
-        final List<String> fields;
         final List<String> fieldDefs;
         final List<String> fieldUses;
         final List<InstanceFieldAccess> instanceFieldDefs;
@@ -192,7 +153,6 @@ final class CausynthStaticFacts {
             this.unitText = unit.toString();
             this.defs = valueStrings(unit.getDefBoxes());
             this.uses = valueStrings(unit.getUseBoxes());
-            this.fields = fieldRefs(unit);
             this.fieldDefs = fieldRefs(unit.getDefBoxes());
             this.fieldUses = fieldRefs(unit.getUseBoxes());
             this.instanceFieldDefs = instanceFieldRefs(unit.getDefBoxes());
@@ -212,18 +172,6 @@ final class CausynthStaticFacts {
                         .getSignature();
             }
             return null;
-        }
-
-        private static List<String> fieldRefs(Unit unit) {
-            Set<String> fields = new LinkedHashSet<>();
-            for (ValueBox box : unit.getUseAndDefBoxes()) {
-                Value value = box.getValue();
-                if (value instanceof FieldRef) {
-                    fields.add(((FieldRef) value).getFieldRef()
-                            .getSignature());
-                }
-            }
-            return new ArrayList<>(fields);
         }
 
         private static List<String> fieldRefs(List<ValueBox> boxes) {

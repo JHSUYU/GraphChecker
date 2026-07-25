@@ -54,7 +54,6 @@ import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Fact;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.FieldWrite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.InstanceFieldAccess;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.MethodCallsite;
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.RpcTarget;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.actualInvokeArgs;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.fieldOwner;
 
@@ -98,8 +97,10 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     private final Map<String, List<Fact>> factsByMethod = new LinkedHashMap<>();
     private final Map<String, List<Fact>> callersByCallee = new LinkedHashMap<>();
-    private final Map<String, List<RpcTarget>> rpcTargetsBySource = new LinkedHashMap<>();
-    private final Map<String, List<RpcTarget>> rpcSourcesByTarget = new LinkedHashMap<>();
+    private final Map<String, List<String>> rpcTargetsBySource =
+            new LinkedHashMap<>();
+    private final Map<String, List<String>> rpcSourcesByTarget =
+            new LinkedHashMap<>();
     private final Map<String, List<FieldWrite>> fieldWritersByField =
             new LinkedHashMap<>();
     private final Map<String, List<ConstructorCallsite>> constructorCallersByCallee =
@@ -215,8 +216,7 @@ final class SeedBackwardStaticAnalyzer {
                             protocolClass.getName())) {
                         continue;
                     }
-                    addRpcMapping(protocolMethod, concreteMethod,
-                            "protocol_implementation");
+                    addRpcMapping(protocolMethod, concreteMethod);
                 }
             }
         }
@@ -232,18 +232,17 @@ final class SeedBackwardStaticAnalyzer {
                 || name.endsWith("PB"));
     }
 
-    private void addRpcMapping(SootMethod source, SootMethod targetMethod,
-                               String kind) {
-        RpcTarget target = new RpcTarget(source.getSignature(),
-                targetMethod.getSignature(), kind);
-        String key = target.sourceSignature + "\n" + target.targetSignature;
+    private void addRpcMapping(SootMethod source, SootMethod targetMethod) {
+        String sourceSignature = source.getSignature();
+        String targetSignature = targetMethod.getSignature();
+        String key = sourceSignature + "\n" + targetSignature;
         if (!emittedRpcMappings.add(key)) {
             return;
         }
-        rpcTargetsBySource.computeIfAbsent(target.sourceSignature,
-                ignored -> new ArrayList<>()).add(target);
-        rpcSourcesByTarget.computeIfAbsent(target.targetSignature,
-                ignored -> new ArrayList<>()).add(target);
+        rpcTargetsBySource.computeIfAbsent(sourceSignature,
+                ignored -> new ArrayList<>()).add(targetSignature);
+        rpcSourcesByTarget.computeIfAbsent(targetSignature,
+                ignored -> new ArrayList<>()).add(sourceSignature);
     }
 
     private boolean classImplementsOrExtends(SootClass candidate, String targetClassName) {
@@ -614,10 +613,8 @@ final class SeedBackwardStaticAnalyzer {
                 Fact guard = factsByUnit.get(candidate.unit);
                 if (guard != null) {
                     Boolean requiredOutcome = null;
-                    String condition = candidate.unitText;
                     if (candidate.unit instanceof IfStmt) {
                         IfStmt ifStmt = (IfStmt) candidate.unit;
-                        condition = ifStmt.getCondition().toString();
                         boolean takenReaches = canReachWithoutRevisiting(
                                 graph, ifStmt.getTarget(), targetFact.unit,
                                 candidate.unit);
@@ -630,8 +627,8 @@ final class SeedBackwardStaticAnalyzer {
                             requiredOutcome = takenReaches;
                         }
                     }
-                    guards.add(new ExceptionGuard(guard, condition,
-                            requiredOutcome, reachingIndices,
+                    guards.add(new ExceptionGuard(guard, requiredOutcome,
+                            reachingIndices,
                             branchShape));
                 }
             }
@@ -2938,31 +2935,31 @@ final class SeedBackwardStaticAnalyzer {
     private boolean processRpcInvoke(String callerMethod, Fact fact, MethodSig callee,
                                      List<String> defs, List<String> actuals,
                                      Set<String> callerRelevant) {
-        List<RpcTarget> targets = resolveRpcTargets(callee);
+        List<String> targets = resolveRpcTargets(callee);
         if (targets.isEmpty()) {
             return false;
         }
         boolean changed = false;
         int count = 0;
-        for (RpcTarget target : targets) {
-            if (target.targetSignature.equals(callee.raw)) {
+        for (String target : targets) {
+            if (target.equals(callee.raw)) {
                 continue;
             }
             if (count++ >= MAX_RPC_TARGETS_PER_CALL) {
                 break;
             }
-            SootMethod targetMethod = methodsBySignature.get(target.targetSignature);
+            SootMethod targetMethod = methodsBySignature.get(target);
             if (targetMethod == null) {
                 continue;
             }
             if (selectedMethods.size() < maxMethods) {
                 loadMethod(targetMethod);
             }
-            MethodSig targetSig = parseMethodSig(target.targetSignature);
+            MethodSig targetSig = parseMethodSig(target);
             if (targetSig == null) {
                 continue;
             }
-            Set<String> targetRelevant = relevant(target.targetSignature);
+            Set<String> targetRelevant = relevant(target);
             int paramCount = Math.min(actuals.size(), targetSig.params.size());
             for (int i = 0; i < paramCount; i++) {
                 String actual = actuals.get(i);
@@ -2986,12 +2983,12 @@ final class SeedBackwardStaticAnalyzer {
                     }
                     if (actualHit) {
                         changed |= targetRelevant.add(formal);
-                        changed |= selectedMethods.add(target.targetSignature);
+                        changed |= selectedMethods.add(target);
                     }
                 }
             }
             for (String def : defs) {
-                String returnNode = target.targetSignature + ".return";
+                String returnNode = target + ".return";
                 boolean defExactHit = callerRelevant.contains(def);
                 boolean defProjectionHit = containsProjection(callerRelevant, def);
                 boolean defHit = defExactHit || defProjectionHit;
@@ -3002,7 +2999,7 @@ final class SeedBackwardStaticAnalyzer {
                     }
                 if (defExactHit || defProjectionHit) {
                     changed |= targetRelevant.add(returnNode);
-                    changed |= selectedMethods.add(target.targetSignature);
+                    changed |= selectedMethods.add(target);
                 }
                 }
             }
@@ -3010,8 +3007,8 @@ final class SeedBackwardStaticAnalyzer {
         return changed;
     }
 
-    private List<RpcTarget> resolveRpcTargets(MethodSig callee) {
-        List<RpcTarget> targets = rpcTargetsBySource.get(callee.raw);
+    private List<String> resolveRpcTargets(MethodSig callee) {
+        List<String> targets = rpcTargetsBySource.get(callee.raw);
         return targets == null ? Collections.emptyList() : targets;
     }
 
@@ -3288,7 +3285,7 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void expandRpcCallers(String targetMethod) {
-        List<RpcTarget> sources = rpcSourcesByTarget.get(targetMethod);
+        List<String> sources = rpcSourcesByTarget.get(targetMethod);
         if (sources == null || sources.isEmpty()) {
             return;
         }
@@ -3301,9 +3298,9 @@ final class SeedBackwardStaticAnalyzer {
         boolean returnRelevant = targetRelevant.contains(returnNode)
                 || containsProjection(targetRelevant, returnNode);
         buildGlobalStaticIndex();
-        for (RpcTarget source : sources) {
+        for (String source : sources) {
             List<MethodCallsite> callsites = methodCallersByCallee
-                    .get(source.sourceSignature);
+                    .get(source);
             if (callsites == null) {
                 continue;
             }

@@ -30,6 +30,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.ToLongFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -104,9 +105,12 @@ final class RuntimeRegionPlanner {
         StaticProjectionIndex staticProjections =
                 readStaticProjectionIndex(staticGraphFile);
         resolveStaticCausalEdgeReferences(regions, staticProjections);
-        List<MethodEvent> methodEvents = sortedMethods(methods);
-        List<RuntimeEvent> executions = sortedRuntime(runtimeEvents);
-        List<FieldAccessEvent> fields = sortedFields(fieldEvents);
+        List<MethodEvent> methodEvents = sorted(methods,
+                value -> value.seq);
+        List<RuntimeEvent> executions = sorted(runtimeEvents,
+                value -> value.seq);
+        List<FieldAccessEvent> fields = sorted(fieldEvents,
+                value -> value.seq);
         RootArgumentRuntimeTypeIndex rootArgumentRuntimeTypes =
                 RootArgumentRuntimeTypeIndex.build(executions);
         RuntimeTraceIndex trace = RuntimeTraceIndex.build(methodEvents,
@@ -125,17 +129,16 @@ final class RuntimeRegionPlanner {
 
         outer:
         for (StaticRegion region : regions) {
-            List<RootCandidate> roots = rootCandidates(region,
+            List<MethodEvent> roots = rootCandidates(region,
                     values(regionsByAnchor.get(region.anchorMethod)),
                     methodsBySignature, calls);
             if (roots.isEmpty()) {
                 continue;
             }
-            for (RootCandidate candidate : roots) {
+            for (MethodEvent root : roots) {
                 if (instanceIndex >= MAX_INSTANCES) {
                     break outer;
                 }
-                MethodEvent root = candidate.event;
                 ContainedCallSelection callSelection =
                         trace.containedCalls(root);
                 Set<Long> containedCalls = callSelection.calls;
@@ -208,12 +211,12 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
-    private static List<RootCandidate> rootCandidates(
+    private static List<MethodEvent> rootCandidates(
             StaticRegion region,
             List<StaticRegion> anchorPeers,
             Map<String, List<MethodEvent>> methodsBySignature,
             Map<Long, MethodEvent> calls) {
-        List<RootCandidate> roots = new ArrayList<>();
+        List<MethodEvent> roots = new ArrayList<>();
         Set<Long> selectedCalls = new LinkedHashSet<>();
         List<MethodEvent> anchors = values(
                 methodsBySignature.get(region.anchorMethod));
@@ -248,7 +251,7 @@ final class RuntimeRegionPlanner {
                 }
             }
             if (selectedCalls.add(selected.callId)) {
-                roots.add(new RootCandidate(selected));
+                roots.add(selected);
             }
         }
 
@@ -269,7 +272,7 @@ final class RuntimeRegionPlanner {
         // evidence for diagnostics, without claiming a validated path.
         for (MethodEvent event : values(methodsBySignature.get(region.rootMethod))) {
             if (selectedCalls.add(event.callId)) {
-                roots.add(new RootCandidate(event));
+                roots.add(event);
             }
         }
         return roots;
@@ -1614,18 +1617,6 @@ final class RuntimeRegionPlanner {
         return selected;
     }
 
-    private static boolean everyRowHasTrue(
-            List<Map<String, Object>> rows, String... fields) {
-        for (Map<String, Object> row : rows) {
-            boolean found = false;
-            for (String field : fields) {
-                found |= Boolean.TRUE.equals(row.get(field));
-            }
-            if (!found) return false;
-        }
-        return true;
-    }
-
     private static void validateRegionEdges(
             List<StaticRegionEdge> staticEdges,
             Map<String, List<InstanceEvidence>> evidenceByRegion,
@@ -1948,14 +1939,12 @@ final class RuntimeRegionPlanner {
                     instance.fieldEvents);
             List<Map<String, Object>> branches = branchActions(
                     instance.region, instance.runtimeEvents);
-            boolean inputsResolved = everyRowHasTrue(inputObjects,
-                    "observed", "deferredResolution");
-            boolean branchesResolved = everyRowHasTrue(branches, "observed");
+            boolean branchesResolved = branchActionsReady(branches);
             boolean symbolizeReady = symbolizeActionsReady(symbolize);
             boolean symbolicPotential = !concreteInputs.isEmpty()
                     || instance.region.inputs.isEmpty()
                     || instance.region.branches.isEmpty();
-            boolean boundaryReady = inputsResolved && branchesResolved
+            boolean boundaryReady = branchesResolved
                     && instance.region.inputSelectionComplete
                     && instance.runtimePathEvidenceComplete
                     && symbolizeReady;
@@ -3835,11 +3824,7 @@ final class RuntimeRegionPlanner {
 
     private static StaticProjectionIndex readStaticProjectionIndex(File file) {
         StaticProjectionIndex result = new StaticProjectionIndex();
-        if (!file.isFile()) {
-            result.catalogReadComplete = false;
-            result.catalogFailure = "FROZEN_STATIC_GRAPH_NOT_FOUND";
-            return result;
-        }
+        int rows = 0;
         try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
                 StandardCharsets.UTF_8)) {
             String line;
@@ -3847,32 +3832,24 @@ final class RuntimeRegionPlanner {
                 if (line.trim().isEmpty()) {
                     continue;
                 }
-                result.catalogRowCount++;
-                try {
-                    JsonObject row = parseJsonObject(line);
-                    StaticDataflowProjectionEdge edge =
-                            StaticDataflowProjectionEdge.fromJson(row);
-                    if (edge == null || edge.edgeId.isEmpty()
-                            || result.byId.containsKey(edge.edgeId)) {
-                        result.catalogInvalidRowCount++;
-                        continue;
-                    }
-                    result.add(edge,
-                            StaticOutputSlice.causalEdgeReference(row));
-                } catch (RuntimeException invalidRow) {
-                    result.catalogInvalidRowCount++;
+                rows++;
+                JsonObject row = parseJsonObject(line);
+                StaticDataflowProjectionEdge edge =
+                        StaticDataflowProjectionEdge.fromJson(row);
+                if (edge == null || edge.edgeId.isEmpty()
+                        || result.byId.containsKey(edge.edgeId)) {
+                    throw new IllegalArgumentException(
+                            "malformed or duplicate frozen static graph edge");
                 }
+                result.add(edge, StaticOutputSlice.causalEdgeReference(row));
             }
         } catch (IOException exception) {
-            result.catalogReadComplete = false;
-            result.catalogFailure = "FROZEN_STATIC_GRAPH_READ_FAILED";
+            throw new IllegalStateException(
+                    "failed to read frozen static graph: " + file, exception);
         }
-        if (result.catalogReadComplete && result.catalogRowCount == 0) {
-            result.catalogFailure = "FROZEN_STATIC_GRAPH_EMPTY";
-        } else if (result.catalogReadComplete
-                && result.catalogInvalidRowCount > 0) {
-            result.catalogFailure = "FROZEN_STATIC_GRAPH_INVALID_ROWS:"
-                    + result.catalogInvalidRowCount;
+        if (rows == 0) {
+            throw new IllegalArgumentException(
+                    "frozen static graph must not be empty");
         }
         return result;
     }
@@ -4847,10 +4824,6 @@ final class RuntimeRegionPlanner {
     }
 
     private static final class StaticProjectionIndex {
-        private boolean catalogReadComplete = true;
-        private int catalogRowCount;
-        private int catalogInvalidRowCount;
-        private String catalogFailure = "";
         private final Map<String, StaticDataflowProjectionEdge> byId =
                 new LinkedHashMap<>();
         private final Map<String, Map<String, Object>> causalReferencesById =
@@ -4901,11 +4874,6 @@ final class RuntimeRegionPlanner {
             slice.causalEdges.clear();
             if (slice.causalEdgeIds.isEmpty()) {
                 return "";
-            }
-            if (!catalogReadComplete || catalogRowCount == 0
-                    || catalogInvalidRowCount > 0) {
-                return firstNonBlank(catalogFailure,
-                        "STATIC_DATAFLOW_CATALOG_NOT_AUTHORITATIVE");
             }
             Set<String> seen = new LinkedHashSet<>();
             for (String id : slice.causalEdgeIds) {
@@ -5034,10 +5002,6 @@ final class RuntimeRegionPlanner {
                 MethodEvent runtimeRoot, Set<Long> containedCalls,
                 RuntimeFieldAccessIndex runtimeFieldAccesses) {
             ConcreteDemandSlice result = new ConcreteDemandSlice();
-            if (!catalogReadComplete || catalogRowCount == 0
-                    || catalogInvalidRowCount > 0 || byId.isEmpty()) {
-                return result;
-            }
             if (region.outputs.isEmpty() && region.branches.isEmpty()) {
                 for (StaticPort input : region.inputs) {
                     result.inputPortIds.add(input.portId);
@@ -7728,14 +7692,6 @@ final class RuntimeRegionPlanner {
         }
     }
 
-    private static final class RootCandidate {
-        private final MethodEvent event;
-
-        private RootCandidate(MethodEvent event) {
-            this.event = event;
-        }
-    }
-
     private static int parameterIndex(String cell) {
         Matcher matcher = PARAMETER.matcher(safe(cell));
         return matcher.find() ? parseInt(matcher.group(1), -1) : -1;
@@ -7835,30 +7791,13 @@ final class RuntimeRegionPlanner {
                 ? objectIdentity.group(1) + "@*" : value;
     }
 
-    private static List<MethodEvent> sortedMethods(List<MethodEvent> values) {
-        List<MethodEvent> result = new ArrayList<>();
+    private static <T> List<T> sorted(List<T> values,
+                                      ToLongFunction<T> sequence) {
+        List<T> result = new ArrayList<>();
         if (values != null) {
             result.addAll(values);
         }
-        result.sort(Comparator.comparingLong(value -> value.seq));
-        return result;
-    }
-
-    private static List<RuntimeEvent> sortedRuntime(List<RuntimeEvent> values) {
-        List<RuntimeEvent> result = new ArrayList<>();
-        if (values != null) {
-            result.addAll(values);
-        }
-        result.sort(Comparator.comparingLong(value -> value.seq));
-        return result;
-    }
-
-    private static List<FieldAccessEvent> sortedFields(List<FieldAccessEvent> values) {
-        List<FieldAccessEvent> result = new ArrayList<>();
-        if (values != null) {
-            result.addAll(values);
-        }
-        result.sort(Comparator.comparingLong(value -> value.seq));
+        result.sort(Comparator.comparingLong(sequence));
         return result;
     }
 

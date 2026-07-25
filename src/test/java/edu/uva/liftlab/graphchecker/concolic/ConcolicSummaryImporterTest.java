@@ -2180,6 +2180,7 @@ public class ConcolicSummaryImporterTest {
         containerAction.addProperty("bindingMode", "FIELD_ACCESS");
         containerAction.addProperty("field", containerCell);
         containerAction.addProperty("cell", containerCell);
+        containerAction.addProperty("javaType", "example.Value[]");
         containerAction.add("fieldPath",
                 JsonParser.parseString("[\"values\"]"));
         actions.add(containerAction);
