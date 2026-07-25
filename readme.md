@@ -1454,6 +1454,23 @@ invocationId -> completion
 
 增量 `z3 -in` 独立为最后一个性能 PR；先证明与当前逐 valuation 启动 Z3 语义等价。
 
+截至 2026-07-25，PR 6 已实现第一轮算法替换。静态 backward analysis 不再最多 96
+轮扫描全部 selected methods，而以 method/state dirty queue 驱动固定点；runtime planner
+一次构建 call tree、method/runtime/field event 与 invocation ordinal 索引，root 只读取
+自身 subtree，字段 latest-writer 改为有序表二分；Composer 一次构建
+`SummaryIndex`，producer resolution 和 binding lookup 不再反复全表扫描，equality
+传播改为邻接 worklist，case partition 从两两互斥的 `O(k²)` 约束收敛为一个线性
+exactly-one cardinality。
+
+同一轮删除了 output slice 中零生产消费者的 `causalEdgeCount`、静态 scope 镜像、
+`excludedAlternative*` 和 `prestateElisions`，以及 heap coverage 只用于展示的 match/gap
+对象和无消费者计数。`complete/runtimeRefinementComplete`、`staticSites`、canonical
+edge ID、transformer issue、capture/read-from/object identity 等准入证据保持不变。
+Scheduler 也不再序列化整个 alternative writer group 后做字符串 `contains(regionId)`
+筛选；精确 selected binding 本身就是 typed instance gate。PMD unused-private 审计后的
+零消费者方法、字段和参数同步删除。该里程碑生产 Java 净减少而不是把索引代码叠加到旧
+实现上；57 项快速回归已通过，完整 13-fixture/真实 Z3 矩阵是提交后的最终验收门。
+
 ### 明确不能删除
 
 必须保留：

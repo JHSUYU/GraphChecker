@@ -204,7 +204,7 @@ public final class RegionPathWorklist {
                             pathKey, "", -1);
                     continue;
                 }
-                planSummary(summary, activation, scope, pathKey,
+                planSummary(summary, scope, pathKey,
                         branchMappings.get(summary));
                 if (tasks.size() >= bounds.maxTasks) break;
             }
@@ -215,8 +215,7 @@ public final class RegionPathWorklist {
         }
 
         private void planSummary(
-                JsonObject summary, JsonObject activation,
-                ExplorationScope scope, String pathKey,
+                JsonObject summary, ExplorationScope scope, String pathKey,
                 List<SummaryBranchMapping> mappings) {
             JsonArray conditions = array(summary, "pathCondition");
             List<SummaryBranchMapping> candidates = new ArrayList<>();
@@ -263,14 +262,13 @@ public final class RegionPathWorklist {
                                     "regionId"), pathKey, "", -1);
                     return;
                 }
-                emitTask(summary, activation, scope, pathKey, conditions,
+                emitTask(summary, scope, pathKey, conditions,
                         mappings, candidates.get(index));
             }
         }
 
         private void emitTask(
-                JsonObject summary, JsonObject activation,
-                ExplorationScope scope, String pathKey,
+                JsonObject summary, ExplorationScope scope, String pathKey,
                 JsonArray conditions, List<SummaryBranchMapping> mappings,
                 SummaryBranchMapping mapping) {
             int conditionIndex = mapping.summaryPcIndex();
@@ -595,21 +593,15 @@ public final class RegionPathWorklist {
         private final OutputClosureContract contract;
         private final Set<String> branchSites;
         private final String identity;
-        private final String demandKey;
-        private final String fingerprint;
 
         private ExplorationScope(RegionCaptureGoal goal,
                                  OutputClosureContract contract,
                                  Set<String> branchSites,
-                                 String identity,
-                                 String demandKey,
-                                 String fingerprint) {
+                                 String identity) {
             this.goal = goal;
             this.contract = contract;
             this.branchSites = branchSites;
             this.identity = identity;
-            this.demandKey = demandKey;
-            this.fingerprint = fingerprint;
         }
 
         private static ExplorationScope from(JsonObject summary,
@@ -657,8 +649,7 @@ public final class RegionPathWorklist {
                         string(summary, "rootMethod"));
                 return new ExplorationScope(goal, null, sites,
                         "TARGET_BRANCH_V1\n" + region + "\n" + instance
-                                + "\n" + targetMethod + "\n" + rootMethod,
-                        "", "");
+                                + "\n" + targetMethod + "\n" + rootMethod);
             }
             OutputClosureContract summaryContract = decode(summary);
             OutputClosureContract activationContract =
@@ -682,8 +673,7 @@ public final class RegionPathWorklist {
             String demand = contract.demandKey();
             String fingerprint = contract.closureFingerprint();
             return new ExplorationScope(goal, contract, sites,
-                    "OUTPUT_CLOSURE_V1\n" + demand + "\n" + fingerprint,
-                    demand, fingerprint);
+                    "OUTPUT_CLOSURE_V1\n" + demand + "\n" + fingerprint);
         }
 
         private static OutputClosureContract decode(JsonObject value) {

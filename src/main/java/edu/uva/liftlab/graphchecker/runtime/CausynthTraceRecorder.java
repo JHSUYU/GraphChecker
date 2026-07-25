@@ -186,7 +186,7 @@ public final class CausynthTraceRecorder {
         TraceEvent event = new TraceEvent(id, process, threadName, tid,
                 method, objectId, id, parentCallId, parentSiteId,
                 method + "#entry", runtimeType(receiver));
-        calls.push(new ActiveCall(id, parentCallId, parentSiteId, method));
+        calls.push(new ActiveCall(id, parentSiteId, method));
         if (contextOnlyConcolicReplay) {
             return id;
         }
@@ -302,8 +302,7 @@ public final class CausynthTraceRecorder {
                                   String primitiveValue) {
         ActiveCall call = activeCall(callId);
         long resolvedCallId = call == null ? callId : call.callId;
-        closeCallSites(resolvedCallId, "CALL_SITE_INCOMPLETE",
-                "method exited without call return");
+        closeCallSites(resolvedCallId, "CALL_SITE_INCOMPLETE");
         ExecutionEvent event = newExecutionEvent("METHOD_EXIT_NORMAL",
                 call == null ? "" : call.method, resolvedCallId);
         event.parentSiteId = call == null ? 0L : call.parentSiteId;
@@ -325,7 +324,7 @@ public final class CausynthTraceRecorder {
         ActiveCall call = activeCall(callId);
         long resolvedCallId = call == null ? callId : call.callId;
         String exceptionType = throwable == null ? "" : throwable.getClass().getName();
-        closeCallSites(resolvedCallId, "CALL_SITE_THROW", exceptionType);
+        closeCallSites(resolvedCallId, "CALL_SITE_THROW");
         ExecutionEvent event = newExecutionEvent("METHOD_EXIT_THROW",
                 call == null ? "" : call.method, resolvedCallId);
         event.parentSiteId = call == null ? 0L : call.parentSiteId;
@@ -335,7 +334,7 @@ public final class CausynthTraceRecorder {
         if (call != null && call.parentSiteId > 0L) {
             ActiveCallSite parentSite = activeCallSite(call.parentSiteId);
             if (parentSite != null) {
-                closeCallSite(parentSite, "CALL_SITE_THROW", exceptionType);
+                closeCallSite(parentSite, "CALL_SITE_THROW");
             }
         }
         removeCall(resolvedCallId);
@@ -484,13 +483,11 @@ public final class CausynthTraceRecorder {
     private static void closeStaleCallSite(long ownerCallId) {
         ActiveCallSite top = ACTIVE_CALL_SITES.get().peek();
         if (top != null && top.ownerCallId == ownerCallId) {
-            closeCallSite(top, "CALL_SITE_INCOMPLETE",
-                    "next callsite reached before a normal return event");
+            closeCallSite(top, "CALL_SITE_INCOMPLETE");
         }
     }
 
-    private static void closeCallSites(long ownerCallId, String kind,
-                                       String detail) {
+    private static void closeCallSites(long ownerCallId, String kind) {
         List<ActiveCallSite> matches = new ArrayList<>();
         for (ActiveCallSite site : ACTIVE_CALL_SITES.get()) {
             if (site.ownerCallId == ownerCallId) {
@@ -498,12 +495,11 @@ public final class CausynthTraceRecorder {
             }
         }
         for (ActiveCallSite site : matches) {
-            closeCallSite(site, kind, detail);
+            closeCallSite(site, kind);
         }
     }
 
-    private static void closeCallSite(ActiveCallSite site, String kind,
-                                      String detail) {
+    private static void closeCallSite(ActiveCallSite site, String kind) {
         if (site == null) {
             return;
         }
@@ -1397,14 +1393,11 @@ public final class CausynthTraceRecorder {
 
     private static final class ActiveCall {
         private final long callId;
-        private final long parentCallId;
         private final long parentSiteId;
         private final String method;
 
-        private ActiveCall(long callId, long parentCallId, long parentSiteId,
-                           String method) {
+        private ActiveCall(long callId, long parentSiteId, String method) {
             this.callId = callId;
-            this.parentCallId = parentCallId;
             this.parentSiteId = parentSiteId;
             this.method = safe(method);
         }

@@ -1756,11 +1756,6 @@ public final class CausynthPipeline {
     }
 
     private void addActiveThrowHandler(Body body, Unit start,
-                                       SootMethodRef throwRef) {
-        addActiveThrowHandler(body, start, throwRef, null, null);
-    }
-
-    private void addActiveThrowHandler(Body body, Unit start,
                                        SootMethodRef throwRef,
                                        SootMethodRef pauseObservation,
                                        SootMethodRef resumeObservation) {
@@ -2004,7 +1999,7 @@ public final class CausynthPipeline {
                 .matcher(cell);
         while (field.find()) {
             String signature = field.group();
-            if (parseMethodSig(signature) != null) {
+            if (methodSignature(signature)) {
                 continue;
             }
             selection.signatures.add(signature);
@@ -2575,38 +2570,11 @@ public final class CausynthPipeline {
     }
 
 
-    private static final class MethodSig {
-        private final String raw;
-        private final String owner;
-        private final String returnType;
-        private final String name;
-        private final List<String> params;
-
-        private MethodSig(String raw, String owner, String returnType,
-                          String name, List<String> params) {
-            this.raw = raw;
-            this.owner = owner;
-            this.returnType = returnType;
-            this.name = name;
-            this.params = params;
-        }
-    }
-
-    private static MethodSig parseMethodSig(String raw) {
-        if (raw == null || !raw.startsWith("<")) {
-            return null;
-        }
-        Matcher matcher = Pattern.compile("<([^:]+):\\s+(.+)\\s+([^\\s(]+)\\((.*)\\)>")
-                .matcher(raw);
-        if (!matcher.find()) {
-            return null;
-        }
-        String paramsText = matcher.group(4).trim();
-        List<String> params = paramsText.isEmpty()
-                ? Collections.emptyList()
-                : Arrays.asList(paramsText.split("\\s*,\\s*"));
-        return new MethodSig(raw, matcher.group(1), matcher.group(2),
-                matcher.group(3), params);
+    private static boolean methodSignature(String value) {
+        return value != null && value.startsWith("<")
+                && Pattern.compile(
+                "<[^:]+:\\s+.+\\s+[^\\s(]+\\((.*)\\)>")
+                .matcher(value).find();
     }
 
     private static final class ConcolicRootSelection {
@@ -2673,11 +2641,4 @@ public final class CausynthPipeline {
                 "false"));
     }
 
-    private static Map<String, Object> object(Object... keyValues) {
-        Map<String, Object> map = new LinkedHashMap<>();
-        for (int i = 0; i + 1 < keyValues.length; i += 2) {
-            map.put(String.valueOf(keyValues[i]), keyValues[i + 1]);
-        }
-        return map;
-    }
 }

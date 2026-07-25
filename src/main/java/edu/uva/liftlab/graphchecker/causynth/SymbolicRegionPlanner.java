@@ -89,8 +89,6 @@ final class SymbolicRegionPlanner {
             "<([^:]+):");
     private static final Pattern REQUIRED_OUTCOME_PATTERN = Pattern.compile(
             "requires Jimple outcome (true|false)");
-    private static final Pattern SCALAR_FIELD_PATTERN = Pattern.compile(
-            "^<[^:]+:\\s+([^()<>]+)\\s+[^\\s()>]+>$");
     private static final Pattern PARAMETER_INDEX_PATTERN = Pattern.compile(
             "\\.param(\\d+):");
 
@@ -1659,7 +1657,7 @@ final class SymbolicRegionPlanner {
                 List<ContainerElementFieldCandidate> containerCandidates =
                         heapStateOutput
                                 ? exactContainerElementFieldCandidates(
-                                region, slice, outputCell)
+                                slice, outputCell)
                                 : Collections
                                 .<ContainerElementFieldCandidate>emptyList();
                 Set<String> containerElementSchemaFields =
@@ -2018,8 +2016,7 @@ final class SymbolicRegionPlanner {
          * No field-name, suffix, or type-only fallback is used.</p>
          */
         private List<ContainerElementFieldCandidate>
-        exactContainerElementFieldCandidates(RegionDraft region,
-                                              RegionDraft slice,
+        exactContainerElementFieldCandidates(RegionDraft slice,
                                               String outputCell) {
             StaticGraphIndex sliceGraph =
                     globalEdgeIdSubgraph(slice.causalEdges);
@@ -4661,7 +4658,6 @@ final class SymbolicRegionPlanner {
         private InputPortResolution inputPortForCell(
                 String cell, List<Map<String, Object>> inputPorts,
                 String rootMethod, RegionDraft slice) {
-            boolean syntheticProjection = syntheticValueProjection(cell);
             // An exact port cell is already the canonical boundary value.
             // Do not walk its own projected aliases and then downgrade that
             // identity into another representation of the same leaf.
@@ -8298,11 +8294,6 @@ final class SymbolicRegionPlanner {
 
     private static void add(Map<String, Set<String>> map, String key, String value) {
         map.computeIfAbsent(key, ignored -> new LinkedHashSet<>()).add(value);
-    }
-
-    private static void increment(Map<String, Integer> map, String key) {
-        Integer previous = map.get(key);
-        map.put(key, previous == null ? 1 : previous + 1);
     }
 
     private static String string(Object value) {

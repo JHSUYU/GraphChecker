@@ -125,6 +125,11 @@ boolean-report	rootBooleanInputs/existentialNonBooleanRootInputs	BooleanReachCon
 boolean-report	truthTable/reachesBug/valuationKey/solverStatus	BooleanReachConditionExtractor	run.sh,matrix	valuations assignments+status	CUTOVER	5
 boolean-report	reachCondition clauses/reachConditionSmtLib/reachability	BooleanReachConditionExtractor	run.sh,matrix	reachCondition formula+reachability	CUTOVER	5
 boolean-report	discoveryGaps	BooleanReachConditionExtractor	run.sh,matrix	gaps	CUTOVER	5
+runtime-output-slice	causalEdgeCount	RuntimeRegionPlanner	tests	none	causalEdgeIds.size	DELETE	6
+runtime-output-slice	staticInputPorts/staticMethods/staticCausalEdgeIds	RuntimeRegionPlanner	none	none	canonical retained scope plus staticSites	DELETE	6
+runtime-output-slice	excludedAlternative*/prestateElisions	RuntimeRegionPlanner	tests	none	complete/runtimeRefinementComplete remain the admission evidence	DELETE	6
+heap-coverage	coverage matches/gaps/counters	ConcolicSummaryImporter	none	none	typed HeapEffectIssue plus completeness counters actually read	DELETE	6
+internal-diagnostics	unused private fields/methods/counters	production Java	none	none	zero consumer verified by PMD and call-site search	DELETE	6
 correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
 correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-
 correctness	transformerObligations	static planner	Runtime/Importer	matrix	not derivable	KEEP	-

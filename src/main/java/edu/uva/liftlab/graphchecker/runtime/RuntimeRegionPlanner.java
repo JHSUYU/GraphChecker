@@ -114,13 +114,11 @@ final class RuntimeRegionPlanner {
         List<FieldAccessEvent> fields = sortedFields(fieldEvents);
         RootArgumentRuntimeTypeIndex rootArgumentRuntimeTypes =
                 RootArgumentRuntimeTypeIndex.build(executions);
-
-        Map<Long, MethodEvent> calls = new LinkedHashMap<>();
-        Map<String, List<MethodEvent>> methodsBySignature = new LinkedHashMap<>();
-        for (MethodEvent event : methodEvents) {
-            calls.put(event.callId, event);
-            add(methodsBySignature, event.method, event);
-        }
+        RuntimeTraceIndex trace = RuntimeTraceIndex.build(methodEvents,
+                executions, fields);
+        Map<Long, MethodEvent> calls = trace.methodsByCall;
+        Map<String, List<MethodEvent>> methodsBySignature =
+                trace.methodsBySignature;
         RuntimeFieldAccessIndex runtimeFieldAccesses =
                 RuntimeFieldAccessIndex.build(fields, calls);
 
@@ -143,31 +141,29 @@ final class RuntimeRegionPlanner {
                     break outer;
                 }
                 MethodEvent root = candidate.event;
-                ContainedCallSelection callSelection = containedCalls(root,
-                        methodEvents, calls);
+                ContainedCallSelection callSelection =
+                        trace.containedCalls(root);
                 Set<Long> containedCalls = callSelection.calls;
                 Set<String> observedMethods = new LinkedHashSet<>();
-                List<MethodEvent> containedMethodEvents = new ArrayList<>();
-                for (MethodEvent event : methodEvents) {
-                    if (containedCalls.contains(event.callId)) {
-                        observedMethods.add(event.method);
-                        containedMethodEvents.add(event);
-                    }
+                List<MethodEvent> containedMethodEvents =
+                        trace.methods(containedCalls);
+                for (MethodEvent event : containedMethodEvents) {
+                    observedMethods.add(event.method);
                 }
 
-                int ordinal = invocationOrdinal(root, methodEvents);
-                int ordinalWithinContext = invocationOrdinalWithinContext(
-                        root, methodEvents);
+                int ordinal = trace.invocationOrdinal(root);
+                int ordinalWithinContext =
+                        trace.invocationOrdinalWithinContext(root);
                 Map<String, Object> rootArgumentSelector =
                         runtimeRootArgumentSelector(root, methodEvents,
                                 rootArgumentRuntimeTypes);
                 String instanceId = region.regionId + "@" + safeToken(root.test)
                         + "#call" + root.callId;
 
-                List<RuntimeEvent> containedRuntime = containedRuntimeEvents(
-                        containedCalls, executions);
-                List<FieldAccessEvent> containedFields = containedFieldEvents(
-                        containedCalls, fields);
+                List<RuntimeEvent> containedRuntime =
+                        trace.runtimeEvents(containedCalls);
+                List<FieldAccessEvent> containedFields =
+                        trace.fieldEvents(containedCalls);
                 PathSignatureSelection pathSelection = pathSignature(
                         containedRuntime);
                 boolean runtimePathEvidenceComplete = !callSelection.truncated
@@ -185,7 +181,7 @@ final class RuntimeRegionPlanner {
                         runtimeFieldAccesses);
                 List<StaticPort> concreteInputs = demandSlice.inputs(region);
                 List<Map<String, Object>> inputObjects = inputObservations(
-                        region, concreteInputs, root, containedCalls,
+                        region, concreteInputs, root,
                         containedRuntime,
                         containedFields, containedMethodEvents);
                 List<Map<String, Object>> symbolize = symbolizeActions(
@@ -222,8 +218,7 @@ final class RuntimeRegionPlanner {
                         containedFields, observedMethods,
                         portIds(concreteInputs), demandSlice,
                         runtimePathEvidenceComplete,
-                        !callSelection.truncated,
-                        !pathSelection.truncated);
+                        !callSelection.truncated);
                 allInstanceEvidence.add(instanceEvidence);
                 if (!callSelection.truncated && !containedFields.isEmpty()) {
                     // Exact shared-state event correlation does not consume
@@ -414,50 +409,6 @@ final class RuntimeRegionPlanner {
         return false;
     }
 
-    private static int invocationOrdinal(MethodEvent target,
-                                         List<MethodEvent> methods) {
-        int ordinal = 0;
-        for (MethodEvent event : methods) {
-            if (!target.test.equals(event.test)
-                    || !target.method.equals(event.method)) {
-                continue;
-            }
-            ordinal++;
-            if (event.callId == target.callId) {
-                return ordinal;
-            }
-        }
-        return 1;
-    }
-
-    /**
-     * Stable replay ordinal for one exact runtime root context.  Trace thread
-     * ids are deliberately excluded because JVM-assigned ids change across
-     * executions.  The receiver runtime class is mandatory for contexts
-     * emitted by this planner; a non-empty thread name further separates
-     * same-class worker roles such as producer and consumer executors. The
-     * generation number in the JDK default executor name is normalized while
-     * preserving its logical worker index.
-     */
-    private static int invocationOrdinalWithinContext(
-            MethodEvent target, List<MethodEvent> methods) {
-        int ordinal = 0;
-        String targetThreadContext = stableRootThreadContext(
-                target.threadName);
-        for (MethodEvent event : methods) {
-            if (!target.test.equals(event.test)
-                    || !target.method.equals(event.method)
-                    || !target.receiverType.equals(event.receiverType)
-                    || !targetThreadContext.equals(stableRootThreadContext(
-                    event.threadName))) {
-                continue;
-            }
-            ordinal++;
-            if (event.callId == target.callId) return ordinal;
-        }
-        return 1;
-    }
-
     private static Map<String, Object> rootSelector(
             MethodEvent root, int globalOrdinal, int contextOrdinal,
             Map<String, Object> arguments) {
@@ -602,75 +553,11 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
-    private static ContainedCallSelection containedCalls(
-            MethodEvent root, List<MethodEvent> methods,
-            Map<Long, MethodEvent> calls) {
-        Set<Long> result = new LinkedHashSet<>();
-        result.add(root.callId);
-        boolean truncated = false;
-        for (MethodEvent event : methods) {
-            if (event.seq < root.seq || !sameContext(root, event)) {
-                continue;
-            }
-            // Static region methods select the root and describe the initial
-            // dependency closure.  Once that exact invocation is selected,
-            // its observed same-thread descendants are authoritative runtime
-            // members too.  Filtering them by region.methods used to discard
-            // concrete interface targets and helper calls (for example an
-            // expiry remover invoked by addKeys) even though their parent-call
-            // chain was recorded exactly.  Parent ancestry, not a static
-            // membership guess, is the bounded admission proof here.
-            long cursor = event.callId;
-            Set<Long> seen = new LinkedHashSet<>();
-            while (cursor > 0L && seen.add(cursor)) {
-                if (cursor == root.callId) {
-                    if (result.contains(event.callId)) {
-                        break;
-                    }
-                    if (result.size() >= MAX_CALLS_PER_INSTANCE) {
-                        truncated = true;
-                    } else {
-                        result.add(event.callId);
-                    }
-                    break;
-                }
-                MethodEvent parent = calls.get(cursor);
-                if (parent == null || !sameContext(root, parent)) {
-                    break;
-                }
-                cursor = parent.parentCallId;
-            }
-        }
-        return new ContainedCallSelection(result, truncated);
-    }
-
     private static boolean sameContext(MethodEvent left, MethodEvent right) {
         return left != null && right != null
                 && left.tid == right.tid
                 && safe(left.process).equals(safe(right.process))
                 && safe(left.test).equals(safe(right.test));
-    }
-
-    private static List<RuntimeEvent> containedRuntimeEvents(
-            Set<Long> calls, List<RuntimeEvent> events) {
-        List<RuntimeEvent> result = new ArrayList<>();
-        for (RuntimeEvent event : events) {
-            if (calls.contains(event.callId)) {
-                result.add(event);
-            }
-        }
-        return result;
-    }
-
-    private static List<FieldAccessEvent> containedFieldEvents(
-            Set<Long> calls, List<FieldAccessEvent> events) {
-        List<FieldAccessEvent> result = new ArrayList<>();
-        for (FieldAccessEvent event : events) {
-            if (calls.contains(event.callId)) {
-                result.add(event);
-            }
-        }
-        return result;
     }
 
     private static PathSignatureSelection pathSignature(
@@ -702,7 +589,7 @@ final class RuntimeRegionPlanner {
 
     private static List<Map<String, Object>> inputObservations(
             StaticRegion region, List<StaticPort> concreteInputs,
-            MethodEvent root, Set<Long> calls,
+            MethodEvent root,
             List<RuntimeEvent> events, List<FieldAccessEvent> fields,
             List<MethodEvent> methods) {
         List<Map<String, Object>> result = new ArrayList<>();
@@ -2026,7 +1913,7 @@ final class RuntimeRegionPlanner {
             int demandPrunedPairCount = 0;
             List<Map<String, Object>> validatedBindings = new ArrayList<>();
             String endpointCorrelationAuthority =
-                    endpointCorrelationAuthority(edge);
+                    endpointCorrelationAuthority();
             Map<String, List<FingerprintMatch>> selectedValueMatches =
                     nearestEndpointFingerprintMatches(edge,
                             upstreamInstances, downstreamInstances);
@@ -2329,7 +2216,7 @@ final class RuntimeRegionPlanner {
                     instance.concreteDemandSlice.inputs(instance.region);
             List<Map<String, Object>> inputObjects = inputObservations(
                     instance.region, concreteInputs, instance.root,
-                    instance.calls, instance.runtimeEvents,
+                    instance.runtimeEvents,
                     instance.fieldEvents, instance.methodEvents);
             List<Map<String, Object>> symbolize = symbolizeActions(
                     instance.region, concreteInputs, instance.root,
@@ -3957,8 +3844,7 @@ final class RuntimeRegionPlanner {
                 currentInstance.instanceId) < 0;
     }
 
-    private static String endpointCorrelationAuthority(
-            StaticRegionEdge edge) {
+    private static String endpointCorrelationAuthority() {
         return "NEAREST_PRECEDING_MATCHING_SOURCE_ENDPOINT";
     }
 
@@ -4870,6 +4756,124 @@ final class RuntimeRegionPlanner {
     }
 
     /**
+     * Immutable indexes over the sorted trace. Per-root planning walks the
+     * concrete child-call tree and touches only events owned by that subtree;
+     * it no longer rescans the complete method/runtime/field trace for every
+     * region instance.
+     */
+    private static final class RuntimeTraceIndex {
+        private final Map<Long, MethodEvent> methodsByCall =
+                new LinkedHashMap<>();
+        private final Map<String, List<MethodEvent>> methodsBySignature =
+                new LinkedHashMap<>();
+        private final Map<Long, List<MethodEvent>> childrenByParent =
+                new LinkedHashMap<>();
+        private final Map<Long, List<RuntimeEvent>> runtimeByCall =
+                new LinkedHashMap<>();
+        private final Map<Long, List<FieldAccessEvent>> fieldsByCall =
+                new LinkedHashMap<>();
+        private final Map<Long, Integer> globalOrdinals =
+                new LinkedHashMap<>();
+        private final Map<Long, Integer> contextOrdinals =
+                new LinkedHashMap<>();
+
+        private static RuntimeTraceIndex build(
+                List<MethodEvent> methods, List<RuntimeEvent> runtime,
+                List<FieldAccessEvent> fields) {
+            RuntimeTraceIndex result = new RuntimeTraceIndex();
+            Map<String, Integer> globalCounts = new LinkedHashMap<>();
+            Map<String, Integer> contextCounts = new LinkedHashMap<>();
+            for (MethodEvent event : values(methods)) {
+                result.methodsByCall.put(event.callId, event);
+                add(result.methodsBySignature, event.method, event);
+                result.childrenByParent.computeIfAbsent(event.parentCallId,
+                        ignored -> new ArrayList<>()).add(event);
+
+                String global = event.test + "\n" + event.method;
+                int globalOrdinal = globalCounts.getOrDefault(global, 0) + 1;
+                globalCounts.put(global, globalOrdinal);
+                result.globalOrdinals.put(event.callId, globalOrdinal);
+
+                String context = global + "\n" + event.receiverType + "\n"
+                        + stableRootThreadContext(event.threadName);
+                int contextOrdinal =
+                        contextCounts.getOrDefault(context, 0) + 1;
+                contextCounts.put(context, contextOrdinal);
+                result.contextOrdinals.put(event.callId, contextOrdinal);
+            }
+            for (RuntimeEvent event : values(runtime)) {
+                result.runtimeByCall.computeIfAbsent(event.callId,
+                        ignored -> new ArrayList<>()).add(event);
+            }
+            for (FieldAccessEvent event : values(fields)) {
+                result.fieldsByCall.computeIfAbsent(event.callId,
+                        ignored -> new ArrayList<>()).add(event);
+            }
+            return result;
+        }
+
+        private int invocationOrdinal(MethodEvent method) {
+            return globalOrdinals.getOrDefault(method.callId, 1);
+        }
+
+        private int invocationOrdinalWithinContext(MethodEvent method) {
+            return contextOrdinals.getOrDefault(method.callId, 1);
+        }
+
+        private ContainedCallSelection containedCalls(MethodEvent root) {
+            Set<Long> calls = new LinkedHashSet<>();
+            Deque<Long> pending = new ArrayDeque<>();
+            calls.add(root.callId);
+            pending.add(root.callId);
+            boolean truncated = false;
+            while (!pending.isEmpty()) {
+                long parent = pending.removeFirst();
+                for (MethodEvent child : values(childrenByParent.get(parent))) {
+                    if (child.seq < root.seq || !sameContext(root, child)
+                            || calls.contains(child.callId)) {
+                        continue;
+                    }
+                    if (calls.size() >= MAX_CALLS_PER_INSTANCE) {
+                        truncated = true;
+                        continue;
+                    }
+                    calls.add(child.callId);
+                    pending.addLast(child.callId);
+                }
+            }
+            return new ContainedCallSelection(calls, truncated);
+        }
+
+        private List<MethodEvent> methods(Set<Long> calls) {
+            List<MethodEvent> result = new ArrayList<>();
+            for (long call : calls) {
+                MethodEvent event = methodsByCall.get(call);
+                if (event != null) result.add(event);
+            }
+            result.sort(Comparator.comparingLong(value -> value.seq));
+            return result;
+        }
+
+        private List<RuntimeEvent> runtimeEvents(Set<Long> calls) {
+            List<RuntimeEvent> result = new ArrayList<>();
+            for (long call : calls) {
+                result.addAll(values(runtimeByCall.get(call)));
+            }
+            result.sort(Comparator.comparingLong(value -> value.seq));
+            return result;
+        }
+
+        private List<FieldAccessEvent> fieldEvents(Set<Long> calls) {
+            List<FieldAccessEvent> result = new ArrayList<>();
+            for (long call : calls) {
+                result.addAll(values(fieldsByCall.get(call)));
+            }
+            result.sort(Comparator.comparingLong(value -> value.seq));
+            return result;
+        }
+    }
+
+    /**
      * Indexed runtime heap events used by the post-runtime demand slice.  A
      * field is crossed only when one exact executed FIELD_READ can be joined
      * to the frozen HEAP_READ row and the latest same-object write is both
@@ -4973,14 +4977,17 @@ final class RuntimeRegionPlanner {
 
         private static FieldAccessEvent latestBefore(
                 List<FieldAccessEvent> events, long upperExclusive) {
-            FieldAccessEvent latest = null;
-            for (FieldAccessEvent event : events) {
-                if (event.seq < upperExclusive
-                        && (latest == null || event.seq > latest.seq)) {
-                    latest = event;
+            int low = 0;
+            int high = events.size();
+            while (low < high) {
+                int middle = (low + high) >>> 1;
+                if (events.get(middle).seq < upperExclusive) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
                 }
             }
-            return latest;
+            return low == 0 ? null : events.get(low - 1);
         }
 
         private static boolean exactRuntimeFieldSite(
@@ -5075,14 +5082,6 @@ final class RuntimeRegionPlanner {
 
         private ConsumerInputResolution resolveConsumerInput(
                 String endpoint, StaticProjectionIndex projections,
-                Set<String> retainedPortIds) {
-            return resolveConsumerInput(endpoint, projections,
-                    retainedPortIds, Collections.emptySet(),
-                    Collections.emptySet());
-        }
-
-        private ConsumerInputResolution resolveConsumerInput(
-                String endpoint, StaticProjectionIndex projections,
                 Set<String> retainedPortIds, Set<String> demandEdgeIds,
                 Set<String> observedMethods) {
             String value = safe(endpoint);
@@ -5101,9 +5100,7 @@ final class RuntimeRegionPlanner {
                 exactMatches++;
             }
             if (exactMatches == 1) {
-                return new ConsumerInputResolution(exact, null,
-                        "UNIQUE_EXACT_TARGET_REGION_SYMBOLIC_INPUT_CELL_V1",
-                        Collections.emptyList());
+                return new ConsumerInputResolution(exact, null);
             }
             if (exactMatches > 1 || projections == null) {
                 return null;
@@ -5122,16 +5119,12 @@ final class RuntimeRegionPlanner {
                 return null;
             }
             if (direct.port != null) {
-                return new ConsumerInputResolution(direct.port, null,
-                        CONCRETE_DEMAND_DIRECT_DEFINITION_AUTHORITY,
-                        direct.evidenceEdgeIds);
+                return new ConsumerInputResolution(direct.port, null);
             }
             StaticProjectionProof proof = projections.uniqueProof(value,
                     retained);
             return proof == null ? null
-                    : new ConsumerInputResolution(proof.targetPort, proof,
-                    STATIC_INPUT_FIELD_PROJECTION_AUTHORITY,
-                    proof.evidenceEdgeIds);
+                    : new ConsumerInputResolution(proof.targetPort, proof);
         }
 
         private StaticPort exactInputFor(String endpoint) {
@@ -5411,40 +5404,30 @@ final class RuntimeRegionPlanner {
     private static final class ConsumerInputResolution {
         private final StaticPort port;
         private final StaticProjectionProof projection;
-        private final String authority;
-        private final List<String> evidenceEdgeIds;
 
         private ConsumerInputResolution(StaticPort port,
-                                        StaticProjectionProof projection,
-                                        String authority,
-                                        Collection<String> evidenceEdgeIds) {
+                                        StaticProjectionProof projection) {
             this.port = port;
             this.projection = projection;
-            this.authority = safe(authority);
-            this.evidenceEdgeIds = new ArrayList<>(evidenceEdgeIds);
         }
     }
 
     private static final class DirectDemandInputResolution {
         private final StaticPort port;
-        private final List<String> evidenceEdgeIds;
         private final boolean ambiguous;
 
         private DirectDemandInputResolution(StaticPort port,
-                Collection<String> evidenceEdgeIds, boolean ambiguous) {
+                                            boolean ambiguous) {
             this.port = port;
-            this.evidenceEdgeIds = new ArrayList<>(evidenceEdgeIds);
             this.ambiguous = ambiguous;
         }
 
         private static DirectDemandInputResolution absent() {
-            return new DirectDemandInputResolution(null,
-                    Collections.emptyList(), false);
+            return new DirectDemandInputResolution(null, false);
         }
 
         private static DirectDemandInputResolution ambiguous() {
-            return new DirectDemandInputResolution(null,
-                    Collections.emptyList(), true);
+            return new DirectDemandInputResolution(null, true);
         }
     }
 
@@ -5505,14 +5488,6 @@ final class RuntimeRegionPlanner {
                 incomingByCell = new LinkedHashMap<>();
         private final Map<String, List<StaticDataflowProjectionEdge>>
                 guardsBySite = new LinkedHashMap<>();
-        private int consumerInputResolutionRequestCount;
-        private int consumerInputResolutionCacheHitCount;
-        private int consumerInputResolutionCacheMissCount;
-
-        private void add(StaticDataflowProjectionEdge edge) {
-            add(edge, null);
-        }
-
         private void add(StaticDataflowProjectionEdge edge,
                          Map<String, Object> causalReference) {
             if (edge == null || edge.edgeId.isEmpty()) {
@@ -5646,7 +5621,6 @@ final class RuntimeRegionPlanner {
                 return DirectDemandInputResolution.absent();
             }
             StaticPort selected = null;
-            Set<String> evidence = new LinkedHashSet<>();
             for (StaticDataflowProjectionEdge edge : values(
                     incomingByCell.get(endpoint))) {
                 if (!demandEdgeIds.contains(edge.edgeId)
@@ -5666,13 +5640,11 @@ final class RuntimeRegionPlanner {
                         return DirectDemandInputResolution.ambiguous();
                     }
                     selected = port;
-                    evidence.add(edge.edgeId);
                 }
             }
             return selected == null
                     ? DirectDemandInputResolution.absent()
-                    : new DirectDemandInputResolution(selected, evidence,
-                    false);
+                    : new DirectDemandInputResolution(selected, false);
         }
 
         /**
@@ -5889,13 +5861,11 @@ final class RuntimeRegionPlanner {
     }
 
     private static final class ProjectionOrientation {
-        private final boolean sourceAtFrom;
         private final String peerObjectCell;
         private final String peerProjectedCell;
 
-        private ProjectionOrientation(boolean sourceAtFrom,
-                String peerObjectCell, String peerProjectedCell) {
-            this.sourceAtFrom = sourceAtFrom;
+        private ProjectionOrientation(String peerObjectCell,
+                                      String peerProjectedCell) {
             this.peerObjectCell = safe(peerObjectCell);
             this.peerProjectedCell = safe(peerProjectedCell);
         }
@@ -6104,9 +6074,8 @@ final class RuntimeRegionPlanner {
                 return null;
             }
             return atFrom
-                    ? new ProjectionOrientation(true, objectToCell, toCell)
-                    : new ProjectionOrientation(false, objectFromCell,
-                    fromCell);
+                    ? new ProjectionOrientation(objectToCell, toCell)
+                    : new ProjectionOrientation(objectFromCell, fromCell);
         }
 
         private boolean exactlyProjects(
@@ -6349,7 +6318,6 @@ final class RuntimeRegionPlanner {
                 new LinkedHashSet<>();
         private final boolean runtimePathEvidenceComplete;
         private final boolean containedCallTreeComplete;
-        private final boolean pathSignatureComplete;
 
         private InstanceEvidence(String instanceId, StaticRegion region,
                                  MethodEvent root, Set<Long> calls,
@@ -6360,8 +6328,7 @@ final class RuntimeRegionPlanner {
                                  Set<String> concreteInputPortIds,
                                  ConcreteDemandSlice concreteDemandSlice,
                                  boolean runtimePathEvidenceComplete,
-                                 boolean containedCallTreeComplete,
-                                 boolean pathSignatureComplete) {
+                                 boolean containedCallTreeComplete) {
             this.instanceId = instanceId;
             this.region = region;
             this.root = root;
@@ -6381,7 +6348,6 @@ final class RuntimeRegionPlanner {
                     concreteDemandSlice.edgeIds);
             this.runtimePathEvidenceComplete = runtimePathEvidenceComplete;
             this.containedCallTreeComplete = containedCallTreeComplete;
-            this.pathSignatureComplete = pathSignatureComplete;
         }
 
         private boolean promoteExternalInput(StaticPort port) {
@@ -6429,16 +6395,12 @@ final class RuntimeRegionPlanner {
         private ConsumerInputResolution resolveConsumerInput(
                 String endpoint, StaticProjectionIndex projections) {
             String key = safe(endpoint);
-            projections.consumerInputResolutionRequestCount++;
             if (consumerInputResolutionCache.containsKey(key)) {
-                projections.consumerInputResolutionCacheHitCount++;
                 return consumerInputResolutionCache.get(key);
             }
             if (unresolvedConsumerInputCache.contains(key)) {
-                projections.consumerInputResolutionCacheHitCount++;
                 return null;
             }
-            projections.consumerInputResolutionCacheMissCount++;
             ConsumerInputResolution resolution = region.resolveConsumerInput(
                     key, projections, concreteInputPortIds,
                     concreteDemandEdgeIds,
@@ -6449,24 +6411,6 @@ final class RuntimeRegionPlanner {
                 consumerInputResolutionCache.put(key, resolution);
             }
             return resolution;
-        }
-
-        private int runtimeOccurrence(RuntimeEvent target) {
-            if (target == null) {
-                return 1;
-            }
-            int occurrence = 0;
-            for (RuntimeEvent event : runtimeEvents) {
-                if (target.kind.equals(event.kind)
-                        && target.method.equals(event.method)
-                        && target.siteId.equals(event.siteId)) {
-                    occurrence++;
-                    if (event == target || event.seq == target.seq) {
-                        return occurrence;
-                    }
-                }
-            }
-            return 1;
         }
 
         private List<RuntimeEvent> matchingCallArguments(
@@ -7077,19 +7021,7 @@ final class RuntimeRegionPlanner {
         private boolean unresolvedInputProvenanceComplete;
         private boolean runtimeRefined;
         private boolean runtimeRefinementComplete = true;
-        private final Set<String> staticInputPorts = new LinkedHashSet<>();
-        private final Set<String> staticMethods = new LinkedHashSet<>();
         private final Set<String> staticSites = new LinkedHashSet<>();
-        private final List<String> staticCausalEdgeIds = new ArrayList<>();
-        private final Set<String> excludedInputPorts = new LinkedHashSet<>();
-        private final Set<String> excludedMethods = new LinkedHashSet<>();
-        private final Set<String> excludedSites = new LinkedHashSet<>();
-        private final Set<String> excludedPathAlternativeSites =
-                new LinkedHashSet<>();
-        private final List<Map<String, Object>>
-                excludedAlternativeUnresolvedInputs = new ArrayList<>();
-        private final List<String> excludedCausalEdgeIds = new ArrayList<>();
-        private final List<String> prestateElisions = new ArrayList<>();
 
         private static final class FieldPathRuntimeCandidate {
             private final StaticPort port;
@@ -7692,8 +7624,6 @@ final class RuntimeRegionPlanner {
                 boolean observedDependency = intersects(dependencyMethods,
                         observed);
                 if (exactStaticMethods && !observedDependency) {
-                    refined.excludedAlternativeUnresolvedInputs.add(
-                            new LinkedHashMap<>(detail));
                     continue;
                 }
                 String diagnostic = string(detail.get("diagnostic"));
@@ -7721,10 +7651,7 @@ final class RuntimeRegionPlanner {
             refined.methodBudgetTruncated = methodBudgetTruncated;
             refined.causalCellBudgetTruncated = causalCellBudgetTruncated;
             refined.structuralIssues.addAll(structuralIssues);
-            refined.staticInputPorts.addAll(inputPorts);
-            refined.staticMethods.addAll(methods);
             refined.staticSites.addAll(sites);
-            refined.staticCausalEdgeIds.addAll(causalEdgeIds);
             refined.captureBindingsRequired = captureBindingsRequired;
             refined.captureBindingsComplete = captureBindingsComplete;
             refined.captureBindingIssues.addAll(captureBindingIssues);
@@ -7752,8 +7679,7 @@ final class RuntimeRegionPlanner {
             observed.retainAll(methods);
             refineUnresolvedInputs(observed, refined);
             refined.methods.addAll(sorted(observed));
-            refined.excludedMethods.addAll(difference(methods, observed));
-            boolean filtersAlternatives = !refined.excludedMethods.isEmpty();
+            boolean filtersAlternatives = observed.size() != methods.size();
 
             Set<String> retainedTransformerSites = new LinkedHashSet<>();
             for (Map<String, Object> obligation
@@ -7801,8 +7727,6 @@ final class RuntimeRegionPlanner {
                         // static branch in an observed method is still an
                         // alternative when its exact site did not execute.
                         // A fresh flipped run can admit it later.
-                        refined.excludedSites.add(site);
-                        refined.excludedPathAlternativeSites.add(site);
                         continue;
                     }
                     // Never turn a truncated call/path record into negative
@@ -7819,8 +7743,6 @@ final class RuntimeRegionPlanner {
                     }
                 } else if (observed.contains(method)) {
                     refined.sites.add(site);
-                } else {
-                    refined.excludedSites.add(site);
                 }
             }
             // Static sites describe the dependency closure.  Every branch
@@ -7866,8 +7788,6 @@ final class RuntimeRegionPlanner {
                     if (!port.isEmpty()) {
                         retainedPorts.add(port);
                     }
-                } else if (!port.isEmpty()) {
-                    refined.excludedInputPorts.add(port);
                 }
             }
             if (inputBindings.isEmpty()) {
@@ -7918,9 +7838,7 @@ final class RuntimeRegionPlanner {
                 for (Map<String, Object> binding : retainedBindings) {
                     if (outputCell.equals(string(binding.get(
                             "dependencyCell")))) {
-                        String port = string(binding.get("inputPort"));
-                        refined.prestateElisions.add(port
-                                + ":FRESH_INITIALIZER_ON_SELECTED_RUNTIME_PATH");
+                        continue;
                     } else {
                         withoutPrestate.add(binding);
                     }
@@ -7945,11 +7863,6 @@ final class RuntimeRegionPlanner {
             }
             refined.inputBindings.addAll(retainedBindings);
             refined.inputPorts.addAll(sorted(retainedPorts));
-            for (String port : inputPorts) {
-                if (!refined.inputPorts.contains(port)) {
-                    refined.excludedInputPorts.add(port);
-                }
-            }
 
             // A container-element declaration is path-specific.  Retain it
             // only when its exact materialization method was observed and
@@ -8019,8 +7932,6 @@ final class RuntimeRegionPlanner {
                 } else if (observed.contains(method)) {
                     refined.causalEdgeIds.add(id);
                     refined.causalEdges.add(new LinkedHashMap<>(edge));
-                } else {
-                    refined.excludedCausalEdgeIds.add(id);
                 }
             }
             if (!causalMetadataComplete && !causalEdgeIds.isEmpty()) {
@@ -8535,7 +8446,6 @@ final class RuntimeRegionPlanner {
                     "sites", new ArrayList<>(sites),
                     "causalEdgeIds", causalEdgeIds,
                     "causalEdges", causalEdges,
-                    "causalEdgeCount", causalEdgeIds.size(),
                     "heapInitializers", heapInitializers,
                     "captureBindings", captureBindings,
                     "captureBindingsRequired", captureBindingsRequired,
@@ -8590,24 +8500,7 @@ final class RuntimeRegionPlanner {
                         "OBSERVED_REGION_CALL_TREE_AND_STATIC_DEPENDENCY_METHOD_PROVENANCE");
                 result.put("runtimeRefinementComplete",
                         runtimeRefinementComplete);
-                result.put("staticInputPorts",
-                        new ArrayList<>(staticInputPorts));
-                result.put("staticMethods", new ArrayList<>(staticMethods));
                 result.put("staticSites", new ArrayList<>(staticSites));
-                result.put("staticCausalEdgeIds", staticCausalEdgeIds);
-                result.put("excludedAlternativeInputPorts",
-                        new ArrayList<>(excludedInputPorts));
-                result.put("excludedAlternativeMethods",
-                        new ArrayList<>(excludedMethods));
-                result.put("excludedAlternativeSites",
-                        new ArrayList<>(excludedSites));
-                result.put("excludedPathAlternativeSites",
-                        new ArrayList<>(excludedPathAlternativeSites));
-                result.put("excludedAlternativeUnresolvedInputs",
-                        excludedAlternativeUnresolvedInputs);
-                result.put("excludedAlternativeCausalEdgeIds",
-                        excludedCausalEdgeIds);
-                result.put("prestateElisions", prestateElisions);
             }
             return result;
         }
@@ -8979,13 +8872,6 @@ final class RuntimeRegionPlanner {
             }
         }
         return false;
-    }
-
-    private static List<String> difference(Collection<String> expected,
-                                           Collection<String> observed) {
-        Set<String> result = new LinkedHashSet<>(expected);
-        result.removeAll(observed);
-        return sorted(result);
     }
 
     private static List<String> sorted(Collection<String> values) {

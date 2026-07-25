@@ -1263,17 +1263,6 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    private static long longInteger(JsonObject object, String key,
-                                    long fallback) {
-        try {
-            JsonElement value = object == null ? null : object.get(key);
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsLong() : fallback;
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
     private static String firstNonBlank(String... values) {
         if (values != null) {
             for (String value : values) {

@@ -368,7 +368,8 @@ public class RuntimeRegionPlannerTest {
                     .contains("UNIQUE_ROOT_ARGUMENT_CARRIER"));
             assertTrue(String.valueOf(retainedSlice.get("heapInitializers"))
                     .contains("FRESH_DEFAULT_CONSTRUCTED_OBJECT"));
-            assertEquals(2, retainedSlice.get("causalEdgeCount"));
+            assertEquals(2, ((List<?>) retainedSlice.get(
+                    "causalEdgeIds")).size());
             assertEquals(1, retainedSlice.get(
                     "requestedStateTransformerContractVersion"));
             assertEquals(true, retainedSlice.get(
@@ -718,9 +719,6 @@ public class RuntimeRegionPlannerTest {
                     constructor + "#u1"));
             assertFalse(String.valueOf(slice.get("sites")).contains(
                     unobservedBranch));
-            assertTrue(String.valueOf(slice.get(
-                    "excludedPathAlternativeSites")).contains(
-                    unobservedBranch));
             assertEquals(Collections.singletonList("DF.U"),
                     slice.get("causalEdgeIds"));
             assertTrue(((java.util.List<?>) slice.get("heapInitializers"))
@@ -737,13 +735,7 @@ public class RuntimeRegionPlannerTest {
                     "requestedStateTransformerObligationCount"));
             assertTrue(((java.util.List<?>) slice.get("captureBindings"))
                     .isEmpty());
-            assertTrue(String.valueOf(slice.get(
-                    "excludedAlternativeInputPorts")).contains(
-                    "REGION.W.in.2"));
             assertTrue(((List<?>) slice.get("unresolvedInputs")).isEmpty());
-            assertTrue(String.valueOf(slice.get(
-                    "excludedAlternativeUnresolvedInputs")).contains(
-                    unresolvedAlternative));
         } finally {
             folder.delete();
         }

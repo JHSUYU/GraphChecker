@@ -6860,7 +6860,6 @@ public final class ConcolicRegionRuntime {
     private static final class VmBranchEventAttestation {
         private final JsonObject event;
         private final String authority;
-        private final int conditionIndex;
         private final List<Integer> conditionIndices;
         private final boolean valid;
         private final String error;
@@ -6873,8 +6872,6 @@ public final class ConcolicRegionRuntime {
             this.authority = safe(authority);
             this.conditionIndices = Collections.unmodifiableList(
                     new ArrayList<>(conditionIndices));
-            this.conditionIndex = conditionIndices.size() == 1
-                    ? conditionIndices.get(0) : -1;
             this.valid = valid;
             this.error = safe(error);
         }
@@ -6898,17 +6895,14 @@ public final class ConcolicRegionRuntime {
         private final String method;
         private final int unitIndex;
         private final String expression;
-        private final String siteId;
         private final int occurrence;
 
         private PreparedBranch(long handle, String method, int unitIndex,
-                               String expression, String siteId,
-                               int occurrence) {
+                               String expression, int occurrence) {
             this.handle = handle;
             this.method = safe(method);
             this.unitIndex = unitIndex;
             this.expression = safe(expression);
-            this.siteId = safe(siteId);
             this.occurrence = occurrence;
         }
 
@@ -7118,7 +7112,7 @@ public final class ConcolicRegionRuntime {
             long handle = (sequence << 32)
                     | (occurrence & 0xffffffffL);
             PreparedBranch prepared = new PreparedBranch(handle, method,
-                    unitIndex, expression, siteId, occurrence);
+                    unitIndex, expression, occurrence);
             preparedBranches.put(handle, prepared);
             return prepared;
         }
@@ -8283,7 +8277,6 @@ public final class ConcolicRegionRuntime {
         private final List<String> fieldPath;
         /** Root object returned by the current Map.Entry#getValue(). */
         private final Object entryValueOwner;
-        private final Object leafOwner;
         private final long entryValueOwnerObjectToken;
         private final long leafOwnerObjectToken;
         private final String objectTokenScope;
@@ -8318,7 +8311,6 @@ public final class ConcolicRegionRuntime {
             this.fieldSignature = safe(fieldSignature);
             this.fieldPath = new ArrayList<>(action.fieldPath);
             this.entryValueOwner = accessOwner;
-            this.leafOwner = leafOwner;
             this.entryValueOwnerObjectToken = active.objectToken(accessOwner);
             this.leafOwnerObjectToken = active.objectToken(leafOwner);
             this.objectTokenScope = active.activation.activationId;
@@ -8357,7 +8349,6 @@ public final class ConcolicRegionRuntime {
             this.fieldSignature = safe(fieldSignature);
             this.fieldPath = new ArrayList<>(action.fieldPath);
             this.entryValueOwner = null;
-            this.leafOwner = leafOwner;
             this.entryValueOwnerObjectToken = 0L;
             this.leafOwnerObjectToken = active.objectToken(leafOwner);
             this.objectTokenScope = active.activation.activationId;

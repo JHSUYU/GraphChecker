@@ -503,9 +503,7 @@ public final class ConcolicScheduler {
                         !hasWitness);
                 boolean desired = hasWitness ? !observed : required;
                 TargetBranch target = new TargetBranch(siteId, index,
-                        occurrence, observed, desired,
-                        hasWitness ? "EXPLORE_ALTERNATIVE"
-                                : "DIRECTED_REQUIRED_OUTCOME");
+                        occurrence, observed, desired);
                 result.add(new Candidate(activation, activationId, region,
                         target, hasWitness,
                         materializationPlan(activation, definitions,
@@ -1659,12 +1657,6 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    private static MaterializationPlan materializationPlan(
-            JsonObject activation) {
-        return materializationPlan(activation, DefinitionIndex.fallback(),
-                Collections.<String>emptySet(), null);
-    }
-
     private static String leafField(String cell) {
         String value = safe(cell);
         int projected = value.lastIndexOf("#field:");
@@ -2563,22 +2555,19 @@ public final class ConcolicScheduler {
         private final int selectedOccurrence;
         private final boolean observedOutcome;
         private final boolean desiredOutcome;
-        private final String selectionMode;
 
         private TargetBranch(String siteId, int branchIndex,
                              int selectedOccurrence, boolean observedOutcome,
-                             boolean desiredOutcome, String selectionMode) {
+                             boolean desiredOutcome) {
             this.siteId = safe(siteId);
             this.branchIndex = branchIndex;
             this.selectedOccurrence = Math.max(1, selectedOccurrence);
             this.observedOutcome = observedOutcome;
             this.desiredOutcome = desiredOutcome;
-            this.selectionMode = safe(selectionMode);
         }
 
         private static TargetBranch outputCapture() {
-            return new TargetBranch("", -1, 1, false, false,
-                    "OUTPUT_CLOSURE_CAPTURE");
+            return new TargetBranch("", -1, 1, false, false);
         }
 
     }
@@ -2858,9 +2847,6 @@ public final class ConcolicScheduler {
             }
             JsonArray alternatives = new JsonArray();
             for (JsonObject value : alternativeWriterGroups) {
-                if (!GSON.toJson(value).contains(regionId)) {
-                    continue;
-                }
                 JsonObject copy = value.deepCopy();
                 JsonArray selectedAlternatives = new JsonArray();
                 for (JsonElement element : array(copy, "alternatives")) {

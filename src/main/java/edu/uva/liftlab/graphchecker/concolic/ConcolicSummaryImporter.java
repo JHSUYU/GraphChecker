@@ -990,7 +990,6 @@ public final class ConcolicSummaryImporter {
         JsonArray observations = new JsonArray();
         JsonArray snapshots = new JsonArray();
         JsonArray bindings = new JsonArray();
-        JsonObject coverage = new JsonObject();
         List<HeapEffectIssue> heapIssues = new ArrayList<>();
         Set<String> heapIssueKeys = new LinkedHashSet<>();
         List<String> outputIssues = new ArrayList<>();
@@ -1050,8 +1049,6 @@ public final class ConcolicSummaryImporter {
                 String key = issue.code + "\n" + issue.detail();
                 if (heapIssueKeys.add(key)) heapIssues.add(issue);
             }
-            coverage.add(member.portId(),
-                    heap.staticCoverage.toJson());
             heapComplete &= heap.complete();
             outputComplete &= output.complete;
             inputAdmissions.add(inputs);
@@ -1064,7 +1061,7 @@ public final class ConcolicSummaryImporter {
                         outputComplete && outputIssues.isEmpty(),
                         outputIssues, "JOINT_EXACT_OUTPUT_CAPTURES");
         return new RelationalExtraction(initializers, effects,
-                observations, snapshots, bindings, coverage, heapIssues,
+                observations, snapshots, bindings, heapIssues,
                 heapComplete, output, mergeInputAdmissions(inputAdmissions),
                 replay);
     }
@@ -2459,7 +2456,6 @@ public final class ConcolicSummaryImporter {
         private final JsonArray observations;
         private final JsonArray finiteMapSnapshots;
         private final JsonArray dynamicFieldBindings;
-        private final JsonElement staticCoverageEvidence;
         private final List<HeapEffectIssue> heapIssues;
         private final boolean heapComplete;
         private final OutputExpressionExtraction outputExtraction;
@@ -2470,7 +2466,6 @@ public final class ConcolicSummaryImporter {
                 JsonArray initializers, JsonArray effects,
                 JsonArray observations, JsonArray finiteMapSnapshots,
                 JsonArray dynamicFieldBindings,
-                JsonElement staticCoverageEvidence,
                 List<HeapEffectIssue> heapIssues, boolean heapComplete,
                 OutputExpressionExtraction outputExtraction,
                 InputAdmission inputAdmission,
@@ -2480,7 +2475,6 @@ public final class ConcolicSummaryImporter {
             this.observations = observations;
             this.finiteMapSnapshots = finiteMapSnapshots;
             this.dynamicFieldBindings = dynamicFieldBindings;
-            this.staticCoverageEvidence = staticCoverageEvidence;
             this.heapIssues = heapIssues;
             this.heapComplete = heapComplete;
             this.outputExtraction = outputExtraction;
@@ -2495,8 +2489,7 @@ public final class ConcolicSummaryImporter {
             return new RelationalExtraction(heap.initializers,
                     heap.effects, heap.observations,
                     heap.finiteMapSnapshots, heap.dynamicFieldBindings,
-                    heap.staticCoverage.toJson(), heap.issues,
-                    heap.complete(), output, inputs, replay);
+                    heap.issues, heap.complete(), output, inputs, replay);
         }
     }
 
@@ -2511,7 +2504,6 @@ public final class ConcolicSummaryImporter {
         int[] rawToNormalized = new int[raw.size()];
         String[] statuses = new String[raw.size()];
         String[] reasons = new String[raw.size()];
-        String[] codePositions = new String[raw.size()];
         String[] admissionAuthorities = new String[raw.size()];
         String previous = null;
         int filteredCount = 0;
@@ -2530,7 +2522,6 @@ public final class ConcolicSummaryImporter {
                     ? dynamicPcFallbacks.byRawIndex.get(index)
                     .semanticCondition : rawCondition;
             String codePosition = codePosition(rawCondition);
-            codePositions[index] = codePosition;
             String rejection = admission.rejectionReason(codePosition);
             String admissionAuthority = rejection.isEmpty()
                     ? "DECLARED_SEMANTIC_METHOD_BOUNDARY" : "";
@@ -2581,8 +2572,7 @@ public final class ConcolicSummaryImporter {
             rawToNormalized[index] = result.size() - 1;
         }
         return new PathNormalization(result, rawToNormalized, statuses,
-                reasons, codePositions, admissionAuthorities,
-                filteredCount);
+                reasons, admissionAuthorities, filteredCount);
     }
 
     /**
@@ -4183,8 +4173,7 @@ public final class ConcolicSummaryImporter {
         String activationId = string(activation, "activationId");
         List<HeapEffectIssue> issues = new ArrayList<>();
         Map<String, RuntimeHeapObservation> byId = new LinkedHashMap<>();
-        Map<String, RuntimeFiniteMapSnapshot> finiteMapSnapshotsById =
-                new LinkedHashMap<>();
+        Set<String> finiteMapSnapshotIds = new LinkedHashSet<>();
         Map<String, RuntimeMapStateInputObservation> mapStateInputsById =
                 new LinkedHashMap<>();
         Set<Long> eventSequences = new LinkedHashSet<>();
@@ -4330,7 +4319,7 @@ public final class ConcolicSummaryImporter {
             }
             boolean duplicate = byId.containsKey(observationId)
                     || mapStateInputsById.containsKey(observationId)
-                    || finiteMapSnapshotsById.containsKey(observationId)
+                    || finiteMapSnapshotIds.contains(observationId)
                     || !snapshotEventSequences.add(eventSequence)
                     || !snapshotSiteOccurrences.add(siteId + "#"
                     + occurrence);
@@ -4340,11 +4329,10 @@ public final class ConcolicSummaryImporter {
                         observationId, siteId));
                 continue;
             }
-            finiteMapSnapshotsById.put(observationId,
-                    new RuntimeFiniteMapSnapshot(record));
+            finiteMapSnapshotIds.add(observationId);
         }
         return new RuntimeHeapObservationCatalog(records.size(), byId,
-                finiteMapSnapshotsById, mapStateInputsById, issues);
+                finiteMapSnapshotIds, mapStateInputsById, issues);
     }
 
     private static JsonObject uniqueObservationInputAction(
@@ -5156,8 +5144,7 @@ public final class ConcolicSummaryImporter {
                                 + "/expected=" + expected));
             }
         }
-        return new DynamicFieldBindingCatalog(byId,
-                byDynamicSymbol, issues);
+        return new DynamicFieldBindingCatalog(byId, issues);
     }
 
     private static void certifyValueRefWitnessJoin(
@@ -7469,7 +7456,6 @@ public final class ConcolicSummaryImporter {
             JsonArray rawPathCondition, PathNormalization normalization,
             JsonArray dynamicFieldBindings,
             JsonArray engineArrayInputBindings) {
-        JsonObject activation = analysis.activation;
         JsonObject requestedOutput = analysis.output();
         JsonObject slice = analysis.slice();
         if (!"HEAP_STATE".equals(string(requestedOutput, "kind"))
@@ -7482,7 +7468,6 @@ public final class ConcolicSummaryImporter {
         boolean exactTransformerContract = slice.has(
                 "requestedStateTransformerContractVersion");
         List<HeapEffectIssue> transformerContractIssues = new ArrayList<>();
-        JsonArray transformerContractGaps = new JsonArray();
         Map<String, Set<String>> causalSitesByMethod = new LinkedHashMap<>();
         Map<String, Set<String>> writeSitesByMethod = new LinkedHashMap<>();
         Map<String, String> signaturesByMethod = new LinkedHashMap<>();
@@ -7512,7 +7497,6 @@ public final class ConcolicSummaryImporter {
                 JsonObject previous = causalByEdgeId.put(edgeId, edge);
                 if (exactTransformerContract && previous != null) {
                     addTransformerContractIssue(transformerContractIssues,
-                            transformerContractGaps,
                             "DUPLICATE_CAUSAL_EDGE_ID:" + edgeId);
                 }
             }
@@ -7550,7 +7534,6 @@ public final class ConcolicSummaryImporter {
                     "requestedStateTransformerObligations").size();
             if (!headerValid) {
                 addTransformerContractIssue(transformerContractIssues,
-                        transformerContractGaps,
                         "INVALID_OR_INCOMPLETE_CONTRACT_HEADER");
             }
             Set<String> obligationSites = new LinkedHashSet<>();
@@ -7560,7 +7543,6 @@ public final class ConcolicSummaryImporter {
                     "requestedStateTransformerObligations")) {
                 if (!element.isJsonObject()) {
                     addTransformerContractIssue(transformerContractIssues,
-                            transformerContractGaps,
                             "NON_OBJECT_TRANSFORMER_OBLIGATION");
                     continue;
                 }
@@ -7605,7 +7587,6 @@ public final class ConcolicSummaryImporter {
                         && requestedCell.equals(string(causal, "toCell"));
                 if (!valid) {
                     addTransformerContractIssue(transformerContractIssues,
-                            transformerContractGaps,
                             "INVALID_TRANSFORMER_OBLIGATION:" + site);
                     continue;
                 }
@@ -7616,7 +7597,6 @@ public final class ConcolicSummaryImporter {
             if (!obligationSites.equals(
                     exactCausalEdgeIdsBySite.keySet())) {
                 addTransformerContractIssue(transformerContractIssues,
-                        transformerContractGaps,
                         "OBLIGATION_SITES_DO_NOT_EQUAL_EXACT_TARGET_WRITES");
             } else {
                 for (String site : obligationSites) {
@@ -7624,7 +7604,6 @@ public final class ConcolicSummaryImporter {
                             obligationEdgeIdsBySite.get(site))) {
                         addTransformerContractIssue(
                                 transformerContractIssues,
-                                transformerContractGaps,
                                 "OBLIGATION_EDGE_IDS_INCOMPLETE:" + site);
                     }
                 }
@@ -7705,7 +7684,6 @@ public final class ConcolicSummaryImporter {
 
         Set<String> exactCoveredWriteSites = new LinkedHashSet<>();
         Set<String> exactCoveredVoidMethods = new LinkedHashSet<>();
-        Map<String, JsonObject> exactMatches = new LinkedHashMap<>();
         List<JsonObject> containerDeclarations = new ArrayList<>();
         for (JsonElement element : array(slice,
                 "containerElementFieldBindings")) {
@@ -7720,7 +7698,6 @@ public final class ConcolicSummaryImporter {
         Set<String> containerWriteSites = new LinkedHashSet<>();
         Set<Integer> containerEffectIndices = new LinkedHashSet<>();
         Set<String> unmatchedContainerSites = new LinkedHashSet<>();
-        int containerMatchCount = 0;
         boolean unsiteableContainerDeclaration = false;
         for (JsonObject declaration : exactTransformerContract
                 ? containerDeclarations
@@ -7752,8 +7729,6 @@ public final class ConcolicSummaryImporter {
             containerWriteSites.add(site);
             containerEffectIndices.add(effectIndex);
             exactCoveredWriteSites.add(site);
-            exactMatches.put("WRITE::" + site, match);
-            containerMatchCount++;
         }
         if (fieldAssignmentCapture != null
                 && fieldAssignmentCapture.complete) {
@@ -7778,19 +7753,6 @@ public final class ConcolicSummaryImporter {
                 if (writeSitesByMethod.containsKey(methodKey)
                         && writeSitesByMethod.get(methodKey).contains(site)) {
                     exactCoveredWriteSites.add(site);
-                    JsonObject match = new JsonObject();
-                    match.addProperty("obligationKind",
-                            "DECLARED_HEAP_WRITE_SITE");
-                    match.addProperty("method", signature);
-                    match.addProperty("siteId", site);
-                    match.addProperty("requestedOutputPort",
-                            requestedPort);
-                    match.addProperty("captureBindingId", string(
-                            exactRequest, "captureBindingId"));
-                    match.addProperty("authority",
-                            "RUNTIME_EXACT_FIELD_ASSIGNMENT_RHS_CAPTURE");
-                    match.add("effectIds", new JsonArray());
-                    exactMatches.put("WRITE::" + site, match);
                 }
             }
         }
@@ -7816,8 +7778,6 @@ public final class ConcolicSummaryImporter {
 
         List<StaticTransformerObligation> remaining = new ArrayList<>();
         int declaredWriteSiteCount = 0;
-        int coveredWriteSiteCount = exactCoveredWriteSites.size()
-                + guardExcludedWriteSites.size();
         for (Map.Entry<String, Set<String>> entry
                 : writeSitesByMethod.entrySet()) {
             int declared = entry.getValue().size();
@@ -7833,7 +7793,6 @@ public final class ConcolicSummaryImporter {
             int covered = exactTransformerContract ? 0
                     : Math.min(uncoveredByExactProvenance.size(), observed);
             declaredWriteSiteCount += declared;
-            coveredWriteSiteCount += covered;
             int ordinal = 0;
             for (String site : uncoveredByExactProvenance) {
                 if (ordinal++ < covered) {
@@ -7857,17 +7816,7 @@ public final class ConcolicSummaryImporter {
                     methodKey, entry.getValue()));
         }
 
-        JsonArray matches = new JsonArray();
-        for (JsonObject match : exactMatches.values()) {
-            matches.add(match);
-        }
-        for (Map.Entry<String, RuntimeGuardExclusion> entry
-                : guardExcludedWriteSites.entrySet()) {
-            matches.add(entry.getValue().toMatch(entry.getKey(),
-                    requestedPort));
-        }
         int guardExcludedWriteSiteCount = guardExcludedWriteSites.size();
-        int statePortMatchedTransformerCount = containerMatchCount;
         int unresolvedStatePortEffectCount = 0;
         List<JsonObject> residualRequestedStateEffects = new ArrayList<>();
         for (JsonObject effect : requestedStateEffects) {
@@ -7924,33 +7873,7 @@ public final class ConcolicSummaryImporter {
                 && libraryEffectsMatchUniqueTransformer(
                 residualLibraryRequestedStateEffects, remaining.get(0),
                 exactTransformerContract)) {
-            StaticTransformerObligation matched = remaining.remove(0);
-            statePortMatchedTransformerCount += 1;
-            if (matched.heapWrite) {
-                coveredWriteSiteCount++;
-            }
-            JsonObject match = new JsonObject();
-            match.addProperty("obligationKind", matched.kind());
-            match.addProperty("method", matched.signature);
-            if (!matched.siteId.isEmpty()) {
-                match.addProperty("siteId", matched.siteId);
-            }
-            match.addProperty("requestedOutputPort", requestedPort);
-            match.addProperty("stateFamily",
-                    libraryFamilies.iterator().next());
-            JsonArray effectIds = new JsonArray();
-            for (JsonObject effect
-                    : residualLibraryRequestedStateEffects) {
-                effectIds.add(string(effect, "effectId"));
-            }
-            match.add("effectIds", effectIds);
-            match.addProperty("authority",
-                    exactTransformerContract
-                            ? "UNIQUE_EXACT_TRANSFORMER_PLUS_REQUESTED_STATE_"
-                            + "PORT_AND_APPLICATION_METHOD"
-                            : "UNIQUE_UNRESOLVED_TRANSFORMER_AND_REQUESTED_"
-                            + "STATE_FAMILY");
-            matches.add(match);
+            remaining.remove(0);
             unresolvedStatePortEffectCount =
                     residualRequestedStateEffects.size()
                             - residualLibraryRequestedStateEffects.size();
@@ -7961,7 +7884,6 @@ public final class ConcolicSummaryImporter {
 
         List<HeapEffectIssue> issues = new ArrayList<>(
                 transformerContractIssues);
-        JsonArray gaps = transformerContractGaps.deepCopy();
         Map<String, List<StaticTransformerObligation>> writeGaps =
                 new LinkedHashMap<>();
         int edgeFreeVoidMethodCount = 0;
@@ -7977,13 +7899,6 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             edgeFreeVoidMethodCount++;
-            JsonObject gap = new JsonObject();
-            gap.addProperty("kind",
-                    "UNMODELED_DECLARED_HEAP_TRANSFORMER");
-            gap.addProperty("method", obligation.signature);
-            gap.addProperty("reason",
-                    "VOID_SLICE_METHOD_HAS_NO_CAUSAL_EDGE_OR_RUNTIME_EFFECT");
-            gaps.add(gap);
             issues.add(new HeapEffectIssue(
                     "UNMODELED_DECLARED_HEAP_TRANSFORMER", -1,
                     "requestedOutputSlice.methods", obligation.signature));
@@ -7994,42 +7909,20 @@ public final class ConcolicSummaryImporter {
                 : writeGaps.entrySet()) {
             uncoveredWriteSiteCount += entry.getValue().size();
             StaticTransformerObligation first = entry.getValue().get(0);
-            JsonArray sites = new JsonArray();
+            List<String> sites = new ArrayList<>();
             for (StaticTransformerObligation obligation : entry.getValue()) {
                 sites.add(obligation.siteId);
             }
-            JsonObject gap = new JsonObject();
-            gap.addProperty("kind", "UNOBSERVED_DECLARED_HEAP_WRITE");
-            gap.addProperty("method", first.signature);
-            gap.addProperty("uncoveredSiteCount", entry.getValue().size());
-            gap.add("declaredSites", sites);
-            gaps.add(gap);
             issues.add(new HeapEffectIssue(
                     "UNOBSERVED_DECLARED_HEAP_WRITE", -1,
                     GSON.toJson(sites), first.signature));
         }
         if (incompleteIteratorRemoveApplicationProvenance) {
             StaticTransformerObligation obligation = remaining.get(0);
-            JsonObject gap = new JsonObject();
-            gap.addProperty("kind",
-                    "INCOMPLETE_ITERATOR_REMOVE_APPLICATION_PROVENANCE");
-            gap.addProperty("method", obligation.signature);
-            gap.addProperty("siteId", obligation.siteId);
-            gap.addProperty("requestedOutputPort", requestedPort);
-            gap.addProperty("effectCount", unresolvedStatePortEffectCount);
-            gaps.add(gap);
             issues.add(new HeapEffectIssue(
                     "INCOMPLETE_ITERATOR_REMOVE_APPLICATION_PROVENANCE",
                     -1, obligation.siteId, obligation.signature));
         } else if (unresolvedStatePortEffectCount > 0) {
-            JsonObject gap = new JsonObject();
-            gap.addProperty("kind",
-                    "UNRESOLVED_REQUESTED_HEAP_EFFECT_PROVENANCE");
-            gap.addProperty("requestedOutputPort", requestedPort);
-            gap.addProperty("effectCount", unresolvedStatePortEffectCount);
-            gap.addProperty("remainingTransformerObligationCount",
-                    remaining.size());
-            gaps.add(gap);
             issues.add(new HeapEffectIssue(
                     "UNRESOLVED_REQUESTED_HEAP_EFFECT_PROVENANCE", -1,
                     requestedPort, "requested-output-state-family"));
@@ -8043,11 +7936,10 @@ public final class ConcolicSummaryImporter {
                 exactTransformerContract,
                 exactTransformerContract
                         && transformerContractIssues.isEmpty(),
-                declaredWriteSiteCount, coveredWriteSiteCount,
+                declaredWriteSiteCount,
                 uncoveredWriteSiteCount, edgeFreeVoidMethodCount,
                 guardExcludedWriteSiteCount,
-                statePortMatchedTransformerCount,
-                unresolvedStatePortEffectCount, matches, gaps, issues,
+                unresolvedStatePortEffectCount, issues,
                 declaredWriteSites, guardExcludedWriteSites);
     }
 
@@ -8258,12 +8150,7 @@ public final class ConcolicSummaryImporter {
     }
 
     private static void addTransformerContractIssue(
-            List<HeapEffectIssue> issues, JsonArray gaps, String detail) {
-        JsonObject gap = new JsonObject();
-        gap.addProperty("kind",
-                "INVALID_REQUESTED_STATE_TRANSFORMER_CONTRACT");
-        gap.addProperty("detail", detail);
-        gaps.add(gap);
+            List<HeapEffectIssue> issues, String detail) {
         issues.add(new HeapEffectIssue(
                 "INVALID_REQUESTED_STATE_TRANSFORMER_CONTRACT", -1,
                 detail, "requestedOutputSlice"));
@@ -8407,8 +8294,7 @@ public final class ConcolicSummaryImporter {
                 boolean requiredOutcome = item.get("requiredOutcome")
                         .getAsBoolean();
                 GuardedMutationProof proof = new GuardedMutationProof(
-                        guardSite, mutationSite, method, unitIndex,
-                        requiredOutcome);
+                        guardSite, method, requiredOutcome);
                 LinkedHashMap<String, GuardedMutationProof> byGuard =
                         deduped.get(mutationSite);
                 if (byGuard == null) {
@@ -8578,10 +8464,7 @@ public final class ConcolicSummaryImporter {
             collectMethods(methodKeys, activationMethods);
         }
         collectMethod(methodKeys, activationRootMethod(activation));
-        return new PathAdmissionPolicy(methodKeys, boundaries,
-                outputSliceRestricted
-                        ? "REQUESTED_OUTPUT_SLICE_METHOD"
-                        : "REGION_METHOD");
+        return new PathAdmissionPolicy(methodKeys, boundaries);
     }
 
     private static void collectMethods(Set<String> result, JsonArray methods) {
@@ -10401,14 +10284,6 @@ public final class ConcolicSummaryImporter {
         }
     }
 
-    private static final class RuntimeFiniteMapSnapshot {
-        private final JsonObject record;
-
-        private RuntimeFiniteMapSnapshot(JsonObject record) {
-            this.record = record.deepCopy();
-        }
-    }
-
     private static final class RuntimeMapStateInputObservation {
         private final JsonObject record;
 
@@ -10497,8 +10372,7 @@ public final class ConcolicSummaryImporter {
     private static final class RuntimeHeapObservationCatalog {
         private final int recordCount;
         private final Map<String, RuntimeHeapObservation> byId;
-        private final Map<String, RuntimeFiniteMapSnapshot>
-                finiteMapSnapshotsById;
+        private final Set<String> finiteMapSnapshotIds;
         private final Map<String, RuntimeMapStateInputObservation>
                 mapStateInputsById;
         private final List<HeapEffectIssue> issues;
@@ -10506,13 +10380,13 @@ public final class ConcolicSummaryImporter {
         private RuntimeHeapObservationCatalog(
                 int recordCount,
                 Map<String, RuntimeHeapObservation> byId,
-                Map<String, RuntimeFiniteMapSnapshot> finiteMapSnapshotsById,
+                Set<String> finiteMapSnapshotIds,
                 Map<String, RuntimeMapStateInputObservation>
                         mapStateInputsById,
                 List<HeapEffectIssue> issues) {
             this.recordCount = recordCount;
             this.byId = byId;
-            this.finiteMapSnapshotsById = finiteMapSnapshotsById;
+            this.finiteMapSnapshotIds = finiteMapSnapshotIds;
             this.mapStateInputsById = mapStateInputsById;
             this.issues = issues;
         }
@@ -10618,15 +10492,12 @@ public final class ConcolicSummaryImporter {
 
     private static final class DynamicFieldBindingCatalog {
         private final Map<String, RuntimeDynamicFieldBinding> byId;
-        private final Map<String, RuntimeDynamicFieldBinding> byDynamicSymbol;
         private final List<HeapEffectIssue> issues;
 
         private DynamicFieldBindingCatalog(
                 Map<String, RuntimeDynamicFieldBinding> byId,
-                Map<String, RuntimeDynamicFieldBinding> byDynamicSymbol,
                 List<HeapEffectIssue> issues) {
             this.byId = byId;
-            this.byDynamicSymbol = byDynamicSymbol;
             this.issues = issues;
         }
 
@@ -10740,7 +10611,7 @@ public final class ConcolicSummaryImporter {
             return catalog.issues.isEmpty() && issues.isEmpty()
                     && observations.size() == catalog.byId.size()
                     && catalog.byId.size()
-                    + catalog.finiteMapSnapshotsById.size()
+                    + catalog.finiteMapSnapshotIds.size()
                     + catalog.mapStateInputsById.size()
                     == catalog.recordCount;
         }
@@ -10798,19 +10669,14 @@ public final class ConcolicSummaryImporter {
 
     private static final class GuardedMutationProof {
         private final String guardSiteId;
-        private final String mutationSiteId;
         private final String method;
-        private final int mutationUnitIndex;
         private final boolean requiredOutcome;
 
         private GuardedMutationProof(String guardSiteId,
-                                     String mutationSiteId,
-                                     String method, int mutationUnitIndex,
+                                     String method,
                                      boolean requiredOutcome) {
             this.guardSiteId = guardSiteId;
-            this.mutationSiteId = mutationSiteId;
             this.method = method;
-            this.mutationUnitIndex = mutationUnitIndex;
             this.requiredOutcome = requiredOutcome;
         }
     }
@@ -10849,14 +10715,10 @@ public final class ConcolicSummaryImporter {
         private final boolean exactTransformerContract;
         private final boolean transformerContractValid;
         private final int declaredWriteSiteCount;
-        private final int coveredWriteSiteCount;
         private final int uncoveredWriteSiteCount;
         private final int edgeFreeVoidMethodCount;
         private final int guardExcludedWriteSiteCount;
-        private final int statePortMatchedTransformerCount;
         private final int unresolvedStatePortEffectCount;
-        private final JsonArray matches;
-        private final JsonArray gaps;
         private final List<HeapEffectIssue> issues;
         private final Set<String> declaredWriteSites;
         private final Map<String, RuntimeGuardExclusion>
@@ -10866,12 +10728,11 @@ public final class ConcolicSummaryImporter {
                 boolean applicable, boolean exactTransformerContract,
                 boolean transformerContractValid,
                 int declaredWriteSiteCount,
-                int coveredWriteSiteCount, int uncoveredWriteSiteCount,
+                int uncoveredWriteSiteCount,
                 int edgeFreeVoidMethodCount,
                 int guardExcludedWriteSiteCount,
-                int statePortMatchedTransformerCount,
-                int unresolvedStatePortEffectCount, JsonArray matches,
-                JsonArray gaps, List<HeapEffectIssue> issues,
+                int unresolvedStatePortEffectCount,
+                List<HeapEffectIssue> issues,
                 Set<String> declaredWriteSites,
                 Map<String, RuntimeGuardExclusion>
                         guardExcludedWriteSites) {
@@ -10879,16 +10740,11 @@ public final class ConcolicSummaryImporter {
             this.exactTransformerContract = exactTransformerContract;
             this.transformerContractValid = transformerContractValid;
             this.declaredWriteSiteCount = declaredWriteSiteCount;
-            this.coveredWriteSiteCount = coveredWriteSiteCount;
             this.uncoveredWriteSiteCount = uncoveredWriteSiteCount;
             this.edgeFreeVoidMethodCount = edgeFreeVoidMethodCount;
             this.guardExcludedWriteSiteCount = guardExcludedWriteSiteCount;
-            this.statePortMatchedTransformerCount =
-                    statePortMatchedTransformerCount;
             this.unresolvedStatePortEffectCount =
                     unresolvedStatePortEffectCount;
-            this.matches = matches;
-            this.gaps = gaps;
             this.issues = issues;
             this.declaredWriteSites = new LinkedHashSet<>(
                     declaredWriteSites);
@@ -10898,8 +10754,7 @@ public final class ConcolicSummaryImporter {
 
         private static StaticHeapTransformerCoverage notApplicable() {
             return new StaticHeapTransformerCoverage(false, false, false,
-                    0, 0, 0, 0, 0, 0, 0, new JsonArray(),
-                    new JsonArray(),
+                    0, 0, 0, 0, 0,
                     Collections.<HeapEffectIssue>emptyList(),
                     Collections.<String>emptySet(),
                     Collections.<String, RuntimeGuardExclusion>emptyMap());
@@ -10919,38 +10774,6 @@ public final class ConcolicSummaryImporter {
                     == declaredWriteSiteCount;
         }
 
-        private JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("policy",
-                    exactTransformerContract
-                            ? "EXACT_REQUESTED_STATE_TRANSFORMER_"
-                            + "RUNTIME_PATH_COVERAGE_V5"
-                            : "REQUESTED_OUTPUT_RUNTIME_PATH_"
-                            + "TRANSFORMER_COVERAGE_V4_LEGACY_FAIL_CLOSED");
-            result.addProperty("applicable", applicable);
-            result.addProperty("exactRequestedStateTransformerContract",
-                    exactTransformerContract);
-            result.addProperty("requestedStateTransformerContractValid",
-                    transformerContractValid);
-            result.addProperty("declaredWriteSiteCount",
-                    declaredWriteSiteCount);
-            result.addProperty("coveredWriteSiteCount",
-                    coveredWriteSiteCount);
-            result.addProperty("uncoveredWriteSiteCount",
-                    uncoveredWriteSiteCount);
-            result.addProperty("edgeFreeVoidMethodCount",
-                    edgeFreeVoidMethodCount);
-            result.addProperty("guardExcludedWriteSiteCount",
-                    guardExcludedWriteSiteCount);
-            result.addProperty("statePortMatchedTransformerCount",
-                    statePortMatchedTransformerCount);
-            result.addProperty("unresolvedStatePortEffectCount",
-                    unresolvedStatePortEffectCount);
-            result.add("matches", matches.deepCopy());
-            result.add("gaps", gaps.deepCopy());
-            result.addProperty("complete", complete());
-            return result;
-        }
     }
 
     private static final class HeapEffectExtraction {
@@ -11417,13 +11240,11 @@ public final class ConcolicSummaryImporter {
     private static final class PathAdmissionPolicy {
         private final Set<String> methodKeys;
         private final List<String> boundaries;
-        private final String policy;
 
         private PathAdmissionPolicy(Set<String> methodKeys,
-                                    List<String> boundaries, String policy) {
+                                    List<String> boundaries) {
             this.methodKeys = methodKeys;
             this.boundaries = boundaries;
-            this.policy = policy;
         }
 
         private String rejectionReason(String codePosition) {
@@ -11520,7 +11341,6 @@ public final class ConcolicSummaryImporter {
         private final int[] rawToNormalized;
         private final String[] statuses;
         private final String[] reasons;
-        private final String[] codePositions;
         private final String[] admissionAuthorities;
         private final int filteredConditionCount;
 
@@ -11528,14 +11348,12 @@ public final class ConcolicSummaryImporter {
                                   int[] rawToNormalized,
                                   String[] statuses,
                                   String[] reasons,
-                                  String[] codePositions,
                                   String[] admissionAuthorities,
                                   int filteredConditionCount) {
             this.conditions = conditions;
             this.rawToNormalized = rawToNormalized;
             this.statuses = statuses;
             this.reasons = reasons;
-            this.codePositions = codePositions;
             this.admissionAuthorities = admissionAuthorities;
             this.filteredConditionCount = filteredConditionCount;
         }

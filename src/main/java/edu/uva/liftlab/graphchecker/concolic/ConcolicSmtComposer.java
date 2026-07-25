@@ -478,11 +478,12 @@ public final class ConcolicSmtComposer {
     private static ResolvedSummaryGraph resolveSummaryGraph(
             JsonObject fatal, JsonObject context, List<JsonObject> summaries,
             Set<String> sourceScopeRegions) {
+        SummaryIndex summaryIndex = SummaryIndex.build(summaries);
         ProducerDemandIndex knownDemands = new ProducerDemandIndex();
         ResolvedSummaryGraph result = null;
         int limit = Math.max(8, summaries.size() * 2 + 4);
         for (int pass = 0; pass < limit; pass++) {
-            result = resolveSummaryGraphPass(fatal, context, summaries,
+            result = resolveSummaryGraphPass(fatal, context, summaryIndex,
                     sourceScopeRegions, knownDemands);
             if (knownDemands.sameAs(result.demands)) {
                 return result;
@@ -490,7 +491,7 @@ public final class ConcolicSmtComposer {
             knownDemands.addAll(result.demands);
         }
         if (result == null) {
-            result = resolveSummaryGraphPass(fatal, context, summaries,
+            result = resolveSummaryGraphPass(fatal, context, summaryIndex,
                     sourceScopeRegions, knownDemands);
         }
         result.gaps.add("ProducerDemandFixpointDidNotConverge:"
@@ -499,7 +500,7 @@ public final class ConcolicSmtComposer {
     }
 
     private static ResolvedSummaryGraph resolveSummaryGraphPass(
-            JsonObject fatal, JsonObject context, List<JsonObject> summaries,
+            JsonObject fatal, JsonObject context, SummaryIndex summaries,
             Set<String> sourceScopeRegions,
             ProducerDemandIndex knownDemands) {
         String fatalRegion = string(fatal, "regionId");
@@ -563,42 +564,34 @@ public final class ConcolicSmtComposer {
             // selecting any producer summary.  Selecting while scanning one
             // edge at a time lets two singleton summaries stand in for one
             // atomic multi-output invocation.
-            for (JsonObject candidate : summaries) {
-                for (JsonElement element : edgeBindings(candidate)) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject binding = element.getAsJsonObject();
-                    if (!bindingTargets(binding, consumer.regionId,
-                            consumer.instanceId, demandedInputs)
-                            || !trustedRuntimeComposition(binding)
-                            || !allowedBoundedSource(
-                            bindingSourceRegion(binding),
-                            sourceScopeRegions)) {
-                        continue;
-                    }
-                    result.registerDemand(bindingSourceRegion(binding),
-                            bindingSourceInstance(binding),
-                            bindingSourceOutput(binding));
+            List<JsonObject> incoming = summaries.bindingsTargeting(
+                    consumer.regionId, consumer.instanceId);
+            for (JsonObject binding : incoming) {
+                if (!bindingTargets(binding, consumer.regionId,
+                        consumer.instanceId, demandedInputs)
+                        || !trustedRuntimeComposition(binding)
+                        || !allowedBoundedSource(
+                        bindingSourceRegion(binding),
+                        sourceScopeRegions)) {
+                    continue;
                 }
+                result.registerDemand(bindingSourceRegion(binding),
+                        bindingSourceInstance(binding),
+                        bindingSourceOutput(binding));
             }
-            for (JsonObject candidate : summaries) {
-                for (JsonElement element : edgeBindings(candidate)) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject binding = element.getAsJsonObject();
-                    if (!bindingTargets(binding, consumer.regionId,
-                            consumer.instanceId, demandedInputs)) {
-                        continue;
-                    }
-                    if (!trustedRuntimeComposition(binding)) {
-                        continue;
-                    }
-                    String sourceRegion = bindingSourceRegion(binding);
-                    if (!allowedBoundedSource(sourceRegion,
-                            sourceScopeRegions)) {
-                        continue;
-                    }
-                    resolveBindingProducer(result, binding, summaries, fatal,
-                            consumer.regionId, consumer.instanceId);
+            for (JsonObject binding : incoming) {
+                if (!bindingTargets(binding, consumer.regionId,
+                        consumer.instanceId, demandedInputs)
+                        || !trustedRuntimeComposition(binding)) {
+                    continue;
                 }
+                String sourceRegion = bindingSourceRegion(binding);
+                if (!allowedBoundedSource(sourceRegion,
+                        sourceScopeRegions)) {
+                    continue;
+                }
+                resolveBindingProducer(result, binding, summaries, fatal,
+                        consumer.regionId, consumer.instanceId);
             }
         }
 
@@ -669,7 +662,7 @@ public final class ConcolicSmtComposer {
 
     private static void seedContextRelation(ResolvedSummaryGraph graph,
                                             JsonObject relation,
-                                            List<JsonObject> summaries,
+                                            SummaryIndex summaries,
                                             JsonObject fatal,
                                             Set<String> boundedRegions,
                                             String expectedRelationKind,
@@ -716,7 +709,7 @@ public final class ConcolicSmtComposer {
 
     private static void resolveBindingProducer(ResolvedSummaryGraph graph,
                                                JsonObject binding,
-                                               List<JsonObject> summaries,
+                                               SummaryIndex summaries,
                                                JsonObject fatal,
                                                String targetRegion,
                                                String targetInstance) {
@@ -753,7 +746,7 @@ public final class ConcolicSmtComposer {
     }
 
     private static ProducerKey selectExactProducer(
-            ResolvedSummaryGraph graph, List<JsonObject> summaries,
+            ResolvedSummaryGraph graph, SummaryIndex summaries,
             JsonObject fatal, String region, String requestedInstance,
             String output, boolean missingProducerIsGap) {
         Set<String> demandedOutputs = graph.demandedOutputs(region,
@@ -784,8 +777,7 @@ public final class ConcolicSmtComposer {
         Map<String, JsonObject> unique = new LinkedHashMap<>();
         Map<String, OutputClosureContract> closures = new LinkedHashMap<>();
         Set<String> fingerprints = new LinkedHashSet<>();
-        for (JsonObject summary : summaries) {
-            if (!region.equals(string(summary, "regionId"))) continue;
+        for (JsonObject summary : summaries.forRegion(region)) {
             if (!summary.has(OutputClosureContract.FIELD)) continue;
             OutputClosureContract closure;
             try {
@@ -1071,6 +1063,47 @@ public final class ConcolicSmtComposer {
     private static boolean allowedBoundedSource(String region,
                                                 Set<String> boundedRegions) {
         return boundedRegions.isEmpty() || boundedRegions.contains(region);
+    }
+
+    private static final class SummaryIndex {
+        private final Map<String, List<JsonObject>> byRegion =
+                new LinkedHashMap<>();
+        private final Map<String, List<JsonObject>> bindingsByTarget =
+                new LinkedHashMap<>();
+
+        private static SummaryIndex build(List<JsonObject> summaries) {
+            SummaryIndex result = new SummaryIndex();
+            for (JsonObject summary : summaries) {
+                String region = string(summary, "regionId");
+                result.byRegion.computeIfAbsent(region,
+                        ignored -> new ArrayList<>()).add(summary);
+                for (JsonElement element : edgeBindings(summary)) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    String targetRegion = firstNonBlank(
+                            string(binding, "toRegion"),
+                            regionOf(bindingTargetInput(binding)));
+                    String targetInstance = bindingTargetInstance(binding);
+                    if (targetRegion.isEmpty() || targetInstance.isEmpty()) {
+                        continue;
+                    }
+                    result.bindingsByTarget.computeIfAbsent(
+                            targetRegion + "\n" + targetInstance,
+                            ignored -> new ArrayList<>()).add(binding);
+                }
+            }
+            return result;
+        }
+
+        private List<JsonObject> forRegion(String region) {
+            return byRegion.getOrDefault(region, Collections.emptyList());
+        }
+
+        private List<JsonObject> bindingsTargeting(String region,
+                                                   String instance) {
+            return bindingsByTarget.getOrDefault(region + "\n" + instance,
+                    Collections.emptyList());
+        }
     }
 
     private static final class ProducerDemandIndex {
@@ -1410,17 +1443,14 @@ public final class ConcolicSmtComposer {
                                                Set<String> boundedRegions) {
         JsonObject result = source.deepCopy();
         if (boundedRegions.isEmpty()) {
-            return new ContextScope(result, 0, 0, 0);
+            return new ContextScope(result, 0);
         }
-        int excludedRelations = 0;
-        int excludedAlternatives = 0;
         int includedRelations = 0;
         for (String field : new String[]{"equalityRelations",
                 "versionedStateMerges"}) {
             JsonArray selected = new JsonArray();
             for (JsonElement element : array(source, field)) {
                 if (!element.isJsonObject()) {
-                    excludedRelations++;
                     continue;
                 }
                 JsonObject relation = element.getAsJsonObject();
@@ -1428,8 +1458,6 @@ public final class ConcolicSmtComposer {
                         "fromEndpoint")))) {
                     selected.add(relation.deepCopy());
                     includedRelations++;
-                } else {
-                    excludedRelations++;
                 }
             }
             result.add(field, selected);
@@ -1440,7 +1468,6 @@ public final class ConcolicSmtComposer {
         for (JsonElement element : array(source,
                 "alternativeWriterGroups")) {
             if (!element.isJsonObject()) {
-                excludedRelations++;
                 continue;
             }
             JsonObject group = element.getAsJsonObject();
@@ -1448,15 +1475,12 @@ public final class ConcolicSmtComposer {
             JsonArray alternatives = array(group, "alternatives");
             for (JsonElement alternative : alternatives) {
                 if (!alternative.isJsonObject()) {
-                    excludedAlternatives++;
                     continue;
                 }
                 JsonObject relation = alternative.getAsJsonObject();
                 if (boundedRegions.contains(regionOf(string(relation,
                         "fromEndpoint")))) {
                     selected.add(relation.deepCopy());
-                } else {
-                    excludedAlternatives++;
                 }
             }
             if (selected.size() == 1) {
@@ -1473,28 +1497,19 @@ public final class ConcolicSmtComposer {
                 copy.add("alternatives", selected);
                 selectedGroups.add(copy);
                 includedRelations += selected.size();
-            } else {
-                excludedRelations++;
             }
         }
         result.add("versionedStateMerges", direct);
         result.add("alternativeWriterGroups", selectedGroups);
-        return new ContextScope(result, excludedRelations,
-                excludedAlternatives, includedRelations);
+        return new ContextScope(result, includedRelations);
     }
 
     private static final class ContextScope {
         private final JsonObject context;
-        private final int excludedRelations;
-        private final int excludedAlternatives;
         private final int includedRelations;
 
-        private ContextScope(JsonObject context, int excludedRelations,
-                             int excludedAlternatives,
-                             int includedRelations) {
+        private ContextScope(JsonObject context, int includedRelations) {
             this.context = context;
-            this.excludedRelations = excludedRelations;
-            this.excludedAlternatives = excludedAlternatives;
             this.includedRelations = includedRelations;
         }
     }
@@ -3377,8 +3392,8 @@ public final class ConcolicSmtComposer {
                 String arrayTerm = scopedName("array", arrayId);
                 declare(arrayTerm, Sort.ARRAY);
                 EngineArrayInputBridge bridge =
-                        new EngineArrayInputBridge(arrayId, arrayTerm, port,
-                                token, integer(object(row,
+                        new EngineArrayInputBridge(arrayTerm, port,
+                                integer(object(row,
                                 "arrayValueExpression"),
                                 "_concrete_length", -1));
                 engineArrayInputBridges.put(bridgeKey, bridge);
@@ -3712,7 +3727,7 @@ public final class ConcolicSmtComposer {
                 JsonArray heapInitializers = array(summary,
                         "heapStateInitializers");
                 JsonArray heapEffects = array(summary, "heapEffects");
-                validateHeapEffectSummary(region, summary, heapInitializers,
+                validateHeapEffectSummary(region, heapInitializers,
                         heapEffects, bool(summary,
                         "relationallyComplete", false));
                 finiteMapSnapshots(region, summary);
@@ -3808,7 +3823,7 @@ public final class ConcolicSmtComposer {
                     JsonArray initializers = array(item,
                             "heapStateInitializers");
                     JsonArray effects = array(item, "heapEffects");
-                    validateHeapEffectSummary(region, item, initializers,
+                    validateHeapEffectSummary(region, initializers,
                             effects, relationComplete);
                     finiteMapSnapshots(region, item);
                     heapObservations(region, item);
@@ -3846,25 +3861,13 @@ public final class ConcolicSmtComposer {
             if (relationComplete
                     && selectors.size() == cases.size()
                     && !selectors.isEmpty()) {
-                String coverage;
-                if (selectors.size() == 1) coverage = selectors.get(0);
-                else {
-                    StringBuilder value = new StringBuilder("(or");
-                    for (String selector : selectors) value.append(' ')
-                            .append(selector);
-                    coverage = value.append(')').toString();
+                StringBuilder partition = new StringBuilder("(= (+");
+                for (String selector : selectors) {
+                    partition.append(" (ite ").append(selector)
+                            .append(" 1 0)");
                 }
-                assertNamed("region_case_selector_coverage_" + region,
-                        coverage);
-                for (int left = 0; left < selectors.size(); left++) {
-                    for (int right = left + 1; right < selectors.size();
-                            right++) {
-                        assertNamed("region_case_selector_exclusive_" + region
-                                        + "_" + left + "_" + right,
-                                "(not (and " + selectors.get(left) + " "
-                                        + selectors.get(right) + "))");
-                    }
-                }
+                assertNamed("region_case_selector_partition_" + region,
+                        partition.append(") 1)").toString());
             } else if (relationComplete) {
                 caseProjectionCatalogComplete = false;
                 heapGap(region, "CaseSelectorPartitionGap@" + region);
@@ -4553,7 +4556,6 @@ public final class ConcolicSmtComposer {
         }
 
         private void validateHeapEffectSummary(String region,
-                                               JsonObject summary,
                                                JsonArray initializers,
                                                JsonArray effects,
                                                boolean relationallyComplete) {
@@ -4670,14 +4672,8 @@ public final class ConcolicSmtComposer {
                 }
                 JsonObject initializer = element.getAsJsonObject();
                 String id = string(initializer, "initializerId");
-                String kind = string(initializer, "kind");
                 String statePort = string(initializer, "statePort");
                 String family = string(initializer, "stateFamily");
-                String stateId = string(initializer, "stateId");
-                String staticId = string(initializer,
-                        "staticInitializerId");
-                String allocationEdge = string(initializer,
-                        "allocationEdgeId");
                 boolean valid = validMapEmptyInitializer(initializer);
                 if (!valid) {
                     heapGap(region, "MalformedMapEmptyInitializer@" + region
@@ -6843,7 +6839,6 @@ public final class ConcolicSmtComposer {
                     guards.add(guard);
                     emitted++;
                     stats.readFrom++;
-                    stats.guardedAlternatives++;
                     guardedRuntimeEvidence(relation, groupId, index, guard,
                             stats);
                 }
@@ -7007,7 +7002,6 @@ public final class ConcolicSmtComposer {
                         + receiver + ")");
                 assertNamed("identity_alt_" + suffix, "(=> " + guard
                         + " (= " + writer + " " + reader + "))");
-                stats.identities++;
             }
         }
 
@@ -7103,11 +7097,9 @@ public final class ConcolicSmtComposer {
                 }
                 if (valueEquality) {
                     stats.equalities++;
-                    stats.runtimeValueEqualities++;
                 } else {
                     stats.readFrom++;
                 }
-                stats.edgeBindings++;
 
                 String write = "event_write_" + smtName(label);
                 String read = "event_read_" + smtName(label);
@@ -7140,7 +7132,6 @@ public final class ConcolicSmtComposer {
                         + readerReceiver + " " + receiver + ")");
                 assertNamed("identity_" + label, "(= "
                         + writerReceiver + " " + readerReceiver + ")");
-                stats.identities++;
             }
             return stats;
         }
@@ -7369,7 +7360,7 @@ public final class ConcolicSmtComposer {
                             }
                             Collections.reverse(path);
                             if (!path.isEmpty()) {
-                                return new CausalPath(source, next, path);
+                                return new CausalPath(path);
                             }
                         }
                         pending.addLast(next);
@@ -7395,15 +7386,19 @@ public final class ConcolicSmtComposer {
         }
 
         private void finishBindings() {
-            boolean changed = true;
-            while (changed) {
-                changed = false;
-                for (String[] equality : portEqualities) {
-                    if (boundPorts.contains(equality[0])) {
-                        changed |= boundPorts.add(equality[1]);
-                    }
-                    if (boundPorts.contains(equality[1])) {
-                        changed |= boundPorts.add(equality[0]);
+            Map<String, Set<String>> equalPorts = new LinkedHashMap<>();
+            for (String[] equality : portEqualities) {
+                equalPorts.computeIfAbsent(equality[0],
+                        ignored -> new LinkedHashSet<>()).add(equality[1]);
+                equalPorts.computeIfAbsent(equality[1],
+                        ignored -> new LinkedHashSet<>()).add(equality[0]);
+            }
+            Deque<String> pending = new ArrayDeque<>(boundPorts);
+            while (!pending.isEmpty()) {
+                for (String port : equalPorts.getOrDefault(
+                        pending.removeFirst(), Collections.emptySet())) {
+                    if (boundPorts.add(port)) {
+                        pending.addLast(port);
                     }
                 }
             }
@@ -8123,7 +8118,7 @@ public final class ConcolicSmtComposer {
             Sort sort = isMapCell(cell) || isMapType(javaType)
                     ? Sort.MAP : isArrayType(javaType)
                     ? Sort.ARRAY_VALUE : Sort.VALUE;
-            ports.put(id, new Port(id, cell, javaType, sort, input));
+            ports.put(id, new Port(cell, javaType, sort, input));
         }
 
         private Port get(String id) {
@@ -8146,15 +8141,12 @@ public final class ConcolicSmtComposer {
     }
 
     private static final class Port {
-        private final String id;
         private final String cell;
         private final String javaType;
         private final Sort sort;
         private final boolean input;
 
-        private Port(String id, String cell, String javaType, Sort sort,
-                     boolean input) {
-            this.id = id;
+        private Port(String cell, String javaType, Sort sort, boolean input) {
             this.cell = cell;
             this.javaType = javaType;
             this.sort = sort;
@@ -8163,21 +8155,15 @@ public final class ConcolicSmtComposer {
     }
 
     private static final class EngineArrayInputBridge {
-        private final String engineArrayId;
         private final String arrayTerm;
         private final String inputPort;
-        private final long objectToken;
         private final int concreteLength;
 
-        private EngineArrayInputBridge(String engineArrayId,
-                                       String arrayTerm,
+        private EngineArrayInputBridge(String arrayTerm,
                                        String inputPort,
-                                       long objectToken,
                                        int concreteLength) {
-            this.engineArrayId = engineArrayId;
             this.arrayTerm = arrayTerm;
             this.inputPort = inputPort;
-            this.objectToken = objectToken;
             this.concreteLength = concreteLength;
         }
     }
@@ -8346,14 +8332,9 @@ public final class ConcolicSmtComposer {
     }
 
     private static final class CausalPath {
-        private final String sourceCell;
-        private final String targetCell;
         private final List<JsonObject> edges;
 
-        private CausalPath(String sourceCell, String targetCell,
-                           List<JsonObject> edges) {
-            this.sourceCell = firstNonBlank(sourceCell);
-            this.targetCell = firstNonBlank(targetCell);
+        private CausalPath(List<JsonObject> edges) {
             this.edges = new ArrayList<>(edges);
         }
     }
@@ -8661,12 +8642,8 @@ public final class ConcolicSmtComposer {
     private static final class MergeStats {
         private int equalities;
         private int readFrom;
-        private int runtimeValueEqualities;
         private int orders;
-        private int identities;
-        private int edgeBindings;
         private int alternativeWriterGroups;
-        private int guardedAlternatives;
 
     }
 

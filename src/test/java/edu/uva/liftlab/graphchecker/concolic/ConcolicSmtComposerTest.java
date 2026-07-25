@@ -91,9 +91,7 @@ public class ConcolicSmtComposerTest {
 
             assertTrue(candidateReady(result.manifest));
             assertTrue(result.smtLib.contains(
-                    "region_case_selector_coverage_REGION_P"));
-            assertTrue(result.smtLib.contains(
-                    "region_case_selector_exclusive_REGION_P_0_1"));
+                    "region_case_selector_partition_REGION_P"));
             assertTrue(result.smtLib.contains("(=>"));
             assertTrue(result.smtLib, result.smtLib.contains(
                     ":named container_element_field_BIND_ARRAY_0"));
