@@ -1701,8 +1701,10 @@ capture；不再跨 activation 合并，也不再为同一 output closure 重复
 accessor、dispatch 和计数诊断对象。
 
 Runtime raw result 的 model assignment 只写 Importer 实际 join 的 canonical key/target/
-value core；engine-array 注册、branch mapping base row 和 exact consumed-field 校验各自
-合并为一个实现。Importer 删除只在方法内部写后再读的 Map-state 镜像、未消费的 target
+value core；dynamic container/Map assignment 另外保留 ReplayValidator 实际 join 的
+activation-local selector/rebinding witness。engine-array 注册、branch mapping base row
+和 exact consumed-field 校验各自合并为一个实现。Importer 删除只在方法内部写后再读的
+Map-state 镜像、未消费的 target
 root/execution metadata，以及 heap effect 的 normalization/authority/output-binding 展示
 字段；raw PC index、site/occurrence、对象身份、表达式、input/output port、capture 与
 transformer obligation 均保留。Composer 只接受 canonical guarded path merge，不再把
@@ -1717,6 +1719,20 @@ reader 已删除，并增加一个只锁定 canonical target-summary contract �
 gap，真实 Z3 再次报告 `SAT/REACHABLE`。当前手写生产 Java 为 72,113 行，相对
 81,581 行冻结基线累计净减 9,468 行；62 项快速回归通过。隔离干净 worktree 的完整
 13-fixture 结果在本里程碑 commit 后记录，不能用主工作树 artifact 代替。
+
+首次 clean matrix 又准确指出两项 field-ledger 分类错误：non-null `String` 的 VM
+symbol 使用 `M_L'RuntimeType'_PORT_owner`，不是 primitive/reference field 的统一前缀；
+fresh Map.Entry/container assignment 的 applied selector 也是 ReplayValidator 的真实
+correctness consumer，并非展示镜像。Solver 现在精确解析这两类合法 VM symbol envelope，
+仍不恢复任意 substring/normalized fuzzy match；Runtime 只恢复 planned static selector
+与当前 activation-local selector/key join 所需字段，不恢复 concrete-class 等诊断字段。
+两个聚焦回归分别锁定 typed String materialization 和 canonical dynamic rebinding。
+Container workflow 随后完整闭合并得到正确 `SAT/REACHABLE`，但 matrix 的最后一个
+shell assertion 仍读取已退休的
+`dynamicFieldBinding.entryValueRefWitnessJoinCertified`。该 assertion 已原子切换到
+Composer 真正消费的 canonical `heapObservation.valueExpressionWitnessCertified`
+及其 activation-local object token/scope，同时继续逐项校验 binding ID、field path 与
+key expression join；没有降低 container 语义门槛。
 
 ### 明确不能删除
 

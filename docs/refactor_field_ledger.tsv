@@ -244,9 +244,11 @@ composer	raw single-path/protocolModel/explicitContracts producer fallback	Conco
 composer	missing-summary uninterpreted predicate	ConcolicSmtComposer	none	none	typed missing/incomplete-summary gap	DELETE_UNSOUND_FALLBACK	6+
 solver	diagnostic uninterpreted functions/free variables	ConcolicConstraintSolver	none	none	typed unsupported expression and solver-not-invoked status	DELETE_UNSOUND_DIAGNOSTIC_SEMANTICS	6+
 solver-result	materialization/deferred/counter mirrors	ConcolicConstraintSolver,ConcolicScheduler	none	none	canonical symbol plus concreteFallbackReason or typed gap	DELETE	6+
-raw-result	model assignment selector/rebind/concrete-class mirrors	ConcolicRegionRuntime	none	none	canonical assignment key/target/path/value plus separate dynamic binding evidence	DELETE	6+
+raw-result	model assignment concrete-class and non-join mirrors	ConcolicRegionRuntime	none	none	canonical assignment core plus separate dynamic binding evidence	DELETE	6+
 raw-result	engine-array consumed-leaf and branch-base mirrors	ConcolicRegionRuntime	none	none	canonical array expression/object scope and typed branch witness	DELETE	6+
 trace	field method-receiver objectId	CausynthTraceRecorder	none	none	field receiver/value identity plus owning call remain canonical	DELETE	6+
 imported-summary	target rootMethod/rootCallId/executionKind	ConcolicSummaryImporter	ConcolicScheduler	run.sh	captureGoal plus exact activation/region/regionInstance identity	DELETE_AND_UPDATE_READERS	6+
 imported-summary	runtime Map-state temporary binding mirrors	ConcolicSummaryImporter	same importer method only	none	typed effect-ID set passed directly to coverage admission	DELETE_INTERNAL_SERIALIZATION	6+
 heap-effect	normalizedConditionIndex/normalizationStatus/fixed provenanceAuthority/outputBinding	ConcolicSummaryImporter	none	none	rawConditionIndex, site/occurrence, state/input/output ports and expressions	DELETE	6+
+correctness	applied fresh-entry/container selector rebinding	ConcolicRegionRuntime	ConcolicReplayValidator	none	created by current replay activation and not derivable from seed/plan	KEEP	-
+dynamic-binding	entryValueRefWitnessJoinCertified mirrors	ConcolicSummaryImporter	none	run_robustness_matrix.sh	heapObservation.valueExpressionWitnessCertified plus token/scope and exact binding join	DELETE_AND_UPDATE_READER	6+

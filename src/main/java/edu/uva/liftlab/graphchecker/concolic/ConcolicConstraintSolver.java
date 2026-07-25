@@ -1510,13 +1510,20 @@ public final class ConcolicConstraintSolver {
     private static boolean exactEngineSymbol(String raw, String symbol) {
         if (raw == null || symbol == null || symbol.isEmpty()) return false;
         if (raw.equals(symbol)) return true;
-        if (raw.length() <= 10 || raw.charAt(0) != 'M'
-                || raw.charAt(1) != '_'
-                || "ZCBSIFJDL".indexOf(raw.charAt(2)) < 0
-                || !raw.startsWith("_field_", 3)) {
-            return false;
+        String payload = "";
+        if (raw.length() > 10 && raw.charAt(0) == 'M'
+                && raw.charAt(1) == '_'
+                && "ZCBSIFJDL".indexOf(raw.charAt(2)) >= 0
+                && raw.startsWith("_field_", 3)) {
+            payload = raw.substring(10);
+        } else if (raw.startsWith("M_L'")) {
+            int runtimeTypeEnd = raw.indexOf("'_", 4);
+            if (runtimeTypeEnd > 4 && raw.substring(4, runtimeTypeEnd)
+                    .matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
+                payload = raw.substring(runtimeTypeEnd + 2);
+            }
         }
-        String payload = raw.substring(10);
+        if (payload.isEmpty()) return false;
         if (payload.equals(symbol)) return true;
         String boundary = symbol + "_";
         return payload.startsWith(boundary)

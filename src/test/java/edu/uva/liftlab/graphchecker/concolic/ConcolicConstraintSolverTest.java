@@ -149,6 +149,38 @@ public class ConcolicConstraintSolverTest {
         assertFalse(result.smtLib.contains("declare-fun uf__"));
     }
 
+    @Test
+    public void runtimeTypedStringSymbolMapsToExactRegionInput()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject input = new JsonObject();
+        input.addProperty("_type", "SymbolExpression");
+        input.addProperty("_java_type", "java/lang/String");
+        input.addProperty("_exp",
+                "M_L'String'_REGION.3.in.0_example/Input");
+        JsonObject needle = new JsonObject();
+        needle.addProperty("_type", "ConStringSymbolExp");
+        needle.addProperty("_java_type", "java/lang/String");
+        needle.addProperty("_exp", "Y_L'String'_needle");
+        JsonArray parameters = new JsonArray();
+        parameters.add(input);
+        parameters.add(needle);
+        JsonObject contains = new JsonObject();
+        contains.addProperty("_type", "OpStrExpression");
+        contains.addProperty("_name", "contains");
+        contains.add("_param_list", parameters);
+        JsonObject condition = binaryExpression(contains, "==",
+                numericConstant("Z", "0"));
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(condition), activation(), Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals("REGION.3.in.0", result.modelAssignments.get(0)
+                .getAsJsonObject().get("inputSymbol").getAsString());
+    }
+
     private static JsonObject activation() {
         JsonObject activation = new JsonObject();
         JsonArray materializations = new JsonArray();

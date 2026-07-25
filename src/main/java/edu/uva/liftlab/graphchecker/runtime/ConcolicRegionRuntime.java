@@ -1205,8 +1205,8 @@ public final class ConcolicRegionRuntime {
                             + "container element field owner");
                     return;
                 }
-                active.recordModelAssignment(assignment,
-                        action.fieldPath);
+                active.recordDynamicContainerModelAssignment(assignment,
+                        action.fieldPath, binding);
             }
 
             active.fieldTargets.put(binding.dynamicBindingId,
@@ -1286,8 +1286,8 @@ public final class ConcolicRegionRuntime {
                             + "entry field owner");
                     return;
                 }
-                active.recordModelAssignment(assignment,
-                        action.fieldPath);
+                active.recordDynamicMapModelAssignment(assignment,
+                        action.fieldPath, binding);
             }
 
             active.fieldTargets.put(binding.dynamicBindingId,
@@ -7638,8 +7638,61 @@ public final class ConcolicRegionRuntime {
 
         private void recordModelAssignment(ModelAssignment assignment,
                                            List<String> path) {
-            appliedModelAssignments.add(assignment.key);
+            recordModelAssignment(assignment, assignment.appliedJson(), path);
+        }
+
+        private void recordDynamicContainerModelAssignment(
+                ModelAssignment assignment, List<String> path,
+                DynamicFieldBinding binding) {
             JsonObject row = assignment.appliedJson();
+            boolean captured = binding != null && binding.complete
+                    && binding.containerSelector != null
+                    && binding.containerSelector.complete;
+            if (captured) {
+                row.add("containerSelector",
+                        binding.containerSelector.toJson());
+            }
+            row.addProperty("sameSourceContainerIdentityClaimed", false);
+            row.addProperty("currentContainerSelectorCaptured", captured);
+            recordModelAssignment(assignment, row, path);
+        }
+
+        private void recordDynamicMapModelAssignment(
+                ModelAssignment assignment, List<String> path,
+                DynamicFieldBinding binding) {
+            JsonObject row = assignment.appliedJson();
+            if (assignment.usesFreshMapEntryRebinding()) {
+                row.remove("expectedEntryKey");
+                row.remove("expectedEntryKeyAuthority");
+                row.addProperty("dynamicReplayRebindingAuthority",
+                        FRESH_MAP_ENTRY_REBINDING_AUTHORITY);
+                row.addProperty("sourceEntrySelectorRetained", false);
+                row.addProperty("sameSeedEntryClaimed", false);
+                row.addProperty("freshEntrySelectorCaptured",
+                        binding != null
+                                && binding.freshReplaySelectorComplete());
+                if (binding != null) {
+                    if (!binding.entryReadObservationId.isEmpty()) {
+                        row.addProperty("entryReadObservationId",
+                                binding.entryReadObservationId);
+                    }
+                    if (binding.keyExpression != null) {
+                        row.add("keyExpression",
+                                copyJsonTree(binding.keyExpression));
+                    }
+                    if (!safe(binding.keyExpressionAuthority).isEmpty()) {
+                        row.addProperty("keyExpressionAuthority",
+                                binding.keyExpressionAuthority);
+                    }
+                }
+            }
+            recordModelAssignment(assignment, row, path);
+        }
+
+        private void recordModelAssignment(ModelAssignment assignment,
+                                           JsonObject row,
+                                           List<String> path) {
+            appliedModelAssignments.add(assignment.key);
             row.addProperty("modelAssignmentKey", assignment.key);
             if (path != null && !path.isEmpty()) {
                 row.add("materializationPath", GSON.toJsonTree(path));
@@ -9723,6 +9776,47 @@ public final class ConcolicRegionRuntime {
             if (!dynamicFieldSymbol.isEmpty()) {
                 result.addProperty("dynamicFieldSymbol",
                         dynamicFieldSymbol);
+            }
+            if (!materializationSiteId.isEmpty()) {
+                result.addProperty("materializationSiteId",
+                        materializationSiteId);
+            }
+            if (materializationOccurrence > 0) {
+                result.addProperty("materializationOccurrence",
+                        materializationOccurrence);
+            }
+            if (!entryReadObservationId.isEmpty()) {
+                result.addProperty("entryReadObservationId",
+                        entryReadObservationId);
+            }
+            if (hasContainerSelectorMetadata()) {
+                JsonObject selector = new JsonObject();
+                selector.addProperty("kind", "ARRAY_INDEX");
+                selector.addProperty("bindingId", containerBindingId);
+                selector.addProperty("containerInputPort",
+                        containerInputPort);
+                selector.addProperty("containerInputCell",
+                        containerInputCell);
+                selector.addProperty("selectorAuthority",
+                        selectorAuthority);
+                selector.addProperty("elementIndex", elementIndex);
+                selector.addProperty("elementOccurrence",
+                        elementOccurrence);
+                selector.addProperty("declaredFieldOwnerClass",
+                        declaredFieldOwnerClass);
+                selector.addProperty("declaredFieldType",
+                        declaredFieldType);
+                result.add("containerSelector", selector);
+                result.addProperty("containerReplayRebindingAuthority",
+                        containerReplayRebindingAuthority);
+                result.addProperty("sourceContainerObjectTokensRetained",
+                        sourceContainerObjectTokensRetained);
+            }
+            if (!dynamicReplayRebindingAuthority.isEmpty()) {
+                result.addProperty("dynamicReplayRebindingAuthority",
+                        dynamicReplayRebindingAuthority);
+                result.addProperty("sourceEntrySelectorRetained",
+                        sourceEntrySelectorRetained);
             }
             result.addProperty("materializeAtRealDefinition",
                     materializeAtRealDefinition);

@@ -607,13 +607,16 @@ validate_container_producer_artifacts() {
         and $dynamic.keyExpression._type == "ConstExpr"
         and $dynamic.keyExpression._java_type == "I"
         and $dynamic.keyExpression._exp == "Y_I_7"
-        and $dynamic.entryValueRefWitnessJoinCertified == true
         and $observation.schemaVersion == 1
         and $observation.kind == "MAP_ENTRY_READ"
         and $observation.complete == true
         and $observation.stateBaseComplete == true
         and $observation.stateBindingAuthority
           == "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1"
+        and $observation.valueExpressionWitnessCertified == true
+        and $observation.valueExpressionWitnessCertifiedObjectToken > 0
+        and ($observation.valueExpressionWitnessCertifiedObjectTokenScope
+          | type == "string" and length > 0)
         and $observation.entryValueFieldBindingComplete == true
         and ($observation.entryFieldBindings | length) == 1
         and $observation.entryFieldBindings[0].dynamicBindingId
