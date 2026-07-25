@@ -141,12 +141,6 @@ final class RuntimeRegionPlanner {
                     observedMethods.add(event.method);
                 }
 
-                int ordinal = trace.invocationOrdinal(root);
-                int ordinalWithinContext =
-                        trace.invocationOrdinalWithinContext(root);
-                Map<String, Object> rootArgumentSelector =
-                        runtimeRootArgumentSelector(root, methodEvents,
-                                rootArgumentRuntimeTypes);
                 String instanceId = region.regionId + "@" + safeToken(root.test)
                         + "#call" + root.callId;
 
@@ -158,54 +152,16 @@ final class RuntimeRegionPlanner {
                         containedRuntime);
                 boolean runtimePathEvidenceComplete = !callSelection.truncated
                         && !pathSignatureTruncated;
-                List<String> runtimeGaps = new ArrayList<>();
-                if (callSelection.truncated) {
-                    runtimeGaps.add("CONTAINED_CALL_TREE_LIMIT_EXCEEDED");
-                }
-                if (pathSignatureTruncated) {
-                    runtimeGaps.add("PATH_SIGNATURE_LIMIT_EXCEEDED");
-                }
                 ConcreteDemandSlice demandSlice = staticProjections.reslice(
                         region, runtimePathEvidenceComplete,
                         observedMethods, root.method, root, containedCalls,
                         runtimeFieldAccesses);
-                List<StaticPort> concreteInputs = demandSlice.inputs(region);
-                List<Map<String, Object>> inputObjects = inputObservations(
-                        concreteInputs, root, containedRuntime,
-                        containedFields, containedMethodEvents);
-                List<Map<String, Object>> symbolize = symbolizeActions(
-                        region, concreteInputs, root, inputObjects,
-                        containedRuntime, containedFields);
-                List<Map<String, Object>> branchPlan = branchActions(
-                        region, containedRuntime);
-                boolean anchorObserved = observedMethods.contains(region.anchorMethod)
-                        || invokedAnchor(containedRuntime, region.anchorMethod);
-                int observedInputCount = countObserved(inputObjects);
-                int deferredInputCount = countDeferred(inputObjects);
-                int observedBranchCount = countObservedBranches(branchPlan);
-                boolean inputsResolved = observedInputCount + deferredInputCount
-                        == inputObjects.size();
-                boolean branchesResolved = observedBranchCount == branchPlan.size();
-                boolean symbolizeActionsReady = symbolizeActionsReady(
-                        symbolize);
-                boolean demandHasSymbolicPotential = !concreteInputs.isEmpty()
-                        || region.inputs.isEmpty() || region.branches.isEmpty();
-                boolean boundaryReady = inputsResolved && branchesResolved
-                        && region.inputSelectionComplete
-                        && runtimePathEvidenceComplete
-                        && symbolizeActionsReady;
-                boolean replayable = anchorObserved
-                        && runtimePathEvidenceComplete;
-                boolean symbolicReady = replayable && boundaryReady;
-                if (!demandHasSymbolicPotential) {
-                    symbolicReady = false;
-                }
 
                 InstanceEvidence instanceEvidence = new InstanceEvidence(
                         instanceId, region, root, containedCalls,
                         containedMethodEvents, containedRuntime,
                         containedFields, observedMethods,
-                        portIds(concreteInputs), demandSlice,
+                        portIds(demandSlice.inputs(region)), demandSlice,
                         runtimePathEvidenceComplete,
                         !callSelection.truncated);
                 allInstanceEvidence.add(instanceEvidence);
@@ -223,38 +179,6 @@ final class RuntimeRegionPlanner {
                     add(evidenceByRegion, region.regionId,
                             instanceEvidence);
                 }
-
-                Map<String, Object> baseExecution = object(
-                        "runtimeDefinitionMethods",
-                        demandSlice.definitionMethods(observedMethods),
-                        "admission", admission(replayable, symbolicReady,
-                                replayable
-                                        ? "RUNTIME_SELECTED_ROOT_REPLAY"
-                                        : "NO_VALIDATED_RUNTIME_PATH",
-                                runtimeGaps),
-                        "symbolize", symbolize,
-                        "branches", branchPlan);
-                List<Map<String, Object>> closureGoals =
-                        new ArrayList<>();
-                if (region.isTargetClosure()) {
-                    Map<String, Object> targetReachGoal =
-                            new LinkedHashMap<>(baseExecution);
-                    targetReachGoal.put("goalId", targetReachGoalId(
-                            instanceId, region.anchorMethod));
-                    targetReachGoal.put("kind", "TARGET_REACH_CLOSURE");
-                    closureGoals.add(targetReachGoal);
-                }
-                Map<String, Object> activation = object(
-                        "regionInstanceId", instanceId,
-                        "regionId", region.regionId,
-                        "test", root.test,
-                        "rootSelector", rootSelector(root, ordinal,
-                                ordinalWithinContext,
-                                rootArgumentSelector),
-                        "targetMethod", region.anchorMethod,
-                        "closureGoals", closureGoals,
-                        "_plannerBaseExecution", baseExecution);
-                result.regionPlans.add(activation);
                 instanceIndex++;
             }
         }
@@ -264,15 +188,18 @@ final class RuntimeRegionPlanner {
         collectConfirmedExternalInputPromotions(regionEdges,
                 evidenceByRegion, sharedStateEvidenceByRegion,
                 staticProjections, relationEvidence);
-        refreshPromotedConcreteInputRows(allInstanceEvidence, result);
+        Map<String, RegionPlanDraft> planDrafts = buildRegionPlans(
+                allInstanceEvidence, result, trace, methodEvents,
+                rootArgumentRuntimeTypes);
 
         List<UpstreamEdgeBinding> edgeBindings = new ArrayList<>();
         validateRegionEdges(regionEdges, evidenceByRegion,
                 sharedStateEvidenceByRegion, staticProjections, result,
                 edgeBindings, relationEvidence);
-        attachOutputRelationGoals(edgeBindings, staticProjections, result);
-        refineMapValueElementProjectionGoals(result);
-        finalizeOutputClosureArtifacts(result);
+        List<OutputGoalDraft> outputGoals = attachOutputRelationGoals(
+                edgeBindings, staticProjections, planDrafts);
+        refineMapValueElementProjectionGoals(outputGoals);
+        result.regionPlans.removeIf(plan -> closureGoals(plan).isEmpty());
         return result;
     }
 
@@ -672,8 +599,6 @@ final class RuntimeRegionPlanner {
                             observation.put("accessSiteId", field.siteId);
                             observation.put("accessSiteAuthority",
                                     RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY);
-                            observation.put("observationAuthority",
-                                    RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY);
                         }
                     } else {
                         // A concrete value was observed, but selecting an
@@ -690,11 +615,6 @@ final class RuntimeRegionPlanner {
                     && parameter >= 0 && !rootArgument) {
                 observation.put("location", "REGION_LIVE_IN");
                 observation.put("deferredResolution", true);
-                observation.put("crossMethodArgument", true);
-                observation.put("staticInputMethod", staticInputMethod);
-                observation.put("runtimeInputMethod", root.method);
-                observation.put("rebaseRejectedAuthority",
-                        "STATIC_INPUT_METHOD_DIFFERS_FROM_RUNTIME_ROOT");
             }
             if (!Boolean.TRUE.equals(observation.get("observed"))
                     && "PROTOCOL_INPUT".equals(port.sourceKind)) {
@@ -1102,13 +1022,10 @@ final class RuntimeRegionPlanner {
             action.putAll(port.materializationMetadata);
             copy(observation, action, "index", "field", "objectId",
                     "fieldReceiverObjectId", "valueObjectId", "runtimeType",
-                    "primitiveValue", "deferredResolution", "runtimeRebased",
+                    "primitiveValue", "deferredResolution",
                     "valueFingerprint", "valueFingerprintComplete",
                     "deferredResolutionAuthority",
-                    "staticInputMethod", "runtimeInputMethod",
-                    "rebaseAuthority", "crossMethodArgument",
-                    "rebaseRejectedAuthority", "fieldBindingGap",
-                    "accessKind", "observationAuthority", "bindingMode",
+                    "fieldBindingGap", "accessKind", "bindingMode",
                     "fieldEventSeq", "fieldCallId",
                     "fieldEventIdentityAuthority",
                     "accessMethod", "accessUnitIndex", "accessSiteId",
@@ -1344,11 +1261,6 @@ final class RuntimeRegionPlanner {
                     "RUNTIME_UNIQUE_STATIC_LEAF_GETFIELD_SITE_AND_OWNER_"
                             + "WITHIN_REGION_INSTANCE_V1");
             action.put("consumedFieldRootAuthority", rootAuthority);
-            action.put("consumedFieldRuntimeEventSeq", consumed.seq);
-            action.put("consumedFieldReceiverObjectId",
-                    consumed.receiverObjectId);
-            action.put("consumedFieldValueObjectId",
-                    consumed.valueObjectId);
             action.put("consumedFieldOccurrence", 1);
             action.put("consumedFieldOccurrenceAuthority",
                     "UNIQUE_CONTAINED_RUNTIME_FIELD_READ_V1");
@@ -1369,9 +1281,7 @@ final class RuntimeRegionPlanner {
                 "consumedFieldMethod", "consumedFieldUnitIndex",
                 "consumedFieldSiteId", "consumedFieldSiteAuthority",
                 "consumedFieldRootAuthority",
-                "consumedFieldRuntimeEventSeq",
-                "consumedFieldReceiverObjectId",
-                "consumedFieldValueObjectId", "consumedFieldOccurrence",
+                "consumedFieldOccurrence",
                 "consumedFieldOccurrenceAuthority",
                 "consumedFieldSiteBindingComplete",
                 "consumedFieldPendingRootKind",
@@ -2094,15 +2004,13 @@ final class RuntimeRegionPlanner {
         return values == null || values.isEmpty() ? null : values.get(0);
     }
 
-    /** Rebuilds region-plan execution inputs from the promoted demand set. */
-    private static void refreshPromotedConcreteInputRows(
-            List<InstanceEvidence> evidence, Result result) {
-        Map<String, Map<String, Object>> plansByInstance = rowsByInstanceId(
-                result.regionPlans);
+    /** Builds each region-instance plan once, after all demand promotion. */
+    private static Map<String, RegionPlanDraft> buildRegionPlans(
+            List<InstanceEvidence> evidence, Result result,
+            RuntimeTraceIndex trace, List<MethodEvent> methodEvents,
+            RootArgumentRuntimeTypeIndex rootArgumentRuntimeTypes) {
+        Map<String, RegionPlanDraft> drafts = new LinkedHashMap<>();
         for (InstanceEvidence instance : evidence) {
-            if (!instance.concreteDemandSlice.externalInputPromoted) {
-                continue;
-            }
             List<StaticPort> concreteInputs =
                     instance.concreteDemandSlice.inputs(instance.region);
             List<Map<String, Object>> inputObjects = inputObservations(
@@ -2129,44 +2037,55 @@ final class RuntimeRegionPlanner {
                     && instance.region.inputSelectionComplete
                     && instance.runtimePathEvidenceComplete
                     && symbolizeReady;
-
-            Map<String, Object> activation = plansByInstance.get(
-                    instance.instanceId);
-            Map<String, Object> baseExecution =
-                    plannerBaseExecution(activation);
-            Map<String, Object> targetGoal = targetReachGoal(activation);
-            boolean replayable = admissionReplayable(baseExecution);
+            boolean replayable = instance.anchorObserved
+                    && instance.runtimePathEvidenceComplete;
             boolean symbolicReady = replayable && boundaryReady
                     && symbolicPotential;
-
-            if (baseExecution != null) {
-                baseExecution.put("symbolize", symbolize);
-                baseExecution.put("branches", branches);
-                baseExecution.put("runtimeDefinitionMethods",
-                        instance.concreteDemandSlice.definitionMethods(
-                                instance.observedMethods));
-                baseExecution.put("admission", admission(replayable,
-                        symbolicReady, admissionMode(baseExecution),
-                        Collections.emptyList()));
-                if (targetGoal != null) {
-                    copy(baseExecution, targetGoal,
-                            "symbolize", "branches",
-                            "runtimeDefinitionMethods", "admission");
-                }
+            List<String> runtimeGaps = new ArrayList<>();
+            if (!instance.containedCallTreeComplete) {
+                runtimeGaps.add("CONTAINED_CALL_TREE_LIMIT_EXCEEDED");
             }
-        }
-    }
-
-    private static Map<String, Map<String, Object>> rowsByInstanceId(
-            List<Map<String, Object>> rows) {
-        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
-        for (Map<String, Object> row : rows) {
-            String id = string(row.get("regionInstanceId"));
-            if (!id.isEmpty()) {
-                result.put(id, row);
+            if (pathSignatureTruncated(instance.runtimeEvents)) {
+                runtimeGaps.add("PATH_SIGNATURE_LIMIT_EXCEEDED");
             }
+            Map<String, Object> baseExecution = object(
+                    "runtimeDefinitionMethods",
+                    instance.concreteDemandSlice.definitionMethods(
+                            instance.observedMethods),
+                    "admission", admission(replayable, symbolicReady,
+                            replayable
+                                    ? "RUNTIME_SELECTED_ROOT_REPLAY"
+                                    : "NO_VALIDATED_RUNTIME_PATH",
+                            runtimeGaps),
+                    "symbolize", symbolize,
+                    "branches", branches);
+            List<Map<String, Object>> closureGoals = new ArrayList<>();
+            if (instance.region.isTargetClosure()) {
+                Map<String, Object> targetGoal =
+                        new LinkedHashMap<>(baseExecution);
+                targetGoal.put("goalId", targetReachGoalId(
+                        instance.instanceId,
+                        instance.region.anchorMethod));
+                targetGoal.put("kind", "TARGET_REACH_CLOSURE");
+                closureGoals.add(targetGoal);
+            }
+            MethodEvent root = instance.root;
+            Map<String, Object> plan = object(
+                    "regionInstanceId", instance.instanceId,
+                    "regionId", instance.region.regionId,
+                    "test", root.test,
+                    "rootSelector", rootSelector(root,
+                            trace.invocationOrdinal(root),
+                            trace.invocationOrdinalWithinContext(root),
+                            runtimeRootArgumentSelector(root, methodEvents,
+                                    rootArgumentRuntimeTypes)),
+                    "targetMethod", instance.region.anchorMethod,
+                    "closureGoals", closureGoals);
+            result.regionPlans.add(plan);
+            drafts.put(instance.instanceId,
+                    new RegionPlanDraft(plan, baseExecution));
         }
-        return result;
+        return drafts;
     }
 
     private static Map<String, Object> admission(
@@ -2184,15 +2103,6 @@ final class RuntimeRegionPlanner {
                 "blockers", blockers);
     }
 
-    private static boolean admissionReplayable(Map<String, Object> goal) {
-        Map<String, Object> admission = goal == null ? null
-                : mapValue(goal.get("admission"));
-        String state = admission == null ? ""
-                : string(admission.get("state"));
-        return "READY".equals(state) || "DISCOVERED".equals(state)
-                || "EXECUTABLE".equals(state);
-    }
-
     private static String admissionMode(Map<String, Object> goal) {
         Map<String, Object> admission = goal == null ? null
                 : mapValue(goal.get("admission"));
@@ -2207,15 +2117,11 @@ final class RuntimeRegionPlanner {
      * preserves goal-local input, branch, admission, and output-closure
      * scope without copying the region instance plan.</p>
      */
-    private static void attachOutputRelationGoals(
+    private static List<OutputGoalDraft> attachOutputRelationGoals(
             List<UpstreamEdgeBinding> bindings,
-            StaticProjectionIndex staticProjections, Result result) {
-        Map<String, Map<String, Object>> baseByInstance = new LinkedHashMap<>();
-        for (Map<String, Object> activation : result.regionPlans) {
-            baseByInstance.put(string(activation.get("regionInstanceId")),
-                    activation);
-        }
-
+            StaticProjectionIndex staticProjections,
+            Map<String, RegionPlanDraft> plansByInstance) {
+        List<OutputGoalDraft> outputGoals = new ArrayList<>();
         Map<String, List<UpstreamEdgeBinding>> grouped = new LinkedHashMap<>();
         Set<String> seen = new LinkedHashSet<>();
         for (UpstreamEdgeBinding binding : bindings) {
@@ -2254,16 +2160,13 @@ final class RuntimeRegionPlanner {
 
         for (List<UpstreamEdgeBinding> demand : grouped.values()) {
             UpstreamEdgeBinding first = demand.get(0);
-            Map<String, Object> base = baseByInstance.get(
+            RegionPlanDraft base = plansByInstance.get(
                     first.upstream.instanceId);
             if (base == null) {
                 continue;
             }
 
-            Map<String, Object> baseExecution = plannerBaseExecution(base);
-            if (baseExecution == null) {
-                continue;
-            }
+            Map<String, Object> baseExecution = base.execution;
             Map<String, Object> outputGoal = object(
                     "goalId", outputRelationGoalId(demand),
                     "kind", "OUTPUT_RELATION_CLOSURE");
@@ -2308,8 +2211,10 @@ final class RuntimeRegionPlanner {
                 outputClosure = null;
             }
             if (issues.isEmpty()) {
-                outputGoal.put("_plannerOutputClosure", outputClosure);
-                outputGoal.put("_plannerOutputMembers", members);
+                outputGoal.put(OutputClosureContract.FIELD,
+                        outputClosure.toJson());
+                outputGoals.add(new OutputGoalDraft(
+                        base.plan, outputGoal, members));
             } else {
                 outputGoal.put("symbolize", Collections.emptyList());
                 outputGoal.put("branches", Collections.emptyList());
@@ -2329,8 +2234,9 @@ final class RuntimeRegionPlanner {
                 bindingRows.add(binding.toMap());
             }
             outputGoal.put("edgeBindings", bindingRows);
-            closureGoals(base).add(outputGoal);
+            closureGoals(base.plan).add(outputGoal);
         }
+        return outputGoals;
     }
 
     private static UpstreamOutputMemberPlan upstreamOutputMemberPlan(
@@ -2501,22 +2407,6 @@ final class RuntimeRegionPlanner {
                 issues.add("CONFLICTING_" + label + ":" + key);
             }
         }
-    }
-
-    private static void finalizeOutputClosureArtifacts(Result result) {
-        for (Map<String, Object> activation : result.regionPlans) {
-            for (Map<String, Object> goal : closureGoals(activation)) {
-                goal.remove("_plannerOutputMembers");
-                Object encoded = goal.remove("_plannerOutputClosure");
-                if (encoded instanceof OutputClosureContract) {
-                    goal.put(OutputClosureContract.FIELD,
-                            ((OutputClosureContract) encoded).toJson());
-                }
-            }
-            activation.remove("_plannerBaseExecution");
-        }
-        result.regionPlans.removeIf(
-                plan -> closureGoals(plan).isEmpty());
     }
 
     private static final class UpstreamOutputMemberPlan {
@@ -3046,28 +2936,26 @@ final class RuntimeRegionPlanner {
      * same-execution observations are complete.</p>
      */
     private static void refineMapValueElementProjectionGoals(
-            Result result) {
-        Map<String, List<GoalContext>> selectedByInstance =
+            List<OutputGoalDraft> outputGoals) {
+        Map<String, List<OutputGoalDraft>> selectedByInstance =
                 new LinkedHashMap<>();
-        List<GoalContext> outputGoals = outputGoalContexts(result);
-        for (GoalContext context : outputGoals) {
-            UpstreamOutputMemberPlan member =
-                    singletonPlannerOutputMember(context.goal);
+        for (OutputGoalDraft context : outputGoals) {
+            UpstreamOutputMemberPlan member = context.singleMember();
             if (member == null || !member.outputSlice.complete) {
                 continue;
             }
-            String instance = string(context.activation.get(
+            String instance = string(context.plan.get(
                     "regionInstanceId"));
             if (!instance.isEmpty()) {
                 add(selectedByInstance, instance, context);
             }
         }
 
-        for (GoalContext context : outputGoals) {
-            Map<String, Object> activation = context.activation;
+        for (OutputGoalDraft context : outputGoals) {
+            Map<String, Object> activation = context.plan;
             Map<String, Object> goal = context.goal;
             UpstreamOutputMemberPlan producerMember =
-                    singletonPlannerOutputMember(goal);
+                    context.singleMember();
             Map<String, Object> producerSlice = producerMember == null
                     ? null : producerMember.outputSlice.toMap();
             List<Map<String, Object>> edgeBindings = mapRows(
@@ -3083,11 +2971,11 @@ final class RuntimeRegionPlanner {
                 String downstreamInstance = string(edge.get(
                         "toRegionInstance"));
                 String downstreamInput = string(edge.get("toInputPort"));
-                List<GoalContext> selected = values(
+                List<OutputGoalDraft> selected = values(
                         selectedByInstance.get(downstreamInstance));
-                for (GoalContext downstream : selected) {
+                for (OutputGoalDraft downstream : selected) {
                     UpstreamOutputMemberPlan downstreamMember =
-                            singletonPlannerOutputMember(downstream.goal);
+                            downstream.singleMember();
                     if (downstreamMember == null) {
                         continue;
                     }
@@ -3100,7 +2988,7 @@ final class RuntimeRegionPlanner {
                         }
                         DownstreamContainerDemand demand =
                                 DownstreamContainerDemand.from(edge,
-                                        downstream.activation, declaration);
+                                        downstream.plan, declaration);
                         if (!demand.complete()) {
                             issues.add("INCOMPLETE_DOWNSTREAM_CONTAINER_DEMAND:"
                                     + firstNonBlank(demand.bindingId,
@@ -3181,7 +3069,6 @@ final class RuntimeRegionPlanner {
                     declarations);
             boolean composable = issues.isEmpty()
                     && !declarations.isEmpty();
-            goal.remove("recursiveElementProjectionCompositionGap");
             // Preserve all pre-existing readiness decisions when the static
             // declaration is complete. Runtime identity evidence is checked
             // later by the importer. A static proof/declaration failure still
@@ -3191,19 +3078,6 @@ final class RuntimeRegionPlanner {
                         admissionMode(goal), issues));
             }
         }
-    }
-
-    private static UpstreamOutputMemberPlan singletonPlannerOutputMember(
-            Map<String, Object> goal) {
-        Object encoded = goal == null ? null
-                : goal.get("_plannerOutputMembers");
-        if (!(encoded instanceof List<?>)
-                || ((List<?>) encoded).size() != 1
-                || !(((List<?>) encoded).get(0)
-                instanceof UpstreamOutputMemberPlan)) {
-            return null;
-        }
-        return (UpstreamOutputMemberPlan) ((List<?>) encoded).get(0);
     }
 
     @SuppressWarnings("unchecked")
@@ -3216,36 +3090,6 @@ final class RuntimeRegionPlanner {
                     "region instance plan is missing closureGoals");
         }
         return (List<Map<String, Object>>) encoded;
-    }
-
-    private static Map<String, Object> targetReachGoal(
-            Map<String, Object> activation) {
-        if (activation == null) return null;
-        for (Map<String, Object> goal : closureGoals(activation)) {
-            if ("TARGET_REACH_CLOSURE".equals(string(goal.get("kind")))) {
-                return goal;
-            }
-        }
-        return null;
-    }
-
-    private static Map<String, Object> plannerBaseExecution(
-            Map<String, Object> activation) {
-        return activation == null ? null
-                : mapValue(activation.get("_plannerBaseExecution"));
-    }
-
-    private static List<GoalContext> outputGoalContexts(Result result) {
-        List<GoalContext> contexts = new ArrayList<>();
-        for (Map<String, Object> activation : result.regionPlans) {
-            for (Map<String, Object> goal : closureGoals(activation)) {
-                if ("OUTPUT_RELATION_CLOSURE".equals(string(
-                        goal.get("kind")))) {
-                    contexts.add(new GoalContext(activation, goal));
-                }
-            }
-        }
-        return contexts;
     }
 
     private static String targetReachGoalId(
@@ -3292,14 +3136,32 @@ final class RuntimeRegionPlanner {
         }
     }
 
-    private static final class GoalContext {
-        private final Map<String, Object> activation;
-        private final Map<String, Object> goal;
+    private static final class RegionPlanDraft {
+        private final Map<String, Object> plan;
+        private final Map<String, Object> execution;
 
-        private GoalContext(Map<String, Object> activation,
-                            Map<String, Object> goal) {
-            this.activation = activation;
+        private RegionPlanDraft(Map<String, Object> plan,
+                                Map<String, Object> execution) {
+            this.plan = plan;
+            this.execution = execution;
+        }
+    }
+
+    private static final class OutputGoalDraft {
+        private final Map<String, Object> plan;
+        private final Map<String, Object> goal;
+        private final List<UpstreamOutputMemberPlan> members;
+
+        private OutputGoalDraft(Map<String, Object> plan,
+                                Map<String, Object> goal,
+                                List<UpstreamOutputMemberPlan> members) {
+            this.plan = plan;
             this.goal = goal;
+            this.members = members;
+        }
+
+        private UpstreamOutputMemberPlan singleMember() {
+            return members.size() == 1 ? members.get(0) : null;
         }
     }
 
@@ -3531,7 +3393,6 @@ final class RuntimeRegionPlanner {
             action.put("location", "ARGUMENT_FIELD_PATH");
             action.remove("fields");
             action.put("fieldPaths", paths);
-            action.put("fieldPathSelectionComplete", !paths.isEmpty());
             action.put("materializationMode", "SELECTIVE_FIELD_PATHS");
             Map<String, String> declared = leafDeclarationsByPort.get(symbol);
             if (paths.size() == 1 && declared != null) {
@@ -3633,8 +3494,9 @@ final class RuntimeRegionPlanner {
                 return false;
             }
             if ("ARGUMENT_FIELD_PATH".equals(action.get("location"))
-                    && !Boolean.TRUE.equals(
-                    action.get("fieldPathSelectionComplete"))) {
+                    && (!(action.get("fieldPaths")
+                    instanceof Collection<?>)
+                    || ((Collection<?>) action.get("fieldPaths")).isEmpty())) {
                 return false;
             }
             ArrayFieldLeaf leaf = ArrayFieldLeaf.from(action);
@@ -5441,7 +5303,6 @@ final class RuntimeRegionPlanner {
 
     /** Result of the post-runtime demand slice over the frozen static graph. */
     private static final class ConcreteDemandSlice {
-        private boolean externalInputPromoted;
         private final Set<String> inputPortIds = new LinkedHashSet<>();
         private final Set<String> methods = new LinkedHashSet<>();
         private final Set<String> edgeIds = new LinkedHashSet<>();
@@ -5470,7 +5331,6 @@ final class RuntimeRegionPlanner {
                 return;
             }
             inputPortIds.add(port.portId);
-            externalInputPromoted = true;
         }
     }
 
