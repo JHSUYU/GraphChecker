@@ -1,5 +1,8 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.causynth.CausynthJson;
 
 import java.io.BufferedWriter;
@@ -26,12 +29,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 public final class CausynthTraceRecorder {
     private static final Object LOCK = new Object();
@@ -55,12 +60,6 @@ public final class CausynthTraceRecorder {
                 }
             };
     private static final int DEFAULT_MAX_EVENTS = 200000;
-    private static final ConcurrentMap<String, Pattern> JSON_STRING_FIELD_PATTERNS =
-            new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, Pattern> JSON_NUMBER_FIELD_PATTERNS =
-            new ConcurrentHashMap<>();
-    private static final ConcurrentMap<String, Pattern> JSON_BOOLEAN_FIELD_PATTERNS =
-            new ConcurrentHashMap<>();
     /**
      * A plain concolic replay uses the rich-trace call stacks only as exact
      * accessor-site context. It does not publish a runtime trace, so hashing
@@ -747,51 +746,64 @@ public final class CausynthTraceRecorder {
         try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
                 StandardCharsets.UTF_8)) {
             String line;
+            int lineNumber = 0;
             while ((line = reader.readLine()) != null) {
-                if (jsonIntField(line, "schemaVersion", -1) != 2) {
+                lineNumber++;
+                final JsonObject row;
+                try {
+                    JsonElement parsed = JsonParser.parseString(line);
+                    if (!parsed.isJsonObject()) {
+                        throw new IllegalArgumentException(
+                                "row is not an object");
+                    }
+                    row = parsed.getAsJsonObject();
+                } catch (RuntimeException malformed) {
+                    throw new IOException("Malformed runtime trace row "
+                            + lineNumber + " in " + file, malformed);
+                }
+                if (integer(row, "schemaVersion", -1) != 2) {
                     throw new IOException("Unsupported runtime trace row: "
                             + line);
                 }
-                String eventKind = jsonField(line, "event");
+                String eventKind = string(row, "event");
                 if ("METHOD_ENTER".equals(eventKind)) {
-                    String method = jsonField(line, "method");
-                    String threadName = jsonField(line, "threadName");
+                    String method = string(row, "method");
+                    String threadName = string(row, "threadName");
+                    long seq = longInteger(row, "seq", 0L);
                     addTraceEvent(new TraceEvent(
-                            jsonLongField(line, "seq", 0L),
-                            normalizeRecordedProcess(jsonField(line, "process"),
+                            seq,
+                            normalizeRecordedProcess(string(row, "process"),
                                     method, threadName),
                             threadName,
-                            jsonLongField(line, "tid", 0L),
+                            longInteger(row, "tid", 0L),
                             method,
-                            jsonIntField(line, "objectId", 0),
-                            jsonLongField(line, "callId",
-                                    jsonLongField(line, "seq", 0L)),
-                            jsonLongField(line, "parentCallId", 0L),
-                            jsonLongField(line, "parentSiteId", 0L),
-                            jsonField(line, "siteId"),
-                            jsonField(line, "receiverType")));
+                            integer(row, "objectId", 0),
+                            longInteger(row, "callId", seq),
+                            longInteger(row, "parentCallId", 0L),
+                            longInteger(row, "parentSiteId", 0L),
+                            string(row, "siteId"),
+                            string(row, "receiverType")));
                 } else if ("FIELD_READ".equals(eventKind)
                         || "FIELD_WRITE".equals(eventKind)) {
-                    String method = jsonField(line, "method");
+                    String method = string(row, "method");
                     addFieldEvent(new FieldEvent(
-                            jsonLongField(line, "seq", 0L),
+                            longInteger(row, "seq", 0L),
                             method,
-                            jsonIntField(line, "objectId", 0),
-                            jsonIntField(line, "unitIndex", -1),
+                            integer(row, "objectId", 0),
+                            integer(row, "unitIndex", -1),
                             eventKind,
-                            jsonField(line, "field"),
-                            jsonIntField(line, "fieldReceiverObjectId", 0),
-                            jsonIntField(line, "valueObjectId", 0),
-                            jsonField(line, "primitiveValue"),
-                            jsonLongField(line, "callId", 0L),
-                            jsonField(line, "siteId"),
-                            jsonField(line, "valueFingerprint"),
-                            jsonBooleanField(line,
-                                    "valueFingerprintComplete", false),
-                            jsonIntField(line, "valueFingerprintNodes", 0),
-                            jsonField(line, "valueFingerprintReason")));
+                            string(row, "field"),
+                            integer(row, "fieldReceiverObjectId", 0),
+                            integer(row, "valueObjectId", 0),
+                            string(row, "primitiveValue"),
+                            longInteger(row, "callId", 0L),
+                            string(row, "siteId"),
+                            string(row, "valueFingerprint"),
+                            bool(row, "valueFingerprintComplete", false),
+                            integer(row, "valueFingerprintNodes", 0),
+                            string(row, "valueFingerprintReason")));
                 } else if (isExecutionEventKind(eventKind)) {
-                    addExecutionEvent(ExecutionEvent.fromJson(line, eventKind));
+                    addExecutionEvent(ExecutionEvent.fromJson(row, eventKind));
                 }
             }
         }
@@ -1002,62 +1014,6 @@ public final class CausynthTraceRecorder {
         return "";
     }
 
-    private static String jsonField(String json, String field) {
-        Matcher matcher = jsonFieldPattern(JSON_STRING_FIELD_PATTERNS, field,
-                "\"((?:\\\\.|[^\"])*)\"", 0).matcher(json);
-        if (!matcher.find()) {
-            return "";
-        }
-        return unescape(matcher.group(1));
-    }
-
-    private static int jsonIntField(String json, String field, int fallback) {
-        Matcher matcher = jsonFieldPattern(JSON_NUMBER_FIELD_PATTERNS, field,
-                "(-?\\d+)", 0).matcher(json);
-        if (!matcher.find()) {
-            return fallback;
-        }
-        try {
-            return Integer.parseInt(matcher.group(1));
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long jsonLongField(String json, String field, long fallback) {
-        Matcher matcher = jsonFieldPattern(JSON_NUMBER_FIELD_PATTERNS, field,
-                "(-?\\d+)", 0).matcher(json);
-        if (!matcher.find()) {
-            return fallback;
-        }
-        try {
-            return Long.parseLong(matcher.group(1));
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static boolean jsonBooleanField(String json, String field,
-                                            boolean fallback) {
-        Matcher matcher = jsonFieldPattern(JSON_BOOLEAN_FIELD_PATTERNS, field,
-                "(true|false)", Pattern.CASE_INSENSITIVE).matcher(json);
-        return matcher.find() ? Boolean.parseBoolean(matcher.group(1)) : fallback;
-    }
-
-    private static Pattern jsonFieldPattern(
-            ConcurrentMap<String, Pattern> patterns, String field,
-            String valuePattern, int flags) {
-        String key = field == null ? "" : field;
-        Pattern pattern = patterns.get(key);
-        if (pattern != null) {
-            return pattern;
-        }
-        Pattern compiled = Pattern.compile("\"" + Pattern.quote(key)
-                + "\"\\s*:\\s*" + valuePattern, flags);
-        Pattern existing = patterns.putIfAbsent(key, compiled);
-        return existing == null ? compiled : existing;
-    }
-
     private static Map<String, String> parseArgs(String[] args) {
         Map<String, String> params = new LinkedHashMap<>();
         if (args == null) {
@@ -1147,46 +1103,6 @@ public final class CausynthTraceRecorder {
 
     private static String jsonObject(Object... values) {
         return CausynthJson.objectWithoutNulls(values);
-    }
-
-    private static String unescape(String value) {
-        StringBuilder builder = new StringBuilder();
-        boolean escaped = false;
-        for (int i = 0; i < value.length(); i++) {
-            char ch = value.charAt(i);
-            if (!escaped) {
-                if (ch == '\\') {
-                    escaped = true;
-                } else {
-                    builder.append(ch);
-                }
-                continue;
-            }
-            switch (ch) {
-                case '"':
-                case '\\':
-                case '/':
-                    builder.append(ch);
-                    break;
-                case 'n':
-                    builder.append('\n');
-                    break;
-                case 'r':
-                    builder.append('\r');
-                    break;
-                case 't':
-                    builder.append('\t');
-                    break;
-                default:
-                    builder.append(ch);
-                    break;
-            }
-            escaped = false;
-        }
-        if (escaped) {
-            builder.append('\\');
-        }
-        return builder.toString();
     }
 
     private static void writeFile(File file, String value) throws IOException {
@@ -1295,38 +1211,34 @@ public final class CausynthTraceRecorder {
         private boolean hasSuccessorIndex;
         private int successorIndex = -1;
 
-        private static ExecutionEvent fromJson(String line, String eventKind) {
+        private static ExecutionEvent fromJson(JsonObject row,
+                                               String eventKind) {
             ExecutionEvent event = new ExecutionEvent();
-            event.id = jsonLongField(line, "seq", 0L);
+            event.id = longInteger(row, "seq", 0L);
             event.kind = safe(eventKind);
-            event.method = jsonField(line, "method");
-            event.callId = jsonLongField(line, "callId", 0L);
-            event.parentSiteId = jsonLongField(line, "parentSiteId", 0L);
-            event.invocationId = jsonLongField(line, "invocationId", 0L);
-            event.siteId = jsonField(line, "siteId");
-            event.declaredCallee = jsonField(line, "declaredCallee");
-            event.argumentIndex = jsonIntField(line, "argumentIndex", -1);
-            event.runtimeType = jsonField(line, "runtimeType");
-            event.objectId = jsonIntField(line, "objectId", 0);
-            event.primitiveValue = jsonField(line, "primitiveValue");
-            event.valueFingerprint = jsonField(line, "valueFingerprint");
-            event.valueFingerprintComplete = jsonBooleanField(line,
+            event.method = string(row, "method");
+            event.callId = longInteger(row, "callId", 0L);
+            event.parentSiteId = longInteger(row, "parentSiteId", 0L);
+            event.invocationId = longInteger(row, "invocationId", 0L);
+            event.siteId = string(row, "siteId");
+            event.declaredCallee = string(row, "declaredCallee");
+            event.argumentIndex = integer(row, "argumentIndex", -1);
+            event.runtimeType = string(row, "runtimeType");
+            event.objectId = integer(row, "objectId", 0);
+            event.primitiveValue = string(row, "primitiveValue");
+            event.valueFingerprint = string(row, "valueFingerprint");
+            event.valueFingerprintComplete = bool(row,
                     "valueFingerprintComplete", false);
-            event.valueFingerprintNodes = jsonIntField(line,
+            event.valueFingerprintNodes = integer(row,
                     "valueFingerprintNodes", 0);
-            event.valueFingerprintReason = jsonField(line,
+            event.valueFingerprintReason = string(row,
                     "valueFingerprintReason");
-            event.hasOutcome = jsonFieldPattern(JSON_BOOLEAN_FIELD_PATTERNS,
-                    "outcome", "(true|false)", Pattern.CASE_INSENSITIVE)
-                    .matcher(line).find();
-            event.outcome = jsonBooleanField(line, "outcome", false);
-            event.branchKind = jsonField(line, "branchKind");
-            event.switchCaseKeys = jsonField(line, "switchCaseKeys");
-            event.hasSuccessorIndex = jsonFieldPattern(
-                    JSON_NUMBER_FIELD_PATTERNS, "successorIndex",
-                    "(-?\\d+)", 0).matcher(line).find();
-            event.successorIndex = jsonIntField(line,
-                    "successorIndex", -1);
+            event.hasOutcome = row.has("outcome");
+            event.outcome = bool(row, "outcome", false);
+            event.branchKind = string(row, "branchKind");
+            event.switchCaseKeys = string(row, "switchCaseKeys");
+            event.hasSuccessorIndex = row.has("successorIndex");
+            event.successorIndex = integer(row, "successorIndex", -1);
             return event;
         }
 

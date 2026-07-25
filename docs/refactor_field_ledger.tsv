@@ -207,3 +207,4 @@ type-contract	duplicated Java field descriptor validation	OutputClosureCodec	loc
 trace-internal	duplicated JSON object/string serialization	CausynthTraceRecorder	local stage only	none	CausynthJson	CONSOLIDATE_AND_DELETE	6+
 instrumentation-selection	four activation-plan JSONL scans	CausynthPipeline	local stage only	none	single immutable InstrumentationPlan parse	CONSOLIDATE_AND_DELETE	6+
 production-api	orphan output member factory and unused planner constant	OutputClosureContract/RuntimeRegionPlanner	none	none	no production/test callers	DELETE	6+
+runtime-trace	repeated regex extraction of every field	CausynthTraceRecorder offline aggregator	local stage only	none	single Gson JsonObject parse per row	CONSOLIDATE_AND_DELETE	6+

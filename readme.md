@@ -1634,6 +1634,13 @@ custom-JDK/Z3 baseline 均已通过。对应里程碑 `8be93716` 的隔离干净
 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
 `target/robustness-matrix-logs/20260725T131337Z.2802421`。
 
+Trace aggregation 也切换为 parse-once：offline aggregator 对每条 runtime trace row
+只调用一次 Gson parser，后续 Method/Field/Execution event 共享该 `JsonObject`；
+原来按字段动态编译/缓存正则、重复扫描整行以及手写 JSON unescape 的实现已删除。
+这同时正确处理标准 Unicode escape，避免不同字段 decoder 对同一 row 得出不同结果。
+手写生产 Java 进一步降至 75,330 行；57 项快速回归、PMD 与真实
+custom-JDK/Z3 baseline 通过。
+
 ### 明确不能删除
 
 必须保留：

@@ -5,7 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 /** Forgiving accessors for optional fields inside an already admitted row. */
-final class JsonFields {
+public final class JsonFields {
     private JsonFields() {
     }
 
@@ -21,7 +21,7 @@ final class JsonFields {
                 ? value.getAsJsonObject() : new JsonObject();
     }
 
-    static String string(JsonObject object, String field) {
+    public static String string(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
         try {
             return value == null || value.isJsonNull()
@@ -31,8 +31,8 @@ final class JsonFields {
         }
     }
 
-    static boolean bool(JsonObject object, String field,
-                        boolean fallback) {
+    public static boolean bool(JsonObject object, String field,
+                               boolean fallback) {
         JsonElement value = object == null ? null : object.get(field);
         try {
             return value == null || value.isJsonNull()
@@ -42,7 +42,7 @@ final class JsonFields {
         }
     }
 
-    static int integer(JsonObject object, String field, int fallback) {
+    public static int integer(JsonObject object, String field, int fallback) {
         JsonElement value = object == null ? null : object.get(field);
         try {
             return value == null || value.isJsonNull()
@@ -52,7 +52,8 @@ final class JsonFields {
         }
     }
 
-    static long longInteger(JsonObject object, String field, long fallback) {
+    public static long longInteger(JsonObject object, String field,
+                                   long fallback) {
         JsonElement value = object == null ? null : object.get(field);
         try {
             return value == null || value.isJsonNull()
