@@ -589,7 +589,7 @@ public class ConcolicSummaryImporterTest {
         JsonObject engine = new JsonObject();
         engine.addProperty("active", true);
         engine.addProperty("regionId", "REGION.TIME");
-        engine.addProperty("activationId", "ACT.TIME");
+        engine.addProperty("taskId", "ACT.TIME");
         JsonArray path = new JsonArray();
         path.add(evidence.deepCopy());
         engine.add("pathCondition", path);
@@ -1707,7 +1707,7 @@ public class ConcolicSummaryImporterTest {
         JsonObject engine = new JsonObject();
         engine.addProperty("active", true);
         engine.addProperty("regionId", "REGION.P");
-        engine.addProperty("activationId", "ACT.P");
+        engine.addProperty("taskId", "ACT.P");
         engine.add("pathCondition", path);
         raw.add("engineSummary", engine);
         if (runtimeHeapObservations != null) {
@@ -1865,7 +1865,7 @@ public class ConcolicSummaryImporterTest {
         JsonObject engine = new JsonObject();
         engine.addProperty("active", true);
         engine.addProperty("regionId", "REGION.P");
-        engine.addProperty("activationId", "ACT.P");
+        engine.addProperty("taskId", "ACT.P");
         JsonArray path = new JsonArray();
         path.add(methodExpression("java/util/HashMap put", 42,
                 symbol("M_L'java/util/HashMap'_25", "java/util/HashMap"),
@@ -2757,7 +2757,7 @@ public class ConcolicSummaryImporterTest {
         JsonObject engine = new JsonObject();
         engine.addProperty("active", true);
         engine.addProperty("regionId", "REGION.OUT");
-        engine.addProperty("activationId", "ACT.OUT");
+        engine.addProperty("taskId", "ACT.OUT");
         engine.add("pathCondition", new JsonArray());
         raw.add("engineSummary", engine);
         write(results, raw + "\n");
@@ -3337,7 +3337,7 @@ public class ConcolicSummaryImporterTest {
         JsonObject engine = new JsonObject();
         engine.addProperty("active", true);
         engine.addProperty("regionId", "REGION.FIELD");
-        engine.addProperty("activationId", "ACT.FIELD");
+        engine.addProperty("taskId", "ACT.FIELD");
         JsonArray pathCondition = new JsonArray();
         if (exactVmGuard) {
             String codePosition = "FILTERED".equals(guardMode)
@@ -3501,7 +3501,7 @@ public class ConcolicSummaryImporterTest {
         JsonObject engine = new JsonObject();
         engine.addProperty("active", true);
         engine.addProperty("regionId", "REGION.ARRAY");
-        engine.addProperty("activationId", "ACT.ARRAY");
+        engine.addProperty("taskId", "ACT.ARRAY");
         engine.add("pathCondition", singletonObject(load));
 
         JsonObject raw = new JsonObject();
@@ -3798,7 +3798,7 @@ public class ConcolicSummaryImporterTest {
         JsonObject engine = new JsonObject();
         engine.addProperty("active", true);
         engine.addProperty("regionId", "REGION.MAP");
-        engine.addProperty("activationId", "ACT.MAP");
+        engine.addProperty("taskId", "ACT.MAP");
         engine.add("pathCondition", new JsonArray());
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
@@ -4349,7 +4349,7 @@ public class ConcolicSummaryImporterTest {
             engine.addProperty("regionId", result.get("regionId")
                     .getAsString());
         }
-        engine.addProperty("activationId", result.get("taskId")
+        engine.addProperty("taskId", result.get("taskId")
                 .getAsString());
         if (!engine.has("threadContextId")) {
             engine.addProperty("threadContextId", 1L);

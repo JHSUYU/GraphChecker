@@ -268,7 +268,7 @@ public final class RegionThreadIsolationSmoke {
             require(has(atStart, "\"regionId\":\"" + regionId + "\""),
                     atStart);
             require(has(atStart,
-                    "\"activationId\":\"" + activationId + "\""),
+                    "\"taskId\":\"" + activationId + "\""),
                     atStart);
             require(has(atStart, "\"pathCondition\":[]"), atStart);
 
@@ -283,7 +283,7 @@ public final class RegionThreadIsolationSmoke {
             require(has(finished, "\"regionId\":\"" + regionId + "\""),
                     finished);
             require(has(finished,
-                    "\"activationId\":\"" + activationId + "\""),
+                    "\"taskId\":\"" + activationId + "\""),
                     finished);
             require(has(finished, prefix), finished);
 
@@ -304,7 +304,7 @@ public final class RegionThreadIsolationSmoke {
     private static void requireInactive(String summary) {
         require(has(summary, "\"active\":false"), summary);
         require(has(summary, "\"regionId\":\"\""), summary);
-        require(has(summary, "\"activationId\":\"\""), summary);
+        require(has(summary, "\"taskId\":\"\""), summary);
         require(has(summary, "\"pathCondition\":[]"), summary);
     }
 

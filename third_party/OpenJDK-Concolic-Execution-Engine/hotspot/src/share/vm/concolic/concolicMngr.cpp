@@ -440,7 +440,7 @@ std::string ConcolicMngr::getRegionSummary() {
       : (ctx->is_aborted() ? "ABORTED" : "ACTIVE"));
   writer.Key("regionId");
   writer.String(ctx == NULL ? "" : ctx->get_region_id().c_str());
-  writer.Key("activationId");
+  writer.Key("taskId");
   writer.String(ctx == NULL ? "" : ctx->get_activation_id().c_str());
   writer.Key("threadContextId");
   writer.Int64(ctx == NULL ? 0 : ctx->get_context_id());

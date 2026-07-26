@@ -1856,7 +1856,7 @@ public class ConcolicRegionRuntimeTest {
             event.addProperty("ownerJavaThreadId", claimedOwner);
             event.addProperty("ownerOsThreadId", OS_THREAD_ID);
             event.addProperty("regionId", regionId);
-            event.addProperty("activationId", activationId);
+            event.addProperty("taskId", activationId);
             event.addProperty("siteId", siteId);
             event.addProperty("occurrence", markerSequence);
             event.addProperty("outcome", true);
@@ -1881,7 +1881,7 @@ public class ConcolicRegionRuntimeTest {
             envelope.addProperty("ownerJavaThreadId", claimedOwner);
             envelope.addProperty("ownerOsThreadId", OS_THREAD_ID);
             envelope.addProperty("regionId", regionId);
-            envelope.addProperty("activationId", activationId);
+            envelope.addProperty("taskId", activationId);
             JsonArray events = new JsonArray();
             events.add(event);
             envelope.add("events", events);
@@ -1994,7 +1994,7 @@ public class ConcolicRegionRuntimeTest {
             event.addProperty("ownerJavaThreadId", ownerThreadId);
             event.addProperty("ownerOsThreadId", OS_THREAD_ID);
             event.addProperty("regionId", regionId);
-            event.addProperty("activationId", activationId);
+            event.addProperty("taskId", activationId);
             event.addProperty("siteId", siteId);
             event.addProperty("occurrence", markerSequence);
             event.addProperty("outcome", outcome);
@@ -2016,7 +2016,7 @@ public class ConcolicRegionRuntimeTest {
             envelope.addProperty("ownerJavaThreadId", ownerThreadId);
             envelope.addProperty("ownerOsThreadId", OS_THREAD_ID);
             envelope.addProperty("regionId", regionId);
-            envelope.addProperty("activationId", activationId);
+            envelope.addProperty("taskId", activationId);
             JsonArray events = new JsonArray();
             events.add(event);
             envelope.add("events", events);

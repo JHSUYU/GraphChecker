@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.contract;
 
 import com.google.gson.JsonObject;
 
@@ -7,8 +7,8 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 /**
  * The semantic relation a concolic campaign must close.
  *
- * <p>A branch flip is deliberately not a goal. It is one query produced while
- * exploring either an output relation or the target reach relation.</p>
+ * <p>A branch flip is an exploration task within a closure goal, not a
+ * separate goal.</p>
  */
 public enum ClosureGoalKind {
     OUTPUT_RELATION_CLOSURE,

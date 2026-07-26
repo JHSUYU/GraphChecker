@@ -187,7 +187,7 @@ std::string ThreadContext::get_branch_events() const {
   writer.Int64(_owner_os_thread_id);
   writer.Key("regionId");
   writer.String(_region_id.c_str());
-  writer.Key("activationId");
+  writer.Key("taskId");
   writer.String(_activation_id.c_str());
   writer.Key("events");
   writer.StartArray();
@@ -204,7 +204,7 @@ std::string ThreadContext::get_branch_events() const {
     writer.Int64(event.owner_os_thread_id);
     writer.Key("regionId");
     writer.String(event.region_id.c_str());
-    writer.Key("activationId");
+    writer.Key("taskId");
     writer.String(event.activation_id.c_str());
     writer.Key("siteId");
     writer.String(event.site_id.c_str());

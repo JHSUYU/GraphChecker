@@ -690,7 +690,7 @@ JVM_ENTRY(jstring, JVM_GetConcolicRegionSummary(JNIEnv *env, jclass ignored))
   return (jstring) JNIHandles::make_local(env, str());
 #else
   Handle str = java_lang_String::create_from_platform_dependent_str(
-      "{\"schemaVersion\":1,\"engine\":\"disabled\",\"active\":false,\"regionId\":\"\",\"activationId\":\"\",\"pathCondition\":[]}",
+      "{\"schemaVersion\":1,\"engine\":\"disabled\",\"active\":false,\"regionId\":\"\",\"taskId\":\"\",\"pathCondition\":[]}",
       THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #endif
@@ -706,7 +706,7 @@ JVM_ENTRY(jstring, JVM_FinishConcolicRegion(JNIEnv *env, jclass ignored))
   return (jstring) JNIHandles::make_local(env, str());
 #else
   Handle str = java_lang_String::create_from_platform_dependent_str(
-      "{\"schemaVersion\":1,\"engine\":\"disabled\",\"active\":false,\"regionId\":\"\",\"activationId\":\"\",\"pathCondition\":[]}",
+      "{\"schemaVersion\":1,\"engine\":\"disabled\",\"active\":false,\"regionId\":\"\",\"taskId\":\"\",\"pathCondition\":[]}",
       THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #endif

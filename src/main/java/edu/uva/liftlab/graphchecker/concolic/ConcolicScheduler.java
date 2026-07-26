@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
@@ -14,7 +15,6 @@ import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
-import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.GoalKind;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -182,7 +182,7 @@ public final class ConcolicScheduler {
             Goal goal, DefinitionIndex definitions) {
             Set<String> definitionMethods =
                     goal.runtimeDefinitionMethods();
-            if (goal.kind() == GoalKind.OUTPUT_RELATION_CLOSURE) {
+            if (goal.kind().capturesOutputRelation()) {
                 OutputClosureContract outputClosure =
                         goal.outputClosure();
                 if (outputClosure == null) {
@@ -1324,15 +1324,14 @@ public final class ConcolicScheduler {
             this.goal = goal;
             this.branches = branches;
             this.target = target;
-            this.directed = goal.kind()
-                    == GoalKind.OUTPUT_RELATION_CLOSURE
+            this.directed = goal.kind().capturesOutputRelation()
                     || !hasRequiredWitness;
             this.inputActions = inputActions;
             this.ready = ready;
         }
 
         private OutputClosureContract outputContract() {
-            return goal.kind() == GoalKind.OUTPUT_RELATION_CLOSURE
+            return goal.kind().capturesOutputRelation()
                     ? goal.outputClosure() : null;
         }
 

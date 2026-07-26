@@ -18,11 +18,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Once-decoded execution goals for one concrete region invocation. */
 public final class RegionInstancePlan {
-    public enum GoalKind {
-        OUTPUT_RELATION_CLOSURE,
-        TARGET_REACH_CLOSURE
-    }
-
     private final JsonObject encoded;
     private final List<Goal> goals;
 
@@ -90,7 +85,7 @@ public final class RegionInstancePlan {
     public static final class Goal {
         private final RegionInstancePlan plan;
         private final JsonObject encoded;
-        private final GoalKind kind;
+        private final ClosureGoalKind kind;
         private final Set<String> runtimeDefinitionMethods;
         private final OutputClosureContract outputClosure;
 
@@ -103,7 +98,7 @@ public final class RegionInstancePlan {
                                 + plan.regionInstanceId());
             }
             try {
-                kind = GoalKind.valueOf(string(encoded, "kind"));
+                kind = ClosureGoalKind.fromGoal(encoded);
             } catch (RuntimeException invalid) {
                 throw new IllegalArgumentException(
                         "goal kind must be OUTPUT_RELATION_CLOSURE or "
@@ -122,16 +117,19 @@ public final class RegionInstancePlan {
             return string(encoded, "goalId");
         }
 
-        public GoalKind kind() {
+        public ClosureGoalKind kind() {
             return kind;
         }
 
         public boolean replayable() {
-            String admissionState = string(object(encoded, "admission"),
-                    "state");
+            String admissionState = admissionState();
             return "READY".equals(admissionState)
                     || "DISCOVERED".equals(admissionState)
                     || "EXECUTABLE".equals(admissionState);
+        }
+
+        public String admissionState() {
+            return string(object(encoded, "admission"), "state");
         }
 
         public Set<String> runtimeDefinitionMethods() {
@@ -211,7 +209,7 @@ public final class RegionInstancePlan {
             copyIfPresent(encoded, target, "heapStateBindings");
             copyIfPresent(encoded, target,
                     "mapValueElementFieldProjections");
-            if (kind() == GoalKind.OUTPUT_RELATION_CLOSURE) {
+            if (kind().capturesOutputRelation()) {
                 OutputClosureContract contract = outputClosure();
                 if (contract != null) {
                     target.add(OutputClosureContract.FIELD,
