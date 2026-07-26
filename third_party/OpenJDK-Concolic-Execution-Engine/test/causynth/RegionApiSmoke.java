@@ -28,7 +28,7 @@ public final class RegionApiSmoke {
         String summary = System.finishConcolicRegion();
         require(expression.contains("\"symbolic\":true"), expression);
         require(summary.contains("\"regionId\":\"REGION.smoke\""), summary);
-        require(summary.contains("\"activationId\":\"ACT.smoke\""), summary);
+        require(summary.contains("\"taskId\":\"ACT.smoke\""), summary);
         require(summary.contains("\"pathCondition\":["), summary);
         require(summary.contains("\"pathConditionRecordingPaused\":true"),
                 summary);

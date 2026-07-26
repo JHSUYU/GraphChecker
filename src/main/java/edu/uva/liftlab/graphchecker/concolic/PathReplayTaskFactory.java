@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 

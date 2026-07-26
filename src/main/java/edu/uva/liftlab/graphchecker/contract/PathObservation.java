@@ -7,7 +7,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
-import edu.uva.liftlab.graphchecker.concolic.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
 
 import java.util.ArrayList;

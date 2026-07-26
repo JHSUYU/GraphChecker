@@ -213,7 +213,7 @@ public final class RegionBranchEventApiSmoke {
                 "active branch event envelope is not explicit: " + events);
         check(events.contains("\"regionId\":\"REGION.BRANCH.SMOKE\""),
                 "missing region ownership: " + events);
-        check(events.contains("\"activationId\":\"ACT.BRANCH.SMOKE\""),
+        check(events.contains("\"taskId\":\"ACT.BRANCH.SMOKE\""),
                 "missing activation ownership: " + events);
         check(events.contains("\"siteId\":\"SAME_SHAPE.1\"")
                         && events.contains("\"siteId\":\"SAME_SHAPE.2\""),

@@ -140,316 +140,38 @@ sha256_file() {
   sha256sum "${path}" | awk '{print $1}'
 }
 
-# The local fixture discovers its producer/consumer channels from the
-# concrete shared-field read-from bindings while the workflow below remains
-# channel-oriented.
-runtime_channel_rows() {
-  jq -c -s '
-    def canonicalize:
-      if type == "object" then
-        to_entries
-        | sort_by(.key)
-        | map({key: .key, value: (.value | canonicalize)})
-        | from_entries
-      elif type == "array" then map(canonicalize)
-      else .
-      end;
-    def canonical_identity:
-      canonicalize | tojson | @base64;
-    def output_member_rows:
-      if (.outputClosure | type) == "object"
-          and .outputClosure.schemaVersion == 1
-          and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
-          and (.outputClosure.members | type) == "array"
-          and (.outputClosure.members | length) > 0
-          and all(.outputClosure.members[];
-            (type == "object")
-            and (.output | type) == "object"
-            and (.slice | type) == "object")
-      then .outputClosure.members[]
-      else error("missing or malformed canonical outputClosure")
-      end;
-    def output_members:
-      output_member_rows | .output
-      | select(type == "object");
-    def output_demand_key:
-      {
-        schemaVersion: 1,
-        producerRegionId: .regionId,
-        outputs: ([output_member_rows
-          | .output
-          | {
-              portId: (.portId // ""),
-              cell: (.cell // ""),
-              kind: (.kind // ""),
-              javaTypeDescriptor: (.javaTypeDescriptor // "")
-            }]
-          | sort_by(.portId))
-      } | canonical_identity;
-    def output_closure_fingerprint:
-      .outputClosure | canonical_identity;
-    def read_from_evidence:
-      (.evidenceKind == "FIELD_ASSIGNMENT_READ_FROM_V1"
-        or .evidenceKind == "CONTAINER_MUTATION_READ_FROM_V1")
-      and (.writerEventSeq | type) == "number"
-      and (.readerEventSeq | type) == "number"
-      and .writerEventSeq < .readerEventSeq
-      and (.receiverObjectId | type) == "number"
-      and .receiverObjectId != 0;
-
-    . as $plans
-    | [$plans[] as $plan
-        | $plan.closureGoals[]
-        | select(.kind == "OUTPUT_RELATION_CLOSURE")
-        | .edgeBindings[]?
-        | select(read_from_evidence)
-      ] as $validatedEdges
-    | ($validatedEdges | map(.fromRegion) | unique) as $sourceRegions
-    | ($validatedEdges | map(.toRegion) | unique
-        | map(select(. as $candidate
-            | ($sourceRegions | index($candidate)) == null))) as $terminalRegions
-    | (if ($terminalRegions | length) != 1 then
-        error("runtime read-from graph has no unique terminal target region")
-      else $terminalRegions[0] end) as $terminalRegion
-    | $plans[] as $plan
-    | $plan.closureGoals[] as $goal
-    | select($goal.kind == "OUTPUT_RELATION_CLOSURE")
-    | select($goal.admission.state == "READY")
-    | ($goal + {regionId: $plan.regionId}) as $demand
-    | ($demand | output_demand_key) as $outputDemandKey
-    | ($demand | output_closure_fingerprint)
-        as $outputClosureFingerprint
-    | ($demand | output_members) as $output
-    | select(
-        ($output.cell
-            | type == "string" and length > 0))
-    | $goal.edgeBindings[]? as $edge
-    | select(
-        ($edge | read_from_evidence)
-        and $edge.toRegion == $terminalRegion
-        and $edge.fromRegion == $plan.regionId
-        and $edge.fromRegionInstance == $plan.regionInstanceId
-        and $edge.fromOutputCell == $output.cell
-        and ($edge.toInputCell | type == "string" and length > 0))
-    | ($output.cell
-        | capture("^<[^:]+:[[:space:]]+[^[:space:]]+"
-            + "[[:space:]]+(?<name>[^ >]+)>$").name
-        | ascii_upcase) as $channel
-    | {
-        edgeId: $edge.edgeId,
-        channel: $channel,
-        fromCell: $output.cell,
-        toCell: $edge.toInputCell,
-        producerRegion: $plan.regionId,
-        producerInstance: $plan.regionInstanceId,
-        producerGoal: $goal.goalId,
-        outputDemandKey: $outputDemandKey,
-        outputClosureFingerprint: $outputClosureFingerprint,
-        targetRegion: $edge.toRegion,
-        targetRegionInstance: $edge.toRegionInstance
-      }
-  ' "${region_plan}" | LC_ALL=C sort
-}
-
-producer_demand_rows() {
-  runtime_channel_rows | jq -c -s '
-    sort_by(.producerInstance, .producerGoal, .outputDemandKey,
-      .outputClosureFingerprint, .channel, .edgeId)
-    | group_by([
-        .producerInstance,
-        .producerGoal,
-        .outputDemandKey,
-        .outputClosureFingerprint
-      ])
-    | .[]
-    | . as $rows
-    | if ([$rows[].producerRegion] | unique | length) != 1
-        or ([$rows[].targetRegionInstance] | unique | length) != 1
-      then error("one producer demand spans conflicting runtime scopes")
-      else {
-        producerKey: ({
-          regionInstanceId: $rows[0].producerInstance,
-          goalId: $rows[0].producerGoal,
-          outputDemandKey: $rows[0].outputDemandKey,
-          outputClosureFingerprint:
-            $rows[0].outputClosureFingerprint
-        } | tojson | @base64),
-        producerRegion: $rows[0].producerRegion,
-        producerInstance: $rows[0].producerInstance,
-        producerGoal: $rows[0].producerGoal,
-        outputDemandKey: $rows[0].outputDemandKey,
-        outputClosureFingerprint:
-          $rows[0].outputClosureFingerprint,
-        ownerChannel: ([$rows[].channel] | unique | sort | .[0]),
-        channels: ([$rows[].channel] | unique | sort),
-        edgeIntents: $rows,
-        targetRegion: $rows[0].targetRegion,
-        targetRegionInstance: $rows[0].targetRegionInstance
-      }
-      end
-  '
+workflow_discovery() {
+  run_graphchecker_main \
+    edu.uva.liftlab.graphchecker.concolic.RuntimeWorkflowDiscovery \
+    --region-plan "${region_plan}" "$@"
 }
 
 validate_discovery_inputs() {
-  require_command jq
-  require_command grep
   require_file "runtime region plan" "${region_plan}"
   require_file "runtime edge validations" "${runtime_edge_validations}"
   require_file "static data-flow graph" "${static_graph}"
-  jq -e -s '
-    length > 0
-    and all(.[];
-      (.regionId | type == "string" and length > 0)
-      and (.regionInstanceId | type == "string" and length > 0)
-      and (.closureGoals | type == "array" and length > 0)
-      and all(.closureGoals[];
-        (.goalId | type == "string" and length > 0)
-        and (.kind == "OUTPUT_RELATION_CLOSURE"
-          or .kind == "TARGET_REACH_CLOSURE")))
-    and (([.[].regionInstanceId] | unique | length) == length)
-  ' "${region_plan}" >/dev/null \
-    || die "runtime region plan has missing or duplicate identities"
-  local channels
-  channels=$(runtime_channel_rows) \
-    || die "could not derive local channels from runtime read-from evidence"
-  jq -e -s '
-    length > 0
-    and all(.[];
-      (.channel | type == "string" and test("^[A-Za-z0-9._-]+$"))
-      and (.edgeId | type == "string" and length > 0)
-      and (.fromCell | type == "string" and length > 0)
-      and (.toCell | type == "string" and length > 0)
-      and (.producerRegion | type == "string" and length > 0)
-      and (.producerInstance | type == "string" and length > 0)
-      and (.producerGoal | type == "string" and length > 0)
-      and (.outputDemandKey | type == "string" and length > 0)
-      and (.outputClosureFingerprint | type == "string" and length > 0)
-      and (.targetRegion | type == "string" and length > 0)
-      and (.targetRegionInstance | type == "string" and length > 0))
-    and (([.[].edgeId] | unique | length) == length)
-    and (group_by(.channel | ascii_downcase) | all(.[];
-      ([.[].fromCell] | unique | length) == 1
-      and ([.[].producerRegion] | unique | length) == 1
-      and ([.[].producerInstance] | unique | length) == 1
-      and ([.[].producerGoal] | unique | length) == 1
-      and ([.[].outputDemandKey] | unique | length) == 1
-      and ([.[].outputClosureFingerprint] | unique | length) == 1))
-    and (([.[].targetRegionInstance] | unique | length) == 1)
-  ' <<< "${channels}" >/dev/null \
-    || die "runtime read-from discovery produced inconsistent edge intents"
-  local producer_demands
-  producer_demands=$(producer_demand_rows) \
-    || die "could not group runtime channels by producer demand"
-  jq -e -s '
-    length > 0
-    and all(.[];
-      (.producerKey | type == "string" and length > 0)
-      and (.producerRegion | type == "string" and length > 0)
-      and (.producerInstance | type == "string" and length > 0)
-      and (.producerGoal | type == "string" and length > 0)
-      and (.outputDemandKey | type == "string" and length > 0)
-      and (.outputClosureFingerprint | type == "string" and length > 0)
-      and (.ownerChannel | type == "string" and length > 0)
-      and (.channels | type == "array" and length > 0)
-      and ((.edgeIntents | type) == "array"
-        and (.edgeIntents | length) >= (.channels | length)))
-    and (([.[].producerKey] | unique | length) == length)
-    and (([.[] | .channels[] | ascii_downcase]
-      | unique | length)
-      == ([.[] | .channels[]] | length))
-    and (([.[].targetRegionInstance] | unique | length) == 1)
-  ' <<< "${producer_demands}" >/dev/null \
-    || die "runtime producer demand grouping is inconsistent"
-}
-
-discovered_channels() {
-  runtime_channel_rows | jq -r '.channel' | LC_ALL=C sort -fu
+  workflow_discovery --command validate >/dev/null \
+    || die "runtime read-from discovery is inconsistent"
 }
 
 discovered_producer_channels() {
-  producer_demand_rows | jq -r '.ownerChannel'
+  workflow_discovery --command producer-channels
 }
 
 discovered_channel() {
-  local requested=$1
-  local -a matches
-  mapfile -t matches < <(runtime_channel_rows | jq -r \
-    --arg requested "${requested}" '
-    select((.channel | ascii_downcase) == ($requested | ascii_downcase))
-    | .channel
-  ' | LC_ALL=C sort -fu)
-  [[ ${#matches[@]} -eq 1 ]] \
-    || die "channel is not discovered exactly once: ${requested}"
-  printf '%s\n' "${matches[0]}"
-}
-
-producer_demand_for_channel() {
-  local requested=$1
-  local channel
-  local -a matches
-  channel=$(discovered_channel "${requested}") || return $?
-  mapfile -t matches < <(producer_demand_rows | jq -c \
-    --arg channel "${channel}" '
-    select(any(.channels[]; . == $channel))
-  ')
-  [[ ${#matches[@]} -eq 1 ]] \
-    || die "channel does not resolve to one producer demand: ${requested}"
-  printf '%s\n' "${matches[0]}"
+  workflow_discovery --command resolve-channel --channel "$1"
 }
 
 producer_owner_channel() {
-  local demand
-  demand=$(producer_demand_for_channel "$1") || return $?
-  jq -er '.ownerChannel' <<< "${demand}" \
-    || die "producer demand has no owner channel: $1"
-}
-
-channel_value() {
-  local channel=$1
-  local property=$2
-  runtime_channel_rows | jq -er -s \
-    --arg channel "${channel}" --arg property "${property}" '
-    [.[] | select(.channel == $channel) | .[$property]] | unique
-    | if length == 1 and (.[0] | tostring | length) > 0
-      then .[0]
-      else error("channel property is missing or ambiguous")
-      end
-  ' || die "runtime channel property ${property} is not unique for ${channel}"
+  workflow_discovery --command owner-channel --channel "$1"
 }
 
 producer_binding() {
-  local requested=$1
-  local demand
-  demand=$(producer_demand_for_channel "${requested}") || return $?
-  jq -er '[.producerRegion, .producerInstance, .producerGoal] | @tsv' \
-    <<< "${demand}" \
-    || die "producer demand binding is incomplete for ${requested}"
+  workflow_discovery --command producer-binding --channel "$1"
 }
 
 target_binding() {
-  local target_region target_instance
-  local -a target_goals
-  target_region=$(runtime_channel_rows | jq -er -s '
-    [.[].targetRegion] | unique
-    | if length == 1 then .[0] else error("ambiguous target region") end
-  ') || die "runtime channels do not converge on one target region"
-  target_instance=$(runtime_channel_rows | jq -er -s '
-    [.[].targetRegionInstance] | unique
-    | if length == 1 then .[0] else error("ambiguous target instance") end
-  ') || die "runtime channels do not converge on one target instance"
-  mapfile -t target_goals < <(jq -r \
-    --arg region "${target_region}" --arg instance "${target_instance}" '
-    select(.regionId == $region and .regionInstanceId == $instance)
-    | . as $plan
-    | .closureGoals[]
-    | select(.kind == "TARGET_REACH_CLOSURE"
-        and (.admission.state == "READY"
-          or .admission.state == "DISCOVERED"))
-    | [$plan.regionInstanceId, .goalId] | @tsv
-  ' "${region_plan}")
-  [[ ${#target_goals[@]} -eq 1 ]] || die \
-    "expected one TARGET_REACH_CLOSURE goal for ${target_instance}"
-  printf '%s\t%s\n' "${target_region}" "${target_goals[0]}"
+  workflow_discovery --command target-binding
 }
 
 channel_schedule() {
@@ -468,67 +190,20 @@ channel_classes() {
 
 scheduled_task() {
   local requested=$1
-  local channel region source_instance source_goal from_cell schedule binding
-  local -a matches
+  local channel schedule
   channel=$(discovered_channel "${requested}") || return $?
-  binding=$(producer_binding "${channel}") || return $?
-  IFS=$'\t' read -r region source_instance source_goal \
-    <<< "${binding}"
-  from_cell=$(channel_value "${channel}" fromCell) || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   require_file "scheduled producer task" \
     "${schedule}/execution_task_plan.jsonl"
-  mapfile -t matches < <(jq -r \
-    --arg region "${region}" --arg sourceInstance "${source_instance}" \
-    --arg sourceGoal "${source_goal}" \
-    --arg fromCell "${from_cell}" '
-    def output_members:
-      if (.outputClosure | type) == "object"
-          and .outputClosure.schemaVersion == 1
-          and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
-          and (.outputClosure.members | type) == "array"
-          and (.outputClosure.members | length) > 0
-          and all(.outputClosure.members[];
-            (type == "object")
-            and (.output | type) == "object"
-            and (.slice | type) == "object")
-      then .outputClosure.members[].output
-      else error("missing or malformed canonical outputClosure")
-      end;
-
-    select(
-      .regionInstanceId == $sourceInstance
-      and .goalId == $sourceGoal
-      and .regionId == $region
-      and .goalKind == "OUTPUT_RELATION_CLOSURE")
-    | select(any(output_members; .cell == $fromCell))
-    | .taskId
-  ' "${schedule}/execution_task_plan.jsonl")
-  [[ ${#matches[@]} -eq 1 ]] || die \
-    "expected one scheduled task for channel ${channel}"
-  printf '%s\n' "${matches[0]}"
+  workflow_discovery --command scheduled-task --channel "${channel}" \
+    --task-plan "${schedule}/execution_task_plan.jsonl"
 }
 
 scheduled_target_task() {
-  local region source_instance source_goal binding
-  local -a matches
-  binding=$(target_binding) || return $?
-  IFS=$'\t' read -r region source_instance source_goal <<< "${binding}"
   require_file "scheduled target task" \
     "${target_schedule}/execution_task_plan.jsonl"
-  mapfile -t matches < <(jq -r \
-    --arg region "${region}" --arg instance "${source_instance}" \
-    --arg goal "${source_goal}" '
-    select(
-      .regionId == $region
-      and .regionInstanceId == $instance
-      and .goalId == $goal
-      and .goalKind == "TARGET_REACH_CLOSURE")
-    | .taskId
-  ' "${target_schedule}/execution_task_plan.jsonl")
-  [[ ${#matches[@]} -eq 1 ]] || die \
-    "expected one scheduled target task; found ${#matches[@]}"
-  printf '%s\n' "${matches[0]}"
+  workflow_discovery --command scheduled-target-task \
+    --task-plan "${target_schedule}/execution_task_plan.jsonl"
 }
 
 do_prepare() {
@@ -568,22 +243,8 @@ do_trace() {
 }
 
 do_discover() {
-  local channel region instance goal target_region target_instance target_goal
-  local binding
-  local -a channels
   validate_discovery_inputs
-  mapfile -t channels < <(discovered_channels)
-  printf 'kind\tchannel\tregion\tinstance\tgoal\n'
-  for channel in "${channels[@]}"; do
-    binding=$(producer_binding "${channel}") || return $?
-    IFS=$'\t' read -r region instance goal <<< "${binding}"
-    printf 'producer\t%s\t%s\t%s\t%s\n' \
-      "${channel}" "${region}" "${instance}" "${goal}"
-  done
-  binding=$(target_binding) || return $?
-  IFS=$'\t' read -r target_region target_instance target_goal <<< "${binding}"
-  printf 'target\t-\t%s\t%s\t%s\n' \
-    "${target_region}" "${target_instance}" "${target_goal}"
+  workflow_discovery --command discover
 }
 
 do_schedule_target() {

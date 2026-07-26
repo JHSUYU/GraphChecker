@@ -3,8 +3,6 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.concolic.ClosureGoalKind;
-
 import java.util.Collections;
 import java.util.List;
 

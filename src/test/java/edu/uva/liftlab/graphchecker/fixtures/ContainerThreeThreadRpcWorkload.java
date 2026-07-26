@@ -111,8 +111,8 @@ public final class ContainerThreeThreadRpcWorkload {
                 input4 =- input4;
             }
             if (enabled || ((input1-input3-input4)>10)) {
-                if(input1>100) input1=100;
-                if(input2>100) input2=100;
+//                if(input1>100) input1=100;
+//                if(input2>100) input2=100;
 //                if(-input3>100) input3=-100;
 //                if(-input4>100) input4=-100;
 

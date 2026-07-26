@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 
 import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.DynamicBindingSpec;
 import edu.uva.liftlab.graphchecker.contract.DynamicBindingSpec.SelectorSpec;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
@@ -7346,8 +7347,8 @@ public final class ConcolicSummaryImporter {
         if (!task.regionId().equals(textString(engine, "regionId"))) {
             return "engineSummary.regionId must match the task";
         }
-        if (!task.taskId().equals(textString(engine, "activationId"))) {
-            return "engineSummary.activationId must match taskId";
+        if (!task.taskId().equals(textString(engine, "taskId"))) {
+            return "engineSummary.taskId must match taskId";
         }
         JsonElement pathCondition = engine.get("pathCondition");
         if (pathCondition == null || !pathCondition.isJsonArray()) {

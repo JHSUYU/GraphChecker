@@ -2392,6 +2392,36 @@ exit、exact region-exit capture 和 `relationallyComplete` gate 没有放宽。
 truth table、SAT/UNSAT、closed worklist、read-from binding、guarded output relation、
 dynamic Map/array field binding 和 artifact SHA；不再把诊断 JSON 形状当成第二套语义。
 
+### Closure/task/workflow 最终收口（2026-07-26）
+
+closure kind 现在只有
+`edu.uva.liftlab.graphchecker.contract.ClosureGoalKind` 一个 authority。
+`RegionInstancePlan.Goal`、`ExecutionTask`、path worklist、Importer 和 Composer 均直接使用
+该 enum；原先嵌套的 `RegionInstancePlan.GoalKind` 与 concolic 包中的重复 enum 已删除。
+依赖方向也因此恢复为 execution/concolic 层依赖 contract，而不是 contract 反向依赖
+concolic 的协议类型。
+
+custom-JDK 公开的 region summary 和 branch-event envelope/event 现在统一写
+`taskId`。Java runtime attestation 与 Importer 只接受 `taskId`，不再用名为
+`activationId` 的字段承载 execution task identity，也不保留双读、双写或兼容 fallback。
+HotSpot 只改了这三个 JSON key 及 disabled envelope，concolic 执行和并行 worker 算法没有
+变化。
+
+三线程 workflow 的 runtime read-from 解码、terminal target 推导、producer demand 分组和
+scheduled task 选择已从 Shell 迁入 typed `RuntimeWorkflowDiscovery`。`run.sh` 只保留
+process/file orchestration 和薄命令包装，从 1,618 行降为 1,279 行；不再用约 390 行 jq
+维护第二套 region-plan 语义。源码目录中的旧
+`src/main/java/activations.json` 和 `src/main/java/concolicplan.jsonl` 已删除并加入根级
+ignore；当前 artifact 只以配置指向的 `target/.../concolic_region_plan.jsonl` 和
+`execution_task_plan.jsonl` 为准。
+
+本次只运行一轮十三 case 的真实 generated RPC 门禁，外层并行度 13、内部 concolic
+worker 并行度 40。结果为 13/13、failure=0，其中 6 个 `REACHABLE/sat`、7 个
+`UNREACHABLE/unsat`；日志目录是
+`target/generated-regression/logs/round-10/20260726T143255Z.2304214`。所有 raw
+`engineSummary` 均含非空 `taskId` 且不含 `activationId`，所有 runtime plan 均使用
+`closureGoals` 新 schema。
+
 ## TODO：用自然 replay 将候选升级为可信结果
 
 当前停止点是准确、结构完整且由 Z3 检查过的候选 SMT。后续工作应把选中的 producer 输入

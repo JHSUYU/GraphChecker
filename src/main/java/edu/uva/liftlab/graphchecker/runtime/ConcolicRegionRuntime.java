@@ -2832,9 +2832,9 @@ public final class ConcolicRegionRuntime {
         if (!safe(active.activation.regionId).equals(
                 string(envelope, "regionId"))
                 || !safe(active.activation.taskId).equals(
-                string(envelope, "activationId"))) {
+                string(envelope, "taskId"))) {
             return VmBranchEventAttestation.invalid(
-                    "event stream region/activation does not match owner");
+                    "event stream region/task does not match owner");
         }
 
         JsonObject selected = null;
@@ -2868,9 +2868,9 @@ public final class ConcolicRegionRuntime {
         if (!safe(active.activation.regionId).equals(
                 string(selected, "regionId"))
                 || !safe(active.activation.taskId).equals(
-                string(selected, "activationId"))) {
+                string(selected, "taskId"))) {
             return VmBranchEventAttestation.invalid(
-                    "event region/activation differs from its owner");
+                    "event region/task differs from its owner");
         }
         if (!safe(siteId).equals(string(selected, "siteId"))
                 || integer(selected, "occurrence", -1) != occurrence) {

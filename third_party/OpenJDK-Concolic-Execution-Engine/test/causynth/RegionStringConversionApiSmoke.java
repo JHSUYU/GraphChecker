@@ -125,7 +125,7 @@ public final class RegionStringConversionApiSmoke {
         require(summary.contains("\"regionId\":\"REGION.string-conversion\""),
                 summary);
         require(summary.contains(
-                "\"activationId\":\"ACT.string-conversion\""), summary);
+                "\"taskId\":\"ACT.string-conversion\""), summary);
         require(summary.contains(
                 "unsupportedPrimitiveStringConversion:"
                         + "java/lang/Boolean.toString(Z)Ljava/lang/String;"),

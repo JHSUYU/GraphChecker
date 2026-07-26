@@ -22,7 +22,7 @@ public class RegionApiTest {
         assertTrue(expression.contains("\"symbolic\":true"));
         assertTrue(expression.contains("\"expression\":"));
         assertTrue(liveSummary.contains("\"regionId\":\"REGION.test\""));
-        assertTrue(liveSummary.contains("\"activationId\":\"ACT.test\""));
+        assertTrue(liveSummary.contains("\"taskId\":\"ACT.test\""));
         assertTrue(liveSummary.contains("\"pathCondition\":["));
         assertTrue(finishedSummary.contains("\"regionId\":\"REGION.test\""));
     }
