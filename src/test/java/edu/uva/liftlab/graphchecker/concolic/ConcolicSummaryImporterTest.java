@@ -8,6 +8,7 @@ import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
+import edu.uva.liftlab.graphchecker.contract.DynamicBindingSpec;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
@@ -89,6 +90,52 @@ public class ConcolicSummaryImporterTest {
                 "CAUSYNTH_REF_WITNESS_V1_A10_4143542e50_T101");
         record.add("mapExpression", expression);
         return record;
+    }
+
+    @Test
+    public void importsDirectMapEntryValueFieldAsNonMutatingState()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            MapFixture imported = importNonMutatingDynamicMapReadFixture(
+                    folder.getRoot().toPath(), "DIRECT_FIELD");
+            assertFalse(imported.diagnostics,
+                    imported.diagnostics.contains(
+                            "INCOMPLETE_NON_MUTATING_MAP_ENTRY_READ_FIELD_BASE"));
+            assertFalse(imported.diagnostics,
+                    imported.diagnostics.contains(
+                            "UNRESOLVED_HEAP_OBSERVATION_STATE_PORT"));
+            JsonObject observation = imported.summary.getAsJsonArray(
+                    "heapObservations").get(0).getAsJsonObject();
+            assertFalse(observation.get("statePort").getAsString().isEmpty());
+            assertEquals(1, observation.getAsJsonArray(
+                    "entryFieldBindings").size());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void importsNonMutatingMapFieldFromRuntimeExpressionWhenBranchRepeatsIt()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            MapFixture imported = importNonMutatingDynamicMapReadFixture(
+                    folder.getRoot().toPath(), "REPEATED_FIELD_USE");
+            assertFalse(imported.diagnostics,
+                    imported.diagnostics.contains(
+                            "MISSING_DYNAMIC_FIELD_EXPRESSION"));
+            JsonObject binding = imported.summary.getAsJsonArray(
+                    "heapObservations").get(0).getAsJsonObject()
+                    .getAsJsonArray("entryFieldBindings").get(0)
+                    .getAsJsonObject();
+            assertEquals(DynamicBindingSpec.FIELD_EXPRESSION_AUTHORITY,
+                    binding.get("fieldExpressionAuthority").getAsString());
+        } finally {
+            folder.delete();
+        }
     }
 
     @Test
@@ -796,6 +843,10 @@ public class ConcolicSummaryImporterTest {
         binding.add("keyExpression", keyExpression.deepCopy());
         binding.addProperty("keyExpressionAuthority",
                 "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT");
+        binding.add("fieldExpression", symbol(
+                "M_J_field_" + dynamicSymbol + "_example/Value", "J"));
+        binding.addProperty("fieldExpressionAuthority",
+                DynamicBindingSpec.FIELD_EXPRESSION_AUTHORITY);
         binding.addProperty("complete", true);
         binding.addProperty("authority",
                 "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
@@ -849,9 +900,11 @@ public class ConcolicSummaryImporterTest {
         String method = "<example.Store: void prune()>";
         String base = "REGION.P.in.1";
         String materializationSite = method + "#u8";
-        String dependencyCell =
-                "<example.State: example.Guard state>"
-                        + "#field:guard#field:expiry";
+        boolean directField = "DIRECT_FIELD".equals(mode);
+        String dependencyCell = directField
+                ? "<example.Value: long expiry>"
+                : "<example.State: example.Guard state>"
+                + "#field:guard#field:expiry";
         String dynamic = dynamicFieldSymbol(base, materializationSite, 1);
         JsonObject key = constant("Y_I_7", "I");
         JsonObject witness = mapRefWitnessRecord();
@@ -864,10 +917,17 @@ public class ConcolicSummaryImporterTest {
         JsonArray observations = new JsonArray();
         observations.add(read);
 
-        JsonArray deepPath = strings("state", "guard", "expiry");
+        JsonArray deepPath = directField
+                ? strings("expiry")
+                : strings("state", "guard", "expiry");
         JsonObject dynamicBinding = dynamicFieldBinding(dynamic,
                 materializationSite, 1, 105L, read, key);
         dynamicBinding.add("fieldPath", deepPath.deepCopy());
+        if ("REPEATED_FIELD_USE".equals(mode)) {
+            dynamicBinding.getAsJsonObject("fieldExpression").addProperty(
+                    "_exp", "M_J_field_" + dynamic
+                            + "_example/SubValue");
+        }
         JsonArray dynamicBindings = new JsonArray();
         dynamicBindings.add(dynamicBinding);
         JsonObject fieldObservation = dynamicFieldObservation(dynamic,
@@ -882,8 +942,12 @@ public class ConcolicSummaryImporterTest {
         action.addProperty("location", "HEAP_OBJECT_FIELD");
         action.addProperty("accessMethod", method);
         action.addProperty("accessSiteId", materializationSite);
-        action.addProperty("fieldPathAuthority",
-                "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
+        if (directField) {
+            action.addProperty("accessFieldSignature", dependencyCell);
+        } else {
+            action.addProperty("fieldPathAuthority",
+                    "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
+        }
         action.addProperty("leafFieldSignature",
                 "<example.Value: long expiry>");
         action.add("fieldPath", deepPath.deepCopy());
@@ -892,9 +956,12 @@ public class ConcolicSummaryImporterTest {
 
         JsonObject expression = symbol("M_J_field_" + dynamic
                 + "_example/Value", "J");
+        JsonObject conditionInput = "REPEATED_FIELD_USE".equals(mode)
+                ? binaryCondition("", "+", expression,
+                expression.deepCopy()) : expression;
         JsonObject condition = binaryCondition(
                 "virtual void example.Store.prune():11", ">",
-                expression, constant("Y_J_0", "J"));
+                conditionInput, constant("Y_J_0", "J"));
         JsonArray path = new JsonArray();
         path.add(condition.deepCopy());
         JsonObject mapping = branchMapping(method, 11, 1, true,
@@ -1699,6 +1766,21 @@ public class ConcolicSummaryImporterTest {
                 String symbol = action.getAsJsonObject().get("symbol")
                         .getAsString();
                 if (!containsString(omittedSymbolizedInputs, symbol)) {
+                    symbolizedInputs.add(symbol);
+                }
+            }
+        }
+        if (dynamicFieldBindings != null
+                && dynamicFieldBindings.isJsonArray()) {
+            for (JsonElement element
+                    : dynamicFieldBindings.getAsJsonArray()) {
+                if (!element.isJsonObject()) continue;
+                String symbol = element.getAsJsonObject().has(
+                        "dynamicFieldSymbol")
+                        ? element.getAsJsonObject().get(
+                        "dynamicFieldSymbol").getAsString() : "";
+                if (!symbol.isEmpty()
+                        && !containsString(omittedSymbolizedInputs, symbol)) {
                     symbolizedInputs.add(symbol);
                 }
             }

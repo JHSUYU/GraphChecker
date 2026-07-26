@@ -1275,7 +1275,7 @@ public final class ConcolicConstraintSolver {
                 if (segments.size() != path.size()) continue;
                 String label = symbol + (segments.isEmpty() ? ""
                         : "." + String.join(".", segments));
-                if (exactEngineSymbol(raw, label)
+                if (DynamicBindingSpec.matchesEngineSymbol(raw, label)
                         && label.length() > bestLength) {
                     best = new ActionMatch(action, segments);
                     bestLength = label.length();
@@ -1334,7 +1334,7 @@ public final class ConcolicConstraintSolver {
         String base = string(direct.action, "symbol");
         List<DynamicFieldBinding> candidates = registry.forBase(base);
         if (!candidates.isEmpty()) {
-            if (exactEngineSymbol(raw, base)) {
+            if (DynamicBindingSpec.matchesEngineSymbol(raw, base)) {
                 return null;
             }
             // Once runtime evidence has split a static field-family input
@@ -1361,35 +1361,6 @@ public final class ConcolicConstraintSolver {
             }
         }
         return false;
-    }
-
-    private static boolean exactEngineSymbol(String raw, String symbol) {
-        if (raw == null || symbol == null || symbol.isEmpty()) return false;
-        if (raw.equals(symbol)) return true;
-        String payload = "";
-        if (raw.length() > 10 && raw.charAt(0) == 'M'
-                && raw.charAt(1) == '_'
-                && "ZCBSIFJDL".indexOf(raw.charAt(2)) >= 0
-                && raw.startsWith("_field_", 3)) {
-            payload = raw.substring(10);
-        } else if (raw.startsWith("M_L'")) {
-            int runtimeTypeEnd = raw.indexOf("'_", 4);
-            if (runtimeTypeEnd > 4 && raw.substring(4, runtimeTypeEnd)
-                    .matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
-                payload = raw.substring(runtimeTypeEnd + 2);
-            }
-        }
-        if (payload.isEmpty()) return false;
-        if (payload.equals(symbol)) return true;
-        String boundary = symbol + "_";
-        return payload.startsWith(boundary)
-                && legalVmOwnerSuffix(payload.substring(boundary.length()));
-    }
-
-    private static boolean legalVmOwnerSuffix(String suffix) {
-        return suffix != null && suffix.matches(
-                "[A-Za-z_$][A-Za-z0-9_$]*"
-                        + "(?:/[A-Za-z_$][A-Za-z0-9_$]*)*");
     }
 
     private static boolean executable(JsonObject action) {
@@ -1452,7 +1423,7 @@ public final class ConcolicConstraintSolver {
             if (direct != null) return direct;
             DynamicFieldBinding selected = null;
             for (DynamicFieldBinding binding : byDynamicSymbol.values()) {
-                if (!exactEngineSymbol(raw,
+                if (!DynamicBindingSpec.matchesEngineSymbol(raw,
                         binding.spec.dynamicFieldSymbol())) {
                     continue;
                 }

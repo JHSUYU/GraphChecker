@@ -1125,9 +1125,17 @@ public final class ConcolicRegionRuntime {
         String materializationSite = siteId(method, unitIndex);
         int occurrence = active.nextFieldMaterializationOccurrence(
                 action.symbol, materializationSite);
+        String exactFieldSignature = firstNonBlank(fieldSignature,
+                action.accessFieldSignature, action.cell);
+        if (!uniqueNameResolvesExactDeclaredField(leafOwner,
+                exactFieldSignature)) {
+            active.addUnresolvedOnce(materializationSite
+                    + ": dynamic map-entry field does not uniquely identify "
+                    + exactFieldSignature);
+            return;
+        }
         DynamicFieldSelection selection = active.dynamicFieldBinding(
-                action, accessOwner, leafOwner, firstNonBlank(fieldSignature,
-                        action.accessFieldSignature, action.cell),
+                action, accessOwner, leafOwner, exactFieldSignature,
                 materializationSite,
                 occurrence, cursor);
         DynamicFieldBinding binding = selection.binding;
@@ -1202,6 +1210,7 @@ public final class ConcolicRegionRuntime {
             api.symbolizeField(leafOwner, action.leafField,
                     binding.dynamicFieldSymbol);
             active.symbolized.add(binding.dynamicFieldSymbol);
+            binding.recordFieldSymbolExpression(leafOwner);
             return;
         }
         long token = liveArray ? active.objectToken(
@@ -2322,31 +2331,6 @@ public final class ConcolicRegionRuntime {
                                              int occurrence) {
         return safe(baseInputSymbol) + ".field." + strongSiteHash(siteId)
                 + ".occ." + occurrence;
-    }
-
-    static boolean dynamicEngineSymbolMatchesForTests(String engine,
-                                                      String dynamic) {
-        if (engine == null || dynamic == null || dynamic.isEmpty()) {
-            return false;
-        }
-        if (engine.equals(dynamic)) return true;
-        if (engine.length() <= 10 || engine.charAt(0) != 'M'
-                || engine.charAt(1) != '_'
-                || "ZCBSIFJDL".indexOf(engine.charAt(2)) < 0
-                || !engine.startsWith("_field_", 3)) {
-            return false;
-        }
-        String payload = engine.substring(10);
-        if (payload.equals(dynamic)) return true;
-        String boundary = dynamic + "_";
-        return payload.startsWith(boundary)
-                && legalVmOwnerSuffix(payload.substring(boundary.length()));
-    }
-
-    private static boolean legalVmOwnerSuffix(String suffix) {
-        return suffix != null && suffix.matches(
-                "[A-Za-z_$][A-Za-z0-9_$]*"
-                        + "(?:/[A-Za-z_$][A-Za-z0-9_$]*)*");
     }
 
     private static String appendReason(String previous, String next) {
@@ -3603,6 +3587,9 @@ public final class ConcolicRegionRuntime {
             }
             api.symbolize(value, action.symbol);
             active.symbolized.add(action.symbol);
+            if (value != null && !liveArray) {
+                active.recordSymbolizedObject(action.symbol, value);
+            }
             if (liveArray) {
                 active.captureEngineArrayInputBinding(action, value, value,
                         symbolizationToken, action.directArrayType(value),
@@ -5655,6 +5642,8 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashMap<>();
         private final IdentityHashMap<Object, Long> objectTokens =
                 new IdentityHashMap<>();
+        private final Map<Long, String> symbolizedObjectPorts =
+                new LinkedHashMap<>();
         private long nextObjectToken = 1L;
         private long runtimeEventSequence;
         private long preparedBranchSequence;
@@ -5790,7 +5779,15 @@ public final class ConcolicRegionRuntime {
         private JsonArray runtimeHeapObservationsJson() {
             JsonArray result = new JsonArray();
             for (JsonObject observation : runtimeHeapObservations) {
-                result.add(copyJsonTree(observation));
+                JsonObject encoded = copyJsonTree(observation);
+                if ("MAP_ENTRY_READ".equals(string(observation, "kind"))) {
+                    String keyInputPort = symbolizedObjectPorts.get(
+                            longInteger(observation, "keyObjectToken", 0L));
+                    if (keyInputPort != null && !keyInputPort.isEmpty()) {
+                        encoded.addProperty("keyInputPort", keyInputPort);
+                    }
+                }
+                result.add(encoded);
             }
             // Keep legacy per-entry rows in their original order.  Finite
             // snapshots carry an eventSequence tied to their first next hook,
@@ -6379,6 +6376,13 @@ public final class ConcolicRegionRuntime {
             return token;
         }
 
+        private void recordSymbolizedObject(String symbol, Object value) {
+            long token = objectToken(value);
+            String previous = symbolizedObjectPorts.get(token);
+            symbolizedObjectPorts.put(token, previous == null
+                    || previous.equals(symbol) ? symbol : "");
+        }
+
         private synchronized void observeFieldWrite(Object owner,
                                                     String signature) {
             DeclaredField declared = FieldPathSpec.declaredField(signature);
@@ -6713,6 +6717,7 @@ public final class ConcolicRegionRuntime {
         private final SelectorSpec containerSelector;
         private JsonElement keyExpression;
         private String keyExpressionAuthority;
+        private JsonElement fieldExpression;
         private boolean complete;
 
         private DynamicFieldBinding(ActiveRegion active,
@@ -6741,6 +6746,7 @@ public final class ConcolicRegionRuntime {
             this.keyExpression = cursor.keyExpression == null ? null
                     : copyJsonTree(cursor.keyExpression);
             this.keyExpressionAuthority = cursor.keyExpressionAuthority;
+            this.fieldExpression = null;
             refresh(active, cursor);
         }
 
@@ -6772,6 +6778,7 @@ public final class ConcolicRegionRuntime {
                     occurrence);
             this.keyExpression = null;
             this.keyExpressionAuthority = "";
+            this.fieldExpression = null;
             this.complete = !baseInputSymbol.isEmpty()
                     && !dynamicFieldSymbol.isEmpty()
                     && !materializationSiteId.isEmpty()
@@ -6803,6 +6810,25 @@ public final class ConcolicRegionRuntime {
                     && completeRuntimeExpression(keyExpression)
                     && !safe(keyExpressionAuthority).isEmpty()
                     && cursor.entryObservationComplete;
+        }
+
+        private void recordFieldSymbolExpression(Object leafOwner) {
+            DeclaredField declared = FieldPathSpec.declaredField(
+                    fieldSignature);
+            String descriptor = declared == null ? ""
+                    : javaTypeDescriptor(declared.type());
+            if (descriptor.length() != 1
+                    || "ZBCSIJFD".indexOf(descriptor.charAt(0)) < 0
+                    || leafOwner == null) {
+                return;
+            }
+            JsonObject expression = new JsonObject();
+            expression.addProperty("_type", "SymbolExpression");
+            expression.addProperty("_java_type", descriptor);
+            expression.addProperty("_exp", "M_" + descriptor + "_field_"
+                    + dynamicFieldSymbol + "_"
+                    + leafOwner.getClass().getName().replace('.', '/'));
+            fieldExpression = expression;
         }
 
         /**
@@ -6857,6 +6883,12 @@ public final class ConcolicRegionRuntime {
             if (!safe(keyExpressionAuthority).isEmpty()) {
                 result.addProperty("keyExpressionAuthority",
                         keyExpressionAuthority);
+            }
+            if (fieldExpression != null) {
+                result.add("fieldExpression",
+                        copyJsonTree(fieldExpression));
+                result.addProperty("fieldExpressionAuthority",
+                        DynamicBindingSpec.FIELD_EXPRESSION_AUTHORITY);
             }
             if (containerSelector != null) {
                 result.add("containerSelector",
@@ -8063,7 +8095,7 @@ public final class ConcolicRegionRuntime {
         }
 
         private boolean engineSymbolMatches(String dynamicSymbol) {
-            return dynamicEngineSymbolMatchesForTests(engineSymbol,
+            return DynamicBindingSpec.matchesEngineSymbol(engineSymbol,
                     dynamicSymbol);
         }
 

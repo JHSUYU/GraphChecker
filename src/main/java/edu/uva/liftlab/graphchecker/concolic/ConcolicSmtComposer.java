@@ -1533,8 +1533,8 @@ public final class ConcolicSmtComposer {
                                        String expressionJavaType) {
             Port schema = ports.get(port);
             String schemaJavaType = schema == null ? "" : schema.javaType;
-            String javaType = firstNonBlank(schemaJavaType,
-                    expressionJavaType);
+            String integralJavaType = canonicalIntegralJavaType(
+                    schemaJavaType, expressionJavaType);
             if (sort == Sort.REF
                     && sortOfJava(schemaJavaType) == Sort.STRING) {
                 return canonicalNullableStringReferenceTerm(port,
@@ -1586,13 +1586,13 @@ public final class ConcolicSmtComposer {
                         "canonical-port:" + port);
             } else {
                 term = new Term(name, sort,
-                        integralWidthOfJava(javaType));
+                        integralWidthOfJava(integralJavaType));
             }
             if (canonicalPortTermBindings.add(bindingKey)) {
                 String previousGuard = currentGuard;
                 currentGuard = "";
                 try {
-                    assertJavaIntegralDomain(name, sort, javaType,
+                    assertJavaIntegralDomain(name, sort, integralJavaType,
                             "canonical_port_" + smtName(port));
                     if (emitPortBinding(port, term)) {
                         boundPorts.add(port);
@@ -3128,6 +3128,38 @@ public final class ConcolicSmtComposer {
                 declarePort(effectiveStatePort, Sort.MAP);
                 mentionedPorts.add(effectiveStatePort);
                 boundPorts.add(effectiveStatePort);
+                String keyInputPort = string(observation, "keyInputPort");
+                if (!keyInputPort.isEmpty()) {
+                    if (!ports.contains(keyInputPort)) {
+                        heapGap("HeapObservationKeyInputPortGap@" + region
+                                + ":" + id + ":" + keyInputPort);
+                        continue;
+                    }
+                    JsonElement keyExpression = observation.get(
+                            "keyExpression");
+                    String keyJavaType = expressionJavaType(keyExpression);
+                    Term observedKey = term(keyExpression,
+                            sortOfJava(keyJavaType));
+                    if (observedKey.sort != Sort.INT
+                            && observedKey.sort != Sort.STRING) {
+                        heapGap("HeapObservationKeyInputTypeGap@" + region
+                                + ":" + id + ":" + keyJavaType);
+                        continue;
+                    }
+                    Term keyInput = canonicalPortTerm(keyInputPort,
+                            observedKey.sort, keyJavaType);
+                    List<String> equality = new ArrayList<>(Arrays.asList(
+                            keyInput.precondition,
+                            observedKey.precondition,
+                            "(= " + keyInput.text + " "
+                                    + observedKey.text + ")"));
+                    if (observedKey.sort == Sort.STRING) {
+                        equality.add(stringNonNull(keyInput));
+                        equality.add(stringNonNull(observedKey));
+                    }
+                    assertNamed("heap_observation_key_input_" + id,
+                            and(equality));
+                }
                 assertNamed("heap_observation_key_present_" + id,
                         "(map_has " + portName(effectiveStatePort) + " "
                                 + key.text + ")");
@@ -5318,6 +5350,12 @@ public final class ConcolicSmtComposer {
 
     private static IntegralWidth integralWidthOfJava(String javaType) {
         return JavaPrimitiveSmtSemantics.widthOfJavaType(javaType);
+    }
+
+    static String canonicalIntegralJavaType(String schemaJavaType,
+                                            String expressionJavaType) {
+        return integralWidthOfJava(schemaJavaType) == IntegralWidth.NONE
+                ? expressionJavaType : schemaJavaType;
     }
 
     private static FloatingKind floatingKind(Sort sort) {

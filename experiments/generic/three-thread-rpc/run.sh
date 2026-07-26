@@ -72,6 +72,7 @@ runtime_edge_validations=$(configured_value runtime_edge_validations)
 graphchecker_jar=$(configured_value graphchecker_jar)
 maven_bin=$(configured_value maven_bin)
 fixture_class=$(workflow_property fixture_class)
+fixture_support_class=$(workflow_property fixture_support_class false)
 trace_test=$(workflow_property trace_test)
 custom_jdk_docker_image=$(workflow_property custom_jdk_docker_image)
 custom_jdk_library_path=$(workflow_property custom_jdk_library_path false)
@@ -225,6 +226,16 @@ do_prepare() {
     -exec cp -f {} "${destination}/" \;
   [[ -f "${destination}/${fixture_simple_class}.class" ]] \
     || die "fixture class isolation failed"
+  if [[ -n "${fixture_support_class}" ]]; then
+    [[ "${fixture_support_class%.*}" == "${fixture_class%.*}" ]] \
+      || die "fixture support class must share the fixture package"
+    local support_simple_class=${fixture_support_class##*.}
+    find "${source_dir}" -maxdepth 1 -type f \
+      -name "${support_simple_class}*.class" ! -name '*Test*.class' \
+      -exec cp -f {} "${destination}/" \;
+    [[ -f "${destination}/${support_simple_class}.class" ]] \
+      || die "fixture support class isolation failed"
+  fi
 }
 
 do_analyze() {

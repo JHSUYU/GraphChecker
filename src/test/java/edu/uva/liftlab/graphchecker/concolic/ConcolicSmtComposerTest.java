@@ -50,6 +50,44 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void erasedReferenceUsesConcreteIntegralExpressionType() {
+        assertEquals("I", ConcolicSmtComposer.canonicalIntegralJavaType(
+                "java.lang.Object", "I"));
+        assertEquals("J", ConcolicSmtComposer.canonicalIntegralJavaType(
+                "java.lang.Number", "J"));
+        assertEquals("byte", ConcolicSmtComposer.canonicalIntegralJavaType(
+                "byte", "I"));
+    }
+
+    @Test
+    public void mapEntryKeyIdentityBindsItsPrimitiveProjection()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject summary = producerSummary(singlePutEffect(), true);
+            JsonObject observation = heapObservation(
+                    "MAP_ENTRY_READ:KEY#1", "producer_value");
+            observation.addProperty("keyInputPort", "REGION.P.in.2");
+            summary.add("heapObservations", singleton(observation));
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+
+            assertTrue(result.manifest.toString(),
+                    candidateReady(result.manifest));
+            assertTrue(result.smtLib.contains(
+                    "(= sym__port__REGION_P_in_2__int 7)"));
+            assertFalse(result.smtLib.contains(
+                    "(= port__REGION_P_in_2 (VMapInteger 7))"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void canonicalRelationAdmissionRunsOnceAtConsumption()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();

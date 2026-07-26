@@ -22,7 +22,10 @@ Usage: experiments/generic/three-thread-rpc/run_robustness_matrix.sh [MODE]
   unreachable-parity | unreachable-correlated-fields |
   unreachable-nested-object | unreachable-inherited-alias |
   unreachable-mutated-object | unreachable-long-fields |
-  compound-target | unreachable-compound-target
+  compound-target | unreachable-compound-target | container-tricky |
+  tricky-nested-array-map-key | tricky-divergent-object-fields |
+  tricky-array-element-frame | tricky-map-key-value |
+  tricky-compound-container-guard
         Run one named workload. This is useful for an exact post-fix gate.
 
 Each entry runs the fixture runner's clean and candidate commands, invokes Z3
@@ -941,13 +944,13 @@ validate_semantic_profile() {
           .javaTypeDescriptor == "I")
         and (.valuations | length) == 4
         and ([.valuations[] | select(.status == "sat")]
-          | length) == 0
-        and ([.valuations[] | select(.status == "unsat")]
           | length) == 4
+        and ([.valuations[] | select(.status == "unsat")]
+          | length) == 0
         and all(.valuations[];
-          .status == "unsat")
+          .status == "sat")
       ' "${reach_report}" >/dev/null \
-        || die "containers lost its bounded UNSAT reach profile"
+        || die "containers lost its Java int overflow reach profile"
       grep -Fq '(define-fun java_int_wrap' "${smt}" \
         || die "containers SMT omitted Java int wrap semantics"
       validate_container_producer_artifacts "${work_root}"
@@ -1019,6 +1022,20 @@ validate_semantic_profile() {
     unreachable-compound-target)
       validate_two_boolean_unsat_report "${label}" "${reach_report}" 0 I
       validate_compound_target_artifacts "${label}" "${work_root}"
+      ;;
+    tricky-divergent-object-fields|tricky-map-key-value)
+      jq -e '
+        .reachCondition.reachability == "REACHABLE"
+        and any(.valuations[]; .status == "sat")
+      ' "${reach_report}" >/dev/null \
+        || die "${label} lost its reachable container profile"
+      ;;
+    tricky-nested-array-map-key|tricky-array-element-frame|tricky-compound-container-guard)
+      jq -e '
+        .reachCondition.reachability == "UNREACHABLE"
+        and all(.valuations[]; .status == "unsat")
+      ' "${reach_report}" >/dev/null \
+        || die "${label} lost its unreachable container profile"
       ;;
     *) die "no semantic profile for matrix label: ${label}" ;;
   esac
@@ -1144,7 +1161,7 @@ run_case() {
 mode=${1:-core}
 [[ $# -le 1 ]] || die "expected at most one mode argument"
 case "${mode}" in
-  core|all|baseline|cross-method-fields|multitype|dependent-scalar|containers|unreachable-parity|unreachable-correlated-fields|unreachable-nested-object|unreachable-inherited-alias|unreachable-mutated-object|unreachable-long-fields|compound-target|unreachable-compound-target) ;;
+  core|all|baseline|cross-method-fields|multitype|dependent-scalar|containers|unreachable-parity|unreachable-correlated-fields|unreachable-nested-object|unreachable-inherited-alias|unreachable-mutated-object|unreachable-long-fields|compound-target|unreachable-compound-target|container-tricky|tricky-nested-array-map-key|tricky-divergent-object-fields|tricky-array-element-frame|tricky-map-key-value|tricky-compound-container-guard) ;;
   help|-h|--help) usage; exit 0 ;;
   *) usage >&2; die "unknown matrix mode: ${mode}" ;;
 esac
@@ -1234,6 +1251,36 @@ case "${mode}" in
   unreachable-compound-target)
     labels=(unreachable-compound-target)
     configs=(unreachable-compound-target/workflow.properties)
+    ;;
+  container-tricky)
+    labels=(tricky-nested-array-map-key tricky-divergent-object-fields \
+      tricky-array-element-frame tricky-map-key-value \
+      tricky-compound-container-guard)
+    configs=(tricky-nested-array-map-key/workflow.properties \
+      tricky-divergent-object-fields/workflow.properties \
+      tricky-array-element-frame/workflow.properties \
+      tricky-map-key-value/workflow.properties \
+      tricky-compound-container-guard/workflow.properties)
+    ;;
+  tricky-nested-array-map-key)
+    labels=(tricky-nested-array-map-key)
+    configs=(tricky-nested-array-map-key/workflow.properties)
+    ;;
+  tricky-divergent-object-fields)
+    labels=(tricky-divergent-object-fields)
+    configs=(tricky-divergent-object-fields/workflow.properties)
+    ;;
+  tricky-array-element-frame)
+    labels=(tricky-array-element-frame)
+    configs=(tricky-array-element-frame/workflow.properties)
+    ;;
+  tricky-map-key-value)
+    labels=(tricky-map-key-value)
+    configs=(tricky-map-key-value/workflow.properties)
+    ;;
+  tricky-compound-container-guard)
+    labels=(tricky-compound-container-guard)
+    configs=(tricky-compound-container-guard/workflow.properties)
     ;;
 esac
 

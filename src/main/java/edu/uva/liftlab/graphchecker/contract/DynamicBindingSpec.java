@@ -26,6 +26,37 @@ public final class DynamicBindingSpec {
             "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING";
     public static final String MAP_OUTPUT_ELEMENT_KIND =
             "DYNAMIC_MAP_VALUE_OUTPUT_ARRAY_ELEMENT_FIELD_BINDING";
+    public static final String FIELD_EXPRESSION_AUTHORITY =
+            "CUSTOM_JDK_EXACT_SYMBOLIZE_FIELD_NAME_CONTRACT_V1";
+
+    public static boolean matchesEngineSymbol(String engine,
+                                              String dynamic) {
+        if (engine == null || dynamic == null || dynamic.isEmpty()) {
+            return false;
+        }
+        if (engine.equals(dynamic)) return true;
+        String payload = "";
+        if (engine.length() > 10 && engine.charAt(0) == 'M'
+                && engine.charAt(1) == '_'
+                && "ZCBSIFJDL".indexOf(engine.charAt(2)) >= 0
+                && engine.startsWith("_field_", 3)) {
+            payload = engine.substring(10);
+        } else if (engine.startsWith("M_L'")) {
+            int runtimeTypeEnd = engine.indexOf("'_", 4);
+            if (runtimeTypeEnd > 4
+                    && engine.substring(4, runtimeTypeEnd)
+                    .matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
+                payload = engine.substring(runtimeTypeEnd + 2);
+            }
+        }
+        if (payload.isEmpty()) return false;
+        if (payload.equals(dynamic)) return true;
+        String boundary = dynamic + "_";
+        return payload.startsWith(boundary)
+                && payload.substring(boundary.length()).matches(
+                "[A-Za-z_$][A-Za-z0-9_$]*"
+                        + "(?:/[A-Za-z_$][A-Za-z0-9_$]*)*");
+    }
 
     private final JsonObject json;
     private final String kind;
