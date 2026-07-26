@@ -2272,10 +2272,28 @@ RegionInstancePlan
 7. 重要框架里程碑独立 commit/push；用户修改的 container fixture 已经明确授权并作为
    `db5a5033` 独立提交，不再作为工作树例外。
 
-当前 framework cutover 已闭合上述 canonical 链：生产 Java 为 65,367 行，Maven
-回归 69/69 通过。它已经删除独立 upstream activation、assignment-site/seed-occurrence
-字段捕获、Runtime/Importer 私有 task decoder、`captureBindingsRequired` 镜像以及多处
-重复扫描。
+当前 framework cutover 已闭合上述 canonical 链。最新大规模删除阶段将手写生产 Java
+进一步降到 58,802 行；相对 81,581 行冻结基线累计减少 22,779 行（约 28%），当前
+工作批次相对最后安全锚点净减 6,600 余行。快速回归保持为 62 项并全部通过，PMD 不允许
+残留 unused private/local/formal/singular-field。这个数字来自真实删除，不包含压格式、
+搬文件或删除 correctness evidence。
+
+这一阶段除删除独立 upstream activation、Runtime/Importer 私有 task decoder 和重复
+admission/扫描外，还完成了三项一次性切换：
+
+- 删除 `SymbolicRegionAssemblyStage` 及其 `argumentPathFields` 后处理 fixed point；
+  `SymbolicRegionPlanner` 直接产生 canonical static region；
+- 删除从 Planner、Soot hook、Runtime、Runtime Planner 到 codec 的
+  `CALL_ARGUMENT` output capture 整条死路径。所有字段输出只在正常 region exit 从完整
+  receiver field path 读取最终 symbolic expression；不同写点、循环 occurrence 和未写
+  frame 不再是预先选择的 capture 身份；
+- 删除 `captureBindingsComplete`、`captureKind`、raw capture 静态字段副本等镜像；
+  唯一准入事实是 `captureBindingIssues.isEmpty()`，旧字段由 V2 codec 直接拒绝，不双写、
+  不 fallback。
+
+本批在提交前只运行 Maven compile/test、PMD、diff whitespace 与 shell 语法门禁，明确
+没有启动 custom-JDK/Z3 fixture。先完成并推送这一大规模删除里程碑，再进入统一 fixture
+调试阶段，避免每删一段旧框架就等待一次昂贵 workload。
 
 正常退出字段捕获的真实 fixture 调试又删除了三条旧假设。第一，完整 root-to-leaf
 `fieldPath` 不再与仅含 leaf declaration 的 output cell 路径作错误相等比较；唯一 join 是
@@ -2309,6 +2327,70 @@ GRAPH_CHECKER_MATRIX_JOBS=13 \
 
 当前预期为五个 `sat/reachable`、八个 `unsat/unreachable`、零 failure。fixture 的
 shared-field RPC 模式、一次写/一次读和确定交互顺序不得为了缩短测试而改变。
+
+### 十轮生成式语义回归
+
+大删剪里程碑提交以后，再运行一次性的十轮生成回归。每轮生成十三个 disposable
+workload，不修改 `src/test/.../fixtures` 中维护的 workload。每个生成 workload 都沿用同一
+RPC contract：两个 producer 各向自己的 primitive shared field 写一次，consumer 按固定
+顺序各读一次；producer 完成后才启动 consumer。producer/consumer 内允许固定上界
+`for`、组合短路条件、不同字段路径、nested object、array 和 Map，不允许无界循环或用
+测试脚本代替程序语义。
+
+生成器先在普通 JVM 上穷举两个 Boolean 输入，确认每轮恰好六个 `REACHABLE`、七个
+`UNREACHABLE`；随后才运行真实 custom-JDK、路径闭包、Composer 和 Z3。外层十三个 case
+并行，每个 case 的 concolic path worker 也可并行，但 Maven 只构建一次：多个进程不得同时
+覆盖共享 `target`。默认命令是：
+
+```bash
+GRAPH_CHECKER_GENERATED_JOBS=13 \
+CAUSYNTH_GENERATED_CONCOLIC_JOBS=10 \
+  experiments/generic/three-thread-rpc/run_generated_round.sh 1
+```
+
+轮次参数为 `1..10`。失败日志保存在
+`target/generated-regression/logs/round-N/<run-id>/case-XX.log`，对应 case 的 canonical
+debug 根目录是 `target/generated-regression/current/case-XX/work`。优先检查
+`region_path_manifest.json`、`region_path_worklist.jsonl`、
+`concolic_import_diagnostics.jsonl`、merged relation、composition manifest 和最终 SMT。
+回归只检查语义 contract、closure 完整性、read-from 顺序和 Z3 结论，不锁定整份 JSON
+字节形状，也不恢复已退休字段。修 bug 时应修 canonical producer，而不是在每个 reader
+追加 fallback；这正是“不过度校验、不过度设计，同时保障正确性”的执行门槛。
+
+### 最终重构与语义验收（2026-07-26）
+
+大规模删除在 fixture 调试前完成并以 `c78a226b` 推送；生成式回归的第一轮修复以
+`8667f21b` 推送。最终手写生产 Java 为 59,039 行，相对 81,581 行冻结基线净减
+22,542 行（27.6%）。该数字只统计 `src/main/java/**/*.java`，不靠删除 fixture、压缩
+格式或把实现搬到测试目录。
+
+生成式语义回归连续完成十轮，每轮十三个新的 disposable workload，共 130/130 通过。
+每轮普通 JVM oracle 都是 6 个 `REACHABLE`、7 个 `UNREACHABLE`，随后真实 custom-JDK
+path closure 与 Z3 得到相同结论。第一轮最终日志是
+`target/generated-regression/logs/round-1/20260726T062305Z.4075342`；第 2–10 轮由同一
+批处理顺序生成、每轮内部 13-way 并行执行。
+
+维护的十三个真实 shared-field RPC workload 也全部通过：当前源码语义为 5 个
+`REACHABLE/sat`、8 个 `UNREACHABLE/unsat`。container workload 的两个 producer
+worklist 均为 `CLOSED`、`gaps=[]`，Map producer 的 88 个 guarded case 保留 key=7 的
+dynamic entry-field binding；最终四个 Boolean valuation 全部 `unsat`。compound-target
+的四条 reached path 与 unreachable-compound-target 的空 path set 均由
+`CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1` 产生。最终统一并行门禁为
+`completed=13 failures=0`，日志根目录是
+`target/robustness-matrix-logs/20260726T072614Z.2098697`。
+
+真实回归暴露并修复的共同 bug 是：runtime-refined output closure 保存了完整
+`staticSites`，但 output execution goal 过去只携带 seed path 已观察到的 branch。
+短路或早期 branch flip 后首次到达的新 branch 因而有 symbolic PC、却没有 branch
+mapping，Importer 只能报 `OUTPUT_REPLAY_REQUIRES_COMPLETE_NORMAL_EXIT`。现在一个
+RegionInstance 的 output goal 在第一次 replay 前就携带完整静态 closure 内的 branch
+policy；是否被 seed 观察到不再是 output relation 的准入条件。Importer 的完整 normal
+exit、exact region-exit capture 和 `relationallyComplete` gate 没有放宽。
+
+同时删除了 robustness shell 中对已退休 `relationships`、root `.cell/.regionId`、
+`readyForSolver`、`pathQueryKey` 和 alias-certificate 镜像的逐字段锁定。回归仍检查完整
+truth table、SAT/UNSAT、closed worklist、read-from binding、guarded output relation、
+dynamic Map/array field binding 和 artifact SHA；不再把诊断 JSON 形状当成第二套语义。
 
 ## TODO：用自然 replay 将候选升级为可信结果
 

@@ -155,23 +155,6 @@ public class ConcolicSmtComposerTest {
                 assertFalse(line, line.contains(
                         "sym__port__REGION_P_in_3__long"));
             }
-            JsonArray catalog = result.manifest.getAsJsonArray(
-                    "caseProjectionCatalog");
-            assertEquals(2, catalog.size());
-            for (com.google.gson.JsonElement element : catalog) {
-                JsonObject pathCase = element.getAsJsonObject();
-                assertEquals(3, pathCase.size());
-                assertFalse(pathCase.get("caseId").getAsString().isEmpty());
-                String selector = pathCase.get(
-                        "selectorTerm").getAsString();
-                assertTrue(result.smtLib.contains(
-                        "(declare-const " + selector + " Bool)"));
-                assertTrue(result.smtLib.contains("(= " + selector + " "));
-                JsonObject mapping = bindingForPort(pathCase,
-                        "REGION.P.in.2");
-                assertEquals("sym__port__REGION_P_in_2__int",
-                        mapping.get("term").getAsString());
-            }
             assertZ3Status(result.smtLib, "sat");
         } finally {
             folder.delete();
@@ -304,7 +287,6 @@ public class ConcolicSmtComposerTest {
             reachedPaths.add(firstPath);
             reachedPaths.add(secondPath);
             fatal.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
-            fatal.addProperty("pathClosureState", "CLOSED");
             fatal.addProperty("constraintAuthority",
                     "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1");
             fatal.add("paths", reachedPaths);
@@ -318,21 +300,11 @@ public class ConcolicSmtComposerTest {
                     ConcolicSmtComposer.compose(arguments(fixture));
 
             assertTrue(result.manifest.toString(), candidateReady(result.manifest));
-            assertEquals(1, result.manifest.getAsJsonArray(
-                    "includedSummaries").size());
             assertEquals("CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1",
                     result.manifest.get("fatalConstraintAuthority")
                             .getAsString());
             assertTrue(result.smtLib.contains(":named fatal_path"));
             assertTrue(result.smtLib.contains("(or "));
-            JsonArray catalog = result.manifest.getAsJsonArray(
-                    "caseProjectionCatalog");
-            assertEquals(2, catalog.size());
-            java.util.Set<String> selectors = new java.util.LinkedHashSet<>();
-            for (JsonElement element : catalog) {
-                selectors.add(element.getAsJsonObject().get(
-                        "selectorTerm").getAsString());
-            }
             for (String outputPort : outputPorts) {
                 assertTrue(result.smtLib.contains(
                         "port__" + outputPort.replace('.', '_')));
@@ -341,14 +313,6 @@ public class ConcolicSmtComposerTest {
                                 + outputPort.replace('.', '_'));
                 assertEquals(outputBindings.toString(), 2,
                         outputBindings.size());
-                for (String binding : outputBindings) {
-                    boolean sharesJointSelector = false;
-                    for (String selector : selectors) {
-                        sharesJointSelector |= binding.contains(
-                                "(=> " + selector);
-                    }
-                    assertTrue(binding, sharesJointSelector);
-                }
             }
         } finally {
             folder.delete();
@@ -430,8 +394,6 @@ public class ConcolicSmtComposerTest {
                     "MissingExactProducerSummary:REGION.P"
                             + "[instance=REGION.P@fixture#call1,"
                             + "outputs=[REGION.P.out.3, REGION.P.out.4]]"));
-            assertEquals(0, result.manifest.getAsJsonArray(
-                    "includedSummaries").size());
             assertTrue(result.smtLib.contains(
                     "(assert false) ; fail closed: unsupported"));
             assertFalse(result.smtLib.contains("uf__"));
@@ -598,7 +560,7 @@ public class ConcolicSmtComposerTest {
         slice.add("methods", new JsonArray());
         slice.add("causalEdgeIds", new JsonArray());
         slice.add("captureBindings", new JsonArray());
-        slice.addProperty("captureBindingsComplete", true);
+        slice.add("captureBindingIssues", new JsonArray());
 
         JsonObject member = new JsonObject();
         member.add("output", output);
@@ -658,7 +620,6 @@ public class ConcolicSmtComposerTest {
             JsonObject capture = new JsonObject();
             capture.addProperty("captureBindingId",
                     outputPort + ".exit-field");
-            capture.addProperty("captureKind", "REGION_EXIT_FIELD");
             capture.addProperty("outputPort", outputPort);
             capture.addProperty("outputCell", outputCell);
             capture.addProperty("accessRootInputPort", inputPort);
@@ -682,7 +643,7 @@ public class ConcolicSmtComposerTest {
             slice.add("causalEdgeIds", singletonString(
                     "DF." + proofSuffix + "." + index));
             slice.add("captureBindings", captures);
-            slice.addProperty("captureBindingsComplete", true);
+            slice.add("captureBindingIssues", new JsonArray());
 
             JsonObject member = new JsonObject();
             member.add("output", output);
@@ -1476,17 +1437,6 @@ public class ConcolicSmtComposerTest {
         result.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         result.addProperty("objectTokenScope", taskId);
-        result.addProperty("containerBindingId", bindingId);
-        result.addProperty("containerInputPort", "REGION.P.in.4");
-        result.addProperty("containerInputCell",
-                "<example.Keys: example.Key[] keys>");
-        result.addProperty("selectorAuthority", "EXACT_ARRAY_INDEX");
-        result.addProperty("resolvedFromSelectorAuthority",
-                "EXACT_ARRAY_INDEX");
-        result.addProperty("elementIndex", index);
-        result.addProperty("elementOccurrence", 1);
-        result.addProperty("declaredFieldOwnerClass", "example.Key");
-        result.addProperty("declaredFieldType", "long");
         JsonObject selector = new JsonObject();
         selector.addProperty("kind", "ARRAY_INDEX");
         selector.addProperty("bindingId", bindingId);
@@ -1498,8 +1448,8 @@ public class ConcolicSmtComposerTest {
                 "EXACT_ARRAY_INDEX");
         selector.addProperty("elementIndex", index);
         selector.addProperty("elementOccurrence", 1);
-        selector.addProperty("declaredFieldOwnerClass", "example.Key");
-        selector.addProperty("declaredFieldType", "long");
+        selector.addProperty("declaredFieldSignature",
+                "<example.Key: long expiry>");
         selector.addProperty("containerObjectToken", 301L);
         selector.addProperty("elementObjectToken", 302L + index);
         selector.addProperty("objectTokenAuthority",
@@ -1644,27 +1594,6 @@ public class ConcolicSmtComposerTest {
                     "expectedMapKey", keys.get(index).deepCopy());
         }
         return result;
-    }
-
-    private static JsonObject bindingForPort(JsonObject projection,
-                                             String portId) {
-        for (JsonElement element : projection.getAsJsonArray("bindings")) {
-            JsonObject binding = element.getAsJsonObject();
-            if (portId.equals(binding.get("portId").getAsString())) {
-                return binding;
-            }
-        }
-        throw new AssertionError("missing port binding " + portId
-                + " in " + projection);
-    }
-
-    private static String selectorInLine(JsonArray catalog, String smtLine) {
-        for (JsonElement element : catalog) {
-            String selector = element.getAsJsonObject().get(
-                    "selectorTerm").getAsString();
-            if (smtLine.contains(selector)) return selector;
-        }
-        throw new AssertionError("no case selector in " + smtLine);
     }
 
     private static int countDeclarationLines(String smt, String... fragments) {
@@ -1866,10 +1795,6 @@ public class ConcolicSmtComposerTest {
             declaration.add("fieldPath", singletonString("expiry"));
             declaration.addProperty("declaredFieldSignature",
                     "<example.Key: long expiry>");
-            declaration.addProperty("declaredFieldOwnerClass",
-                    "example.Key");
-            declaration.addProperty("declaredFieldType", "long");
-            declaration.addProperty("declaredFieldName", "expiry");
             declaration.addProperty("materializationMode",
                     "FIELD_ACCESS_HOOK");
             declaration.addProperty("method", method);

@@ -99,7 +99,7 @@ public final class JsonFields {
         }
     }
 
-    static String textString(JsonObject object, String field) {
+    public static String textString(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
         return value != null && value.isJsonPrimitive()
                 && value.getAsJsonPrimitive().isString()

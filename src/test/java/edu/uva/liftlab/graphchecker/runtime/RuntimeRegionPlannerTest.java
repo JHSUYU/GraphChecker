@@ -161,16 +161,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"dependencyCell\":\"<example.Request: int key>\","
                     + "\"inputPort\":\"REGION.W.in.0\","
                     + "\"bindingAuthority\":"
-                    + "\"UNIQUE_ROOT_ARGUMENT_CARRIER\","
-                    + "\"requestedStateTransformerSinkSites\":[\""
-                    + updater + "#u15\"],"
-                    + "\"requestedStateTransformerGuardSites\":[\""
-                    + updater + "#u14\"],"
-                    + "\"requestedStateTransformerSinkClosureComplete\":true,"
-                    + "\"requestedStateTransformerSinkExclusive\":true,"
-                    + "\"requestedStateTransformerUnclassifiedEdgeIds\":[],"
-                    + "\"requestedStateTransformerSinkAuthority\":"
-                    + "\"STATIC_FORWARD_CAUSAL_CLOSURE_TO_EXACT_REQUESTED_STATE_TRANSFORMERS\"}],"
+                    + "\"UNIQUE_ROOT_ARGUMENT_CARRIER\"}],"
                     + "\"methods\":[\"" + updater + "\"],"
                     + "\"sites\":[],\"causalEdgeIds\":[\"DF.1\","
                     + "\"DF.WRITE\"],"
@@ -197,14 +188,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"transferKind\":\"HEAP_WRITE\","
                     + "\"kind\":\"field_mutation\","
                     + "\"invoke\":\"<java.util.Iterator: void remove()>\"}],"
-                    + "\"requestedStateTransformerObligations\":[{"
-                    + "\"siteId\":\"" + updater + "#u15\","
-                    + "\"method\":\"" + updater + "\","
-                    + "\"targetCell\":\"" + field + "\","
-                    + "\"transferKind\":\"HEAP_WRITE\","
-                    + "\"kind\":\"field_mutation\","
-                    + "\"causalEdgeIds\":[\"DF.WRITE\"],"
-                    + "\"authority\":\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL\"}],"
                     + "\"requestedStateTransformerContractIssues\":[],"
                     + "\"requestedStateTransformerContractComplete\":true,"
                     + "\"heapInitializers\":[{"
@@ -215,8 +198,8 @@ public class RuntimeRegionPlannerTest {
                     + "\"outputCell\":\"" + field + "\","
                     + "\"proofEdgeIds\":[\"DF.1\"],"
                     + "\"proofComplete\":true}],"
-                    + "\"captureBindingsComplete\":true,"
                     + "\"captureBindings\":[],"
+                    + "\"captureBindingIssues\":[],"
                     + "\"structuralComplete\":true,"
                     + "\"complete\":true,"
                     + "\"selection\":"
@@ -314,8 +297,8 @@ public class RuntimeRegionPlannerTest {
                     "heapStateBindings")).size());
             assertEquals(1, ((java.util.List<?>) outputGoal.get(
                     "symbolize")).size());
-            assertEquals(true, retainedSlice.get(
-                    "captureBindingsComplete"));
+            assertEquals(Collections.emptyList(), retainedSlice.get(
+                    "captureBindingIssues"));
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> outputCaptures =
                     (List<Map<String, Object>>) retainedSlice.get(
@@ -334,15 +317,8 @@ public class RuntimeRegionPlannerTest {
                     "requestedStateTransformerContractVersion"));
             assertEquals(true, retainedSlice.get(
                     "requestedStateTransformerContractComplete"));
-            assertTrue(String.valueOf(retainedSlice.get(
-                    "requestedStateTransformerObligations")).contains(
-                    updater + "#u15"));
-            assertTrue(String.valueOf(retainedSlice.get("inputBindings"))
-                    .contains("requestedStateTransformerSinkSites=["
-                            + updater + "#u15]"));
-            assertTrue(String.valueOf(retainedSlice.get("inputBindings"))
-                    .contains("requestedStateTransformerGuardSites=["
-                            + updater + "#u14]"));
+            assertFalse(retainedSlice.containsKey(
+                    "requestedStateTransformerObligations"));
             assertTrue(String.valueOf(retainedSlice.get("causalEdges"))
                     .contains("guardedMutationSiteId=" + updater + "#u15"));
             assertTrue(String.valueOf(retainedSlice.get("causalEdges"))
@@ -415,10 +391,10 @@ public class RuntimeRegionPlannerTest {
         assertEquals("<example.State: int y>",
                 ((Map<?, ?>) outputMember(joint,
                         "REGION.P.out.y").get("output")).get("cell"));
-        assertEquals(Boolean.TRUE, outputSlice(joint,
-                "REGION.P.out.x").get("captureBindingsComplete"));
-        assertEquals(Boolean.TRUE, outputSlice(joint,
-                "REGION.P.out.y").get("captureBindingsComplete"));
+        assertEquals(Collections.emptyList(), outputSlice(joint,
+                "REGION.P.out.x").get("captureBindingIssues"));
+        assertEquals(Collections.emptyList(), outputSlice(joint,
+                "REGION.P.out.y").get("captureBindingIssues"));
         assertEquals(4, ((List<?>) joint.get("symbolize")).size());
         assertEquals(2, ((List<?>) joint.get("branches")).size());
         // E.X.1 and E.X.2 deliberately fan out the same output within the
@@ -551,7 +527,8 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"field:allKeys\"}],"
                     + "\"outputs\":[{\"portId\":\"REGION.W.out.0\","
                     + "\"cell\":\"" + state
-                    + "\",\"kind\":\"HEAP_STATE\"}],"
+                    + "\",\"kind\":\"HEAP_STATE\","
+                    + "\"javaType\":\"java.util.Map\"}],"
                     + "\"outputSlices\":[{"
                     + "\"outputPort\":\"REGION.W.out.0\","
                     + "\"outputCell\":\"" + state + "\","
@@ -568,9 +545,10 @@ public class RuntimeRegionPlannerTest {
                     + unobservedBranch + "\"],"
                     + "\"causalEdgeIds\":[\"DF.C\",\"DF.U\"],"
                     + "\"causalEdges\":["
-                    + causalReference("DF.C", constructor,
-                    constructor + "#u1") + ","
-                    + causalReference("DF.U", updater, updaterSite) + "],"
+                    + transformerReference("DF.C", constructor,
+                    constructor + "#u1", state) + ","
+                    + transformerReference("DF.U", updater, updaterSite,
+                    state) + "],"
                     + "\"structuralComplete\":true,"
                     // Broad-region truncation is diagnostic once the output
                     // slice was independently rebuilt within its own budget.
@@ -580,34 +558,8 @@ public class RuntimeRegionPlannerTest {
                     + "\"dependencyMethods\":[\"" + constructor + "\"],"
                     + "\"reason\":\"OUTPUT_SLICE_INPUT_HAS_NO_REGION_PORT\","
                     + "\"diagnostic\":\"" + unresolvedAlternative + "\"}],"
-                    + "\"requestedStateTransformerContractVersion\":1,"
-                    + "\"requestedStateTransformerContractApplicable\":true,"
-                    + "\"requestedStateTransformerContractOutputPort\":"
-                    + "\"REGION.W.out.0\","
-                    + "\"requestedStateTransformerContractOutputCell\":"
-                    + "\"" + state + "\","
-                    + "\"requestedStateTransformerObligations\":[{"
-                    + "\"siteId\":\"" + constructor + "#u1\","
-                    + "\"method\":\"" + constructor + "\","
-                    + "\"targetCell\":\"" + state + "\","
-                    + "\"transferKind\":\"HEAP_WRITE\","
-                    + "\"kind\":\"field_mutation\","
-                    + "\"causalEdgeIds\":[\"DF.C\"],"
-                    + "\"authority\":\"STATIC_EXACT_REQUESTED_"
-                    + "OUTPUT_TARGET_CELL\"},{"
-                    + "\"siteId\":\"" + updaterSite + "\","
-                    + "\"method\":\"" + updater + "\","
-                    + "\"targetCell\":\"" + state + "\","
-                    + "\"transferKind\":\"HEAP_WRITE\","
-                    + "\"kind\":\"field_mutation\","
-                    + "\"causalEdgeIds\":[\"DF.U\"],"
-                    + "\"authority\":\"STATIC_EXACT_REQUESTED_"
-                    + "OUTPUT_TARGET_CELL\"}],"
                     + "\"requestedStateTransformerContractIssues\":[],"
                     + "\"requestedStateTransformerContractComplete\":true,"
-                    + "\"requestedStateTransformerContractAuthority\":"
-                    + "\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1\","
-                    + "\"captureBindingsComplete\":false,"
                     + "\"captureBindings\":[],"
                     + "\"captureBindingIssues\":["
                     + "\"REQUESTED_TRANSFORMER_HAS_NO_FINAL_STATE_"
@@ -701,7 +653,8 @@ public class RuntimeRegionPlannerTest {
             Map<String, Object> slice = outputSlice(
                     output, "REGION.W.out.0");
             assertFalse(slice.containsKey("captureBindingsRequired"));
-            assertEquals(true, slice.get("captureBindingsComplete"));
+            assertEquals(Collections.emptyList(),
+                    slice.get("captureBindingIssues"));
             assertEquals(Collections.singletonList(updater),
                     slice.get("methods"));
             assertEquals(2, ((java.util.List<?>) output.get("symbolize"))
@@ -719,6 +672,8 @@ public class RuntimeRegionPlannerTest {
             assertFalse(String.valueOf(slice.get("sites")).contains(
                     constructor + "#u1"));
             assertFalse(String.valueOf(slice.get("sites")).contains(
+                    unobservedBranch));
+            assertTrue(String.valueOf(output.get("branches")).contains(
                     unobservedBranch));
             assertEquals(Collections.singletonList("DF.U"),
                     slice.get("causalEdgeIds"));
@@ -857,6 +812,14 @@ public class RuntimeRegionPlannerTest {
             assertEquals("HEAP_OBJECT_FIELD", actions.get(1).get("location"));
             assertEquals(fieldA, actions.get(0).get("cell"));
             assertEquals(fieldB, actions.get(1).get("cell"));
+            assertEquals(Collections.singletonList("a"),
+                    actions.get(0).get("fieldPath"));
+            assertEquals(Collections.singletonList("b"),
+                    actions.get(1).get("fieldPath"));
+            assertEquals(fieldA,
+                    actions.get(0).get("leafFieldSignature"));
+            assertEquals(fieldB,
+                    actions.get(1).get("leafFieldSignature"));
             assertFalse(String.valueOf(targetGoal.get(
                     "runtimeDefinitionMethods")).contains(other));
             assertEquals("READY", admissionState(targetGoal));
@@ -1433,10 +1396,11 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"" + updaterSite + "\"],"
                     + "\"causalEdgeIds\":[\"DF.A\",\"DF.U\"],"
                     + "\"causalEdges\":["
-                    + causalReference("DF.A", alternative,
-                    alternativeSite) + ","
+                    + transformerReference("DF.A", alternative,
+                    alternativeSite, state) + ","
                     + "{\"edgeId\":\"DF.U\",\"method\":\""
                     + updater + "\",\"siteId\":\"" + updaterSite
+                    + "\",\"toCell\":\"" + state
                     + "\",\"transferKind\":\"HEAP_WRITE\","
                     + "\"kind\":\"" + retainedKind + "\"}],"
                     + "\"structuralComplete\":true,"
@@ -1446,36 +1410,10 @@ public class RuntimeRegionPlannerTest {
                     + "\"],\"reason\":"
                     + "\"OUTPUT_SLICE_INPUT_HAS_NO_REGION_PORT\","
                     + "\"diagnostic\":\"" + diagnostic + "\"}],"
-                    + "\"requestedStateTransformerContractVersion\":1,"
-                    + "\"requestedStateTransformerContractApplicable\":true,"
-                    + "\"requestedStateTransformerContractOutputPort\":"
-                    + "\"REGION.W.out.0\","
-                    + "\"requestedStateTransformerContractOutputCell\":"
-                    + "\"" + state + "\","
-                    + "\"requestedStateTransformerObligations\":[{"
-                    + "\"siteId\":\"" + alternativeSite + "\","
-                    + "\"method\":\"" + alternative + "\","
-                    + "\"targetCell\":\"" + state + "\","
-                    + "\"transferKind\":\"HEAP_WRITE\","
-                    + "\"kind\":\"field_mutation\","
-                    + "\"causalEdgeIds\":[\"DF.A\"],"
-                    + "\"authority\":"
-                    + "\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL\"},{"
-                    + "\"siteId\":\"" + updaterSite + "\","
-                    + "\"method\":\"" + updater + "\","
-                    + "\"targetCell\":\"" + state + "\","
-                    + "\"transferKind\":\"HEAP_WRITE\","
-                    + "\"kind\":\"" + retainedKind + "\","
-                    + "\"causalEdgeIds\":[\"DF.U\"],"
-                    + "\"authority\":"
-                    + "\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL\"}],"
                     + "\"requestedStateTransformerContractIssues\":"
                     + contractIssues + ","
                     + "\"requestedStateTransformerContractComplete\":"
                     + contractComplete + ","
-                    + "\"requestedStateTransformerContractAuthority\":"
-                    + "\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1\","
-                    + "\"captureBindingsComplete\":false,"
                     + "\"captureBindings\":[],"
                     + "\"captureBindingIssues\":["
                     + "\"REQUESTED_TRANSFORMER_HAS_NO_FINAL_STATE_"
@@ -1780,6 +1718,7 @@ public class RuntimeRegionPlannerTest {
         result.addProperty("portId", port);
         result.addProperty("cell", cell);
         result.addProperty("kind", "HEAP_STATE");
+        result.addProperty("javaType", "int");
         return result;
     }
 
@@ -1830,7 +1769,6 @@ public class RuntimeRegionPlannerTest {
         result.add("causalEdges", causalEdges);
 
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
         capture.addProperty("captureBindingId", outputPort + ".capture");
         capture.addProperty("outputPort", outputPort);
         capture.addProperty("outputCell", outputCell);
@@ -1841,9 +1779,12 @@ public class RuntimeRegionPlannerTest {
         capture.addProperty("javaType", "int");
         JsonArray captures = new JsonArray();
         captures.add(capture);
-        result.addProperty("captureBindingsComplete",
-                captureBindingsComplete);
         result.add("captureBindings", captures);
+        JsonArray captureIssues = new JsonArray();
+        if (!captureBindingsComplete) {
+            captureIssues.add("MISSING_CAPTURE");
+        }
+        result.add("captureBindingIssues", captureIssues);
         result.addProperty("structuralComplete", true);
         result.addProperty("complete", captureBindingsComplete);
         result.addProperty("selection",
@@ -2106,6 +2047,15 @@ public class RuntimeRegionPlannerTest {
                                           String siteId) {
         return "{\"edgeId\":\"" + edgeId + "\",\"method\":\""
                 + method + "\",\"siteId\":\"" + siteId + "\","
+                + "\"transferKind\":\"HEAP_WRITE\","
+                + "\"kind\":\"field_mutation\"}";
+    }
+
+    private static String transformerReference(
+            String edgeId, String method, String siteId, String targetCell) {
+        return "{\"edgeId\":\"" + edgeId + "\",\"method\":\""
+                + method + "\",\"siteId\":\"" + siteId + "\","
+                + "\"toCell\":\"" + targetCell + "\","
                 + "\"transferKind\":\"HEAP_WRITE\","
                 + "\"kind\":\"field_mutation\"}";
     }

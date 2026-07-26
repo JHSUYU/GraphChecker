@@ -8,6 +8,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.textString;
+
 /**
  * Canonical V2 wire contract for activation-local dynamic field bindings.
  *
@@ -23,8 +26,6 @@ public final class DynamicBindingSpec {
             "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING";
     public static final String MAP_OUTPUT_ELEMENT_KIND =
             "DYNAMIC_MAP_VALUE_OUTPUT_ARRAY_ELEMENT_FIELD_BINDING";
-    public static final String OBJECT_TOKEN_AUTHORITY =
-            "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN";
 
     private final JsonObject json;
     private final String kind;
@@ -35,7 +36,7 @@ public final class DynamicBindingSpec {
             throw new IllegalArgumentException(
                     "unsupported dynamic binding schema");
         }
-        kind = text(source, "kind");
+        kind = textString(source, "kind");
         if (!MAP_ENTRY_KIND.equals(kind)
                 && !CONTAINER_ELEMENT_KIND.equals(kind)
                 && !MAP_OUTPUT_ELEMENT_KIND.equals(kind)) {
@@ -71,19 +72,19 @@ public final class DynamicBindingSpec {
     }
 
     public String dynamicBindingId() {
-        return text(json, "dynamicBindingId");
+        return textString(json, "dynamicBindingId");
     }
 
     public String baseInputSymbol() {
-        return text(json, "baseInputSymbol");
+        return textString(json, "baseInputSymbol");
     }
 
     public String dynamicFieldSymbol() {
-        return text(json, "dynamicFieldSymbol");
+        return textString(json, "dynamicFieldSymbol");
     }
 
     public String materializationSiteId() {
-        return text(json, "materializationSiteId");
+        return textString(json, "materializationSiteId");
     }
 
     public int materializationOccurrence() {
@@ -91,7 +92,7 @@ public final class DynamicBindingSpec {
     }
 
     public String fieldSignature() {
-        return text(json, "fieldSignature");
+        return textString(json, "fieldSignature");
     }
 
     public List<String> fieldPath() {
@@ -103,7 +104,7 @@ public final class DynamicBindingSpec {
     }
 
     public String objectTokenScope() {
-        return text(json, "objectTokenScope");
+        return textString(json, "objectTokenScope");
     }
 
     public SelectorSpec selector() {
@@ -140,7 +141,7 @@ public final class DynamicBindingSpec {
         private final String kind;
 
         private SelectorSpec(JsonObject source) {
-            kind = text(source, "kind");
+            kind = textString(source, "kind");
             if (!ARRAY_INDEX.equals(kind)
                     && !MAP_OUTPUT_ARRAY_INDEX.equals(kind)) {
                 throw new IllegalArgumentException(
@@ -180,9 +181,9 @@ public final class DynamicBindingSpec {
                 JsonObject declaration) {
             if (integer(declaration, "schemaVersion", -1) != 2
                     || !"ARRAY_ELEMENT_FIELD".equals(
-                    text(declaration, "kind"))
+                    textString(declaration, "kind"))
                     || !"CONTAINER_SNAPSHOT".equals(
-                    text(declaration, "materializationMode"))) {
+                    textString(declaration, "materializationMode"))) {
                 throw new IllegalArgumentException(
                         "unsupported container element binding contract");
             }
@@ -196,27 +197,27 @@ public final class DynamicBindingSpec {
         }
 
         public String bindingId() {
-            return text(json, "bindingId");
+            return textString(json, "bindingId");
         }
 
         public String baseInputSymbol() {
-            return text(json, "baseInputSymbol");
+            return textString(json, "baseInputSymbol");
         }
 
         public String containerInputPort() {
-            return text(json, "containerInputPort");
+            return textString(json, "containerInputPort");
         }
 
         public String containerInputCell() {
-            return text(json, "containerInputCell");
+            return textString(json, "containerInputCell");
         }
 
         public String selectorAuthority() {
-            return text(json, "selectorAuthority");
+            return textString(json, "selectorAuthority");
         }
 
         public String resolvedFromSelectorAuthority() {
-            return text(json, "resolvedFromSelectorAuthority");
+            return textString(json, "resolvedFromSelectorAuthority");
         }
 
         public int elementIndex() {
@@ -229,7 +230,7 @@ public final class DynamicBindingSpec {
         }
 
         public String fieldMaterializationSiteId() {
-            return text(json, "fieldMaterializationSiteId");
+            return textString(json, "fieldMaterializationSiteId");
         }
 
         public List<String> fieldPath() {
@@ -237,36 +238,40 @@ public final class DynamicBindingSpec {
         }
 
         public String declaredFieldSignature() {
-            return text(json, "declaredFieldSignature");
+            return textString(json, "declaredFieldSignature");
         }
 
         public String declaredFieldOwnerClass() {
-            return text(json, "declaredFieldOwnerClass");
+            FieldPathSpec.DeclaredField field =
+                    FieldPathSpec.declaredField(declaredFieldSignature());
+            return field == null ? "" : field.owner();
         }
 
         public String declaredFieldType() {
-            return text(json, "declaredFieldType").trim()
+            FieldPathSpec.DeclaredField field =
+                    FieldPathSpec.declaredField(declaredFieldSignature());
+            return field == null ? "" : field.type().trim()
                     .replace('/', '.');
         }
 
         public String mapInputPort() {
-            return text(json, "mapInputPort");
+            return textString(json, "mapInputPort");
         }
 
         public String mapInputCell() {
-            return text(json, "mapInputCell");
+            return textString(json, "mapInputCell");
         }
 
         public String outputPort() {
-            return text(json, "outputPort");
+            return textString(json, "outputPort");
         }
 
         public String outputCell() {
-            return text(json, "outputCell");
+            return textString(json, "outputCell");
         }
 
         public String mapProjectionOperation() {
-            return text(json, "mapProjectionOperation");
+            return textString(json, "mapProjectionOperation");
         }
 
         public long containerObjectToken() {
@@ -285,20 +290,12 @@ public final class DynamicBindingSpec {
             return longInteger(json, "outputArrayObjectToken", 0L);
         }
 
-        public String objectTokenAuthority() {
-            return text(json, "objectTokenAuthority");
-        }
-
         public String objectTokenScope() {
-            return text(json, "objectTokenScope");
+            return textString(json, "objectTokenScope");
         }
 
         public String sourceObjectTokenScope() {
-            return text(json, "sourceObjectTokenScope");
-        }
-
-        public String crossExecutionOrdinalAuthority() {
-            return text(json, "crossExecutionOrdinalAuthority");
+            return textString(json, "sourceObjectTokenScope");
         }
 
         public JsonElement expectedMapKey() {
@@ -308,7 +305,7 @@ public final class DynamicBindingSpec {
         }
 
         public String outputVerificationAuthority() {
-            return text(json, "outputVerificationAuthority");
+            return textString(json, "outputVerificationAuthority");
         }
 
         public boolean outputIdentityVerified() {
@@ -334,8 +331,7 @@ public final class DynamicBindingSpec {
         }
 
         public boolean completeContainerReplay(
-                String replayRebindingAuthority,
-                boolean sourceContainerObjectTokensRetained) {
+                String replayRebindingAuthority) {
             return ARRAY_INDEX.equals(kind)
                     && !bindingId().isEmpty()
                     && !containerInputPort().isEmpty()
@@ -343,11 +339,10 @@ public final class DynamicBindingSpec {
                     && !selectorAuthority().isEmpty()
                     && elementIndex() >= 0
                     && elementOccurrence() > 0
-                    && !declaredFieldOwnerClass().isEmpty()
-                    && !declaredFieldType().isEmpty()
+                    && FieldPathSpec.declaredField(
+                    declaredFieldSignature()) != null
                     && CONTAINER_REPLAY_REBINDING_AUTHORITY.equals(
-                    replayRebindingAuthority)
-                    && !sourceContainerObjectTokensRetained;
+                    replayRebindingAuthority);
         }
 
         public boolean completeMapOutputReplay() {
@@ -363,12 +358,8 @@ public final class DynamicBindingSpec {
                     && "MAP_VALUES_VIEW".equals(mapProjectionOperation())
                     && elementIndex() >= 0 && elementOccurrence() > 0
                     && MAP_OUTPUT_AUTHORITY.equals(
-                    text(json, "authority"))
-                    && OBJECT_TOKEN_AUTHORITY.equals(objectTokenAuthority())
+                    textString(json, "authority"))
                     && !objectTokenScope().isEmpty()
-                    && "NONE".equals(crossExecutionOrdinalAuthority())
-                    && !declaredFieldOwnerClass().isEmpty()
-                    && !declaredFieldType().isEmpty()
                     && !declaredFieldSignature().isEmpty()
                     && map > 0L && element > 0L && output > 0L
                     && map != element && map != output && element != output
@@ -376,18 +367,18 @@ public final class DynamicBindingSpec {
                     && expectedMapKey() != null
                     && "CONCRETE_IMMUTABLE_MAP_ENTRY_KEY_AT_ENTRYSET_"
                     .concat("SNAPSHOT").equals(
-                            text(json, "expectedMapKeyAuthority"))
+                            textString(json, "expectedMapKeyAuthority"))
                     && "ENTRYSET_AND_MAP_VIEW_TO_ARRAY_SAME_EXECUTION_"
                     .concat("POSITIONAL_REFERENCE_EQUALITY").equals(
-                            text(json, "sourceOutputIndexAuthority"))
+                            textString(json, "sourceOutputIndexAuthority"))
                     && "IMMUTABLE_MAP_KEY_LOOKUP_THEN_SAME_OUTPUT_INDEX_"
                     .concat("AND_EXACT_OUTPUT_IDENTITY").equals(
-                            text(json, "replaySelectionAuthority"))
+                            textString(json, "replaySelectionAuthority"))
                     && !sourceObjectTokenScope().isEmpty()
                     && "SOURCE_CASE_SELECTOR_VALIDATED_THEN_REPLAY_"
                     .concat("ACTIVATION_SCOPE_REBOUND_TOKENS_NOT_"
                             + "COMPARED_ACROSS_EXECUTIONS").equals(
-                            text(json, "replayScopeRebindingAuthority"))
+                            textString(json, "replayScopeRebindingAuthority"))
                     && outputIdentityVerified() && complete();
         }
 
@@ -399,9 +390,8 @@ public final class DynamicBindingSpec {
                     && selectorAuthority().equals(other.selectorAuthority())
                     && elementIndex() == other.elementIndex()
                     && elementOccurrence() == other.elementOccurrence()
-                    && declaredFieldOwnerClass().equals(
-                    other.declaredFieldOwnerClass())
-                    && declaredFieldType().equals(other.declaredFieldType());
+                    && declaredFieldSignature().equals(
+                    other.declaredFieldSignature());
         }
 
         public JsonObject toJson() {
@@ -409,17 +399,20 @@ public final class DynamicBindingSpec {
         }
     }
 
-    private static JsonObject object(JsonObject source, String field) {
+    private static List<String> strings(JsonObject source, String field) {
         JsonElement value = source == null ? null : source.get(field);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    private static String text(JsonObject source, String field) {
-        JsonElement value = source == null ? null : source.get(field);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isString()
-                ? value.getAsString() : "";
+        if (value == null || !value.isJsonArray()) {
+            return Collections.emptyList();
+        }
+        List<String> result = new ArrayList<>();
+        JsonArray values = value.getAsJsonArray();
+        for (JsonElement element : values) {
+            if (element.isJsonPrimitive()
+                    && element.getAsJsonPrimitive().isString()) {
+                result.add(element.getAsString());
+            }
+        }
+        return Collections.unmodifiableList(result);
     }
 
     private static int integer(JsonObject source, String field, int fallback) {
@@ -443,21 +436,5 @@ public final class DynamicBindingSpec {
         return value != null && value.isJsonPrimitive()
                 && value.getAsJsonPrimitive().isBoolean()
                 ? value.getAsBoolean() : fallback;
-    }
-
-    private static List<String> strings(JsonObject source, String field) {
-        JsonElement value = source == null ? null : source.get(field);
-        if (value == null || !value.isJsonArray()) {
-            return Collections.emptyList();
-        }
-        List<String> result = new ArrayList<>();
-        JsonArray values = value.getAsJsonArray();
-        for (JsonElement element : values) {
-            if (element.isJsonPrimitive()
-                    && element.getAsJsonPrimitive().isString()) {
-                result.add(element.getAsString());
-            }
-        }
-        return Collections.unmodifiableList(result);
     }
 }

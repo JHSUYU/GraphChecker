@@ -54,7 +54,7 @@ public class CausynthPipelineTest {
         slice.put("truncationReasons", Collections.emptyList());
         slice.put("causalEdgeIds", Collections.singletonList("DF.1"));
         slice.put("inputGaps", Collections.emptyList());
-        slice.put("captureBindingsComplete", true);
+        slice.put("captureBindingIssues", Collections.emptyList());
 
         assertTrue(SymbolicRegionPlanner.completeOutputSlice(slice));
         slice.put("inputGaps", Collections.singletonList(
@@ -132,9 +132,9 @@ public class CausynthPipelineTest {
             slice.add("staticSites", new JsonArray());
             slice.add("methods", new JsonArray());
             slice.add("causalEdgeIds", new JsonArray());
-            slice.addProperty("captureBindingsComplete", true);
             slice.add("captureBindings",
                     singletonJsonArray(capture.deepCopy()));
+            slice.add("captureBindingIssues", new JsonArray());
 
             JsonObject member = new JsonObject();
             member.add("output", output);
@@ -144,6 +144,9 @@ public class CausynthPipelineTest {
         activation.add("inputActions", new JsonArray());
         activation.addProperty("goalId", outputGoalId(activation));
         activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
+        activation.addProperty("regionId", regionId);
+        activation.addProperty("regionInstanceId",
+                regionId + "@TEST#call" + rootCallId);
         envelope.add("members", members);
         activation.add("outputClosure", envelope);
     }
@@ -175,8 +178,6 @@ public class CausynthPipelineTest {
             Path plan = folder.getRoot().toPath().resolve(
                     "joint-captures.jsonl");
             String caller = "<example.JointProducer: void run()>";
-            String callee = "<example.Sink: void take(int)>";
-            String cell = callee + ".param0:int";
 
             JsonObject activation = new JsonObject();
             activation.addProperty("taskId", "TASK.JOINT.CAPTURE");
@@ -186,32 +187,38 @@ public class CausynthPipelineTest {
             JsonArray captures = new JsonArray();
             for (int index = 0; index < 2; index++) {
                 JsonObject capture = new JsonObject();
-                capture.addProperty("captureKind", "CALL_ARGUMENT");
                 capture.addProperty("captureBindingId",
                         "REGION.JOINT.out." + index + ".capture.0");
                 capture.addProperty("outputPort",
                         "REGION.JOINT.out." + index);
-                capture.addProperty("outputCell", cell);
-                capture.addProperty("callerMethod", caller);
-                capture.addProperty("unitIndex", index + 1);
-                capture.addProperty("siteId",
-                        caller + "#u" + (index + 1));
-                capture.addProperty("calleeMethod", callee);
-                capture.addProperty("argumentIndex", 0);
-                capture.addProperty("argumentCell", "arg0");
-                capture.addProperty("occurrence", 1);
+                String field = "<example.JointProducer: int value"
+                        + index + ">";
+                capture.addProperty("outputCell", field);
+                capture.addProperty("accessRootInputPort",
+                        "REGION.JOINT.in." + index);
+                capture.add("fieldPath",
+                        singletonJsonArray("value" + index));
+                capture.addProperty("fieldSignature", field);
+                capture.addProperty("javaType", "int");
                 captures.add(capture);
             }
             attachDirectOutputClosure(activation, "REGION.JOINT", 0,
                     captures, "I", "I");
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", caller + "#u7");
+            activation.add("branches", singletonJsonArray(branch));
             writePlanRow(plan, activation);
 
-            List<OutputCaptureSpec> selection =
+            ConcolicInstrumentationSelections.InstrumentationPlan
+                    instrumentation =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
-                            plan, "TASK.JOINT.CAPTURE")
-                            .outputCaptures();
+                            plan, "TASK.JOINT.CAPTURE");
+            List<OutputCaptureSpec> selection =
+                    instrumentation.outputCaptures();
             assertEquals(2, selection.size());
+            assertEquals(Collections.singleton(7),
+                    instrumentation.branches().units(caller));
 
             Files.write(plan, Arrays.asList(activation.toString(),
                     activation.toString()), StandardCharsets.UTF_8);
@@ -229,7 +236,8 @@ public class CausynthPipelineTest {
                     .getAsJsonArray("members").get(0).getAsJsonObject()
                     .getAsJsonObject("slice")
                     .getAsJsonArray("captureBindings").get(0)
-                    .getAsJsonObject().addProperty("occurrence", 0);
+                    .getAsJsonObject().addProperty(
+                    "captureKind", "CALL_ARGUMENT");
             writePlanRow(plan, malformed);
             boolean malformedRejected = false;
             try {
@@ -276,114 +284,6 @@ public class CausynthPipelineTest {
                 singularRejected = true;
             }
             assertTrue(singularRejected);
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void instrumentsExactRequestedOutboundCallArgument()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            G.reset();
-            System.setProperty("causynth.instrument.concolic", "true");
-            Scene.v().addClass(new SootClass("java.lang.Throwable",
-                    Modifier.PUBLIC));
-            Scene.v().addClass(new SootClass("java.lang.String",
-                    Modifier.PUBLIC));
-            SootClass protocol = new SootClass("example.Protocol",
-                    Modifier.PUBLIC);
-            Scene.v().addClass(protocol);
-            SootMethod accept = new SootMethod("accept",
-                    Collections.singletonList(RefType.v("java.lang.String")),
-                    VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
-            protocol.addMethod(accept);
-
-            SootClass owner = new SootClass("example.CaptureRegion",
-                    Modifier.PUBLIC);
-            Scene.v().addClass(owner);
-            owner.setApplicationClass();
-            SootMethod root = new SootMethod("run",
-                    Collections.singletonList(RefType.v("java.lang.String")),
-                    VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
-            owner.addMethod(root);
-            Body body = Jimple.v().newBody(root);
-            root.setActiveBody(body);
-            Local argument = Jimple.v().newLocal("arg",
-                    RefType.v("java.lang.String"));
-            body.getLocals().add(argument);
-            body.getUnits().add(Jimple.v().newIdentityStmt(argument,
-                    Jimple.v().newParameterRef(RefType.v("java.lang.String"),
-                            0)));
-            body.getUnits().add(Jimple.v().newInvokeStmt(
-                    Jimple.v().newStaticInvokeExpr(accept.makeRef(),
-                            argument)));
-            body.getUnits().add(Jimple.v().newReturnVoidStmt());
-
-            String cell = accept.getSignature()
-                    + ".param0:java.lang.String";
-            Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
-            JsonObject activation = new JsonObject();
-            activation.addProperty("taskId", "TASK.CAPTURE");
-            addGlobalRootSelector(activation, root.getSignature());
-            admitExecutable(activation,
-                    "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
-            JsonObject capture = new JsonObject();
-            capture.addProperty("captureKind", "CALL_ARGUMENT");
-            capture.addProperty("captureBindingId", "REGION.0.out.0.capture.0");
-            capture.addProperty("outputPort", "REGION.0.out.0");
-            capture.addProperty("outputCell", cell);
-            capture.addProperty("callerMethod", root.getSignature());
-            capture.addProperty("unitIndex", 1);
-            capture.addProperty("siteId", root.getSignature() + "#u1");
-            capture.addProperty("calleeMethod", accept.getSignature());
-            capture.addProperty("argumentIndex", 0);
-            capture.addProperty("argumentCell", cell);
-            capture.addProperty("occurrence", 1);
-            JsonArray captures = new JsonArray();
-            captures.add(capture);
-            attachDirectOutputClosure(activation, "REGION.0", 0,
-                    captures, "Ljava/lang/String;");
-            Files.write(plan, (activation + "\n").getBytes(
-                    StandardCharsets.UTF_8));
-            System.setProperty("causynth.concolic.task.plan",
-                    plan.toString());
-            System.setProperty("causynth.concolic.task.id",
-                    "TASK.CAPTURE");
-
-            List<OutputCaptureSpec> selection =
-                    ConcolicInstrumentationSelections
-                            .InstrumentationPlan.from(
-                            plan, "TASK.CAPTURE").outputCaptures();
-            assertEquals(1, selection.size());
-            Class<?> refsClass = Class.forName(
-                    CausynthPipeline.class.getName() + "$HookCatalog");
-            Method create = refsClass.getDeclaredMethod("concolic");
-            create.setAccessible(true);
-            Object refs = create.invoke(null);
-            Method instrument = CausynthPipeline.class.getDeclaredMethod(
-                    "instrumentConcolicOutputCaptures",
-                    Collection.class,
-                    refsClass);
-            instrument.setAccessible(true);
-            instrument.invoke(new CausynthPipeline(null), selection, refs);
-
-            InvokeExpr hook = null;
-            for (Unit unit : body.getUnits()) {
-                if (unit instanceof Stmt
-                        && ((Stmt) unit).containsInvokeExpr()
-                        && "recordOutputCapture".equals(((Stmt) unit)
-                        .getInvokeExpr().getMethodRef().name())) {
-                    hook = ((Stmt) unit).getInvokeExpr();
-                }
-            }
-            assertNotNull(hook);
-            assertEquals(root.getSignature(), hook.getArg(0).toString()
-                    .replace("\"", ""));
-            assertEquals(1, ((IntConstant) hook.getArg(1)).value);
-            assertEquals(0, ((IntConstant) hook.getArg(4)).value);
         } finally {
             folder.delete();
         }
@@ -437,7 +337,6 @@ public class CausynthPipelineTest {
             admitExecutable(activation,
                     "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
             JsonObject capture = new JsonObject();
-            capture.addProperty("captureKind", "REGION_EXIT_FIELD");
             capture.addProperty("captureBindingId",
                     "REGION.FIELD.out.0.exit-field");
             capture.addProperty("outputPort", "REGION.FIELD.out.0");

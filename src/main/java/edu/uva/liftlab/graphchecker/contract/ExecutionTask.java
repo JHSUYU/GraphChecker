@@ -16,35 +16,14 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 /** Canonical scheduled task emitted from one typed region goal. */
 public final class ExecutionTask {
     private final JsonObject encoded;
-    private final String goalId;
-    private final String taskId;
-    private final String regionInstanceId;
-    private final String regionId;
-    private final String test;
-    private final String pathQueryKey;
-    private final String executionPhase;
-    private final ClosureGoalKind goalKind;
-    private final JsonObject rootSelector;
-    private final boolean executable;
     private final InputActionCatalog inputActions;
     private final OutputClosureContract outputClosure;
     private final List<OutputCaptureSpec> outputCaptures;
 
     private ExecutionTask(JsonObject encoded) {
         this.encoded = encoded;
-        goalId = string(encoded, "goalId");
-        taskId = string(encoded, "taskId");
-        regionInstanceId = string(encoded, "regionInstanceId");
-        regionId = string(encoded, "regionId");
-        test = string(encoded, "test");
-        pathQueryKey = string(encoded, "pathQueryKey");
-        executionPhase = string(encoded, "executionPhase");
-        goalKind = ClosureGoalKind.fromTask(encoded);
-        rootSelector = object(encoded, "rootSelector").deepCopy();
-        executable = "EXECUTABLE".equals(
-                string(object(encoded, "admission"), "state"));
-        if (taskId.isEmpty() || goalId.isEmpty()
-                || regionId.isEmpty() || regionInstanceId.isEmpty()) {
+        if (taskId().isEmpty() || goalId().isEmpty()
+                || regionId().isEmpty() || regionInstanceId().isEmpty()) {
             throw new IllegalArgumentException(
                     "execution task requires taskId, goalId, regionId and "
                             + "regionInstanceId");
@@ -55,7 +34,7 @@ public final class ExecutionTask {
         outputCaptures = outputClosure == null
                 ? Collections.emptyList()
                 : OutputClosureCodec.captureSpecs(outputClosure);
-        if (goalKind.capturesOutputRelation() != (outputClosure != null)) {
+        if (goalKind().capturesOutputRelation() != (outputClosure != null)) {
             throw new IllegalArgumentException(
                     "execution task goalKind and outputClosure disagree");
         }
@@ -71,7 +50,6 @@ public final class ExecutionTask {
     public static ExecutionTask create(
             RegionInstancePlan.Goal goal,
             String taskId,
-            String executionPhase,
             JsonArray inputActions,
             JsonArray branches,
         JsonArray edgeBindings,
@@ -81,7 +59,6 @@ public final class ExecutionTask {
         goal.writeTaskPayloadTo(task);
         task.addProperty("taskId", taskId);
         task.addProperty("goalKind", goal.kind().name());
-        task.addProperty("executionPhase", executionPhase);
         task.add(InputActionCatalog.FIELD, inputActions.deepCopy());
         task.add("branches", branches.deepCopy());
         if (edgeBindings.size() > 0) {
@@ -98,51 +75,48 @@ public final class ExecutionTask {
     }
 
     public String goalId() {
-        return goalId;
+        return string(encoded, "goalId");
     }
 
     public String taskId() {
-        return taskId;
+        return string(encoded, "taskId");
     }
 
     public String regionInstanceId() {
-        return regionInstanceId;
+        return string(encoded, "regionInstanceId");
     }
 
     public String regionId() {
-        return regionId;
+        return string(encoded, "regionId");
     }
 
     public String test() {
-        return test;
+        return string(encoded, "test");
     }
 
     public String pathQueryKey() {
-        return pathQueryKey;
-    }
-
-    public String executionPhase() {
-        return executionPhase;
+        return string(encoded, "pathQueryKey");
     }
 
     public ClosureGoalKind goalKind() {
-        return goalKind;
+        return ClosureGoalKind.fromTask(encoded);
     }
 
     public boolean executable() {
-        return executable;
+        return "EXECUTABLE".equals(
+                string(object(encoded, "admission"), "state"));
     }
 
     public String rootMethod() {
-        return string(rootSelector, "method");
+        return string(object(encoded, "rootSelector"), "method");
     }
 
     public int rootOrdinal() {
-        return integer(rootSelector, "ordinal", 1);
+        return integer(object(encoded, "rootSelector"), "ordinal", 1);
     }
 
     public JsonObject rootSelector() {
-        return rootSelector.deepCopy();
+        return object(encoded, "rootSelector").deepCopy();
     }
 
     public InputActionCatalog inputActions() {

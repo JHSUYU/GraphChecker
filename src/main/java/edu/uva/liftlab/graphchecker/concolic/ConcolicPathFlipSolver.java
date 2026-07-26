@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
@@ -29,8 +30,7 @@ public final class ConcolicPathFlipSolver {
     public static void main(String[] argv) throws Exception {
         Arguments arguments = Arguments.parse(argv);
         Result result = solve(arguments);
-        writeOutputs(arguments.outputDirectory, result);
-        System.out.println(PRETTY.toJson(result.solve.record));
+        System.out.println(writeOutputs(arguments.outputDirectory, result));
         String status = string(result.solve.record, "status");
         if (!"SAT_MODEL_READY".equals(status) && !"UNSAT".equals(status)) {
             System.exit(2);
@@ -55,14 +55,15 @@ public final class ConcolicPathFlipSolver {
         JsonObject replay = "SAT_MODEL_READY".equals(string(solved.record,
                 "status"))
                 ? PathReplayTaskFactory.create(task, source,
-                solved.modelAssignments) : null;
-        return new Result(task, solved, replay);
+                solved.modelAssignments, solved.replayContract) : null;
+        return new Result(solved, replay);
     }
 
-    static void writeOutputs(Path directory, Result result)
+    static String writeOutputs(Path directory, Result result)
             throws IOException {
+        String record = PRETTY.toJson(result.solve.record);
         ArtifactIO.replace(directory.resolve("path_flip_solver_result.json"),
-                PRETTY.toJson(result.solve.record) + System.lineSeparator());
+                record + System.lineSeparator());
         ArtifactIO.replace(directory.resolve("path_flip_query.smt2"),
                 result.solve.smtLib);
         List<JsonObject> replayRows = result.replayTask == null
@@ -70,36 +71,17 @@ public final class ConcolicPathFlipSolver {
                 : Collections.singletonList(result.replayTask);
         ArtifactIO.replaceJsonl(directory.resolve("execution_task_plan.jsonl"),
                 replayRows);
-        JsonObject validation = result.replayTask == null
-                ? unavailableValidation(result.solve.record)
-                : PathReplayTaskFactory.validationPlan(result.task,
-                result.solve.modelAssignments);
-        ArtifactIO.replace(directory.resolve("replay_validation_plan.json"),
-                PRETTY.toJson(validation) + System.lineSeparator());
-    }
-
-    private static JsonObject unavailableValidation(JsonObject solverRecord) {
-        JsonObject result = new JsonObject();
-        result.addProperty("ready", false);
-        result.addProperty("reason", string(solverRecord, "status"));
-        result.addProperty("queryKey", string(solverRecord, "queryKey"));
-        return result;
+        return record;
     }
 
     private static JsonObject exactTask(List<JsonObject> tasks,
                                         String queryKey) throws IOException {
-        JsonObject selected = null;
-        int count = 0;
-        for (JsonObject task : tasks) {
-            if (!queryKey.equals(string(task, "queryKey"))) continue;
-            selected = task;
-            count++;
+        JsonObject selected = ArtifactIO.uniqueIndex(tasks, "queryKey")
+                .get(queryKey);
+        if (selected == null) {
+            throw new IOException("Path task not found: " + queryKey);
         }
-        if (count != 1) {
-            throw new IOException("Expected exactly one path task for "
-                    + queryKey + ", found " + count);
-        }
-        return selected.deepCopy();
+        return selected;
     }
 
     static final class Arguments {
@@ -132,7 +114,7 @@ public final class ConcolicPathFlipSolver {
                 values.put(option.substring(2), argv[++index]);
             }
             String queryKey = requiredValue(values, "query-key");
-            if (!queryKey.matches("[0-9a-f]{64}")) {
+            if (!ConcolicConstraintSolver.canonicalQueryKey(queryKey)) {
                 throw new IllegalArgumentException(
                         "--query-key must be lowercase SHA-256");
             }
@@ -166,21 +148,13 @@ public final class ConcolicPathFlipSolver {
     }
 
     static final class Result {
-        final JsonObject task;
         final ConcolicConstraintSolver.Result solve;
         final JsonObject replayTask;
 
-        private Result(JsonObject task,
-                       ConcolicConstraintSolver.Result solve,
+        private Result(ConcolicConstraintSolver.Result solve,
                        JsonObject replayTask) {
-            this.task = task.deepCopy();
             this.solve = solve;
-            this.replayTask = replayTask == null
-                    ? null : replayTask.deepCopy();
+            this.replayTask = replayTask;
         }
-    }
-
-    private static String firstNonBlank(String first, String second) {
-        return first != null && !first.trim().isEmpty() ? first : second;
     }
 }

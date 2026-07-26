@@ -150,6 +150,39 @@ public class ConcolicConstraintSolverTest {
     }
 
     @Test
+    public void untypedSymbolIsRejectedInsteadOfBecomingAFreeReference()
+            throws Exception {
+        JsonObject untyped = new JsonObject();
+        untyped.addProperty("_type", "SymbolExpression");
+        untyped.addProperty("_exp",
+                "M_L'Object'_REGION.3.in.0_example/Input");
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(binaryExpression(untyped, "==",
+                        intSymbol("N"))),
+                activation(), Paths.get("/does/not/exist/z3"), 10_000L);
+
+        assertEquals("UNSUPPORTED",
+                result.record.get("status").getAsString());
+        assertTrue(result.record.getAsJsonArray("unsupported").toString(),
+                result.record.getAsJsonArray("unsupported").toString()
+                        .contains("UNSUPPORTED_SYMBOL_TYPE:MISSING"));
+        assertFalse(result.smtLib.contains("sym__M_L_Object"));
+
+        JsonObject untypedConstant = new JsonObject();
+        untypedConstant.addProperty("_type", "ConstExpr");
+        untypedConstant.addProperty("_exp", "Y_UNKNOWN_payload");
+        result = solveForTest(task(binaryExpression(untypedConstant, "==",
+                        intSymbol("N"))),
+                activation(), Paths.get("/does/not/exist/z3"), 10_000L);
+        assertEquals("UNSUPPORTED",
+                result.record.get("status").getAsString());
+        assertTrue(result.record.getAsJsonArray("unsupported").toString(),
+                result.record.getAsJsonArray("unsupported").toString()
+                        .contains("UNSUPPORTED_CONSTANT_TYPE:MISSING"));
+        assertFalse(result.smtLib.contains("const__"));
+    }
+
+    @Test
     public void runtimeTypedStringSymbolMapsToExactRegionInput()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -239,7 +272,7 @@ public class ConcolicConstraintSolverTest {
 
     private static JsonObject task(JsonObject condition) {
         JsonObject task = new JsonObject();
-        task.addProperty("queryKey", "QUERY.0");
+        task.addProperty("queryKey", CanonicalJson.sha256("QUERY.0"));
         task.addProperty("regionId", "REGION.3");
         JsonArray constraints = new JsonArray();
         constraints.add(condition);

@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.option;
 import edu.uva.liftlab.graphchecker.GraphCheckerMain;
 import edu.uva.liftlab.graphchecker.analysis.AnalysisManager;
 import edu.uva.liftlab.graphchecker.analysis.PhaseInfo;
-import edu.uva.liftlab.graphchecker.util.StringUtils;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.HelpFormatter;
@@ -13,95 +12,62 @@ import org.apache.commons.cli.ParseException;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 public class OptionParser {
-    private final Option analysisList = Option.builder("a").longOpt("analysis").hasArgs()
-            .argName("name name ...")
-            .desc("Analysis phase names to run").build();
-    private final Option phaseOptions = Option.builder("p").longOpt("phase_option").hasArgs()
-            .argName("phase key:value,key:value ...")
-            .desc("Soot phase options").build();
-    private final Option inputDirectoryList = Option.builder("i").longOpt("indir").hasArgs()
-            .argName("directory directory ...")
-            .desc("Input directories containing class files").build();
-    private final Option inputJarList = Option.builder("j").longOpt("jar").hasArgs()
-            .argName("file file ...")
-            .desc("Input jar files").build();
-    private final Option classPathList = Option.builder("x").longOpt("extra_classpath").hasArgs()
-            .argName("classpath classpath ...")
-            .desc("Additional classpath entries").build();
-    private final Option classList = Option.builder("c").longOpt("class").hasArgs()
-            .argName("class class ...")
-            .desc("Class names to process from the classpath").build();
-    private final Option mainClass = Option.builder("m").longOpt("main").hasArg()
-            .argName("class")
-            .desc("Main class").build();
-    private final Option outputDirectory = Option.builder("o").longOpt("outdir").hasArg()
-            .argName("directory")
-            .desc("Output directory").build();
-    private final Option noOutput = Option.builder("n").longOpt("no_output")
-            .desc("Do not write Soot output").build();
-    private final Option wholeProgram = Option.builder("w").longOpt("whole")
-            .desc("Enable whole-program mode").build();
-    private final Option noDebugInfo = Option.builder().longOpt("no_debug")
-            .desc("Do not keep line numbers").build();
-    private final Option listAnalysis = Option.builder().longOpt("list")
-            .desc("List available GraphChecker analyses").build();
-    private final Option help = Option.builder("h").longOpt("help")
-            .desc("Print this help message").build();
-    private final Option helpWithSootHelp = Option.builder("H").longOpt("Help")
-            .desc("Print this help message and Soot help").build();
-    private final Option configFile = Option.builder("C").longOpt("systemConfigFile").hasArg()
-            .argName("file")
-            .desc("Reserved configuration file path for future transformers").build();
-
     private final Options options = new Options();
 
     public OptionParser() {
-        options.addOption(analysisList);
-        options.addOption(phaseOptions);
-        options.addOption(inputDirectoryList);
-        options.addOption(inputJarList);
-        options.addOption(classPathList);
-        options.addOption(classList);
-        options.addOption(mainClass);
-        options.addOption(outputDirectory);
-        options.addOption(noOutput);
-        options.addOption(wholeProgram);
-        options.addOption(noDebugInfo);
-        options.addOption(listAnalysis);
-        options.addOption(help);
-        options.addOption(helpWithSootHelp);
-        options.addOption(configFile);
+        add("a", true, "name name ...", "Analysis phase names to run");
+        add("p", true, "phase key:value,key:value ...",
+                "Soot phase options");
+        add("i", true, "directory directory ...",
+                "Input directories containing class files");
+        add("j", true, "file file ...", "Input jar files");
+        add("x", true, "classpath classpath ...",
+                "Additional classpath entries");
+        add("c", true, "class class ...",
+                "Class names to process from the classpath");
+        addOne("m", "class", "Main class");
+        addOne("o", "directory", "Output directory");
+        options.addOption(Option.builder("n")
+                .desc("Do not write Soot output").build());
+        options.addOption(Option.builder().longOpt("no-debug")
+                .desc("Do not keep line numbers").build());
+        options.addOption(Option.builder().longOpt("list")
+                .desc("List available GraphChecker analyses").build());
+        options.addOption(Option.builder("h")
+                .desc("Print this help message").build());
+        options.addOption(Option.builder("H")
+                .desc("Print this help message and Soot help").build());
+        addOne("C", "file", "Workflow configuration file");
     }
 
     public GraphCheckerOptions parse(String[] args) throws OptionError {
         try {
             CommandLine cmd = new DefaultParser().parse(options, args);
-            GraphCheckerOptions parsed = GraphCheckerOptions.getInstance();
+            GraphCheckerOptions parsed = new GraphCheckerOptions();
 
             List<String> inputList = parseInputs(cmd);
-            parsed.setInputList(inputList);
-            parsed.setOutputJar(cmd.getOptionValues(inputJarList.getOpt()) != null);
-            parsed.setClasses(cmd.getOptionValues(classList.getLongOpt()));
-            parsed.setMainClass(cmd.getOptionValue(mainClass.getLongOpt()));
-            parsed.setOutputDir(cmd.getOptionValue(outputDirectory.getLongOpt()));
-            parsed.setNoOutput(cmd.hasOption(noOutput.getLongOpt()));
-            parsed.setWholeProgram(true);
-            parsed.setKeepDebug(!cmd.hasOption(noDebugInfo.getLongOpt()));
-            parsed.setListAnalysis(cmd.hasOption(listAnalysis.getLongOpt()));
-            parsed.setHelp(cmd.hasOption(help.getLongOpt()));
-            parsed.setSootHelp(cmd.hasOption(helpWithSootHelp.getLongOpt()));
-            parsed.setConfigFilePath(cmd.getOptionValue(configFile.getLongOpt()));
-            parsed.setArgs(cmd.getArgs());
-
-            parsed.setClassPath(buildClassPath(cmd, inputList));
-            parsed.setAnalyses(parseAnalyses(cmd));
-            parsed.setPhaseOptions(parsePhaseOptions(cmd));
+            parsed.inputList = inputList;
+            parsed.outputJar = cmd.hasOption("j");
+            String[] classes = cmd.getOptionValues("c");
+            parsed.classes = classes == null ? new String[0] : classes;
+            parsed.mainClass = cmd.getOptionValue("m");
+            parsed.outputDir = cmd.getOptionValue("o");
+            parsed.noOutput = cmd.hasOption("n");
+            parsed.keepDebug = !cmd.hasOption("no-debug");
+            parsed.listAnalysis = cmd.hasOption("list");
+            parsed.help = cmd.hasOption("h");
+            parsed.sootHelp = cmd.hasOption("H");
+            parsed.configFilePath = cmd.getOptionValue("C");
+            parsed.args = cmd.getArgs();
+            parsed.classPath = buildClassPath(cmd, inputList);
+            parsed.analyses = parseAnalyses(cmd);
+            parsed.phaseOptions = parsePhaseOptions(cmd);
             return parsed;
         } catch (ParseException exception) {
             throw new OptionError(exception.getMessage());
@@ -123,9 +89,21 @@ public class OptionParser {
         }
     }
 
+    private void add(String name, boolean many, String argument,
+                     String description) {
+        Option.Builder builder = Option.builder(name).argName(argument)
+                .desc(description);
+        options.addOption(many ? builder.hasArgs().build()
+                : builder.hasArg().build());
+    }
+
+    private void addOne(String name, String argument, String description) {
+        add(name, false, argument, description);
+    }
+
     private List<String> parseInputs(CommandLine cmd) throws OptionError {
-        String[] jars = cmd.getOptionValues(inputJarList.getOpt());
-        String[] directories = cmd.getOptionValues(inputDirectoryList.getOpt());
+        String[] jars = cmd.getOptionValues("j");
+        String[] directories = cmd.getOptionValues("i");
         if (jars != null && directories != null) {
             throw new OptionError("Can only accept either jar inputs or directory inputs.");
         }
@@ -155,7 +133,7 @@ public class OptionParser {
         String toolPath = GraphCheckerMain.class.getProtectionDomain().getCodeSource().getLocation().getPath();
         entries.add(toolPath);
 
-        String[] extraClassPath = cmd.getOptionValues(classPathList.getLongOpt());
+        String[] extraClassPath = cmd.getOptionValues("x");
         if (extraClassPath != null) {
             for (String entry : extraClassPath) {
                 entries.add(entry);
@@ -167,13 +145,13 @@ public class OptionParser {
         if (javaClassPath != null && !javaClassPath.isEmpty()) {
             entries.add(javaClassPath);
         }
-        return StringUtils.join(File.pathSeparator, entries);
+        return String.join(File.pathSeparator, entries);
     }
 
     private String[] parseAnalyses(CommandLine cmd) throws OptionError {
-        String[] analyses = cmd.getOptionValues(analysisList.getLongOpt());
+        String[] analyses = cmd.getOptionValues("a");
         if (analyses == null) {
-            return null;
+            return new String[0];
         }
         for (String analysis : analyses) {
             if (AnalysisManager.getInstance().getPhaseInfo(analysis) == null) {
@@ -184,8 +162,8 @@ public class OptionParser {
     }
 
     private Map<String, List<String>> parsePhaseOptions(CommandLine cmd) throws OptionError {
-        String[] phaseOptionValues = cmd.getOptionValues(phaseOptions.getLongOpt());
-        Map<String, List<String>> allPhaseOptions = new HashMap<>();
+        String[] phaseOptionValues = cmd.getOptionValues("p");
+        Map<String, List<String>> allPhaseOptions = new LinkedHashMap<>();
         if (phaseOptionValues == null) {
             return allPhaseOptions;
         }
@@ -206,12 +184,8 @@ public class OptionParser {
                     if (phaseName == null || phaseName.isEmpty()) {
                         throw new OptionError("Missing phase name for phase option " + component);
                     }
-                    List<String> optionList = allPhaseOptions.get(phaseName);
-                    if (optionList == null) {
-                        optionList = new ArrayList<>();
-                        allPhaseOptions.put(phaseName, optionList);
-                    }
-                    optionList.add(component);
+                    allPhaseOptions.computeIfAbsent(phaseName,
+                            ignored -> new ArrayList<>()).add(component);
                     lastWasOption = true;
                 }
             }

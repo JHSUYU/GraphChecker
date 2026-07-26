@@ -37,7 +37,7 @@ import java.util.regex.Pattern;
  * <p>The extractor never accepts caller-authored reachability formulas.  It
  * discovers Java Boolean input ports from the static region IR, joins them to
  * the exact canonical terms already emitted by {@link ConcolicSmtComposer},
- * removes inputs supplied by composed producer-output relationships, and asks
+ * removes inputs supplied by composed producer outputs, and asks
  * Z3 about every remaining Boolean valuation.  The resulting truth table and
  * canonical DNF are therefore derived candidate artifacts of the composed
  * SMT. This class never promotes them to a trusted final result.</p>
@@ -51,16 +51,12 @@ public final class BooleanReachConditionExtractor {
     public static void main(String[] argv) throws Exception {
         Arguments arguments = Arguments.parse(argv);
         JsonObject manifest = ArtifactIO.readObject(arguments.manifest);
-        Path relationshipsPath = arguments.relationships;
         String smt = ArtifactIO.readText(arguments.smt);
-        JsonObject relationships = ArtifactIO.readObject(relationshipsPath);
         List<JsonObject> regions = ArtifactIO.readJsonl(arguments.regions);
-        validateArtifactBindings(arguments.smt, arguments.regions,
-                relationshipsPath, manifest);
+        validateArtifactBindings(arguments.smt, arguments.regions, manifest);
         Z3Solver solver = new Z3Solver(arguments.z3,
                 arguments.timeoutMillis);
-        JsonObject report = extract(smt, manifest, regions,
-                relationships, solver,
+        JsonObject report = extract(smt, manifest, regions, solver,
                 arguments.maxInputs, arguments.maxValuations);
         report.add("compositionManifestArtifact",
                 artifact(arguments.manifest));
@@ -74,8 +70,7 @@ public final class BooleanReachConditionExtractor {
     }
 
     static JsonObject extract(String composedSmt, JsonObject manifest,
-                              List<JsonObject> regions,
-                              JsonObject relationships, Z3Solver solver,
+                              List<JsonObject> regions, Z3Solver solver,
                               int maxInputs, int maxValuations)
             throws IOException, InterruptedException {
         JsonObject report = new JsonObject();
@@ -84,13 +79,14 @@ public final class BooleanReachConditionExtractor {
         report.addProperty("trustState", "CANDIDATE_ONLY");
 
         List<String> gaps = new ArrayList<>();
-        validateCompositionAuthority(manifest, relationships, gaps);
+        validateCompositionAuthority(manifest, gaps);
         if (firstNonBlank(composedSmt).isEmpty()) {
             gaps.add("COMPOSED_SMT_EMPTY");
         }
 
         PortCatalog ports = PortCatalog.from(regions);
-        Discovery discovery = discover(composedSmt, relationships, ports);
+        Discovery discovery = discover(composedSmt,
+                suppliedInputs(manifest), ports);
         List<RootInput> inputs = discovery.rootInputs;
         JsonObject roots = new JsonObject();
         roots.add("booleanInputs", inputCatalog(inputs));
@@ -118,7 +114,6 @@ public final class BooleanReachConditionExtractor {
                 discovery.booleanDomainInputs);
         List<boolean[]> satisfyingValuations = new ArrayList<>();
         JsonArray valuationRows = new JsonArray();
-        int satisfying = 0;
         int solverErrors = 0;
         int count = (int) valuationCount;
         for (int ordinal = 0; ordinal < count; ordinal++) {
@@ -127,9 +122,8 @@ public final class BooleanReachConditionExtractor {
             ConcolicConstraintSolver.SolverOutput result =
                     solver.check(query);
             String status = result.status();
-            JsonObject row = valuationRow(inputs, values, status);
+            JsonObject row = valuationRow(values, status);
             if ("sat".equals(status)) {
-                satisfying++;
                 satisfyingValuations.add(values.clone());
             } else if (!"unsat".equals(status)) {
                 row.addProperty("solverOutput", result.diagnostic());
@@ -145,7 +139,7 @@ public final class BooleanReachConditionExtractor {
         // rechecks that exhaustive table and adds no admission evidence.
         boolean complete = solverErrors == 0;
         String reachability = !complete
-                ? "UNKNOWN" : satisfying > 0
+                ? "UNKNOWN" : !satisfyingValuations.isEmpty()
                 ? "REACHABLE" : "UNREACHABLE";
         JsonObject reachCondition = new JsonObject();
         reachCondition.addProperty("formula", dnf(inputs,
@@ -164,32 +158,21 @@ public final class BooleanReachConditionExtractor {
     }
 
     private static void validateCompositionAuthority(
-            JsonObject manifest, JsonObject relationships,
-            List<String> gaps) {
+            JsonObject manifest, List<String> gaps) {
         boolean commonManifest = manifest != null
                 && integer(manifest, "schemaVersion", -1) == 2
                 && "CONCOLIC_COMPOSED_SMT".equals(string(manifest, "kind"));
-        boolean commonRelationships = relationships != null
-                && integer(relationships, "schemaVersion", -1) == 2
-                && "SYMBOLIC_RELATIONSHIP_CANDIDATES".equals(string(
-                relationships, "kind"));
         if (!commonManifest
                 || !"CANDIDATE_READY".equals(string(manifest, "state"))
                 || !"CANDIDATE_ONLY".equals(string(manifest,
                 "trustState"))) {
             gaps.add("COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE");
         }
-        if (!commonRelationships
-                || !"CANDIDATE_ONLY".equals(string(relationships,
-                "trustState"))) {
-            gaps.add("RELATIONSHIP_CATALOG_NOT_CANDIDATE_MODEL_ELIGIBLE");
-        }
     }
 
     private static Discovery discover(String smt,
-                                      JsonObject relationships,
+                                      Set<String> upstreamSupplied,
                                       PortCatalog ports) {
-        Set<String> upstreamSupplied = suppliedInputs(relationships, ports);
         List<RootInput> roots = new ArrayList<>();
         List<RootInput> domainInputs = new ArrayList<>();
         List<RootInput> scalarRoots = new ArrayList<>();
@@ -253,22 +236,12 @@ public final class BooleanReachConditionExtractor {
                 + solverTerm + ") " + portTerm + ")");
     }
 
-    private static Set<String> suppliedInputs(JsonObject relationships,
-                                              PortCatalog ports) {
+    private static Set<String> suppliedInputs(JsonObject manifest) {
         Set<String> result = new LinkedHashSet<>();
-        for (JsonElement element : array(relationships, "relationships")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject roles = object(element.getAsJsonObject(), "roles");
-            String left = string(roles, "left");
-            String right = string(roles, "right");
-            if (ports.inputs.containsKey(left)
-                    && ports.outputs.contains(right)) {
-                result.add(left);
-            }
-            if (ports.inputs.containsKey(right)
-                    && ports.outputs.contains(left)) {
-                result.add(right);
-            }
+        for (JsonElement element : array(manifest, "suppliedInputs")) {
+            if (!element.isJsonPrimitive()) continue;
+            String input = firstNonBlank(element.getAsString());
+            if (!input.isEmpty()) result.add(input);
         }
         return result;
     }
@@ -422,9 +395,8 @@ public final class BooleanReachConditionExtractor {
         private JsonObject toJson() {
             JsonObject result = new JsonObject();
             result.addProperty("portId", port.id);
-            result.addProperty("regionId", port.regionId);
-            result.addProperty("cell", port.cell);
             result.addProperty("javaTypeDescriptor", port.descriptor);
+            result.addProperty("solverTerm", solverTerm);
             if (!nullnessSolverTerm.isEmpty()) {
                 result.addProperty("nullnessSolverTerm",
                         nullnessSolverTerm);
@@ -475,17 +447,9 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    private static JsonObject valuationRow(List<RootInput> inputs,
-                                           boolean[] values, String status) {
+    private static JsonObject valuationRow(boolean[] values, String status) {
         JsonObject result = new JsonObject();
-        JsonArray assignments = new JsonArray();
-        for (int index = 0; index < inputs.size(); index++) {
-            JsonObject assignment = new JsonObject();
-            assignment.addProperty("portId", inputs.get(index).port.id);
-            assignment.addProperty("value", values[index]);
-            assignments.add(assignment);
-        }
-        result.add("assignments", assignments);
+        result.add("values", GSON.toJsonTree(values));
         result.addProperty("status", status);
         return result;
     }
@@ -517,28 +481,18 @@ public final class BooleanReachConditionExtractor {
 
     private static final class PortCatalog {
         private final Map<String, PortInfo> inputs = new LinkedHashMap<>();
-        private final Set<String> outputs = new LinkedHashSet<>();
 
         private static PortCatalog from(List<JsonObject> regions) {
             PortCatalog result = new PortCatalog();
             for (JsonObject region : regions) {
-                String regionId = string(region, "regionId");
                 for (JsonElement element : array(region,
                         "symbolicInputs")) {
                     if (!element.isJsonObject()) continue;
                     JsonObject row = element.getAsJsonObject();
                     String id = string(row, "portId");
                     if (!id.isEmpty()) {
-                        result.inputs.put(id, new PortInfo(id, regionId,
-                                string(row, "cell"),
+                        result.inputs.put(id, new PortInfo(id,
                                 MaterializationSpec.logicalJavaType(row)));
-                    }
-                }
-                for (JsonElement element : array(region, "outputs")) {
-                    if (element.isJsonObject()) {
-                        String id = string(element.getAsJsonObject(),
-                                "portId");
-                        if (!id.isEmpty()) result.outputs.add(id);
                     }
                 }
             }
@@ -554,16 +508,11 @@ public final class BooleanReachConditionExtractor {
 
     private static final class PortInfo {
         private final String id;
-        private final String regionId;
-        private final String cell;
         private final String descriptor;
         private final boolean javaBoolean;
 
-        private PortInfo(String id, String regionId, String cell,
-                         String javaType) {
+        private PortInfo(String id, String javaType) {
             this.id = firstNonBlank(id);
-            this.regionId = firstNonBlank(regionId);
-            this.cell = firstNonBlank(cell);
             this.descriptor = javaTypeDescriptor(javaType);
             this.javaBoolean = "Z".equals(descriptor)
                     || "Ljava/lang/Boolean;".equals(descriptor);
@@ -574,7 +523,6 @@ public final class BooleanReachConditionExtractor {
         private Path smt;
         private Path manifest;
         private Path regions;
-        private Path relationships;
         private Path output;
         private String z3 = "z3";
         private long timeoutMillis = 20_000L;
@@ -603,7 +551,6 @@ public final class BooleanReachConditionExtractor {
             result.smt = required(values, "smt");
             result.manifest = required(values, "manifest");
             result.regions = required(values, "regions");
-            result.relationships = required(values, "relationships");
             result.output = values.containsKey("output")
                     ? Paths.get(values.get("output"))
                     : sibling(result.manifest,
@@ -620,7 +567,6 @@ public final class BooleanReachConditionExtractor {
         private static boolean option(String key) {
             return "smt".equals(key) || "manifest".equals(key)
                     || "regions".equals(key)
-                    || "relationships".equals(key)
                     || "output".equals(key) || "z3".equals(key)
                     || "timeout-ms".equals(key)
                     || "max-inputs".equals(key)
@@ -640,21 +586,17 @@ public final class BooleanReachConditionExtractor {
     /**
      * Rejects cross-wired CLI artifacts before any solver process starts.
      * The composer manifest is the trust root: it fingerprints the exact SMT,
-     * static-region ledger, and relationship-candidate bytes.
+     * and static-region ledger.
      */
     static void validateArtifactBindings(Path smtPath, Path regionsPath,
-                                         Path relationshipsPath,
                                          JsonObject manifest)
             throws IOException {
         JsonObject actualSmt = artifact(smtPath);
         JsonObject actualRegions = artifact(regionsPath);
-        JsonObject actualRelationships = artifact(relationshipsPath);
         requireExactArtifact("composed SMT", object(manifest,
                 "composedSmtArtifact"), actualSmt);
         requireExactArtifact("static regions", object(manifest,
                 "staticRegionsArtifact"), actualRegions);
-        requireExactArtifact("relationship candidates", object(manifest,
-                "relationshipCandidatesArtifact"), actualRelationships);
     }
 
     private static void requireExactArtifact(String label,

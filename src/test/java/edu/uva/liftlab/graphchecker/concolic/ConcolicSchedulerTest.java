@@ -72,8 +72,7 @@ public class ConcolicSchedulerTest {
             assertFalse(scheduled.has("scheduleId"));
             assertFalse(scheduled.has("bundle"));
             assertEquals(1, scheduled.getAsJsonObject("admission").size());
-            assertEquals("CAPTURE_OUTPUT_PATH", scheduled
-                    .get("executionPhase").getAsString());
+            assertFalse(scheduled.has("executionPhase"));
             assertEquals("OUTPUT_RELATION_CLOSURE",
                     scheduled.get("goalKind").getAsString());
             assertFalse(scheduled.has("runtimeDefinitionMethods"));
@@ -107,13 +106,9 @@ public class ConcolicSchedulerTest {
                     .getAsJsonObject();
             assertEquals("MAP_STATE_INPUT_OBSERVATION",
                     mapBinding.get("bindingMode").getAsString());
-            assertTrue(mapBinding.get("mapStateObservationOnly")
-                    .getAsBoolean());
-            assertFalse(mapBinding.get("modelControllable")
-                    .getAsBoolean());
-            assertEquals(ALL_KEYS,
-                    mapBinding.get("mapStateRequestedOutputCell")
-                            .getAsString());
+            assertFalse(mapBinding.has("mapStateObservationOnly"));
+            assertFalse(mapBinding.has("modelControllable"));
+            assertFalse(mapBinding.has("mapStateRequestedOutputCell"));
 
             JsonObject incompleteSlice = activation.deepCopy();
             onlyGoal(incompleteSlice).getAsJsonObject(
@@ -335,7 +330,6 @@ public class ConcolicSchedulerTest {
                 "REGION.1@test#call7");
         activation.addProperty("rootCallId", 7);
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
         capture.addProperty("captureBindingId", port + ".capture");
         capture.addProperty("outputPort", port);
         capture.addProperty("outputCell", cell);
@@ -351,7 +345,7 @@ public class ConcolicSchedulerTest {
         slice.addProperty("outputPort", port);
         slice.addProperty("outputCell", cell);
         slice.addProperty("complete", true);
-        slice.addProperty("captureBindingsComplete", true);
+        slice.add("captureBindingIssues", new JsonArray());
         JsonArray inputs = new JsonArray();
         inputs.add(input);
         slice.add("inputPorts", inputs);
@@ -364,7 +358,7 @@ public class ConcolicSchedulerTest {
         slice.add("captureBindings", captures.deepCopy());
         OutputClosureCodec.writeTo(activation, OutputClosureCodec.singleton(
                 "REGION.1", "REGION.1@test#call7", 7,
-                port, cell, "REGION_OUTPUT", "TEST_EXACT_OUTPUT", slice));
+                port, cell, "REGION_OUTPUT", "I", slice));
         return activation;
     }
 
@@ -393,7 +387,7 @@ public class ConcolicSchedulerTest {
         slice.addProperty("outputPort", "REGION.11.out.0");
         slice.addProperty("outputCell", ALL_KEYS);
         slice.addProperty("complete", true);
-        slice.addProperty("captureBindingsComplete", true);
+        slice.add("captureBindingIssues", new JsonArray());
         slice.add("inputPorts", strings("REGION.11.in.map"));
         slice.add("sites", new JsonArray());
         slice.add("staticSites", new JsonArray());
@@ -403,7 +397,7 @@ public class ConcolicSchedulerTest {
         OutputClosureCodec.writeTo(goal, OutputClosureCodec.singleton(
                 "REGION.11", "REGION.11@test#call7", 7,
                 "REGION.11.out.0", ALL_KEYS, "HEAP_STATE",
-                "TEST_EXACT_OUTPUT", slice));
+                "Ljava/util/Map;", slice));
         JsonArray goals = new JsonArray();
         goals.add(goal);
         envelope.add("closureGoals", goals);
