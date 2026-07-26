@@ -254,9 +254,15 @@ public class ConcolicSummaryImporterTest {
             assertEquals(1, missing.getAsJsonObject("outputExpressions")
                     .size());
 
-            JsonObject rejected = importJointOutputCaptureFixture(
-                    wrongGoal.getRoot().toPath(), false, true);
-            assertEquals(0, rejected.size());
+            boolean wrongGoalRejected = false;
+            try {
+                importJointOutputCaptureFixture(
+                        wrongGoal.getRoot().toPath(), false, true);
+            } catch (java.io.IOException expected) {
+                wrongGoalRejected = expected.getMessage().contains(
+                        "goalKind and outputClosure disagree");
+            }
+            assertTrue(wrongGoalRejected);
 
             Path missingRoot = missingContract.getRoot().toPath();
             importJointOutputCaptureFixture(missingRoot, false, false);
@@ -265,17 +271,19 @@ public class ConcolicSummaryImporterTest {
             activation.remove(OutputClosureContract.FIELD);
             writeVerbatim(missingRoot.resolve("activation.jsonl"),
                     activation + "\n");
-            ConcolicSummaryImporter.ImportResult missingContractResult =
-                    ConcolicSummaryImporter.importSummaries(
-                            missingRoot.resolve("results.jsonl"),
-                            missingRoot.resolve("activation.jsonl"),
-                            missingRoot.resolve("regions.jsonl"),
-                            missingRoot.resolve("missing-summary.jsonl"),
-                            missingRoot.resolve("missing-diagnostics.jsonl"));
-            assertEquals(0, missingContractResult.validSummaryCount);
-            assertTrue(readOptional(missingRoot.resolve(
-                    "missing-diagnostics.jsonl")).contains(
-                    "canonical outputClosure is required"));
+            boolean missingContractRejected = false;
+            try {
+                ConcolicSummaryImporter.importSummaries(
+                        missingRoot.resolve("results.jsonl"),
+                        missingRoot.resolve("activation.jsonl"),
+                        missingRoot.resolve("regions.jsonl"),
+                        missingRoot.resolve("missing-summary.jsonl"),
+                        missingRoot.resolve("missing-diagnostics.jsonl"));
+            } catch (java.io.IOException expected) {
+                missingContractRejected = expected.getMessage().contains(
+                        "goalKind and outputClosure disagree");
+            }
+            assertTrue(missingContractRejected);
         } finally {
             complete.delete();
             partial.delete();
@@ -319,12 +327,12 @@ public class ConcolicSummaryImporterTest {
 
 
     @Test
-    public void importsExactFieldAssignmentRhsAsHeapStateOutput()
+    public void importsExactRegionExitFieldAsHeapStateOutput()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
-            MapFixture imported = importExactFieldAssignmentCaptureFixture(
+            MapFixture imported = importRegionExitFieldCaptureFixture(
                     folder.getRoot().toPath(), "NORMAL", true, true,
                     symbol("M_L_field_REGION.FIELD.in.0_java/lang/String",
                             "L"));
@@ -337,7 +345,7 @@ public class ConcolicSummaryImporterTest {
                             .get("_exp").getAsString());
             assertFalse(imported.summary.has("outputExpressionAdmission"));
 
-            MapFixture projected = importExactFieldAssignmentCaptureFixture(
+            MapFixture projected = importRegionExitFieldCaptureFixture(
                     folder.getRoot().toPath().resolve("projected"),
                     "NORMAL", true, true, JsonNull.INSTANCE);
             assertTrue(projected.diagnostics, projected.summary.get(
@@ -347,15 +355,13 @@ public class ConcolicSummaryImporterTest {
                     .getAsJsonObject("REGION.FIELD.out.0");
             assertEquals("SymbolExpression", projectedExpression.get(
                     "_type").getAsString());
-            assertEquals("REGION.FIELD.in.0", projectedExpression.get(
-                    "_causynth_projection_input_port").getAsString());
-            assertEquals("[\"value\"]", projectedExpression.getAsJsonArray(
-                    "_causynth_projection_field_path").toString());
+            assertEquals("REGION.FIELD.in.0.value",
+                    projectedExpression.get("_exp").getAsString());
             assertFalse(projected.summary.has(
                     "ignoredRuntimeHeapEvidence"));
 
             MapFixture causalGuardObservation =
-                    importExactFieldAssignmentCaptureFixture(
+                    importRegionExitFieldCaptureFixture(
                             folder.getRoot().toPath().resolve(
                                     "causal-map-observation"),
                             "NORMAL", true, true,
@@ -407,16 +413,16 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void importsNoWritePathAsExactFieldFrameCondition()
+    public void normalExitCaptureReturnsPrestateOnNoWritePath()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
-            MapFixture imported = importExactFieldAssignmentCaptureFixture(
+            MapFixture imported = importRegionExitFieldCaptureFixture(
                     folder.getRoot().toPath(), "NORMAL", true, true,
                     "<example.State: int value>",
                     symbol("unused-write-expression", "I"),
-                    "FRAME_CONDITION");
+                    "ZERO_WRITE");
 
             assertTrue(imported.diagnostics, imported.summary.get(
                     "relationallyComplete").getAsBoolean());
@@ -429,15 +435,26 @@ public class ConcolicSummaryImporterTest {
                     expression.get("_exp").getAsString());
 
             MapFixture executedButMissingCapture =
-                    importExactFieldAssignmentCaptureFixture(
+                    importRegionExitFieldCaptureFixture(
                             folder.getRoot().toPath().resolve(
                                     "executed-without-capture"),
                             "NORMAL", true, true,
                             "<example.State: int value>",
                             symbol("unused-write-expression", "I"),
-                            "FRAME_CONDITION_EXECUTED");
-            assertFalse(executedButMissingCapture.summary.get(
+                            "WRITE_EXECUTED");
+            assertTrue(executedButMissingCapture.diagnostics,
+                    executedButMissingCapture.summary.get(
                     "relationallyComplete").getAsBoolean());
+
+            MapFixture exceptional = importRegionExitFieldCaptureFixture(
+                    folder.getRoot().toPath().resolve("exceptional"),
+                    "THROW", true, true,
+                    "<example.State: int value>",
+                    symbol("must-not-be-imported", "I"), "ZERO_WRITE");
+            assertFalse(exceptional.summary.get(
+                    "relationallyComplete").getAsBoolean());
+            assertEquals(0, exceptional.summary.getAsJsonObject(
+                    "outputExpressions").size());
         } finally {
             folder.delete();
         }
@@ -752,7 +769,7 @@ public class ConcolicSummaryImporterTest {
             String dynamicSymbol, String siteId, int occurrence,
             long ownerToken, JsonObject entryRead, JsonObject keyExpression) {
         JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 1);
+        binding.addProperty("schemaVersion", 2);
         binding.addProperty("kind", "DYNAMIC_MAP_ENTRY_FIELD_BINDING");
         binding.addProperty("dynamicBindingId",
                 "DYNAMIC_FIELD:" + dynamicSymbol);
@@ -1155,7 +1172,7 @@ public class ConcolicSummaryImporterTest {
         selector.addProperty("complete", true);
 
         JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 3);
+        binding.addProperty("schemaVersion", 2);
         binding.addProperty("kind",
                 "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
         binding.addProperty("dynamicBindingId",
@@ -2099,7 +2116,6 @@ public class ConcolicSummaryImporterTest {
         metadata.addProperty("captureDischargeAuthority",
                 "HEAP_EFFECT_STATE_TRANSFORMER");
         metadata.add("captureBindings", new JsonArray());
-        metadata.addProperty("captureBindingsRequired", false);
         metadata.addProperty("captureBindingsComplete", true);
         metadata.add("captureBindingIssues", new JsonArray());
     }
@@ -2268,7 +2284,7 @@ public class ConcolicSummaryImporterTest {
 
             JsonObject binding = new JsonObject();
             binding.addProperty("schemaVersion",
-                    "OLD_BINDING_SCHEMA".equals(mutation) ? 2 : 3);
+                    "OLD_BINDING_SCHEMA".equals(mutation) ? 3 : 2);
             binding.addProperty("kind",
                     "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
             binding.addProperty("dynamicBindingId",
@@ -2809,9 +2825,12 @@ public class ConcolicSummaryImporterTest {
         for (int index = 0; index < 2; index++) {
             JsonObject input = new JsonObject();
             input.addProperty("symbol", regionId + ".in." + index);
-            input.addProperty("cell",
-                    rootMethod + ".param" + index + ":int");
-            input.addProperty("location", "ARGUMENT");
+            String field = "<example.Client: int value" + index + ">";
+            input.addProperty("cell", field);
+            input.addProperty("sourceKind", "HEAP_PRESTATE");
+            input.addProperty("location", "RECEIVER_FIELD");
+            input.addProperty("leafFieldSignature", field);
+            input.add("fieldPath", singletonString("value" + index));
             inputs.add(input);
         }
         activation.add("symbolize", inputs);
@@ -2845,7 +2864,10 @@ public class ConcolicSummaryImporterTest {
             if (omitSecondCapture && index == 1) continue;
             JsonObject observed = requests.get(index)
                     .getAsJsonObject().deepCopy();
-            observed.addProperty("expressionCaptured", true);
+            observed.addProperty("fieldOwnerObjectToken", 10 + index);
+            observed.addProperty("objectTokenScope", activationId);
+            observed.addProperty("captureAuthority",
+                    "ACTIVE_TOKEN_EXACT_REGION_EXIT_FIELD");
             observed.add("expression", symbol(
                     "M_I_field_" + regionId + ".in." + index + "_value",
                     "I"));
@@ -2866,20 +2888,18 @@ public class ConcolicSummaryImporterTest {
             String regionId, String activationId, String rootMethod,
             String callee, int index) {
         String port = regionId + ".out." + index;
-        String cell = callee + ".param" + index + ":int";
+        String cell = "<example.Client: int value" + index + ">";
         String site = rootMethod + "#u7";
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "CALL_ARGUMENT");
+        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
         capture.addProperty("captureBindingId", port + ".capture.0");
         capture.addProperty("outputPort", port);
         capture.addProperty("outputCell", cell);
-        capture.addProperty("callerMethod", rootMethod);
-        capture.addProperty("calleeMethod", callee);
-        capture.addProperty("unitIndex", 7);
-        capture.addProperty("siteId", site);
-        capture.addProperty("argumentIndex", index);
-        capture.addProperty("argumentCell", rootMethod + "::i" + index);
-        capture.addProperty("occurrence", 1);
+        capture.addProperty("accessRootInputPort",
+                regionId + ".in." + index);
+        capture.add("fieldPath", singletonString("value" + index));
+        capture.addProperty("fieldSignature", cell);
+        capture.addProperty("javaType", "int");
 
         JsonObject slice = new JsonObject();
         slice.addProperty("outputPort", port);
@@ -2892,7 +2912,6 @@ public class ConcolicSummaryImporterTest {
         slice.add("methods", singletonString(rootMethod));
         slice.add("causalEdgeIds",
                 singletonString("DF.JOINT." + index));
-        slice.addProperty("captureBindingsRequired", true);
         slice.addProperty("captureBindingsComplete", true);
         slice.add("captureBindings", singletonObject(capture));
 
@@ -2907,7 +2926,7 @@ public class ConcolicSummaryImporterTest {
         JsonObject requested = new JsonObject();
         requested.addProperty("portId", port);
         requested.addProperty("cell", cell);
-        requested.addProperty("kind", "SINK_STATE");
+        requested.addProperty("kind", "HEAP_STATE");
         requested.addProperty("javaTypeDescriptor", "I");
         requested.addProperty("selectionAuthority",
                 "CONFIRMED_READ_FROM_EDGE");
@@ -2939,19 +2958,24 @@ public class ConcolicSummaryImporterTest {
             throws Exception {
         Path firstRoot = root.resolve("first");
         Path secondRoot = root.resolve("second");
-        importExactFieldAssignmentCaptureFixture(firstRoot, "NORMAL",
+        importRegionExitFieldCaptureFixture(firstRoot, "NORMAL",
                 true, true, "<example.State: int x>",
                 symbol("M_I_field_REGION.FIELD.in.0_x", "I"));
-        importExactFieldAssignmentCaptureFixture(secondRoot, "NORMAL",
+        importRegionExitFieldCaptureFixture(secondRoot, "NORMAL",
                 true, true, "<example.State: int y>",
                 symbol("M_I_field_REGION.FIELD.in.0_y", "I"));
 
         JsonObject firstActivation = readObject(
                 firstRoot.resolve("activation.jsonl"));
-        JsonObject secondActivation = renamedOutputPort(readObject(
-                secondRoot.resolve("activation.jsonl")), 1);
+        JsonObject secondActivation = renamedOutputPort(renamedInputPort(
+                readObject(secondRoot.resolve("activation.jsonl")), 1), 1);
         makeCodecLegacyReady(firstActivation);
         makeCodecLegacyReady(secondActivation);
+        for (JsonElement action : secondActivation.getAsJsonArray(
+                "inputActions")) {
+            firstActivation.getAsJsonArray("inputActions").add(
+                    action.deepCopy());
+        }
         if (invalidateSecondTransformer) {
             secondActivation.getAsJsonObject(OutputClosureContract.FIELD)
                     .getAsJsonArray("members").get(0).getAsJsonObject()
@@ -2966,11 +2990,13 @@ public class ConcolicSummaryImporterTest {
         OutputClosureCodec.writeTo(firstActivation, contract);
 
         JsonObject raw = readObject(firstRoot.resolve("results.jsonl"));
-        JsonObject secondRaw = renamedOutputPort(readObject(
-                secondRoot.resolve("results.jsonl")), 1);
+        JsonObject secondRaw = renamedOutputPort(renamedInputPort(readObject(
+                secondRoot.resolve("results.jsonl")), 1), 1);
         JsonArray captures = raw.getAsJsonArray("outputCaptures");
         captures.add(secondRaw.getAsJsonArray("outputCaptures")
                 .get(0).deepCopy());
+        raw.getAsJsonArray("symbolizedInputs").add(
+                "REGION.FIELD.in.1");
 
         Path activations = root.resolve("activation.jsonl");
         Path regions = root.resolve("regions.jsonl");
@@ -2989,7 +3015,7 @@ public class ConcolicSummaryImporterTest {
     private static JsonObject importMixedJointOutputCaptureFixture(
             Path root) throws Exception {
         Path fieldRoot = root.resolve("field");
-        importExactFieldAssignmentCaptureFixture(fieldRoot, "NORMAL",
+        importRegionExitFieldCaptureFixture(fieldRoot, "NORMAL",
                 true, true, "<example.State: int y>",
                 symbol("M_I_field_REGION.FIELD.in.0_y", "I"));
         JsonObject fieldActivation = renamedOutputPort(readObject(
@@ -3016,7 +3042,6 @@ public class ConcolicSummaryImporterTest {
                 callRequest = request.deepCopy();
             }
         }
-        callRequest.addProperty("expressionCaptured", true);
         callRequest.add("expression", symbol(
                 "M_I_field_REGION.FIELD.in.0_call", "I"));
         raw.getAsJsonArray("outputCaptures").add(callRequest);
@@ -3080,6 +3105,13 @@ public class ConcolicSummaryImporterTest {
                 "REGION.FIELD.out." + index)).getAsJsonObject();
     }
 
+    private static JsonObject renamedInputPort(
+            JsonObject value, int index) {
+        return JsonParser.parseString(value.toString().replace(
+                "REGION.FIELD.in.0",
+                "REGION.FIELD.in." + index)).getAsJsonObject();
+    }
+
     private static JsonObject readObject(Path path) throws Exception {
         String content = new String(Files.readAllBytes(path),
                 StandardCharsets.UTF_8).trim();
@@ -3091,34 +3123,34 @@ public class ConcolicSummaryImporterTest {
         return JsonParser.parseString(content).getAsJsonObject();
     }
 
-    private static MapFixture importExactFieldAssignmentCaptureFixture(
+    private static MapFixture importRegionExitFieldCaptureFixture(
             Path root, String exitKind, boolean identityVerified,
             boolean rhsRelationComplete, JsonElement expression)
             throws Exception {
-        return importExactFieldAssignmentCaptureFixture(root, exitKind,
+        return importRegionExitFieldCaptureFixture(root, exitKind,
                 identityVerified, rhsRelationComplete,
                 "<example.State: java.lang.String value>", expression);
     }
 
-    private static MapFixture importExactFieldAssignmentCaptureFixture(
+    private static MapFixture importRegionExitFieldCaptureFixture(
             Path root, String exitKind, boolean identityVerified,
             boolean rhsRelationComplete, String field,
             JsonElement expression) throws Exception {
-        return importExactFieldAssignmentCaptureFixture(root, exitKind,
+        return importRegionExitFieldCaptureFixture(root, exitKind,
                 identityVerified, rhsRelationComplete, field, expression,
                 false);
     }
 
-    private static MapFixture importExactFieldAssignmentCaptureFixture(
+    private static MapFixture importRegionExitFieldCaptureFixture(
             Path root, String exitKind, boolean identityVerified,
             boolean rhsRelationComplete, String field,
             JsonElement expression, boolean exactVmGuard) throws Exception {
-        return importExactFieldAssignmentCaptureFixture(root, exitKind,
+        return importRegionExitFieldCaptureFixture(root, exitKind,
                 identityVerified, rhsRelationComplete, field, expression,
                 exactVmGuard ? "EXACT" : "NONE");
     }
 
-    private static MapFixture importExactFieldAssignmentCaptureFixture(
+    private static MapFixture importRegionExitFieldCaptureFixture(
             Path root, String exitKind, boolean identityVerified,
             boolean rhsRelationComplete, String field,
             JsonElement expression, String guardMode) throws Exception {
@@ -3126,7 +3158,6 @@ public class ConcolicSummaryImporterTest {
                 "CAUSAL_MAP_OBSERVATION".equals(guardMode);
         boolean nullGuardWithUnusedInput =
                 "EXACT_NULL_WITH_UNUSED_INPUT".equals(guardMode);
-        boolean frameCondition = guardMode.startsWith("FRAME_CONDITION");
         boolean exactVmGuard = !"NONE".equals(guardMode)
                 && !causalMapObservation;
         boolean projectedDischarge = expression == null
@@ -3142,45 +3173,27 @@ public class ConcolicSummaryImporterTest {
                 : "<example.Heartbeat: void install(java.lang.String)>";
         String site = method + "#u3";
         String edgeId = "DF.FIELD.WRITE";
+        String fieldName = field.substring(field.lastIndexOf(' ') + 1,
+                field.length() - 1);
+        String fieldType = field.contains(": int ")
+                ? "int" : "java.lang.String";
+        JsonElement exitExpression = projectedDischarge
+                || "ZERO_WRITE".equals(guardMode)
+                || "WRITE_EXECUTED".equals(guardMode)
+                ? symbol("REGION.FIELD.in.0." + fieldName,
+                "int".equals(fieldType) ? "I" : "L")
+                : expression;
 
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
+        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
         capture.addProperty("captureBindingId",
                 "REGION.FIELD.out.0.capture.0");
         capture.addProperty("outputPort", "REGION.FIELD.out.0");
         capture.addProperty("outputCell", field);
-        capture.addProperty("method", method);
-        capture.addProperty("unitIndex", 3);
-        capture.addProperty("siteId", site);
-        capture.addProperty("unit", "r0." + field + " = r1");
+        capture.addProperty("accessRootInputPort", "REGION.FIELD.in.0");
+        capture.add("fieldPath", singletonString(fieldName));
         capture.addProperty("fieldSignature", field);
-        capture.addProperty("fieldOwnerExpression", "r0");
-        capture.addProperty("fieldOwnerCell", method + "::r0");
-        capture.addProperty("fieldOwnerDeclaredType", "example.State");
-        capture.addProperty("fieldOwnerBindingKind",
-                "INSTANCE_FIELD_LHS_BASE");
-        capture.addProperty("fieldOwnerBindingAuthority",
-                "STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_LHS");
-        capture.addProperty("rhsExpression", "r1");
-        capture.addProperty("rhsCell", method + "::r1");
-        capture.addProperty("rhsCausalEdgeId", edgeId);
-        capture.addProperty("rhsRelation", "value_flow");
-        capture.addProperty("rhsRelationComplete", rhsRelationComplete);
-        capture.addProperty("rhsRelationAuthority",
-                "STATIC_EXACT_HEAP_WRITE_VALUE_FLOW");
-        capture.addProperty("causalEdgeId", edgeId);
-        capture.addProperty("transferKind", "HEAP_WRITE");
-        capture.addProperty("bindingKind", "field_write");
-        capture.addProperty("bindingAuthority",
-                "STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_RHS");
-        capture.addProperty("occurrence", 1);
-        capture.addProperty("occurrenceAuthority",
-                "RUNTIME_UNIQUE_STATIC_FIELD_ASSIGNMENT_"
-                        + "SITE_LAST_WRITE_OCCURRENCE");
-        capture.addProperty("runtimeFieldOwnerObjectId", 17);
-        capture.addProperty("runtimeFieldOwnerBindingAuthority",
-                "RUNTIME_EXACT_FIELD_WRITE_RECEIVER_IDENTITY");
-        capture.addProperty("runtimeEventSeq", 5);
+        capture.addProperty("javaType", fieldType);
 
         JsonObject obligation = exactTransformerObligation(edgeId, method,
                 site, field);
@@ -3219,6 +3232,10 @@ public class ConcolicSummaryImporterTest {
         causalEdges.add(causal);
         JsonObject slice = exactTransformerSliceMetadata(field,
                 singletonObject(obligation), inputBindings);
+        if (!rhsRelationComplete) {
+            slice.addProperty(
+                    "requestedStateTransformerContractComplete", false);
+        }
         slice.addProperty("requestedStateTransformerContractOutputPort",
                 "REGION.FIELD.out.0");
         slice.addProperty("outputPort", "REGION.FIELD.out.0");
@@ -3240,7 +3257,6 @@ public class ConcolicSummaryImporterTest {
         slice.add("causalEdgeIds", causalEdgeIds);
         slice.addProperty("causalEdgeCount", causalEdges.size());
         slice.add("captureBindings", singletonObject(capture));
-        slice.addProperty("captureBindingsRequired", true);
         slice.addProperty("captureBindingsComplete", true);
         slice.add("captureBindingIssues", new JsonArray());
         slice.addProperty("complete", true);
@@ -3266,28 +3282,12 @@ public class ConcolicSummaryImporterTest {
         activation.add("requestedOutputCapture", singletonObject(capture));
         JsonObject input = new JsonObject();
         input.addProperty("symbol", "REGION.FIELD.in.0");
-        if (frameCondition) {
-            input.addProperty("cell", field);
-            input.addProperty("sourceKind", "HEAP_PRESTATE");
-            input.addProperty("location", "RECEIVER_FIELD");
-            input.addProperty("field", field);
-            input.add("fieldPath", singletonString("value"));
-            input.addProperty("frameConditionAuthority",
-                    "RUNTIME_UNIQUE_ROOT_TO_OUTPUT_OWNER_FIELD_PATH");
-            JsonObject heapBinding = new JsonObject();
-            heapBinding.addProperty("inputPort", "REGION.FIELD.in.0");
-            heapBinding.addProperty("outputPort", "REGION.FIELD.out.0");
-            heapBinding.addProperty("cell", field);
-            heapBinding.addProperty("bindingAuthority",
-                    "STATIC_CELL_IDENTITY_PLUS_RUNTIME_READ_FROM");
-            activation.add("heapStateBindings",
-                    singletonObject(heapBinding));
-        } else {
-            input.addProperty("cell", method + ".param0:"
-                    + (projectedDischarge ? "example.Snapshot"
-                    : "java.lang.String"));
-            input.addProperty("location", "ARGUMENT");
-        }
+        input.addProperty("cell", field);
+        input.addProperty("sourceKind", "HEAP_PRESTATE");
+        input.addProperty("location", "RECEIVER_FIELD");
+        input.addProperty("field", field);
+        input.addProperty("leafFieldSignature", field);
+        input.add("fieldPath", singletonString(fieldName));
         JsonArray symbolize = singletonObject(input);
         if (nullGuardWithUnusedInput) {
             JsonObject unused = new JsonObject();
@@ -3299,13 +3299,6 @@ public class ConcolicSummaryImporterTest {
             symbolize.add(unused);
         }
         activation.add("symbolize", symbolize);
-        if (projectedDischarge) {
-            JsonObject fallback = input.deepCopy();
-            fallback.addProperty("bindingMode", "CONCRETE_PASSTHROUGH");
-            fallback.addProperty("concreteFallback", true);
-            activation.add("concreteFallbacks", singletonObject(fallback));
-            activation.add("materializations", new JsonArray());
-        }
         JsonObject outputAction = new JsonObject();
         outputAction.addProperty("symbol", "REGION.FIELD.out.0");
         outputAction.addProperty("location", "RETURN_OR_HEAP_EFFECT");
@@ -3331,91 +3324,31 @@ public class ConcolicSummaryImporterTest {
         write(regions, region + "\n");
 
         JsonObject observed = new JsonObject();
-        observed.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
+        observed.addProperty("captureKind", "REGION_EXIT_FIELD");
         observed.addProperty("captureBindingId",
                 "REGION.FIELD.out.0.capture.0");
         observed.addProperty("outputPort", "REGION.FIELD.out.0");
         observed.addProperty("outputCell", field);
-        observed.addProperty("method", method);
-        observed.addProperty("unitIndex", 3);
-        observed.addProperty("siteId", site);
         observed.addProperty("fieldSignature", field);
-        observed.addProperty("requestedOccurrence", 1);
-        observed.addProperty("occurrence", 1);
+        observed.add("fieldPath", singletonString(fieldName));
         observed.addProperty("captureAuthority",
-                "ACTIVE_TOKEN_EXACT_POST_INSTANCE_FIELD_ASSIGNMENT");
-        observed.addProperty("declaredFieldOwnerVerified", true);
-        observed.addProperty("declaredFieldTypeVerified", true);
-        observed.addProperty("observedFieldValueAvailable", true);
-        observed.addProperty("assignmentIdentityVerified", identityVerified);
-        observed.addProperty("fieldOwnerObjectTokenKnown", true);
-        observed.addProperty("fieldOwnerObjectToken", 1);
-        observed.addProperty("assignedValueObjectTokenKnown", true);
-        observed.addProperty("assignedValueObjectToken", 2);
-        observed.addProperty("observedFieldValueObjectToken", 2);
-        observed.addProperty("objectTokenAuthority",
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
+                "ACTIVE_TOKEN_EXACT_REGION_EXIT_FIELD");
+        observed.addProperty("fieldOwnerObjectToken",
+                identityVerified ? 1 : 0);
         observed.addProperty("objectTokenScope", "ACT.FIELD");
-        observed.addProperty("assignedValueClass", "java.lang.String");
-        observed.addProperty("observedFieldValueClass", "java.lang.String");
-        observed.addProperty("assignedValueWasNull", false);
-        observed.addProperty("observedFieldValueWasNull", false);
-        observed.addProperty("assignmentIdentityMode",
-                "REFERENCE_IDENTITY");
-        observed.addProperty("assignmentIdentityAuthority",
-                "EXACT_DECLARED_FIELD_REFLECTION_AND_REFERENCE_IDENTITY");
-        observed.addProperty("expressionCaptured", !projectedDischarge);
-        if (!projectedDischarge) {
-            observed.add("expression", expression.deepCopy());
-        }
-        if (exactVmGuard) {
-            observed.addProperty("expressionEnvelopeSchemaVersion", 1);
-            observed.addProperty("expressionEnvelopeActive",
-                    !"INACTIVE_ENVELOPE".equals(guardMode));
-            observed.addProperty("assignedValueClass", "java.lang.Integer");
-            observed.addProperty("observedFieldValueClass",
-                    "java.lang.Integer");
-            observed.addProperty("assignedValueWasNull", false);
-            observed.addProperty("observedFieldValueWasNull", false);
-            observed.addProperty("assignmentIdentityMode",
-                    "BOXED_PRIMITIVE_VALUE_EQUALITY");
-            observed.addProperty("concretePrimitiveValue", "10");
-            observed.addProperty("expressionEnvelopeKind",
-                    "CONCRETE_PRIMITIVE");
-            observed.addProperty("expressionEnvelopeSymbolic", false);
-            observed.addProperty("expressionEnvelopeAuthority",
-                    "VM_EXACT_CONCRETE_BOXED_PRIMITIVE_V1");
-            observed.addProperty("expressionEnvelopeJavaTypeDescriptor",
-                    "I");
-        }
+        observed.add("expression", exitExpression.deepCopy());
 
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
         raw.addProperty("activationId", "ACT.FIELD");
         raw.addProperty("regionId", "REGION.FIELD");
         raw.addProperty("exitKind", exitKind);
-        JsonArray unresolvedInputs = new JsonArray();
-        if (projectedDischarge) {
-            unresolvedInputs.add("REGION.FIELD.out.0.capture.0: "
-                    + "field-assignment expression capture failed");
-        }
-        raw.add("unresolvedInputs", unresolvedInputs);
-        raw.add("symbolizedInputs", frameCondition
-                ? singletonString("REGION.FIELD.in.0.value")
-                : projectedDischarge
-                ? new JsonArray()
-                : singletonString("REGION.FIELD.in.0"));
+        raw.add("unresolvedInputs", new JsonArray());
+        raw.add("symbolizedInputs",
+                singletonString("REGION.FIELD.in.0"));
         raw.add("rootOutputExpression", constant("Y_L_NULL", "L"));
-        raw.add("outputCaptures", frameCondition
-                ? new JsonArray() : singletonObject(observed));
-        if (frameCondition) {
-            JsonObject executionCounts = new JsonObject();
-            executionCounts.addProperty(
-                    "REGION.FIELD.out.0.capture.0",
-                    "FRAME_CONDITION_EXECUTED".equals(guardMode)
-                            ? 1 : 0);
-            raw.add("outputCaptureExecutionCounts", executionCounts);
-        }
+        raw.add("outputCaptures", "NORMAL".equals(exitKind)
+                ? singletonObject(observed) : new JsonArray());
         if (exactVmGuard || projectedDischarge) {
             JsonArray runtimeHeapObservations = new JsonArray();
             if (projectedDischarge) {
@@ -3762,7 +3695,7 @@ public class ConcolicSummaryImporterTest {
                     operation, mapPort, mapCell, outputPort, outputCell,
                     fieldSignature, index, 501L, 601L + index, 701L, true);
             JsonObject binding = new JsonObject();
-            binding.addProperty("schemaVersion", 3);
+            binding.addProperty("schemaVersion", 2);
             binding.addProperty("kind",
                     "DYNAMIC_MAP_VALUE_OUTPUT_ARRAY_ELEMENT_FIELD_BINDING");
             binding.addProperty("dynamicBindingId",
@@ -4321,8 +4254,6 @@ public class ConcolicSummaryImporterTest {
                 ? activation.getAsJsonArray("requestedOutputCapture")
                 .deepCopy() : new JsonArray();
         slice.add("captureBindings", captures);
-        slice.addProperty("captureBindingsRequired",
-                captures.size() > 0);
         slice.addProperty("captureBindingsComplete",
                 !activation.has("requestedOutputCaptureComplete")
                         || activation.get(

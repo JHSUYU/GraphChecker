@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -26,7 +27,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.va
  * capture and materialization proofs.</p>
  */
 public final class OutputClosureCodec {
-    private static final int MAX_MEMBERS = 128;
     private static final Set<String> OUTPUT_KINDS = set(
             "REGION_OUTPUT", "SINK_STATE", "HEAP_STATE",
             "FAILURE_PREDICATE", "RETURN");
@@ -81,10 +81,9 @@ public final class OutputClosureCodec {
                         requireLong(scope, "rootCallId"));
 
         JsonArray rows = requireArray(envelope, "members");
-        if (rows.size() == 0 || rows.size() > MAX_MEMBERS) {
+        if (rows.size() == 0) {
             throw new IllegalArgumentException(
-                    "outputClosure.members must contain 1.." + MAX_MEMBERS
-                            + " members");
+                    "outputClosure.members must not be empty");
         }
         List<OutputClosureContract.Member> members = new ArrayList<>();
         String previous = "";
@@ -222,6 +221,16 @@ public final class OutputClosureCodec {
         return result;
     }
 
+    public static List<OutputCaptureSpec> captureSpecs(
+            OutputClosureContract contract) {
+        List<OutputCaptureSpec> result = new ArrayList<>();
+        for (JsonElement capture : captures(contract)) {
+            result.add(OutputCaptureSpec.decodeValidated(
+                    capture.getAsJsonObject()));
+        }
+        return Collections.unmodifiableList(result);
+    }
+
     private static OutputClosureContract.Member decodeMember(
             JsonObject encoded, int index) {
         String path = "outputClosure.members[" + index + "]";
@@ -239,9 +248,8 @@ public final class OutputClosureCodec {
 
         JsonObject slice = requireObject(encoded, "slice");
         validateSliceShape(slice, port, cell, path + ".slice");
-        boolean required = requireBoolean(slice, "captureBindingsRequired");
         JsonArray bindings = requireArray(slice, "captureBindings");
-        validateCaptureLedger(bindings, required, port, cell, path,
+        validateCaptureLedger(bindings, port, cell, path,
                 descriptor);
         return new OutputClosureContract.Member(output, slice);
     }
@@ -255,17 +263,16 @@ public final class OutputClosureCodec {
         }
         for (String name : SCOPE_ARRAYS) stringSet(slice, name);
         requireArray(slice, "captureBindings");
-        requireBoolean(slice, "captureBindingsRequired");
         requireBoolean(slice, "captureBindingsComplete");
+        if (slice.has("captureBindingsRequired")) {
+            throw new IllegalArgumentException(
+                    path + " contains retired captureBindingsRequired");
+        }
     }
 
     private static void validateCaptureLedger(
-            JsonArray bindings, boolean required, String port, String cell,
+            JsonArray bindings, String port, String cell,
             String path, String descriptor) {
-        if (required != (bindings.size() > 0)) {
-            throw new IllegalArgumentException(
-                    path + " capture ledger is inconsistent");
-        }
         Set<String> ids = new LinkedHashSet<>();
         for (int i = 0; i < bindings.size(); i++) {
             if (!bindings.get(i).isJsonObject()) {
@@ -281,27 +288,48 @@ public final class OutputClosureCodec {
                         path + " capture identity is inconsistent");
             }
             String captureKind = requireText(binding, "captureKind");
-            if ("FIELD_ASSIGNMENT_RHS".equals(captureKind)) {
-                validateFieldEndpoint(binding, cell, path);
+            if ("REGION_EXIT_FIELD".equals(captureKind)) {
+                validateExitFieldEndpoint(binding, cell, path, descriptor);
             } else if ("CALL_ARGUMENT".equals(captureKind)) {
                 validateCallEndpoint(binding, cell, descriptor, path);
+            } else {
+                throw new IllegalArgumentException(
+                        path + " capture kind is unsupported: "
+                                + captureKind);
             }
         }
     }
 
-    private static void validateFieldEndpoint(
-            JsonObject binding, String cell, String path) {
-        String method = requireText(binding, "method");
-        int unit = requireNonNegativeInt(binding, "unitIndex");
-        if (!requireText(binding, "siteId").equals(method + "#u" + unit)
-                || !cell.equals(requireText(binding, "fieldSignature"))) {
+    private static void validateExitFieldEndpoint(
+            JsonObject binding, String cell, String path,
+            String descriptor) {
+        Set<String> fields = set("captureKind", "captureBindingId",
+                "outputPort", "outputCell", "accessRootInputPort",
+                "fieldPath", "fieldSignature", "javaType");
+        DeclaredField field = FieldPathSpec.declaredField(
+                requireText(binding, "fieldSignature"));
+        List<String> fieldPath = FieldPathSpec.stringArray(binding,
+                "fieldPath");
+        String javaType = requireText(binding, "javaType");
+        if (!binding.keySet().equals(fields)
+                || field == null || !cell.equals(
+                requireText(binding, "fieldSignature"))
+                || fieldPath.isEmpty()
+                || !field.name().equals(fieldPath.get(fieldPath.size() - 1))
+                || !field.type().equals(javaType)
+                || !descriptor.equals(javaTypeDescriptor(javaType))) {
             throw new IllegalArgumentException(
-                    path + " field capture endpoint is inconsistent");
+                    path + " region-exit field capture is inconsistent");
         }
+        requireText(binding, "accessRootInputPort");
     }
 
     private static void validateCallEndpoint(
             JsonObject binding, String cell, String descriptor, String path) {
+        Set<String> fields = set("captureKind", "captureBindingId",
+                "outputPort", "outputCell", "callerMethod", "unitIndex",
+                "siteId", "calleeMethod", "argumentIndex", "argumentCell",
+                "occurrence");
         String caller = requireText(binding, "callerMethod");
         int unit = requireNonNegativeInt(binding, "unitIndex");
         String callee = requireText(binding, "calleeMethod");
@@ -311,10 +339,13 @@ public final class OutputClosureCodec {
                 ? cell.substring(formalPrefix.length()).trim() : "";
         String parameterType = methodParameterType(callee, argument);
         String endpointDescriptor = javaTypeDescriptor(formalType);
-        if (!requireText(binding, "siteId").equals(caller + "#u" + unit)
+        if (!binding.keySet().equals(fields)
+                || !requireText(binding, "siteId").equals(
+                caller + "#u" + unit)
                 || formalType.isEmpty()
                 || !formalType.equals(parameterType)
-                || !descriptor.equals(endpointDescriptor)) {
+                || !descriptor.equals(endpointDescriptor)
+                || requireNonNegativeInt(binding, "occurrence") < 1) {
             throw new IllegalArgumentException(
                     path + " call capture endpoint is inconsistent");
         }

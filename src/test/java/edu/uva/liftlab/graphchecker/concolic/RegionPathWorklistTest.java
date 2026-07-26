@@ -199,19 +199,18 @@ public class RegionPathWorklistTest {
                     .get("cell").getAsString();
             JsonObject capture = new JsonObject();
             capture.addProperty("captureBindingId",
-                    "CAPTURE.JOINT." + index);
-            capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
+                    "CAPTURE.JOINT.EXIT." + index);
+            capture.addProperty("captureKind", "REGION_EXIT_FIELD");
             capture.addProperty("outputPort", port);
             capture.addProperty("outputCell", cell);
-            capture.addProperty("method", "<P: void produce()>");
-            capture.addProperty("unitIndex", index);
-            capture.addProperty("siteId",
-                    "<P: void produce()>#u" + index);
+            capture.addProperty("accessRootInputPort", "REGION.3.in.0");
+            JsonArray fieldPath = new JsonArray();
+            fieldPath.add(index == 0 ? "x" : "y");
+            capture.add("fieldPath", fieldPath);
             capture.addProperty("fieldSignature", cell);
+            capture.addProperty("javaType", "int");
             JsonArray captures = new JsonArray();
             captures.add(capture);
-            member.getAsJsonObject("slice").addProperty(
-                    "captureBindingsRequired", true);
             member.getAsJsonObject("slice").add(
                     "captureBindings", captures);
         }
@@ -552,7 +551,6 @@ public class RegionPathWorklistTest {
         slice.add("methods", new JsonArray());
         slice.add("causalEdgeIds", new JsonArray());
         slice.add("captureBindings", new JsonArray());
-        slice.addProperty("captureBindingsRequired", false);
         slice.addProperty("captureBindingsComplete", true);
         slice.addProperty("proofTag", proofTag);
 

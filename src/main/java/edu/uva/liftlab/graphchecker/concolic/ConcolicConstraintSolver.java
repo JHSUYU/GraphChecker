@@ -8,6 +8,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.DynamicBindingSpec;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 
 import java.io.ByteArrayOutputStream;
@@ -1575,11 +1576,18 @@ public final class ConcolicConstraintSolver {
                             + ":NOT_AN_OBJECT");
                     continue;
                 }
-                DynamicFieldBinding binding = new DynamicFieldBinding(
-                        element.getAsJsonObject());
-                String problem = binding.validationProblem();
-                if (!problem.isEmpty()) {
-                    result.problems.add("BINDING_" + index + ":" + problem);
+                final DynamicFieldBinding binding;
+                try {
+                    DynamicBindingSpec spec = DynamicBindingSpec.decode(
+                            element.getAsJsonObject());
+                    if (DynamicBindingSpec.MAP_OUTPUT_ELEMENT_KIND.equals(
+                            spec.kind())) {
+                        continue;
+                    }
+                    binding = new DynamicFieldBinding(spec);
+                } catch (IllegalArgumentException malformed) {
+                    result.problems.add("BINDING_" + index
+                            + ":INVALID_CANONICAL_BINDING");
                     continue;
                 }
                 if (!ids.add(binding.dynamicBindingId)) {
@@ -1627,10 +1635,6 @@ public final class ConcolicConstraintSolver {
     }
 
     private static final class DynamicFieldBinding {
-        private static final String MAP_KIND =
-                "DYNAMIC_MAP_ENTRY_FIELD_BINDING";
-        private static final String CONTAINER_KIND =
-                "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING";
         /**
          * A map-entry field model is rebound in the replay JVM by the exact
          * static field-family port, getter site and dynamic occurrence.  The
@@ -1642,9 +1646,7 @@ public final class ConcolicConstraintSolver {
         private static final String FRESH_MAP_ENTRY_REBINDING_AUTHORITY =
                 "EXACT_BASE_PORT_GETTER_SITE_OCCURRENCE_THEN_"
                         + "FRESH_ENTRY_REBIND_V1";
-        private static final String CONTAINER_REPLAY_REBINDING_AUTHORITY =
-                "EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_LOCAL_"
-                        + "IDENTITY_REBIND_V1";
+        private final DynamicBindingSpec spec;
         private final JsonObject raw;
         private final String dynamicBindingId;
         private final String baseInputSymbol;
@@ -1652,76 +1654,19 @@ public final class ConcolicConstraintSolver {
         private final String materializationSiteId;
         private final int materializationOccurrence;
 
-        private DynamicFieldBinding(JsonObject raw) {
-            this.raw = raw.deepCopy();
-            dynamicBindingId = string(raw, "dynamicBindingId");
-            baseInputSymbol = string(raw, "baseInputSymbol");
-            dynamicFieldSymbol = string(raw, "dynamicFieldSymbol");
-            materializationSiteId = string(raw,
-                    "materializationSiteId");
-            materializationOccurrence = integer(raw,
-                    "materializationOccurrence", -1);
-        }
-
-        private String validationProblem() {
-            String kind = string(raw, "kind");
-            boolean map = MAP_KIND.equals(kind);
-            boolean container = CONTAINER_KIND.equals(kind);
-            if (!map && !container) return "WRONG_KIND";
-            int expectedSchema = container ? 3 : 1;
-            if (integer(raw, "schemaVersion", -1) != expectedSchema)
-                return "UNSUPPORTED_SCHEMA_VERSION";
-            if (baseInputSymbol.isEmpty()) return "MISSING_BASE_INPUT";
-            if (dynamicFieldSymbol.isEmpty()) return "MISSING_DYNAMIC_SYMBOL";
-            if (materializationSiteId.isEmpty())
-                return "MISSING_MATERIALIZATION_SITE";
-            if (materializationOccurrence < 1)
-                return "INVALID_MATERIALIZATION_OCCURRENCE";
-            if (dynamicBindingId.isEmpty())
-                return "MISSING_DYNAMIC_BINDING_ID";
-            if (!dynamicFieldSymbol.isEmpty()
-                    && !dynamicBindingId.equals("DYNAMIC_FIELD:"
-                    + dynamicFieldSymbol))
-                return "BINDING_ID_SYMBOL_MISMATCH";
-            String expected = baseInputSymbol + ".field."
-                    + sha256(materializationSiteId).substring(0, 12)
-                    + ".occ." + materializationOccurrence;
-            if (!expected.equals(dynamicFieldSymbol))
-                return "DYNAMIC_SYMBOL_SITE_OCCURRENCE_MISMATCH";
-            return container ? containerSelectorProblem() : "";
-        }
-
-        private String containerSelectorProblem() {
-            JsonObject selector = object(raw, "containerSelector");
-            if (selector.size() == 0) return "MISSING_CONTAINER_SELECTOR";
-            String bindingId = string(selector, "bindingId");
-            String containerPort = string(selector, "containerInputPort");
-            String containerCell = string(selector, "containerInputCell");
-            int index = integer(selector, "elementIndex", -1);
-            int occurrence = integer(selector, "elementOccurrence", -1);
-            if (!"ARRAY_INDEX".equals(string(selector, "kind")))
-                return "WRONG_CONTAINER_SELECTOR_KIND";
-            if (bindingId.isEmpty()) return "MISSING_CONTAINER_BINDING_ID";
-            if (containerPort.isEmpty() || containerCell.isEmpty())
-                return "MISSING_CONTAINER_ENDPOINT";
-            if (containerPort.equals(baseInputSymbol))
-                return "CONTAINER_PORT_EQUALS_BASE_INPUT";
-            if (!"EXACT_ARRAY_INDEX".equals(string(selector,
-                    "selectorAuthority")))
-                return "NON_EXACT_CONTAINER_SELECTOR";
-            if (index < 0) return "INVALID_CONTAINER_ELEMENT_INDEX";
-            if (occurrence < 1
-                    || occurrence != materializationOccurrence)
-                return "CONTAINER_OCCURRENCE_MISMATCH";
-            if (string(selector, "declaredFieldOwnerClass").isEmpty())
-                return "MISSING_DECLARED_FIELD_OWNER";
-            if (string(selector, "declaredFieldType").isEmpty())
-                return "MISSING_DECLARED_FIELD_TYPE";
-            return "";
+        private DynamicFieldBinding(DynamicBindingSpec spec) {
+            this.spec = spec;
+            raw = spec.toJson();
+            dynamicBindingId = spec.dynamicBindingId();
+            baseInputSymbol = spec.baseInputSymbol();
+            dynamicFieldSymbol = spec.dynamicFieldSymbol();
+            materializationSiteId = spec.materializationSiteId();
+            materializationOccurrence = spec.materializationOccurrence();
         }
 
         private boolean isContainerElement() {
-            return CONTAINER_KIND.equals(string(raw, "kind"));
+            return DynamicBindingSpec.CONTAINER_ELEMENT_KIND.equals(
+                    spec.kind());
         }
 
         /**
@@ -1743,8 +1688,8 @@ public final class ConcolicConstraintSolver {
                     "accessSiteId"))) {
                 return false;
             }
-            String signature = string(raw, "fieldSignature");
-            List<String> expectedPath = fieldPath();
+            String signature = spec.fieldSignature();
+            List<String> expectedPath = spec.fieldPath();
             List<String> actionPath = new ArrayList<>();
             for (JsonElement segment : array(action, "fieldPath")) {
                 if (!segment.isJsonPrimitive()
@@ -1754,7 +1699,7 @@ public final class ConcolicConstraintSolver {
                 }
                 actionPath.add(segment.getAsString());
             }
-            JsonObject selector = object(raw, "containerSelector");
+            DynamicBindingSpec.SelectorSpec selector = spec.selector();
             return !signature.isEmpty()
                     && expectedPath.size() >= 2
                     && expectedPath.size() <= 4
@@ -1762,24 +1707,22 @@ public final class ConcolicConstraintSolver {
                     && signature.equals(string(action, "field"))
                     && signature.equals(string(action,
                     "leafFieldSignature"))
-                    && string(selector, "declaredFieldOwnerClass").equals(
+                    && selector.declaredFieldOwnerClass().equals(
                     string(action, "leafOwnerClass"))
                     && expectedPath.get(expectedPath.size() - 1).equals(
                     string(action, "leafField"));
         }
 
         private String containerInputPort() {
-            return string(object(raw, "containerSelector"),
-                    "containerInputPort");
+            return spec.selector().containerInputPort();
         }
 
         private String containerInputCell() {
-            return string(object(raw, "containerSelector"),
-                    "containerInputCell");
+            return spec.selector().containerInputCell();
         }
 
         private List<String> fieldPath() {
-            return stringList(array(raw, "fieldPath"));
+            return spec.fieldPath();
         }
 
         private void copySelectorTo(JsonObject assignment) {
@@ -1794,20 +1737,13 @@ public final class ConcolicConstraintSolver {
             copy(raw, assignment, "fieldSignature");
             copy(raw, assignment, "fieldPath");
             assignment.addProperty("dynamicFieldBindingKind",
-                    string(raw, "kind"));
+                    spec.kind());
             if (isContainerElement()) {
-                JsonObject runtime = object(raw, "containerSelector");
-                JsonObject container = new JsonObject();
-                for (String member : new String[]{"kind", "bindingId",
-                        "containerInputPort", "containerInputCell",
-                        "selectorAuthority", "elementIndex",
-                        "elementOccurrence", "declaredFieldOwnerClass",
-                        "declaredFieldType"}) {
-                    copy(runtime, container, member);
-                }
-                assignment.add("containerSelector", container.deepCopy());
+                assignment.add("containerSelector",
+                        spec.selector().toJson());
                 assignment.addProperty("containerReplayRebindingAuthority",
-                        CONTAINER_REPLAY_REBINDING_AUTHORITY);
+                        DynamicBindingSpec.SelectorSpec
+                                .CONTAINER_REPLAY_REBINDING_AUTHORITY);
                 assignment.addProperty(
                         "sourceContainerObjectTokensRetained", false);
             } else {

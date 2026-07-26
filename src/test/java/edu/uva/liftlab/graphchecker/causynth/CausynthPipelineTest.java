@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -130,7 +131,6 @@ public class CausynthPipelineTest {
             slice.add("staticSites", new JsonArray());
             slice.add("methods", new JsonArray());
             slice.add("causalEdgeIds", new JsonArray());
-            slice.addProperty("captureBindingsRequired", true);
             slice.addProperty("captureBindingsComplete", true);
             slice.add("captureBindings",
                     singletonJsonArray(capture.deepCopy()));
@@ -205,8 +205,7 @@ public class CausynthPipelineTest {
                     captures, "I", "I");
             writePlanRow(plan, activation);
 
-            List<ConcolicInstrumentationSelections.OutputCaptureTarget>
-                    selection =
+            List<OutputCaptureSpec> selection =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
                             plan, "TASK.JOINT.CAPTURE")
@@ -353,8 +352,7 @@ public class CausynthPipelineTest {
             System.setProperty("causynth.concolic.task.id",
                     "TASK.CAPTURE");
 
-            List<ConcolicInstrumentationSelections.OutputCaptureTarget>
-                    selection =
+            List<OutputCaptureSpec> selection =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
                             plan, "TASK.CAPTURE").outputCaptures();
@@ -391,7 +389,7 @@ public class CausynthPipelineTest {
     }
 
     @Test
-    public void instrumentsExactFieldAssignmentRhsAfterSuccessfulWrite()
+    public void capturesExactFieldStateAtNormalRegionExit()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -399,39 +397,36 @@ public class CausynthPipelineTest {
             G.reset();
             Scene.v().addClass(new SootClass("java.lang.String",
                     Modifier.PUBLIC));
-            SootClass holderClass = new SootClass("example.CaptureHolder",
-                    Modifier.PUBLIC);
-            Scene.v().addClass(holderClass);
-            SootField field = new SootField("value",
-                    RefType.v("java.lang.String"), Modifier.PUBLIC);
-            holderClass.addField(field);
-
             SootClass owner = new SootClass("example.FieldCaptureRegion",
                     Modifier.PUBLIC);
             Scene.v().addClass(owner);
             owner.setApplicationClass();
-            SootMethod root = new SootMethod("run", Arrays.asList(
-                    RefType.v(holderClass.getName()),
-                    RefType.v("java.lang.String")), VoidType.v(),
-                    Modifier.PUBLIC | Modifier.STATIC);
+            SootField field = new SootField("value",
+                    RefType.v("java.lang.String"), Modifier.PUBLIC);
+            owner.addField(field);
+            SootMethod root = new SootMethod("run",
+                    Collections.singletonList(RefType.v("java.lang.String")),
+                    VoidType.v(), Modifier.PUBLIC);
             owner.addMethod(root);
             Body body = Jimple.v().newBody(root);
             root.setActiveBody(body);
-            Local holder = Jimple.v().newLocal("holder",
-                    RefType.v(holderClass.getName()));
+            Local receiver = Jimple.v().newLocal("receiver",
+                    RefType.v(owner.getName()));
             Local rhs = Jimple.v().newLocal("rhs",
                     RefType.v("java.lang.String"));
-            body.getLocals().add(holder);
+            body.getLocals().add(receiver);
             body.getLocals().add(rhs);
-            body.getUnits().add(Jimple.v().newIdentityStmt(holder,
-                    Jimple.v().newParameterRef(holder.getType(), 0)));
+            body.getUnits().add(Jimple.v().newIdentityStmt(receiver,
+                    Jimple.v().newThisRef(
+                            (RefType) receiver.getType())));
             body.getUnits().add(Jimple.v().newIdentityStmt(rhs,
-                    Jimple.v().newParameterRef(rhs.getType(), 1)));
+                    Jimple.v().newParameterRef(rhs.getType(), 0)));
             AssignStmt write = Jimple.v().newAssignStmt(
-                    Jimple.v().newInstanceFieldRef(holder, field.makeRef()),
+                    Jimple.v().newInstanceFieldRef(receiver, field.makeRef()),
                     rhs);
             body.getUnits().add(write);
-            body.getUnits().add(Jimple.v().newReturnVoidStmt());
+            Unit exit = Jimple.v().newReturnVoidStmt();
+            body.getUnits().add(exit);
 
             Path plan = folder.getRoot().toPath().resolve(
                     "field-activation.jsonl");
@@ -441,25 +436,30 @@ public class CausynthPipelineTest {
             admitExecutable(activation,
                     "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
             JsonObject capture = new JsonObject();
-            capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
+            capture.addProperty("captureKind", "REGION_EXIT_FIELD");
             capture.addProperty("captureBindingId",
-                    "REGION.FIELD.out.0.capture.0");
+                    "REGION.FIELD.out.0.exit-field");
             capture.addProperty("outputPort", "REGION.FIELD.out.0");
             capture.addProperty("outputCell", field.getSignature());
-            capture.addProperty("method", root.getSignature());
-            capture.addProperty("unitIndex", 2);
-            capture.addProperty("siteId", root.getSignature() + "#u2");
+            capture.addProperty("accessRootInputPort",
+                    "REGION.FIELD.in.0");
+            capture.add("fieldPath", singletonJsonArray("value"));
             capture.addProperty("fieldSignature", field.getSignature());
-            capture.addProperty("occurrence", 1);
+            capture.addProperty("javaType", "java.lang.String");
             JsonArray captures = new JsonArray();
             captures.add(capture);
             attachDirectOutputClosure(activation, "REGION.FIELD", 0,
                     captures, "Ljava/lang/String;");
+            JsonObject accessRoot = new JsonObject();
+            accessRoot.addProperty("symbol", "REGION.FIELD.in.0");
+            accessRoot.addProperty("location", "RECEIVER_FIELD");
+            accessRoot.addProperty("mode", "SYMBOLIC");
+            activation.add("inputActions",
+                    singletonJsonArray(accessRoot));
             Files.write(plan, (activation + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
-            List<ConcolicInstrumentationSelections.OutputCaptureTarget>
-                    selection =
+            List<OutputCaptureSpec> selection =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
                             plan, "TASK.FIELD.CAPTURE")
@@ -471,16 +471,17 @@ public class CausynthPipelineTest {
             create.setAccessible(true);
             Object refs = create.invoke(null);
             Method instrument = CausynthPipeline.class.getDeclaredMethod(
-                    "instrumentConcolicOutputCaptures",
+                    "instrumentRegionExitFieldCaptures",
+                    Body.class, Unit.class, soot.Value.class,
                     Collection.class,
                     refsClass);
             instrument.setAccessible(true);
-            instrument.invoke(new CausynthPipeline(null), selection, refs);
+            instrument.invoke(new CausynthPipeline(null), body, exit,
+                    receiver, selection, refs);
 
             List<Unit> units = new ArrayList<>();
             for (Unit unit : body.getUnits()) units.add(unit);
             int writeIndex = units.indexOf(write);
-            int activeTokenIndex = -1;
             int hookIndex = -1;
             InvokeExpr hook = null;
             for (int index = 0; index < units.size(); index++) {
@@ -488,9 +489,7 @@ public class CausynthPipelineTest {
                 if (!(unit instanceof Stmt)
                         || !((Stmt) unit).containsInvokeExpr()) continue;
                 InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
-                if ("activeToken".equals(invoke.getMethodRef().name())) {
-                    activeTokenIndex = index;
-                } else if ("recordFieldAssignmentOutput".equals(
+                if ("recordRegionExitFieldOutput".equals(
                         invoke.getMethodRef().name())) {
                     hookIndex = index;
                     hook = invoke;
@@ -498,16 +497,16 @@ public class CausynthPipelineTest {
             }
             assertTrue(write.getRightOp() instanceof Local);
             assertTrue(writeIndex > 0);
-            assertTrue(activeTokenIndex > writeIndex);
-            assertTrue(hookIndex > activeTokenIndex);
+            assertTrue(hookIndex > writeIndex);
+            assertTrue(hookIndex < units.indexOf(exit));
             assertNotNull(hook);
-            assertEquals(root.getSignature(), hook.getArg(1).toString()
+            assertEquals("REGION.FIELD.out.0.exit-field",
+                    hook.getArg(0).toString()
                     .replace("\"", ""));
-            assertEquals(2, ((IntConstant) hook.getArg(2)).value);
-            assertEquals(field.getSignature(), hook.getArg(4).toString()
+            assertEquals(field.getSignature(), hook.getArg(3).toString()
                     .replace("\"", ""));
-            assertSame(holder, hook.getArg(9));
-            assertSame(write.getRightOp(), hook.getArg(10));
+            assertSame(receiver, hook.getArg(4));
+            assertTrue(hook.getArg(5) instanceof Local);
         } finally {
             folder.delete();
         }

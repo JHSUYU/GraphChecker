@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import org.junit.Assume;
 import org.junit.Test;
@@ -597,7 +598,6 @@ public class ConcolicSmtComposerTest {
         slice.add("methods", new JsonArray());
         slice.add("causalEdgeIds", new JsonArray());
         slice.add("captureBindings", new JsonArray());
-        slice.addProperty("captureBindingsRequired", false);
         slice.addProperty("captureBindingsComplete", true);
 
         JsonObject member = new JsonObject();
@@ -656,15 +656,19 @@ public class ConcolicSmtComposerTest {
                     "STATIC_EXACT_OUTPUT_PORT");
 
             JsonObject capture = new JsonObject();
-            capture.addProperty("captureBindingId", "CAPTURE."
-                    + proofSuffix + "." + index);
-            capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
+            capture.addProperty("captureBindingId",
+                    outputPort + ".exit-field");
+            capture.addProperty("captureKind", "REGION_EXIT_FIELD");
             capture.addProperty("outputPort", outputPort);
             capture.addProperty("outputCell", outputCell);
-            capture.addProperty("method", method);
-            capture.addProperty("unitIndex", 20 + index);
-            capture.addProperty("siteId", site);
+            capture.addProperty("accessRootInputPort", inputPort);
+            JsonArray fieldPath = new JsonArray();
+            FieldPathSpec.DeclaredField field =
+                    FieldPathSpec.declaredField(outputCell);
+            fieldPath.add(field.name());
+            capture.add("fieldPath", fieldPath);
             capture.addProperty("fieldSignature", outputCell);
+            capture.addProperty("javaType", field.type());
             JsonArray captures = new JsonArray();
             captures.add(capture);
 
@@ -678,7 +682,6 @@ public class ConcolicSmtComposerTest {
             slice.add("causalEdgeIds", singletonString(
                     "DF." + proofSuffix + "." + index));
             slice.add("captureBindings", captures);
-            slice.addProperty("captureBindingsRequired", true);
             slice.addProperty("captureBindingsComplete", true);
 
             JsonObject member = new JsonObject();
@@ -1422,7 +1425,7 @@ public class ConcolicSmtComposerTest {
             String observationId, String dynamicFieldSymbol,
             String taskId) {
         JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", 1);
+        result.addProperty("schemaVersion", 2);
         result.addProperty("kind", "DYNAMIC_MAP_ENTRY_FIELD_BINDING");
         result.addProperty("dynamicBindingId",
                 "DYNAMIC_FIELD:" + dynamicFieldSymbol);
@@ -1457,7 +1460,7 @@ public class ConcolicSmtComposerTest {
         String bindingId = "BIND_ARRAY_" + index;
         String method = "<example.Store: void update(example.Keys)>";
         JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", 3);
+        result.addProperty("schemaVersion", 2);
         result.addProperty("kind",
                 "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
         result.addProperty("dynamicBindingId", "DYNAMIC_FIELD:" + dynamic);
@@ -1529,7 +1532,7 @@ public class ConcolicSmtComposerTest {
             String dynamic = "REGION.P.in.5.field.cccccccccccc.occ."
                     + (index + 1);
             JsonObject binding = new JsonObject();
-            binding.addProperty("schemaVersion", 3);
+            binding.addProperty("schemaVersion", 2);
             binding.addProperty("kind",
                     "DYNAMIC_MAP_VALUE_OUTPUT_ARRAY_ELEMENT_FIELD_BINDING");
             binding.addProperty("dynamicBindingId",

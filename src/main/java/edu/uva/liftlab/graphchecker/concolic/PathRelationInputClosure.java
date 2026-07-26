@@ -12,10 +12,10 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/** Path-local input closure for exact VM-guarded constant outputs. */
+/** Path-local input closure for exact VM-observed constant outputs. */
 final class PathRelationInputClosure {
     private static final String FIELD_CONSTANT_AUTHORITY =
-            "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_PATH_GUARD";
+            "EXACT_REGION_EXIT_FIELD";
 
     private PathRelationInputClosure() {
     }

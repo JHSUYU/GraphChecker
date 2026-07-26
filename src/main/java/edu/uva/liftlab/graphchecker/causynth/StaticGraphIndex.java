@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -10,7 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-/** Input-order-preserving indexes over finalized static edge rows. */
+/** Canonical input-order-preserving graph and method-fact index. */
 final class StaticGraphIndex {
     private static final Pattern DECLARED_FIELD = Pattern.compile(
             "^<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>$");
@@ -19,20 +20,22 @@ final class StaticGraphIndex {
     private final Map<String, List<Map<String, Object>>> incoming;
     private final Map<String, List<Map<String, Object>>> outgoing;
     private final Map<String, List<Map<String, Object>>> byId;
-    private final Map<String, List<String>> inputsByMethod =
+    private final Map<String, MethodFacts> methods = new LinkedHashMap<>();
+    private final Map<String, List<Map<String, Object>>> methodSets =
             new LinkedHashMap<>();
-    private final Map<String, List<String>> outputsByMethod =
-            new LinkedHashMap<>();
-    private final Map<String, List<String>> sitesByMethod =
-            new LinkedHashMap<>();
-    private final Set<String> symbolicMethods = new LinkedHashSet<>();
 
     StaticGraphIndex(List<Map<String, Object>> source) {
         edges = source;
-        byMethod = index("method");
-        incoming = index("toCell");
-        outgoing = index("fromCell");
-        byId = index("id");
+        byMethod = new LinkedHashMap<>();
+        incoming = new LinkedHashMap<>();
+        outgoing = new LinkedHashMap<>();
+        byId = new LinkedHashMap<>();
+        for (Map<String, Object> edge : edges) {
+            add(byMethod, key(edge, "method"), edge);
+            add(incoming, key(edge, "toCell"), edge);
+            add(outgoing, key(edge, "fromCell"), edge);
+            add(byId, key(edge, "id"), edge);
+        }
         indexMethodFacts();
     }
 
@@ -56,28 +59,58 @@ final class StaticGraphIndex {
         return byId.getOrDefault(id, Collections.emptyList());
     }
 
+    List<Map<String, Object>> withIds(Collection<String> ids) {
+        Set<String> selected = new LinkedHashSet<>(ids);
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> edge : edges) {
+            if (selected.contains(key(edge, "id"))) {
+                result.add(edge);
+            }
+        }
+        return result;
+    }
+
+    List<Map<String, Object>> forMethods(Collection<String> selected) {
+        List<String> ordered = new ArrayList<>(selected);
+        Collections.sort(ordered);
+        String key = String.join("\n", ordered);
+        List<Map<String, Object>> cached = methodSets.get(key);
+        if (cached == null) {
+            cached = new ArrayList<>();
+            for (String method : ordered) {
+                cached.addAll(forMethod(method));
+            }
+            methodSets.put(key, cached);
+        }
+        return cached;
+    }
+
     Set<String> methods() {
-        return inputsByMethod.keySet();
+        return methods.keySet();
     }
 
     boolean hasMethod(String method) {
-        return inputsByMethod.containsKey(method);
+        return methods.containsKey(method);
     }
 
     boolean requiresSymbolicExecution(String method) {
-        return symbolicMethods.contains(method);
+        MethodFacts facts = methods.get(method);
+        return facts != null && facts.symbolic;
     }
 
     List<String> inputs(String method) {
-        return inputsByMethod.getOrDefault(method, Collections.emptyList());
+        MethodFacts facts = methods.get(method);
+        return facts == null ? Collections.emptyList() : facts.inputs;
     }
 
     List<String> outputs(String method) {
-        return outputsByMethod.getOrDefault(method, Collections.emptyList());
+        MethodFacts facts = methods.get(method);
+        return facts == null ? Collections.emptyList() : facts.outputs;
     }
 
     List<String> sites(String method) {
-        return sitesByMethod.getOrDefault(method, Collections.emptyList());
+        MethodFacts facts = methods.get(method);
+        return facts == null ? Collections.emptyList() : facts.sites;
     }
 
     private void indexMethodFacts() {
@@ -87,34 +120,38 @@ final class StaticGraphIndex {
             if (method.isEmpty()) continue;
             Set<String> inputs = new LinkedHashSet<>();
             Set<String> outputs = new LinkedHashSet<>();
-            Set<String> heapInputs = new LinkedHashSet<>();
-            Set<String> environmentInputs = new LinkedHashSet<>();
-            Set<String> transfers = new LinkedHashSet<>();
+            Set<String> forcedInputs = new LinkedHashSet<>();
             Set<String> sites = new LinkedHashSet<>();
             boolean guard = false;
             boolean exception = false;
+            boolean symbolic = false;
             for (Map<String, Object> edge : entry.getValue()) {
                 String from = key(edge, "fromCell");
                 String to = key(edge, "toCell");
                 String transfer = key(edge, "transferKind");
                 if (!from.isEmpty()) inputs.add(from);
                 if (!to.isEmpty()) outputs.add(to);
-                if (!transfer.isEmpty()) transfers.add(transfer);
                 String site = key(edge, "siteId");
                 if (!site.isEmpty()) sites.add(site);
                 if ("HEAP_READ".equals(transfer)
                         || "HEAP_LOOKUP".equals(transfer)
                         || from.contains("#field:")
                         || DECLARED_FIELD.matcher(from).matches()) {
-                    heapInputs.add(from);
+                    forcedInputs.add(from);
                 }
                 guard |= "GUARD".equals(transfer);
                 exception |= "EXCEPTION".equals(transfer);
+                symbolic |= "COMPUTE".equals(transfer)
+                        || "HEAP_WRITE".equals(transfer)
+                        || "MODEL_TRANSFORM".equals(transfer)
+                        || "PROTOCOL_TRANSFER".equals(transfer)
+                        || "CONSTRUCT".equals(transfer)
+                        || "UNKNOWN".equals(transfer);
                 String unit = key(edge, "unit").toLowerCase(Locale.ROOT);
                 if (unit.contains("time.now")
                         || unit.contains("currenttimemillis")
                         || unit.contains("nanotime")) {
-                    environmentInputs.add("environment.now");
+                    forcedInputs.add("environment.now");
                 }
             }
             Set<String> liveIns = new LinkedHashSet<>(inputs);
@@ -126,31 +163,17 @@ final class StaticGraphIndex {
                     liveIns.add(input);
                 }
             }
-            liveIns.addAll(heapInputs);
-            liveIns.addAll(environmentInputs);
-            inputsByMethod.put(method, sorted(liveIns));
-            outputsByMethod.put(method, sorted(outputs));
-            sitesByMethod.put(method, sorted(sites));
-            if (transfers.contains("COMPUTE") || guard || exception
-                    || transfers.contains("HEAP_WRITE")
-                    || transfers.contains("MODEL_TRANSFORM")
-                    || transfers.contains("PROTOCOL_TRANSFER")
-                    || transfers.contains("CONSTRUCT")
-                    || transfers.contains("UNKNOWN")
-                    || transfers.contains("HEAP_LOOKUP")
-                    && (guard || exception)) {
-                symbolicMethods.add(method);
-            }
+            liveIns.addAll(forcedInputs);
+            symbolic |= guard || exception;
+            methods.put(method, new MethodFacts(sorted(liveIns),
+                    sorted(outputs), sorted(sites), symbolic));
         }
     }
 
-    private Map<String, List<Map<String, Object>>> index(String field) {
-        Map<String, List<Map<String, Object>>> result = new LinkedHashMap<>();
-        for (Map<String, Object> edge : edges) {
-            result.computeIfAbsent(key(edge, field),
-                    ignored -> new ArrayList<>()).add(edge);
-        }
-        return result;
+    private static void add(
+            Map<String, List<Map<String, Object>>> index, String key,
+            Map<String, Object> edge) {
+        index.computeIfAbsent(key, ignored -> new ArrayList<>()).add(edge);
     }
 
     private static String key(Map<String, Object> edge, String field) {
@@ -163,5 +186,20 @@ final class StaticGraphIndex {
         List<String> result = new ArrayList<>(values);
         Collections.sort(result);
         return result;
+    }
+
+    private static final class MethodFacts {
+        private final List<String> inputs;
+        private final List<String> outputs;
+        private final List<String> sites;
+        private final boolean symbolic;
+
+        private MethodFacts(List<String> inputs, List<String> outputs,
+                            List<String> sites, boolean symbolic) {
+            this.inputs = inputs;
+            this.outputs = outputs;
+            this.sites = sites;
+            this.symbolic = symbolic;
+        }
     }
 }

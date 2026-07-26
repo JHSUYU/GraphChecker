@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.concolic.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import soot.SootClass;
@@ -72,7 +73,7 @@ final class ConcolicInstrumentationSelections {
     static final class InstrumentationPlan {
         private final Set<String> roots;
         private final ConcolicMaterializationSelection materializations;
-        private final List<OutputCaptureTarget> outputCaptures;
+        private final List<OutputCaptureSpec> outputCaptures;
         private final boolean boundedOutputClosureCoverageReady;
 
         private InstrumentationPlan(
@@ -83,7 +84,7 @@ final class ConcolicInstrumentationSelections {
                             "method"));
             this.materializations =
                     ConcolicMaterializationSelection.fromRow(row);
-            this.outputCaptures = outputCaptureTargets(closure);
+            this.outputCaptures = outputCaptureSpecs(closure, row);
             this.boundedOutputClosureCoverageReady = closure != null
                     && boundedOutputClosureRowReady(row, closure);
         }
@@ -174,7 +175,7 @@ final class ConcolicInstrumentationSelections {
             return materializations;
         }
 
-        List<OutputCaptureTarget> outputCaptures() {
+        List<OutputCaptureSpec> outputCaptures() {
             return outputCaptures;
         }
 
@@ -867,64 +868,40 @@ final class ConcolicInstrumentationSelections {
         }
     }
 
-    private static List<OutputCaptureTarget> outputCaptureTargets(
-            OutputClosureContract closure) throws IOException {
+    private static List<OutputCaptureSpec> outputCaptureSpecs(
+            OutputClosureContract closure, JsonObject task)
+            throws IOException {
         if (closure == null) {
             return Collections.emptyList();
         }
-        List<OutputCaptureTarget> result = new ArrayList<>();
-        for (JsonElement element : OutputClosureCodec.captures(closure)) {
-            OutputCaptureTarget target = new OutputCaptureTarget(
-                    element.getAsJsonObject());
-            if (target.occurrence <= 0) {
+        List<OutputCaptureSpec> result =
+                OutputClosureCodec.captureSpecs(closure);
+        for (OutputCaptureSpec capture : result) {
+            if (capture.kind() == OutputCaptureSpec.Kind.CALL_ARGUMENT
+                    && capture.occurrence() <= 0) {
                 throw new IOException("Output capture occurrence must "
-                        + "be positive: " + target.captureBindingId);
+                        + "be positive: " + capture.captureBindingId());
             }
-            result.add(target);
+            if (capture.kind() == OutputCaptureSpec.Kind.REGION_EXIT_FIELD
+                    && !"RECEIVER_FIELD".equals(jsonString(inputAction(task,
+                    capture.accessRootInputPort()), "location"))) {
+                throw new IOException("Region-exit field capture root must "
+                        + "be a receiver field: "
+                        + capture.captureBindingId());
+            }
         }
-        return Collections.unmodifiableList(result);
+        return result;
     }
 
-    static final class OutputCaptureTarget {
-        static final String CALL_ARGUMENT = "CALL_ARGUMENT";
-        static final String FIELD_ASSIGNMENT_RHS =
-                "FIELD_ASSIGNMENT_RHS";
-
-        final String captureKind;
-        final String captureBindingId;
-        final String outputPort;
-        final String outputCell;
-        final String method;
-        final String callerMethod;
-        final int unitIndex;
-        final String siteId;
-        final String calleeMethod;
-        final int argumentIndex;
-        final String fieldSignature;
-        final int occurrence;
-
-        OutputCaptureTarget(JsonObject json) {
-            this.captureKind = jsonString(json, "captureKind");
-            this.captureBindingId = jsonString(json, "captureBindingId");
-            this.outputPort = jsonString(json, "outputPort");
-            this.outputCell = jsonString(json, "outputCell");
-            this.callerMethod = jsonString(json, "callerMethod");
-            this.method = jsonString(json, "method");
-            this.unitIndex = ConcolicMaterializationSelection.intJson(json,
-                    "unitIndex", -1);
-            this.siteId = jsonString(json, "siteId");
-            this.calleeMethod = jsonString(json, "calleeMethod");
-            this.argumentIndex = ConcolicMaterializationSelection.intJson(
-                    json, "argumentIndex", -1);
-            this.fieldSignature = jsonString(json, "fieldSignature");
-            this.occurrence = ConcolicMaterializationSelection.intJson(json,
-                    "occurrence", 0);
+    private static JsonObject inputAction(JsonObject task, String symbol) {
+        for (JsonElement element : JsonFields.array(task,
+                InputActionCatalog.FIELD)) {
+            if (element.isJsonObject() && symbol.equals(jsonString(
+                    element.getAsJsonObject(), "symbol"))) {
+                return element.getAsJsonObject();
+            }
         }
-
-        String instrumentedMethod() {
-            return FIELD_ASSIGNMENT_RHS.equals(captureKind) ? method
-                    : callerMethod;
-        }
+        return new JsonObject();
     }
 
     static final class AccessorCallTarget {

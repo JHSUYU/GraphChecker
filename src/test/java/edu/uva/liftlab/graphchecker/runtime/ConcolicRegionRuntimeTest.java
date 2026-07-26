@@ -544,30 +544,41 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void capturesExactPostAssignmentRhsWithTokenAndIdentityProof()
+    public void capturesExactFieldValueOnceAtNormalRegionExit()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
         Path results = folder.getRoot().toPath().resolve("results.jsonl");
         String root = "<example.Root: void run()>";
-        String method = "<example.Heartbeat: void install(java.lang.Object)>";
         String field = "<" + AssignmentOwner.class.getName()
                 + ": java.lang.Object assigned>";
         JsonObject activation = symbolicTask("ACT.FIELD.OUTPUT", root,
                 1);
         activation.addProperty("test", "field-output-capture-test");
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
+        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
         capture.addProperty("captureBindingId",
-                "REGION.TEST.out.field.capture.0");
+                "REGION.TEST.out.field.exit-field");
         capture.addProperty("outputPort", "REGION.TEST.out.field");
         capture.addProperty("outputCell", field);
-        capture.addProperty("method", method);
-        capture.addProperty("unitIndex", 11);
-        capture.addProperty("siteId", method + "#u11");
+        capture.addProperty("accessRootInputPort", "REGION.TEST.in.field");
+        capture.add("fieldPath", strings("assigned"));
         capture.addProperty("fieldSignature", field);
-        capture.addProperty("occurrence", 2);
+        capture.addProperty("javaType", "java.lang.Object");
+        JsonObject prestate = new JsonObject();
+        prestate.addProperty("symbol", "REGION.TEST.in.field");
+        prestate.addProperty("cell", field);
+        prestate.addProperty("sourceKind", "HEAP_PRESTATE");
+        prestate.addProperty("location", "RECEIVER_FIELD");
+        prestate.addProperty("field", field);
+        prestate.add("fieldPath", strings("assigned"));
+        prestate.addProperty("leafFieldSignature", field);
+        prestate.addProperty("leafField", "assigned");
+        prestate.addProperty("javaType", "java.lang.Object");
+        prestate.addProperty("frameConditionAuthority",
+                "RUNTIME_UNIQUE_ROOT_TO_OUTPUT_OWNER_FIELD_PATH");
+        addExecutableActions(activation, singleton(prestate));
         attachDirectOutputClosure(activation, singleton(capture),
                 "Ljava/lang/Object;");
         Files.write(plan, (activation + "\n").getBytes(
@@ -578,35 +589,16 @@ public class ConcolicRegionRuntimeTest {
         try {
             ConcolicRegionRuntime.installEngineApiForTests(
                     DelayedExpressionEngine.class);
-            long token = ConcolicRegionRuntime.enterRegion(root,
-                    new Object(), null);
+            AssignmentOwner owner = new AssignmentOwner();
+            owner.assigned = "prestate";
+            long token = ConcolicRegionRuntime.enterRegion(root, owner, null);
             assertTrue(token > 0L);
             assertEquals(token, ConcolicRegionRuntime.activeToken());
-            AssignmentOwner owner = new AssignmentOwner();
-
-            owner.assigned = "ignored-wrong-token";
-            ConcolicRegionRuntime.recordFieldAssignmentOutput(token + 1L,
-                    method, 11, method + "#u11", field,
-                    "REGION.TEST.out.field.capture.0",
-                    "REGION.TEST.out.field", field, 2,
-                    owner, owner.assigned, "");
-            owner.assigned = "ignored-wrong-site";
-            ConcolicRegionRuntime.recordFieldAssignmentOutput(token,
-                    method, 11, method + "#wrong", field,
-                    "REGION.TEST.out.field.capture.0",
-                    "REGION.TEST.out.field", field, 2,
-                    owner, owner.assigned, "");
             owner.assigned = "first";
-            ConcolicRegionRuntime.recordFieldAssignmentOutput(token,
-                    method, 11, method + "#u11", field,
-                    "REGION.TEST.out.field.capture.0",
-                    "REGION.TEST.out.field", field, 2,
-                    owner, owner.assigned, "");
             owner.assigned = "second";
-            ConcolicRegionRuntime.recordFieldAssignmentOutput(token,
-                    method, 11, method + "#u11", field,
-                    "REGION.TEST.out.field.capture.0",
-                    "REGION.TEST.out.field", field, 2,
+            ConcolicRegionRuntime.recordRegionExitFieldOutput(
+                    "REGION.TEST.out.field.exit-field",
+                    "REGION.TEST.out.field", field, field,
                     owner, owner.assigned, "");
             ConcolicRegionRuntime.exitRegion(token, null, "");
 
@@ -615,25 +607,14 @@ public class ConcolicRegionRuntimeTest {
             JsonArray captures = row.getAsJsonArray("outputCaptures");
             assertEquals(1, captures.size());
             JsonObject observed = captures.get(0).getAsJsonObject();
-            assertEquals("FIELD_ASSIGNMENT_RHS",
+            assertEquals("REGION_EXIT_FIELD",
                     observed.get("captureKind").getAsString());
-            assertEquals(2, observed.get("occurrence").getAsInt());
-            assertTrue(observed.get("declaredFieldOwnerVerified")
-                    .getAsBoolean());
-            assertTrue(observed.get("declaredFieldTypeVerified")
-                    .getAsBoolean());
-            assertTrue(observed.get("assignmentIdentityVerified")
-                    .getAsBoolean());
+            assertFalse(observed.has("occurrence"));
+            assertFalse(observed.has("method"));
+            assertFalse(observed.has("siteId"));
             long ownerToken = observed.get("fieldOwnerObjectToken")
                     .getAsLong();
-            long valueToken = observed.get("assignedValueObjectToken")
-                    .getAsLong();
             assertTrue(ownerToken > 0L);
-            assertTrue(valueToken > 0L);
-            assertTrue(ownerToken != valueToken);
-            assertEquals(valueToken,
-                    observed.get("observedFieldValueObjectToken")
-                            .getAsLong());
             assertEquals("M_L_field_REGION.TEST.in.0_java/lang/String",
                     observed.getAsJsonObject("expression").get("_exp")
                             .getAsString());
@@ -708,7 +689,11 @@ public class ConcolicRegionRuntimeTest {
             assertEquals(0, row.getAsJsonArray("unresolvedInputs").size());
             JsonArray bindings = row.getAsJsonArray("dynamicFieldBindings");
             assertEquals(1, bindings.size());
-            JsonObject selector = bindings.get(0).getAsJsonObject()
+            JsonObject dynamicBinding = bindings.get(0).getAsJsonObject();
+            assertEquals(2, dynamicBinding.get("schemaVersion").getAsInt());
+            assertEquals("DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING",
+                    dynamicBinding.get("kind").getAsString());
+            JsonObject selector = dynamicBinding
                     .getAsJsonObject("containerSelector");
             assertEquals(selectedIndex,
                     selector.get("elementIndex").getAsInt());
@@ -1703,6 +1688,12 @@ public class ConcolicRegionRuntimeTest {
         return result;
     }
 
+    private static JsonArray strings(String... values) {
+        JsonArray result = new JsonArray();
+        for (String value : values) result.add(value);
+        return result;
+    }
+
     private static void attachDirectOutputClosure(
             JsonObject activation, JsonArray captures,
             String... descriptors) {
@@ -1744,12 +1735,17 @@ public class ConcolicRegionRuntimeTest {
                     capture.get("outputPort").getAsString());
             slice.addProperty("outputCell",
                     capture.get("outputCell").getAsString());
-            slice.add("inputPorts", new JsonArray());
+            JsonArray inputPorts = new JsonArray();
+            if ("REGION_EXIT_FIELD".equals(
+                    capture.get("captureKind").getAsString())) {
+                inputPorts.add(capture.get(
+                        "accessRootInputPort").getAsString());
+            }
+            slice.add("inputPorts", inputPorts);
             slice.add("sites", new JsonArray());
             slice.add("staticSites", new JsonArray());
             slice.add("methods", new JsonArray());
             slice.add("causalEdgeIds", new JsonArray());
-            slice.addProperty("captureBindingsRequired", true);
             slice.addProperty("captureBindingsComplete", true);
             slice.add("captureBindings",
                     singleton(capture.deepCopy()));

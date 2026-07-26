@@ -171,20 +171,16 @@ public class OutputClosureCodecTest {
         activation.addProperty("rootCallId", 7);
 
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
-        capture.addProperty("captureBindingId", port + ".capture.0");
+        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
+        capture.addProperty("captureBindingId", port + ".exit-field");
         capture.addProperty("outputPort", port);
         capture.addProperty("outputCell", cell);
-        capture.addProperty("method", method);
-        capture.addProperty("siteId", site);
-        capture.addProperty("unitIndex", 2);
+        capture.addProperty("accessRootInputPort", region + ".in.0");
+        JsonArray fieldPath = new JsonArray();
+        fieldPath.add(FieldPathSpec.declaredField(cell).name());
+        capture.add("fieldPath", fieldPath);
         capture.addProperty("fieldSignature", cell);
-        capture.addProperty("occurrence", 1);
-        capture.addProperty("occurrenceAuthority",
-                "RUNTIME_UNIQUE_STATIC_FIELD_ASSIGNMENT_SITE_"
-                        + "LAST_WRITE_OCCURRENCE");
-        capture.addProperty("bindingAuthority",
-                "STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_RHS");
+        capture.addProperty("javaType", "int");
         JsonArray captures = new JsonArray();
         captures.add(capture);
 
@@ -198,7 +194,6 @@ public class OutputClosureCodecTest {
         slice.addProperty("runtimeRefinementAuthority",
                 "OBSERVED_REGION_CALL_TREE");
         slice.addProperty("inputAliasCanonicalizationComplete", true);
-        slice.addProperty("captureBindingsRequired", true);
         slice.addProperty("captureBindingsComplete", true);
         slice.addProperty("regionTruncated", false);
         slice.addProperty("truncated", false);

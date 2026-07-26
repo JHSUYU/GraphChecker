@@ -4,7 +4,7 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.A
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicBranchSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
-import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.OutputCaptureTarget;
+import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +23,7 @@ import soot.RefType;
 import soot.Scene;
 import soot.ShortType;
 import soot.SootClass;
+import soot.SootField;
 import soot.SootFieldRef;
 import soot.SootMethod;
 import soot.SootMethodRef;
@@ -217,7 +218,7 @@ public final class CausynthPipeline {
                 .instrumentationPlanFromEnvironment();
         ConcolicMaterializationSelection materializationSelection =
                 plan.materializations();
-        List<OutputCaptureTarget> outputCaptureSelection =
+        List<OutputCaptureSpec> outputCaptureSelection =
                 plan.outputCaptures();
         Set<String> roots = plan.roots();
         Set<String> backedViewMethods = concolicBackedViewMethods(result);
@@ -225,8 +226,10 @@ public final class CausynthPipeline {
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
         taggedMethods.addAll(materializationSelection.localMethods());
         taggedMethods.addAll(materializationSelection.accessorCallerMethods());
-        for (OutputCaptureTarget target : outputCaptureSelection) {
-            taggedMethods.add(target.instrumentedMethod());
+        for (OutputCaptureSpec target : outputCaptureSelection) {
+            if (target.kind() == OutputCaptureSpec.Kind.CALL_ARGUMENT) {
+                taggedMethods.add(target.callerMethod());
+            }
         }
         taggedMethods.addAll(backedViewMethods);
         for (String methodSignature : taggedMethods) {
@@ -366,11 +369,15 @@ public final class CausynthPipeline {
                     }
                     Stmt stmt = (Stmt) unit;
                     if (stmt instanceof ReturnStmt) {
+                        instrumentRegionExitFieldCaptures(body, stmt,
+                                receiver, outputCaptureSelection, refs);
                         insertRegionExit(body, stmt, ((ReturnStmt) stmt).getOp(),
                                 signature, refs.ref(Hook.EXIT_REGION_FRAME),
                                 refs.ref(Hook.PAUSE_OBSERVATION),
                                 refs.ref(Hook.RESUME_OBSERVATION));
                     } else if (stmt instanceof ReturnVoidStmt) {
+                        instrumentRegionExitFieldCaptures(body, stmt,
+                                receiver, outputCaptureSelection, refs);
                         insertRegionExit(body, stmt, NullConstant.v(),
                                 signature, refs.ref(Hook.EXIT_REGION_FRAME),
                                 refs.ref(Hook.PAUSE_OBSERVATION),
@@ -746,12 +753,15 @@ public final class CausynthPipeline {
 
     /** Captures the VM expression at an exact activation-authorized endpoint. */
     private void instrumentConcolicOutputCaptures(
-            Collection<OutputCaptureTarget> selection,
+            Collection<OutputCaptureSpec> selection,
             HookCatalog refs) {
-        for (OutputCaptureTarget target : selection) {
+        for (OutputCaptureSpec target : selection) {
+            if (target.kind() == OutputCaptureSpec.Kind.REGION_EXIT_FIELD) {
+                continue;
+            }
             SootMethod method;
             try {
-                method = Scene.v().getMethod(target.instrumentedMethod());
+                method = Scene.v().getMethod(target.callerMethod());
             } catch (RuntimeException unavailable) {
                 throw outputCaptureInstrumentationFailure(target,
                         "METHOD_UNAVAILABLE", unavailable);
@@ -761,15 +771,10 @@ public final class CausynthPipeline {
                         "METHOD_NOT_CONCRETE", null);
             }
             Body body = method.retrieveActiveBody();
-            Unit unit = originalUnit(body, target.unitIndex);
+            Unit unit = originalUnit(body, target.unitIndex());
             if (unit == null) {
                 throw outputCaptureInstrumentationFailure(target,
                         "UNIT_NOT_FOUND", null);
-            }
-            if (OutputCaptureTarget.FIELD_ASSIGNMENT_RHS.equals(target.captureKind)) {
-                instrumentFieldAssignmentOutputCapture(body, unit,
-                        target, refs);
-                continue;
             }
             if (!(unit instanceof Stmt)
                     || !((Stmt) unit).containsInvokeExpr()) {
@@ -778,14 +783,14 @@ public final class CausynthPipeline {
             }
             Stmt stmt = (Stmt) unit;
             InvokeExpr invoke = stmt.getInvokeExpr();
-            if (!target.calleeMethod.equals(
+            if (!target.calleeMethod().equals(
                     invoke.getMethodRef().getSignature())
-                    || target.argumentIndex < 0
-                    || target.argumentIndex >= invoke.getArgCount()) {
+                    || target.argumentIndex() < 0
+                    || target.argumentIndex() >= invoke.getArgCount()) {
                 throw outputCaptureInstrumentationFailure(target,
                         "CALL_ARGUMENT_ENDPOINT_MISMATCH", null);
             }
-            Value argument = invoke.getArg(target.argumentIndex);
+            Value argument = invoke.getArg(target.argumentIndex());
             List<Unit> before = new ArrayList<>();
             // Box while symbolic propagation is still enabled.  Capture
             // boxes are always fresh: Wrapper.valueOf may return a JVM
@@ -800,15 +805,15 @@ public final class CausynthPipeline {
             before.add(Jimple.v().newInvokeStmt(
                     Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.RECORD_OUTPUT_CAPTURE),
-                            StringConstant.v(target.callerMethod),
-                            IntConstant.v(target.unitIndex),
-                            StringConstant.v(target.siteId),
-                            StringConstant.v(target.calleeMethod),
-                            IntConstant.v(target.argumentIndex),
-                            StringConstant.v(target.outputPort),
-                            StringConstant.v(target.outputCell),
-                            StringConstant.v(target.captureBindingId),
-                            IntConstant.v(target.occurrence),
+                            StringConstant.v(target.callerMethod()),
+                            IntConstant.v(target.unitIndex()),
+                            StringConstant.v(target.siteId()),
+                            StringConstant.v(target.calleeMethod()),
+                            IntConstant.v(target.argumentIndex()),
+                            StringConstant.v(target.outputPort()),
+                            StringConstant.v(target.outputCell()),
+                            StringConstant.v(target.captureBindingId()),
+                            IntConstant.v(target.occurrence()),
                             objectValue, primitiveValue)));
             before.add(Jimple.v().newInvokeStmt(
                     Jimple.v().newStaticInvokeExpr(
@@ -817,82 +822,95 @@ public final class CausynthPipeline {
         }
     }
 
-    private static IllegalStateException outputCaptureInstrumentationFailure(
-            OutputCaptureTarget target, String reason, Throwable cause) {
-        String detail = "OUTPUT_CAPTURE_" + reason + ": "
-                + target.captureBindingId + " at "
-                + target.instrumentedMethod() + "#u" + target.unitIndex;
-        return cause == null ? new IllegalStateException(detail)
-                : new IllegalStateException(detail, cause);
+    private void instrumentRegionExitFieldCaptures(
+            Body body, Unit exit, Value rootReceiver,
+            Collection<OutputCaptureSpec> selection, HookCatalog refs) {
+        for (OutputCaptureSpec target : selection) {
+            if (target.kind() != OutputCaptureSpec.Kind.REGION_EXIT_FIELD) {
+                continue;
+            }
+            if (!(rootReceiver instanceof Local)
+                    || target.fieldPath().isEmpty()) {
+                throw outputCaptureInstrumentationFailure(target,
+                        "EXIT_FIELD_ACCESS_ROOT_UNAVAILABLE", null);
+            }
+            List<Unit> before = new ArrayList<>();
+            Local current = (Local) rootReceiver;
+            Local fieldOwner = null;
+            Local fieldValue = null;
+            for (int index = 0; index < target.fieldPath().size(); index++) {
+                String fieldName = target.fieldPath().get(index);
+                SootField field = exactInstanceField(current.getType(),
+                        fieldName, index + 1 == target.fieldPath().size()
+                                ? target.fieldSignature() : "");
+                if (field == null || field.isStatic()) {
+                    throw outputCaptureInstrumentationFailure(target,
+                            "EXIT_FIELD_PATH_NOT_EXACT", null);
+                }
+                Local next = newTraceLocal(body, field.getType(),
+                        "$causynthExitField");
+                before.add(Jimple.v().newAssignStmt(next,
+                        Jimple.v().newInstanceFieldRef(current,
+                                field.makeRef())));
+                fieldOwner = current;
+                fieldValue = next;
+                if (index + 1 < target.fieldPath().size()) {
+                    if (!(field.getType() instanceof RefType)) {
+                        throw outputCaptureInstrumentationFailure(target,
+                                "EXIT_FIELD_PATH_NOT_REFERENCE", null);
+                    }
+                    current = next;
+                }
+            }
+            Value owner = objectArg(body, fieldOwner, before);
+            Value value = boxedCaptureValue(body, fieldValue, before);
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.PAUSE_OBSERVATION))));
+            Value primitive = primitiveValueString(body, fieldValue,
+                    before);
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RECORD_REGION_EXIT_FIELD_OUTPUT),
+                            StringConstant.v(target.captureBindingId()),
+                            StringConstant.v(target.outputPort()),
+                            StringConstant.v(target.outputCell()),
+                            StringConstant.v(target.fieldSignature()),
+                            owner, value, primitive)));
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RESUME_OBSERVATION))));
+            insertBeforeSequence(body, exit, before);
+        }
     }
 
-    /**
-     * Captures the value written by one exact original instance-field
-     * assignment.  A non-immediate RHS is evaluated once into a local and the
-     * original write is rewritten to consume that local; evaluating the RHS
-     * again after the write could duplicate calls or allocation side effects.
-     * The runtime hook itself is inserted after the write, so a failing
-     * {@code putfield} cannot produce a capture.
-     */
-    private void instrumentFieldAssignmentOutputCapture(
-            Body body, Unit unit, OutputCaptureTarget target,
-            HookCatalog refs) {
-        if (!(unit instanceof AssignStmt)) {
-            throw outputCaptureInstrumentationFailure(target,
-                    "FIELD_ASSIGNMENT_NOT_FOUND", null);
+    private SootField exactInstanceField(Type ownerType, String name,
+                                         String exactSignature) {
+        if (!(ownerType instanceof RefType) || name.isEmpty()) return null;
+        SootClass owner = ((RefType) ownerType).getSootClass();
+        SootField match = null;
+        while (owner != null) {
+            for (SootField field : owner.getFields()) {
+                if (!name.equals(field.getName())
+                        || !exactSignature.isEmpty()
+                        && !exactSignature.equals(field.getSignature())) {
+                    continue;
+                }
+                if (match != null) return null;
+                match = field;
+            }
+            owner = owner.hasSuperclass() ? owner.getSuperclass() : null;
         }
-        AssignStmt assignment = (AssignStmt) unit;
-        if (!(assignment.getLeftOp() instanceof InstanceFieldRef)) {
-            throw outputCaptureInstrumentationFailure(target,
-                    "INSTANCE_FIELD_LHS_NOT_FOUND", null);
-        }
-        InstanceFieldRef field = (InstanceFieldRef) assignment.getLeftOp();
-        if (!target.fieldSignature.equals(
-                field.getFieldRef().getSignature())) {
-            throw outputCaptureInstrumentationFailure(target,
-                    "FIELD_SIGNATURE_MISMATCH", null);
-        }
+        return match;
+    }
 
-        Value rhs = assignment.getRightOp();
-        if (!(rhs instanceof Local) && !(rhs instanceof Constant)) {
-            Local evaluated = newTraceLocal(body, rhs.getType(),
-                    "$causynthAssignedRhs");
-            Unit evaluateOnce = Jimple.v().newAssignStmt(evaluated, rhs);
-            assignment.setRightOp(evaluated);
-            insertBeforeSequence(body, assignment,
-                    Collections.singletonList(evaluateOnce));
-            rhs = evaluated;
-        }
-
-        List<Unit> after = new ArrayList<>();
-        Local activeToken = newTraceLocal(body, LongType.v(),
-                "$causynthActiveToken");
-        after.add(Jimple.v().newAssignStmt(activeToken,
-                Jimple.v().newStaticInvokeExpr(
-                        refs.ref(Hook.ACTIVE_TOKEN))));
-        Value owner = objectArg(body, field.getBase(), after);
-        Value assignedValue = boxedCaptureValue(body, rhs, after);
-        after.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(
-                        refs.ref(Hook.PAUSE_OBSERVATION))));
-        Value primitiveValue = primitiveValueString(body, rhs, after);
-        after.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(
-                        refs.ref(Hook.RECORD_FIELD_ASSIGNMENT_OUTPUT),
-                        activeToken,
-                        StringConstant.v(target.instrumentedMethod()),
-                        IntConstant.v(target.unitIndex),
-                        StringConstant.v(target.siteId),
-                        StringConstant.v(target.fieldSignature),
-                        StringConstant.v(target.captureBindingId),
-                        StringConstant.v(target.outputPort),
-                        StringConstant.v(target.outputCell),
-                        IntConstant.v(target.occurrence),
-                        owner, assignedValue, primitiveValue)));
-        after.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(
-                        refs.ref(Hook.RESUME_OBSERVATION))));
-        insertAfterSequence(body, assignment, after);
+    private static IllegalStateException outputCaptureInstrumentationFailure(
+            OutputCaptureSpec target, String reason, Throwable cause) {
+        String detail = "OUTPUT_CAPTURE_" + reason + ": "
+                + target.captureBindingId() + " at "
+                + target.callerMethod() + "#u" + target.unitIndex();
+        return cause == null ? new IllegalStateException(detail)
+                : new IllegalStateException(detail, cause);
     }
 
     /**
@@ -2117,8 +2135,7 @@ public final class CausynthPipeline {
         REGISTER_MAP_VIEW_ITERATOR,
         RECORD_MAP_ITERATOR_NEXT,
         RECORD_OUTPUT_CAPTURE,
-        ACTIVE_TOKEN,
-        RECORD_FIELD_ASSIGNMENT_OUTPUT,
+        RECORD_REGION_EXIT_FIELD_OUTPUT,
         PAUSE_OBSERVATION,
         RESUME_OBSERVATION,
         PAUSE_VM_PATH_CONDITION,
@@ -2241,12 +2258,9 @@ public final class CausynthPipeline {
                             "recordOutputCapture", VoidType.v(), string,
                             IntType.v(), string, string, IntType.v(), string,
                             string, string, IntType.v(), object, string)
-                    .add(Hook.ACTIVE_TOKEN, runtime, "activeToken",
-                            LongType.v())
-                    .add(Hook.RECORD_FIELD_ASSIGNMENT_OUTPUT, runtime,
-                            "recordFieldAssignmentOutput", VoidType.v(),
-                            LongType.v(), string, IntType.v(), string, string,
-                            string, string, string, IntType.v(), object, object,
+                    .add(Hook.RECORD_REGION_EXIT_FIELD_OUTPUT, runtime,
+                            "recordRegionExitFieldOutput", VoidType.v(),
+                            string, string, string, string, object, object,
                             string)
                     .add(Hook.PAUSE_OBSERVATION, runtime, "pauseObservation",
                             VoidType.v())

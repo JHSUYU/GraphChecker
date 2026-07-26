@@ -153,6 +153,7 @@ public class ConcolicSummaryImporterReplayAdmissionTest {
     private static JsonObject freshMapBinding(JsonObject applied,
                                               String authority) {
         JsonObject binding = new JsonObject();
+        binding.addProperty("schemaVersion", 2);
         binding.addProperty("kind", "DYNAMIC_MAP_ENTRY_FIELD_BINDING");
         binding.addProperty("authority", authority);
         for (String field : new String[]{"baseInputSymbol",
@@ -199,7 +200,7 @@ public class ConcolicSummaryImporterReplayAdmissionTest {
 
     private static JsonObject containerBinding(JsonObject applied) {
         JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 3);
+        binding.addProperty("schemaVersion", 2);
         binding.addProperty("kind",
                 "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
         binding.addProperty("authority",

@@ -694,21 +694,35 @@ field1_out =
 未写 `field1` 的正常路径必须有经过证明的 frame condition
 `field1_out = field1_in`。异常、超时或不退出的路径没有普通 `field1_out`，必须以独立
 exit/exception observation 参与 closure completeness，不能伪造成普通 output case。
-worklist 只枚举影响 output 最终值、是否写入、最后一次写入、正常出口或异常出口的 branch；
-与 closure 无关的 branch 不进入 frontier。
+worklist 只翻转 `outputSlice.sites/staticSites` 中的 branch；它不再判断某条 replay
+会命中哪个写点，也不维护“最后一次写入”。每条正常 replay 统一在 Region 出口读取 OUT，
+由 symbolic heap 直接给出该路径的最终 expression；与 closure 无关的 branch 不进入
+frontier。
 
 primitive instance-field 的 frame condition 使用现有 relation contract，不另建 frame
 subsystem：静态 output slice 加一个与 output cell 完全相同的 `HEAP_PRESTATE` input；
 runtime discovery 通过精确 putfield receiver identity 和引用型 getfield event，求得唯一
 bounded `region root -> ... -> field` 路径；custom JDK 在 region 入口 symbolize 该真实字段。
-所有 output capture hook 必须在 instrumentation 阶段精确安装，否则任务直接失败并报告
-`captureBindingId + method#unit`；runtime 同时为每个 binding 写一个实际 hook execution
-count。因此某条正常 execution 中该 member 的 execution count 与 capture 数都为零时，
-Importer 才可用已 symbolized 的 same-cell prestate 生成
-`field_out = field_in`；存在 capture 时仍以最后一次精确 assignment RHS 为准。这里复用
-`heapStateBindings`、slice input admission 和原有 PathQuery，不增加 runtime attestation
-hash、双重 capture ledger 或 fallback。reference/container output 继续走既有 identity、
-heap-effect 和 Map/array transformer contract，不能被 primitive frame 规则猜测替代。
+`captureBindings` 不再表示 assignment site。primitive/reference field output 只保留
+`demanded field + exact receiver + FieldPathSpec + normal-exit coverage`。Instrumentation
+在 Region/root activation 的每个正常出口读取一次该字段当前值，并把此时 custom-JDK
+symbolic heap 中的 expression 记录为该 replay 的最终 OUT：
+
+```text
+PathObservation {
+  normalExit,
+  output[field1] = symbolicExpression(read(receiver.field1))
+}
+```
+
+因此多个静态写点、同一写点循环执行任意次数以及 branch flip 后 occurrence 变化都不需要
+特殊处理；Region replay 完成时字段是什么 expression，output 就是什么 expression。零写
+路径也无需反推“没有哪个写点执行”：入口真实字段已经 symbolize，出口读取自然得到
+`field1_in`，从而形成 `field1_out = field1_in`。正确性门槛只剩精确 receiver/field path、
+入口 prestate materialization，以及所有正常出口均安装 capture；异常、超时或非正常退出不
+产生普通 output。删除 seed occurrence、assignment execution count、last-write event
+ledger 和相关 fallback。reference/container output 继续走既有 identity、heap-effect 和
+Map/array transformer contract，不能被 primitive frame 规则猜测替代。
 
 同一次 invocation 中被同一个 downstream demand 共同使用的 `outX/outY` 属于一个 joint
 `OUTPUT_RELATION` goal。每个 task 原子捕获完整 output set，每个 relation case 使用同一
@@ -886,18 +900,16 @@ static region、region plan、summary、worklist task 也不再靠同名 `output
         "staticSites": ["B_x"],
         "methods": ["<P: void produce()>"],
         "causalEdgeIds": ["E_x"],
-        "captureBindingsRequired": true,
         "captureBindingsComplete": true,
         "captureBindings": [{
-          "captureKind": "FIELD_ASSIGNMENT_RHS",
-          "captureBindingId": "REGION.P.out.0.capture.0",
+          "captureKind": "REGION_EXIT_FIELD",
+          "captureBindingId": "REGION.P.out.0.exit-field",
           "outputPort": "REGION.P.out.0",
           "outputCell": "<P: int outX>",
-          "method": "<P: void produce()>",
-          "siteId": "<P: void produce()>#u4",
-          "unitIndex": 4,
+          "accessRootInputPort": "REGION.P.in.1",
+          "fieldPath": ["outX"],
           "fieldSignature": "<P: int outX>",
-          "occurrence": 1
+          "javaType": "int"
         }]
       }
     }, {
@@ -914,18 +926,16 @@ static region、region plan、summary、worklist task 也不再靠同名 `output
         "staticSites": ["B_y"],
         "methods": ["<P: void produce()>"],
         "causalEdgeIds": ["E_y"],
-        "captureBindingsRequired": true,
         "captureBindingsComplete": true,
         "captureBindings": [{
-          "captureKind": "FIELD_ASSIGNMENT_RHS",
-          "captureBindingId": "REGION.P.out.1.capture.0",
+          "captureKind": "REGION_EXIT_FIELD",
+          "captureBindingId": "REGION.P.out.1.exit-field",
           "outputPort": "REGION.P.out.1",
           "outputCell": "<P: int outY>",
-          "method": "<P: void produce()>",
-          "siteId": "<P: void produce()>#u5",
-          "unitIndex": 5,
+          "accessRootInputPort": "REGION.P.in.2",
+          "fieldPath": ["outY"],
           "fieldSignature": "<P: int outY>",
-          "occurrence": 1
+          "javaType": "int"
         }]
       }
     }]
@@ -938,9 +948,8 @@ Envelope 不保存独立 `complete` boolean，也不复制 `capture` wrapper 或
 decoder 只检查版本、wire shape、producer/member scope 与 ledger identity，任一 member
 malformed 时整个 decode 失败，不能过滤坏 member 后返回一个较小的“完整”集合。动态
 materialization/capture 正确性仍只由 Scheduler 与 Importer 在各自 trust boundary 证明。
-完整 slice JSON 作为不可变 defensive copy 保留，因此 field owner、RHS causal edge、
-transformer obligation、runtime occurrence 和 object identity 等证据不会在类型化过程中
-丢失。
+完整 slice JSON 作为不可变 defensive copy 保留，因此 field owner、normal-exit field
+path、transformer obligation 和 object identity 等证据不会在类型化过程中丢失。
 
 每个 closure 派生两个不同身份：
 
@@ -965,12 +974,10 @@ composition demand id）收集同一 upstream instance 的 output port set，再
 set 合并等价 demand。它不会预生成所有 output 子集，也不会把无关 consumer 的 outputs
 无条件 union。
 
-首个 writer 切换只允许两个或以上的 member 都有唯一
-`CALL_ARGUMENT` / `FIELD_ASSIGNMENT_RHS` 直接 capture，且 JVM descriptor 是 custom JDK
-已经支持的 primitive scalar。任一 member 缺 capture、capture 重复或类型不支持，整个 joint
-goal fail closed。现有 singleton heap/container/root-return 路径先通过同一 envelope
-保留完整 payload 和现有验证，再逐 variant 去掉旧内部适配；不能为了尽快删除 legacy 而降低
-这些路径的证明强度。
+primitive field member 使用唯一逻辑 `REGION_EXIT_FIELD` capture；它覆盖 root method 的
+所有正常 return，而不是绑定某个 writer。一次具体 replay 对每个 joint member产生一个最终
+expression，任一 member 缺 capture、capture 重复或类型不支持时整个 joint goal fail
+closed。Map/array/container 继续使用其 transformer contract，不能伪装成 scalar exit read。
 
 删除目标：
 
@@ -2052,8 +2059,8 @@ closure-goal follow-up 由 `30dd0704`、`d4fe4ee8`、`98d30d89` 三个里程碑�
 嵌套的 `OUTPUT_RELATION` / `TARGET_REACH` closure goal，branch flip 只产生
 `PathQuery` / `ExecutionTask`，不再伪装成 `ACT.UPSTREAM.*` 或 `ACT.PATH.*`。
 primitive field 的 no-write path 由 same-cell `HEAP_PRESTATE`、唯一 root-to-owner
-field path、精确安装的 capture hook 和每个 binding 的实际 execution count 共同证明；
-若写点执行但 requested occurrence 未捕获则 fail closed，不能误判为 frame condition。
+field path、入口真实 prestate symbolization 和全部正常出口的 final-field capture 共同证明；
+不再追踪哪一个 assignment 最后写入，也不把 seed occurrence 固化到翻转路径。
 这一轮同时删除 test-only Scheduler output 准备路径、重复 canonical JSON、旧 bundle
 清理和多余计数镜像。当前手写生产 Java 为 69,696 行；新增行属于此前缺失的 frame
 correctness，不为进入某个行数区间删除证明。
@@ -2116,8 +2123,8 @@ producer-demand 与 canonical-output 选择统一调用同一个推导：truncat
 
 随后三条独立旧路径被原子收敛。`ConcolicRegionRuntime` 删除了从无 Scheduler/Planner
 writer、且 Importer 明确拒绝的 whole-task `concreteReplayOnly/observationOnlyReplay`
-模式；action-level concrete materialization、frame execution counts、read-from 与 object
-identity 均保留。`RegionPathWorklist` 成为 relation closure 的唯一 authority，只在
+模式；action-level concrete materialization、normal-exit final-field capture、read-from 与
+object identity 均保留。`RegionPathWorklist` 成为 relation closure 的唯一 authority，只在
 `CLOSED + OUTPUT_RELATION_CLOSURE` 时生成原有 wire-compatible guarded relation，
 因此独立 `RegionSummaryMerger` 及其第二遍 scope/path/evidence 校验被删除。Soot 插桩侧
 两套巨型 hook holder 合并为一个 typed `HookCatalog`，三份 primitive
@@ -2160,6 +2167,65 @@ assignment vectors 派生，删除无消费者的 `solverTerm`、`solverStatus` 
 诊断镜像，但保留 executable 和 composition manifest 的 SHA。当前手写生产 Java 为
 68,161 行；快速回归为 69 项并全部通过。
 
+### 全量架构切换：先闭合框架，再集中调试 fixture
+
+接下来的实现不再以原来的巨型类为边界，而只保留五个 domain carrier：
+
+```text
+RegionInstancePlan
+  {instance, root selector, closure goals}
+
+ClosureGoal
+  {kind, admission, execution scope, output closure}
+
+ExecutionTask
+  {task identity, selected goal, input actions, replay query}
+
+PathObservation
+  {task identity, path condition, branch occurrences, outputs, heap evidence}
+
+RelationSummary
+  {producer identity, output closure, guarded cases, admitted edge bindings}
+```
+
+JSON 只允许出现在 artifact 读写边界。每个 decoder 保留原始重复 row，用于 exact
+cardinality 和冲突检测；进入 domain carrier 后，业务代码不再通过字符串字段反复
+`array/object/string/bool`。五个 carrier 之间的转换是单向的，禁止 writer 同时保留旧
+Map、禁止 consumer fallback 到上一版 schema。
+
+validation 的唯一 owner 如下：
+
+| 事实 | 唯一 owner | 后续阶段 |
+| --- | --- | --- |
+| frozen static edge、slice、capture declaration | StaticProgram / Planner boundary | 只引用 canonical ID |
+| root、input action、dynamic selector 可执行性 | Scheduler → ExecutionTask | Runtime 直接执行 |
+| live object identity、index、event order、replay-local 最后写 | Runtime → PathObservation | Importer 按 task join |
+| exact row uniqueness、frame、joint output、heap/Map/array completeness | Importer admission | Worklist 只枚举路径 |
+| path coverage 与 guarded merge | Worklist → RelationSummary | Composer 直接消费 |
+| cross-region producer selection、read-from equality、SMT sort/expression | Composer | Solver 只求解 |
+
+这意味着：
+
+- `RuntimeRegionPlanner` 删除 activation/base-goal 的 Map 复制，只构造一个
+  `RegionInstancePlan`，每个 output demand 只是 `ClosureGoal`；
+- `ConcolicScheduler` 不再 deep-copy plan 再删字段，而从 selected goal 一次编译
+  `ExecutionTask`；
+- `ConcolicRegionRuntime` 删除自己的 container/map selector schema parser，复用唯一
+  `DynamicBindingSpec`，并直接产生 `PathObservation`；
+- `ConcolicSummaryImporter` 用一个 `ImportedExecution` 和一个保留重复 row 的
+  `EvidenceIndex` 完成准入；同一 output/frame/heap extraction 只执行一次；
+- `RegionPathWorklist` 只接收 `PathObservation`，branch flip 是内部 `PathQuery`，CLOSED
+  时一次生成 `RelationSummary`；
+- `ConcolicSmtComposer` 删除已经由 Importer/Worklist 证明过的 dynamic/heap/output
+  schema validation，只保留 summary graph、demand fixed point、exact edge join 和 SMT
+  emitter。
+
+第一轮全量 cutover 的成功标准不是某个临时行数，而是上述旧 decoder、fallback、
+deep-copy-then-strip、第二/第三遍 admission 全部真实删除。预期主要净减来自
+Planner/Runtime/Importer/Composer 四个巨型类，而不是把代码移动到新文件。施工期间只要求
+全量 compile 和受影响 contract 的聚焦测试；框架闭合并看到千行级净减后，再统一运行
+十三个真实 fixture，按 artifact lineage 逐项修复到既定 6 SAT / 7 UNSAT / 0 failure。
+
 ### 明确不能删除
 
 必须保留：
@@ -2178,19 +2244,44 @@ assignment vectors 派生，删除无消费者的 `solverTerm`、`solverStatus` 
 
 ### 每个 PR 的验收门槛
 
-每个 PR 必须同时满足：
+当前大规模架构重构采用两级门禁。Git 中已经存在最后一个通过全部真实 workload 的
+`69439dea` 语义锚点，因此不在每个中间 carrier 修改后等待完整 fixture matrix；先把
+下面这条唯一生产链闭合：
+
+```text
+RegionInstancePlan
+  -> ClosureGoal
+  -> ExecutionTask
+  -> PathObservation
+  -> RelationSummary
+  -> composed SMT
+```
+
+框架施工阶段的每个 commit 必须满足：
 
 1. ledger 能指出被删字段/代码的 writer 和全部 reader，并说明是零消费者还是由哪个
    canonical value 推导；
 2. 生产 Java 净减少；新增类型、codec 或验证必须同时删除更多旧实现，不能只搬代码；
-3. 当前 13 类 / 57 项快速回归通过，不新增锁定整份 JSON 的测试；
-4. 受影响的 fixture 运行真实 concolic 与真实 Z3，不用 dry-run/fake Z3；
-5. schema 切换同时更新 writer、Java reader、shell reader，旧 schema fail closed；
-6. SAT/UNSAT、root sorts、joint-output case、read-from 与 target-path 语义不漂移；
-7. 不减少 unsupported/gap coverage，不用 fallback 或自由符号换取“成功”；
-8. 重要里程碑独立 commit/push。
+3. 全部生产代码编译通过，并通过直接覆盖当前 cutover 的聚焦 contract 测试；
+4. writer、Java reader 和 shell reader 原子切到同一 canonical schema，旧 schema 直接
+   拒绝，不保留双写、fallback 或适配层；
+5. 不减少 frame、joint-output、heap/Map/array、read-from、branch occurrence、object
+   identity、event order、unsupported gap 和 artifact SHA 证据；
+6. 新 carrier 必须替换旧 Map/JSON plumbing；如果旧路径尚未删除，这个 commit 不能称为
+   framework milestone；
+7. 重要框架里程碑独立 commit/push；用户修改的 container fixture 已经明确授权并作为
+   `db5a5033` 独立提交，不再作为工作树例外。
 
-删除旧 authority 或完成一个 schema cutover 前，必须运行全部十三个 fixture：
+当前 framework cutover 已闭合上述 canonical 链：生产 Java 为 65,409 行，Maven
+回归 69/69 通过。它已经删除独立 upstream activation、assignment-site/seed-occurrence
+字段捕获、Runtime/Importer 私有 task decoder、`captureBindingsRequired` 镜像以及多处
+重复扫描；尚未把这一结果声明为 fixture 语义基线，必须继续通过下面十三个真实
+custom-JDK/Z3 workload。
+
+当上述 canonical 链端到端闭合后，进入语义调试阶段。此后一次性并行运行全部十三个真实
+custom-JDK/Z3 fixture，根据 artifact、path observation、relation summary 和 composition
+gap 逐项修复；不能修改 workload 来迎合新框架，也不能用 dry-run/fake Z3。只有恢复完整
+基线后，才删除 fixture 证明已经无消费者的最后旧路径并发布最终里程碑：
 
 ```bash
 GRAPH_CHECKER_MATRIX_JOBS=13 \

@@ -215,34 +215,8 @@ public class RuntimeRegionPlannerTest {
                     + "\"outputCell\":\"" + field + "\","
                     + "\"proofEdgeIds\":[\"DF.1\"],"
                     + "\"proofComplete\":true}],"
-                    + "\"captureBindingsRequired\":true,"
                     + "\"captureBindingsComplete\":true,"
-                    + "\"captureBindings\":[{"
-                    + "\"captureKind\":\"FIELD_ASSIGNMENT_RHS\","
-                    + "\"captureBindingId\":\"REGION.W.out.0.capture.0\","
-                    + "\"outputPort\":\"REGION.W.out.0\","
-                    + "\"outputCell\":\"" + field + "\","
-                    + "\"method\":\"" + updater + "\","
-                    + "\"siteId\":\"" + updater + "#u15\","
-                    + "\"unitIndex\":15,"
-                    + "\"unit\":\"r0." + field + " = key\","
-                    + "\"fieldSignature\":\"" + field + "\","
-                    + "\"fieldOwnerExpression\":\"r0\","
-                    + "\"fieldOwnerCell\":\"" + updater + "::r0\","
-                    + "\"fieldOwnerDeclaredType\":\"example.State\","
-                    + "\"fieldOwnerBindingKind\":\"INSTANCE_FIELD_LHS_BASE\","
-                    + "\"fieldOwnerBindingAuthority\":\"STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_LHS\","
-                    + "\"rhsExpression\":\"key\","
-                    + "\"rhsCell\":\"" + updater + "::key\","
-                    + "\"rhsCausalEdgeId\":\"DF.WRITE\","
-                    + "\"rhsRelation\":\"value_flow\","
-                    + "\"rhsRelationComplete\":true,"
-                    + "\"rhsRelationAuthority\":\"STATIC_EXACT_HEAP_WRITE_VALUE_FLOW\","
-                    + "\"causalEdgeId\":\"DF.WRITE\","
-                    + "\"transferKind\":\"HEAP_WRITE\","
-                    + "\"bindingKind\":\"field_write\","
-                    + "\"bindingAuthority\":\"STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_RHS\","
-                    + "\"occurrence\":0}],"
+                    + "\"captureBindings\":[],"
                     + "\"structuralComplete\":true,"
                     + "\"complete\":true,"
                     + "\"selection\":"
@@ -346,22 +320,7 @@ public class RuntimeRegionPlannerTest {
             List<Map<String, Object>> outputCaptures =
                     (List<Map<String, Object>>) retainedSlice.get(
                             "captureBindings");
-            assertEquals(1, outputCaptures.size());
-            assertEquals(1, outputCaptures.get(0).get("occurrence"));
-            assertEquals("FIELD_ASSIGNMENT_RHS",
-                    outputCaptures.get(0).get("captureKind"));
-            assertEquals(updater + "#u15",
-                    outputCaptures.get(0).get("siteId"));
-            assertEquals(field,
-                    outputCaptures.get(0).get("fieldSignature"));
-            assertEquals(77,
-                    outputCaptures.get(0).get(
-                            "runtimeFieldOwnerObjectId"));
-            assertEquals("RUNTIME_UNIQUE_STATIC_FIELD_ASSIGNMENT_"
-                            + "SITE_LAST_WRITE_OCCURRENCE",
-                    outputCaptures.get(0).get("occurrenceAuthority"));
-            assertEquals(Boolean.TRUE,
-                    outputCaptures.get(0).get("rhsRelationComplete"));
+            assertEquals(0, outputCaptures.size());
             assertEquals(Collections.singletonList(updater),
                     retainedSlice.get("methods"));
             assertEquals(true, retainedSlice.get("complete"));
@@ -460,7 +419,7 @@ public class RuntimeRegionPlannerTest {
                 "REGION.P.out.x").get("captureBindingsComplete"));
         assertEquals(Boolean.TRUE, outputSlice(joint,
                 "REGION.P.out.y").get("captureBindingsComplete"));
-        assertEquals(2, ((List<?>) joint.get("symbolize")).size());
+        assertEquals(4, ((List<?>) joint.get("symbolize")).size());
         assertEquals(2, ((List<?>) joint.get("branches")).size());
         // E.X.1 and E.X.2 deliberately fan out the same output within the
         // same demand; E.Y contributes the second output member.
@@ -648,14 +607,13 @@ public class RuntimeRegionPlannerTest {
                     + "\"requestedStateTransformerContractComplete\":true,"
                     + "\"requestedStateTransformerContractAuthority\":"
                     + "\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1\","
-                    + "\"captureBindingsRequired\":true,"
                     + "\"captureBindingsComplete\":false,"
                     + "\"captureBindings\":[],"
                     + "\"captureBindingIssues\":["
-                    + "\"REQUESTED_TRANSFORMER_HAS_NO_EXACT_FIELD_"
-                    + "ASSIGNMENT_RHS:" + constructor + "#u1\","
-                    + "\"REQUESTED_TRANSFORMER_HAS_NO_EXACT_FIELD_"
-                    + "ASSIGNMENT_RHS:" + updaterSite + "\"],"
+                    + "\"REQUESTED_TRANSFORMER_HAS_NO_FINAL_STATE_"
+                    + "CAPTURE:" + constructor + "#u1\","
+                    + "\"REQUESTED_TRANSFORMER_HAS_NO_FINAL_STATE_"
+                    + "CAPTURE:" + updaterSite + "\"],"
                     + "\"heapInitializers\":[{"
                     + "\"initializerId\":\"STATIC_INIT.C\","
                     + "\"kind\":\"FRESH_DEFAULT_CONSTRUCTED_OBJECT\","
@@ -742,7 +700,7 @@ public class RuntimeRegionPlannerTest {
             assertCanonicalOutputOnly(output);
             Map<String, Object> slice = outputSlice(
                     output, "REGION.W.out.0");
-            assertEquals(false, slice.get("captureBindingsRequired"));
+            assertFalse(slice.containsKey("captureBindingsRequired"));
             assertEquals(true, slice.get("captureBindingsComplete"));
             assertEquals(Collections.singletonList(updater),
                     slice.get("methods"));
@@ -1517,14 +1475,13 @@ public class RuntimeRegionPlannerTest {
                     + contractComplete + ","
                     + "\"requestedStateTransformerContractAuthority\":"
                     + "\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1\","
-                    + "\"captureBindingsRequired\":true,"
                     + "\"captureBindingsComplete\":false,"
                     + "\"captureBindings\":[],"
                     + "\"captureBindingIssues\":["
-                    + "\"REQUESTED_TRANSFORMER_HAS_NO_EXACT_FIELD_"
-                    + "ASSIGNMENT_RHS:" + alternativeSite + "\","
-                    + "\"REQUESTED_TRANSFORMER_HAS_NO_EXACT_FIELD_"
-                    + "ASSIGNMENT_RHS:" + updaterSite + "\"],"
+                    + "\"REQUESTED_TRANSFORMER_HAS_NO_FINAL_STATE_"
+                    + "CAPTURE:" + alternativeSite + "\","
+                    + "\"REQUESTED_TRANSFORMER_HAS_NO_FINAL_STATE_"
+                    + "CAPTURE:" + updaterSite + "\"],"
                     + "\"complete\":false,\"selection\":"
                     + "\"REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE\"}],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
@@ -1707,6 +1664,8 @@ public class RuntimeRegionPlannerTest {
             JsonArray producerInputs = new JsonArray();
             producerInputs.add(primitivePort("REGION.P.in.x", inputX));
             producerInputs.add(primitivePort("REGION.P.in.y", inputY));
+            producerInputs.add(prestatePort("REGION.P.out.x.pre", outputX));
+            producerInputs.add(prestatePort("REGION.P.out.y.pre", outputY));
             producerRegion.add("symbolicInputs", producerInputs);
             JsonArray producerOutputs = new JsonArray();
             producerOutputs.add(outputPort("REGION.P.out.x", outputX));
@@ -1776,19 +1735,19 @@ public class RuntimeRegionPlannerTest {
                                     66, 0, "2"),
                             new RuntimeRegionPlanner.FieldAccessEvent(6,
                                     "FIELD_WRITE", producer, 11, outputX,
-                                    77, 88, "3"),
+                                    42, 88, "3"),
                             new RuntimeRegionPlanner.FieldAccessEvent(7,
                                     "FIELD_WRITE", producer, 11, outputY,
-                                    77, 99, "4"),
+                                    42, 99, "4"),
                             new RuntimeRegionPlanner.FieldAccessEvent(11,
                                     "FIELD_READ", dxy, 22, outputX,
-                                    77, 88, "3"),
+                                    42, 88, "3"),
                             new RuntimeRegionPlanner.FieldAccessEvent(12,
                                     "FIELD_READ", dxy, 22, outputY,
-                                    77, 99, "4"),
+                                    42, 99, "4"),
                             new RuntimeRegionPlanner.FieldAccessEvent(21,
                                     "FIELD_READ", dx, 33, outputX,
-                                    77, 88, "3"));
+                                    42, 88, "3"));
             return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
                     companionStaticGraph(regions).toFile(), methods, runtime,
                     fields);
@@ -1803,6 +1762,16 @@ public class RuntimeRegionPlannerTest {
         result.addProperty("cell", cell);
         result.addProperty("sourceKind", "SHARED_HEAP");
         result.addProperty("projection", "value");
+        return result;
+    }
+
+    private static JsonObject prestatePort(String port, String cell) {
+        JsonObject result = new JsonObject();
+        result.addProperty("portId", port);
+        result.addProperty("cell", cell);
+        result.addProperty("sourceKind", "HEAP_PRESTATE");
+        result.addProperty("projection", "value");
+        result.addProperty("javaType", "int");
         return result;
     }
 
@@ -1822,7 +1791,9 @@ public class RuntimeRegionPlannerTest {
         JsonObject result = new JsonObject();
         result.addProperty("outputPort", outputPort);
         result.addProperty("outputCell", outputCell);
-        result.add("inputPorts", jsonStrings(inputPort));
+        String accessRootInputPort = outputPort + ".pre";
+        result.add("inputPorts", jsonStrings(inputPort,
+                accessRootInputPort));
         JsonObject inputBinding = new JsonObject();
         inputBinding.addProperty("dependencyCell", inputCell);
         inputBinding.addProperty("inputPort", inputPort);
@@ -1830,6 +1801,13 @@ public class RuntimeRegionPlannerTest {
         inputBinding.add("dependencyMethods", jsonStrings(method));
         JsonArray inputBindings = new JsonArray();
         inputBindings.add(inputBinding);
+        JsonObject prestateBinding = new JsonObject();
+        prestateBinding.addProperty("dependencyCell", outputCell);
+        prestateBinding.addProperty("inputPort", accessRootInputPort);
+        prestateBinding.addProperty("bindingAuthority",
+                "EXACT_CELL_IDENTITY");
+        prestateBinding.add("dependencyMethods", jsonStrings(method));
+        inputBindings.add(prestateBinding);
         result.add("inputBindings", inputBindings);
         result.add("methods", jsonStrings(method));
         result.add("sites", jsonStrings(method + "#u" + branchUnit));
@@ -1852,38 +1830,17 @@ public class RuntimeRegionPlannerTest {
         result.add("causalEdges", causalEdges);
 
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
+        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
         capture.addProperty("captureBindingId", outputPort + ".capture");
         capture.addProperty("outputPort", outputPort);
         capture.addProperty("outputCell", outputCell);
-        capture.addProperty("method", method);
-        capture.addProperty("siteId", method + "#u" + assignmentUnit);
-        capture.addProperty("unitIndex", assignmentUnit);
-        capture.addProperty("unit", "state assignment");
+        capture.addProperty("accessRootInputPort", accessRootInputPort);
+        capture.add("fieldPath", jsonStrings(
+                outputCell.contains(" int x>") ? "x" : "y"));
         capture.addProperty("fieldSignature", outputCell);
-        capture.addProperty("fieldOwnerExpression", "state");
-        capture.addProperty("fieldOwnerCell", method + "::state");
-        capture.addProperty("fieldOwnerDeclaredType", "example.State");
-        capture.addProperty("fieldOwnerBindingKind",
-                "INSTANCE_FIELD_LHS_BASE");
-        capture.addProperty("fieldOwnerBindingAuthority",
-                "STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_LHS");
-        capture.addProperty("rhsExpression", inputPort);
-        capture.addProperty("rhsCell", inputCell);
-        capture.addProperty("rhsCausalEdgeId", causalEdgeId);
-        capture.addProperty("rhsRelation", "value_flow");
-        capture.addProperty("rhsRelationComplete", true);
-        capture.addProperty("rhsRelationAuthority",
-                "STATIC_EXACT_HEAP_WRITE_VALUE_FLOW");
-        capture.addProperty("causalEdgeId", causalEdgeId);
-        capture.addProperty("transferKind", "HEAP_WRITE");
-        capture.addProperty("bindingKind", "field_write");
-        capture.addProperty("bindingAuthority",
-                "STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_RHS");
-        capture.addProperty("occurrence", 0);
+        capture.addProperty("javaType", "int");
         JsonArray captures = new JsonArray();
         captures.add(capture);
-        result.addProperty("captureBindingsRequired", true);
         result.addProperty("captureBindingsComplete",
                 captureBindingsComplete);
         result.add("captureBindings", captures);
@@ -2080,7 +2037,8 @@ public class RuntimeRegionPlannerTest {
 
     private static void assertCanonicalOutputOnly(
             Map<String, Object> activation) {
-        assertTrue(activation.containsKey("outputClosure"));
+        assertTrue(String.valueOf(activation),
+                activation.containsKey("outputClosure"));
         for (String legacy : Arrays.asList("requestedOutput",
                 "requestedOutputSlice", "requestedOutputCapture",
                 "requestedOutputCaptureRequired",

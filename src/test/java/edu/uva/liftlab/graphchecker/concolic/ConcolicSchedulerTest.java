@@ -219,6 +219,21 @@ public class ConcolicSchedulerTest {
             assertFalse(scheduled.has("outputs"));
             assertEquals(2, scheduled.getAsJsonArray("inputActions").size());
             assertEquals(2, scheduled.getAsJsonArray("branches").size());
+
+            JsonObject wrongRoot = asEnvelope(explicitJointActivation());
+            wrongRoot.getAsJsonArray("closureGoals").get(0)
+                    .getAsJsonObject().getAsJsonObject(
+                    OutputClosureContract.FIELD).getAsJsonArray("members")
+                    .get(0).getAsJsonObject().getAsJsonObject("slice")
+                    .getAsJsonArray("captureBindings").get(0)
+                    .getAsJsonObject().addProperty("accessRootInputPort",
+                    "REGION.1.in.debug");
+            Files.write(fixture.regionPlan, (wrongRoot + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            ConcolicScheduler.Result blocked =
+                    ConcolicScheduler.schedule(arguments);
+            assertEquals("BLOCKED", admissionState(
+                    blocked.executionTasks.get(0)));
         } finally {
             folder.delete();
         }
@@ -295,10 +310,12 @@ public class ConcolicSchedulerTest {
                 "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
         activation.add("runtimeDefinitionMethods", new JsonArray());
         JsonArray symbolize = new JsonArray();
-        symbolize.add(argumentAction("REGION.1.in.x", "int x"));
+        symbolize.add(fieldPrestateAction("REGION.1.in.x",
+                "<example.Producer: int x>"));
         symbolize.add(argumentAction("REGION.1.in.debug",
                 "int debug"));
-        symbolize.add(argumentAction("REGION.1.in.y", "int y"));
+        symbolize.add(fieldPrestateAction("REGION.1.in.y",
+                "<example.Producer: int y>"));
         activation.add("symbolize", symbolize);
         JsonArray branches = new JsonArray();
         branches.add(branch("B.x"));
@@ -317,23 +334,16 @@ public class ConcolicSchedulerTest {
         activation.addProperty("regionInstanceId",
                 "REGION.1@test#call7");
         activation.addProperty("rootCallId", 7);
-        String method = "<example.Producer: void produce(int,int)>";
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
+        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
         capture.addProperty("captureBindingId", port + ".capture");
         capture.addProperty("outputPort", port);
         capture.addProperty("outputCell", cell);
-        capture.addProperty("method", method);
-        capture.addProperty("siteId", method + "#u" + unitIndex);
-        capture.addProperty("unitIndex", unitIndex);
+        capture.addProperty("accessRootInputPort", input);
+        capture.add("fieldPath", strings(
+                cell.contains(" x>") ? "x" : "y"));
         capture.addProperty("fieldSignature", cell);
-        capture.addProperty("occurrence", 1);
-        capture.addProperty("occurrenceAuthority",
-                "RUNTIME_UNIQUE_STATIC_FIELD_ASSIGNMENT_SITE_"
-                        + "LAST_WRITE_OCCURRENCE");
-        capture.addProperty("runtimeEventSeq", 10 + unitIndex);
-        capture.addProperty("runtimeCallId", 7);
-        capture.addProperty("runtimeFieldOwnerObjectId", 99);
+        capture.addProperty("javaType", "int");
         JsonArray captures = new JsonArray();
         captures.add(capture);
 
@@ -341,7 +351,6 @@ public class ConcolicSchedulerTest {
         slice.addProperty("outputPort", port);
         slice.addProperty("outputCell", cell);
         slice.addProperty("complete", true);
-        slice.addProperty("captureBindingsRequired", true);
         slice.addProperty("captureBindingsComplete", true);
         JsonArray inputs = new JsonArray();
         inputs.add(input);
@@ -384,7 +393,6 @@ public class ConcolicSchedulerTest {
         slice.addProperty("outputPort", "REGION.11.out.0");
         slice.addProperty("outputCell", ALL_KEYS);
         slice.addProperty("complete", true);
-        slice.addProperty("captureBindingsRequired", false);
         slice.addProperty("captureBindingsComplete", true);
         slice.add("inputPorts", strings("REGION.11.in.map"));
         slice.add("sites", new JsonArray());
@@ -437,6 +445,19 @@ public class ConcolicSchedulerTest {
         action.addProperty("symbol", symbol);
         action.addProperty("cell", cell);
         action.addProperty("location", "ARGUMENT");
+        return action;
+    }
+
+    private static JsonObject fieldPrestateAction(
+            String symbol, String field) {
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", symbol);
+        action.addProperty("cell", field);
+        action.addProperty("sourceKind", "HEAP_PRESTATE");
+        action.addProperty("location", "RECEIVER_FIELD");
+        action.addProperty("leafFieldSignature", field);
+        action.add("fieldPath", strings(
+                field.contains(" x>") ? "x" : "y"));
         return action;
     }
 
