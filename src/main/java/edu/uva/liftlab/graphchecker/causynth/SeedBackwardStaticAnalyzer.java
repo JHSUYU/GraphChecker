@@ -1810,14 +1810,13 @@ final class SeedBackwardStaticAnalyzer {
      *
      * <p>Only exact, signature-checked Map view factories and Collection
      * {@code toArray} overloads are admitted.  The edge records element
-     * identity flow, not container equality or iteration order.  Concrete
-     * ordering and cardinality remain runtime refinement obligations.</p>
+     * identity flow; the VM's {@code ContainerRelation} owns concrete
+     * ordering, cardinality and mutation semantics.</p>
      */
     private void processSemanticContainerProjection(
             String callerMethod, Fact fact, MethodSig callee,
             List<String> defs, Set<String> callerRelevant) {
-        String operation = semanticContainerProjectionOperation(callee);
-        if (operation.isEmpty() || defs.isEmpty()) {
+        if (!isSemanticContainerProjection(callee) || defs.isEmpty()) {
             return;
         }
         String receiver = invokeBaseLocal(fact.unitText);
@@ -1835,61 +1834,38 @@ final class SeedBackwardStaticAnalyzer {
             if (!defHit || ignoreNode(def)) {
                 continue;
             }
-            String kind = "COLLECTION_TO_ARRAY".equals(operation)
-                    ? "container_snapshot_projection"
-                    : "container_backed_view_projection";
-            addEdgeInternal(kind, receiverNode, def,
+            addEdgeInternal("container_projection", receiverNode, def,
                     callerMethod, fact,
                     "Java collection contract makes result elements "
                             + "depend on receiver elements", false);
-            StaticEdge edge = emittedEdgeRows.get(edgeKey(kind,
-                    receiverNode, def, callerMethod, fact));
-            if (edge != null) {
-                edge.put("containerProjectionContractVersion", 1);
-                edge.put("containerProjectionOperation", operation);
-                edge.put("containerProjectionAuthority",
-                        "JAVA_COLLECTION_API_EXACT_SIGNATURE_WHITELIST_V1");
-                edge.put("receiverValueDependencyComplete", true);
-                edge.put("elementIdentityPreserving",
-                        !"MAP_ENTRY_SET_VIEW".equals(operation));
-                edge.put("backedView", !"COLLECTION_TO_ARRAY".equals(
-                        operation));
-                edge.put("snapshot", "COLLECTION_TO_ARRAY".equals(
-                        operation));
-            }
             callerRelevant.add(receiverNode);
         }
     }
 
-    private String semanticContainerProjectionOperation(MethodSig method) {
-        if (method == null) {
-            return "";
-        }
+    private boolean isSemanticContainerProjection(MethodSig method) {
+        if (method == null) return false;
         if (javaMapContractOwner(method.owner)
                 && method.params.isEmpty()) {
             if ("values".equals(method.name)
                     && "java.util.Collection".equals(
                     method.returnType)) {
-                return "MAP_VALUES_VIEW";
+                return true;
             }
             if ("keySet".equals(method.name)
                     && "java.util.Set".equals(method.returnType)) {
-                return "MAP_KEY_SET_VIEW";
+                return true;
             }
             if ("entrySet".equals(method.name)
                     && "java.util.Set".equals(method.returnType)) {
-                return "MAP_ENTRY_SET_VIEW";
+                return true;
             }
         }
-        if (javaCollectionContractOwner(method.owner)
+        return javaCollectionContractOwner(method.owner)
                 && "toArray".equals(method.name)
                 && method.returnType.endsWith("[]")
                 && (method.params.isEmpty()
                 || (method.params.size() == 1
-                && method.params.get(0).endsWith("[]")))) {
-            return "COLLECTION_TO_ARRAY";
-        }
-        return "";
+                && method.params.get(0).endsWith("[]")));
     }
 
     private boolean javaMapContractOwner(String owner) {

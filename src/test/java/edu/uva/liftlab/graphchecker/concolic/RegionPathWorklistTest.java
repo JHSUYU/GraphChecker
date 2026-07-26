@@ -109,12 +109,9 @@ public class RegionPathWorklistTest {
         attachClosure(executionTask, closure);
         summary.getAsJsonObject("outputExpressions").add(
                 "REGION.3.out.0", binary("+", 1));
-        String[] evidenceFields = new String[]{"heapStateInitializers",
-                "heapObservations", "finiteMapSnapshots",
-                "dynamicFieldBindings", "engineArrayInputBindings",
+        String[] evidenceFields = new String[]{
                 "vmIntrinsicPlaceholderBindings",
-                "unforcedEnvironmentValidationRequirements",
-                "heapEffects"};
+                "unforcedEnvironmentValidationRequirements"};
         for (String field : evidenceFields) {
             JsonObject marker = new JsonObject();
             marker.addProperty("evidenceField", field);
@@ -245,38 +242,6 @@ public class RegionPathWorklistTest {
                 .getAsJsonObject("regionRelation").getAsJsonArray("cases")
                 .get(0).getAsJsonObject().getAsJsonObject(
                         "outputExpressions").size());
-    }
-
-    @Test
-    public void conflictingDuplicatePathEvidenceCannotProduceRelation() {
-        JsonObject first = summary("ACT.DUPLICATE.A",
-                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
-        JsonObject second = summary("ACT.DUPLICATE.B",
-                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
-        JsonObject closure = outputClosure("REGION.3.out.0",
-                "<P: int x>", "PROOF.DUPLICATE");
-        attachClosure(first, closure);
-        attachClosure(second, closure);
-        shareGoal(first, second);
-        first.add("branchMappings", new JsonArray());
-        second.add("branchMappings", new JsonArray());
-        JsonObject observation = new JsonObject();
-        observation.addProperty("observationId", "DIFFERENT");
-        JsonArray observations = new JsonArray();
-        observations.add(observation);
-        second.add("heapObservations", observations);
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Arrays.asList(first, second),
-                Collections.<JsonObject>emptyList(),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertEquals(RegionPathWorklist.State.GAPPED.name(),
-                result.manifest.get("state").getAsString());
-        assertTrue(result.relations.isEmpty());
-        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
-                .contains("CONFLICTING_DUPLICATE_PATH_PAYLOAD"));
     }
 
     @Test
@@ -745,7 +710,6 @@ public class RegionPathWorklistTest {
         mappings.add(mapping("SITE.1", 1));
         summary.add("branchMappings", mappings);
         summary.add("outputExpressions", new JsonObject());
-        summary.add("heapEffects", new JsonArray());
         authorizeVmPcMappings(summary);
         return summary;
     }

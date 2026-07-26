@@ -7,6 +7,7 @@
 #include "utilities/ostream.hpp"
 #include "concolic/utils.hpp"
 #include "concolic/exp/stringExpression.hpp"
+#include "concolic/exp/fieldAccessExpression.hpp"
 
 #include <sstream>
 
@@ -168,8 +169,15 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
         if (sym_inst != NULL) {
           assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
                  "should be equal");
-          sym_inst->set_sym_exp(fd->offset(), new FieldSymbolExp(
-              sym_inst->get_sym_rid(), symbolic_name, T_OBJECT));
+          Expression *symbol = new FieldSymbolExp(
+              sym_inst->get_sym_rid(), symbolic_name, T_OBJECT);
+          sym_inst->set_sym_exp(fd->offset(), symbol);
+          _ctx.record_path_condition(new OpSymExpression(
+              new FieldAccessExpression(
+                  sym_inst->get_or_create_ref_exp(obj),
+                  obj->klass()->name()->as_C_string(), fd->offset(),
+                  T_OBJECT),
+              symbol, op_eq, true));
         }
       }
       return false;
@@ -187,8 +195,15 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
       }
       assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
              "should be equal");
-      sym_inst->set_sym_exp(fd->offset(), new StringSymbolExp(
-          sym_inst->get_sym_rid(), symbolic_name));
+      Expression *symbol = new StringSymbolExp(
+          sym_inst->get_sym_rid(), symbolic_name);
+      sym_inst->set_sym_exp(fd->offset(), symbol);
+      _ctx.record_path_condition(new OpSymExpression(
+          new FieldAccessExpression(
+              sym_inst->get_or_create_ref_exp(obj),
+              obj->klass()->name()->as_C_string(), fd->offset(), T_OBJECT,
+              "Ljava/lang/String;"),
+          symbol, op_eq, true));
       return false;
     }
     if (!_selected_field.empty()) {
@@ -201,10 +216,17 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
              "should be equal");
       SymInstance *field_instance = this->_ctx.get_or_alloc_sym_inst(fld_oop);
       if (field_instance != NULL) {
-        field_instance->set_ref_exp(new FieldSymbolExp(
-            field_instance->get_sym_rid(), symbolic_name, T_OBJECT));
+        Expression *symbol = new FieldSymbolExp(
+            field_instance->get_sym_rid(), symbolic_name, T_OBJECT);
+        field_instance->set_ref_exp(symbol);
         sym_inst->set_sym_exp(fd->offset(),
             field_instance->get_or_create_ref_exp(fld_oop));
+        _ctx.record_path_condition(new OpSymExpression(
+            new FieldAccessExpression(
+                sym_inst->get_or_create_ref_exp(obj),
+                obj->klass()->name()->as_C_string(), fd->offset(),
+                T_OBJECT),
+            symbol, op_eq, true));
       }
       return false;
     }
@@ -214,10 +236,6 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
     arrayOop array_obj = (arrayOop)(obj->obj_field(fd->offset()));
     if (array_obj != NULL) {
       sym_arr = this->_ctx.get_or_alloc_sym_array(array_obj);
-      if (sym_arr != NULL) {
-        sym_arr->set_length_exp(
-            new ArrayLengthExp(sym_arr->get_sym_rid(), type));
-      }
     }
     return false;
   }
@@ -229,8 +247,14 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
     }
     assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
            "should be equal");
-    sym_inst->set_sym_exp(fd->offset(), new FieldSymbolExp(
-        sym_inst->get_sym_rid(), symbolic_name, type));
+    Expression *symbol = new FieldSymbolExp(
+        sym_inst->get_sym_rid(), symbolic_name, type);
+    sym_inst->set_sym_exp(fd->offset(), symbol);
+    _ctx.record_path_condition(new OpSymExpression(
+        new FieldAccessExpression(
+            sym_inst->get_or_create_ref_exp(obj),
+            obj->klass()->name()->as_C_string(), fd->offset(), type),
+        symbol, op_eq, true));
 //      sym_inst->init_sym_exp(fd->offset(), type);
     return false;
   }
@@ -334,7 +358,10 @@ bool FieldSymbolizer::before_array_helper() {
   SymArr *sym_arr = this->_ctx.alloc_sym_array(array_obj);
 
   BasicType type = ArrayKlass::cast((array_obj)->klass())->element_type();
-  sym_arr->set_length_exp(new ArrayLengthExp(sym_arr->get_sym_rid(), type));
+  if (!_prefix_lst.empty()) {
+    sym_arr->set_ref_exp(new FieldSymbolExp(
+        sym_arr->get_sym_rid(), _prefix_lst.back(), T_ARRAY));
+  }
 
   _sym_refs.push_back(sym_arr);
   ResourceMark rm;

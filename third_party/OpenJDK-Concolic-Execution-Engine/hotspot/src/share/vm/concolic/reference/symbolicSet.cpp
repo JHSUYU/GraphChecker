@@ -1,12 +1,12 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/exp/methodExpression.hpp"
+#include "concolic/exp/containerExpression.hpp"
 #include "concolic/jdbc/reference/symbolicHibernateKey.hpp"
+#include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicSet.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "concolic/utils.hpp"
-
-bool SymSet::need_recording = false;
 
 std::set<std::string> SymSet::target_class_names = init_target_class_names();
 
@@ -21,12 +21,13 @@ std::set<std::string> SymSet::handle_method_names = init_handle_method_names();
 
 std::set<std::string> SymSet::init_handle_method_names() {
   std::set<std::string> set;
-//  set.insert("add");
-//  set.insert("remove");
-//  set.insert("contains");
-//  set.insert("isEmpty");
-//  set.insert("clear");
-//  set.insert("size");
+  set.insert("add");
+  set.insert("remove");
+  set.insert("contains");
+  set.insert("isEmpty");
+  set.insert("clear");
+  set.insert("size");
+  set.insert("iterator");
   return set;
 }
 
@@ -55,11 +56,10 @@ void SymSet::init_register_class(MethodSymbolizer *m_symbolizer) {
 bool SymSet::invoke_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &callee_name = handle.get_callee_name();
   bool need_symbolize = true;
-  need_recording = false;
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
-    need_recording = SymSet::check_param_symbolized(handle);
-    if (need_recording) {
-//      SymSet::prepare_param(handle);
+    bool recording = SymSet::check_param_symbolized(handle);
+    if (recording) {
+      handle.general_prepare_param();
     }
   } else {
     std::map<std::string, bool>::iterator iter = skip_method_names.find(callee_name);
@@ -108,8 +108,7 @@ int SymSet::prepare_param_helper(MethodSymbolizerHandle &handle, BasicType type,
       SymInstance *sym_inst = ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
       exp = sym_inst->get_or_create_ref_exp(obj);
     } else {
-      // if one param of the method is null, we ignore this method now.
-      need_recording = false;
+      exp = SymbolExpression::get(Sym_NULL);
     }
   } else {
     tty->print_cr("unhandled set parameter types!");
@@ -153,15 +152,62 @@ int SymSet::check_param_symbolized_helper(MethodSymbolizerHandle &handle, BasicT
 }
 
 Expression *SymSet::finish_method_helper(MethodSymbolizerHandle &handle) {
-  if (!need_recording) {
+  const std::string &method = handle.get_callee_name();
+  exp_list_t &parameters = handle.get_param_list();
+  if (parameters.empty()) return NULL;
+  oop receiver_object = handle.get_param<oop>(0);
+  Expression *state = ConcolicMngr::ctx->container_state(
+      receiver_object, "ASSOCIATIVE");
+  if (state == NULL) return NULL;
+  exp_list_t arguments;
+  for (size_t index = 1; index < parameters.size(); ++index) {
+    arguments.push_back(parameters[index]);
+  }
+  if (method == "add" && arguments.size() == 1) {
+    exp_list_t key;
+    key.push_back(arguments[0]);
+    Expression *present = new ContainerExpression(
+        "ASSOCIATIVE", "CONTAINS", state, key, T_BOOLEAN);
+    arguments.push_back(new ConExpression((jboolean)true));
+    Expression *next = new ContainerExpression(
+        "ASSOCIATIVE", "PUT", state, arguments);
+    ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    Expression *result = new OpSymExpression(
+        present, new ConExpression((jboolean)false), op_eq);
+    ContainerSupport::constrain_result(handle, result);
+    return result;
+  }
+  if (method == "remove" && arguments.size() == 1) {
+    Expression *present = new ContainerExpression(
+        "ASSOCIATIVE", "CONTAINS", state, arguments, T_BOOLEAN);
+    Expression *next = new ContainerExpression(
+        "ASSOCIATIVE", "REMOVE", state, arguments);
+    ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    ContainerSupport::constrain_result(handle, present);
+    return present;
+  }
+  if (method == "clear") {
+    Expression *next = new ContainerExpression(
+        "ASSOCIATIVE", "CLEAR", state, arguments);
+    ConcolicMngr::ctx->set_container_state(receiver_object, next);
     return NULL;
   }
-
-  Expression *exp = NULL;
-  if (handle_method_names.find(handle.get_callee_name()) != handle_method_names.end()) {
-    exp = handle.general_prepare_result_helper();
+  const char *operation = method == "contains" ? "CONTAINS"
+      : method == "size" ? "SIZE"
+      : method == "isEmpty" ? "IS_EMPTY"
+      : method == "iterator" ? "KEY_VIEW" : NULL;
+  if (operation == NULL) return NULL;
+  Expression *result = new ContainerExpression(
+      "ASSOCIATIVE", operation, state, arguments,
+      handle.get_result_type());
+  if (method != "iterator") {
+    ContainerSupport::constrain_result(handle, result);
   }
-  return exp;
+  if (handle.get_result_type() == T_OBJECT) {
+    ContainerSupport::attach_result(
+        handle.get_result<oop>(T_OBJECT), result);
+  }
+  return result;
 }
 
 #endif // ENABLE_CONCOLIC

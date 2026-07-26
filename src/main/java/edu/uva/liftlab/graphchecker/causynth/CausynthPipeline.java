@@ -228,12 +228,12 @@ public final class CausynthPipeline {
                 plan.outputCaptures();
         String outputCaptureReceiverClass = plan.receiverClass();
         String signature = plan.rootMethod();
-        Set<String> backedViewMethods =
+        Set<String> instrumentationMethods =
                 new LinkedHashSet<>(plan.instrumentationMethods());
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
         taggedMethods.addAll(materializationSelection.localMethods());
         taggedMethods.addAll(materializationSelection.accessorCallerMethods());
-        taggedMethods.addAll(backedViewMethods);
+        taggedMethods.addAll(instrumentationMethods);
         for (String methodSignature : taggedMethods) {
             try {
                 SootMethod method = Scene.v().getMethod(methodSignature);
@@ -387,7 +387,6 @@ public final class CausynthPipeline {
         }
         instrumentConcolicAccessorCallContexts(materializationSelection, refs);
         instrumentConcolicMaterializations(materializationSelection, refs);
-        instrumentConcolicMapEntryObservations(backedViewMethods, refs);
         instrumentConcolicBranches(branchSelection, refs);
         LOG.info("Instrumented symbolic-region root {} for concolic replay",
                 signature);
@@ -571,11 +570,6 @@ public final class CausynthPipeline {
                         }
                         InstanceFieldRef instanceField =
                                 (InstanceFieldRef) field;
-                        if (fieldRef.type() instanceof ArrayType) {
-                            instrumentConsumedArrayFieldRead(body, method,
-                                    stmt, unitIndex, instanceField, refs);
-                            continue;
-                        }
                         List<Unit> before = new ArrayList<>();
                         before.add(Jimple.v().newInvokeStmt(
                                 Jimple.v().newStaticInvokeExpr(
@@ -676,64 +670,6 @@ public final class CausynthPipeline {
                             + method.getSignature() + "#u" + unitIndex);
         }
         insertAfterSequence(body, stmt, after);
-    }
-
-    /**
-     * Splits an array-valued {@code getfield} around the runtime hooks without
-     * ever evaluating the field twice.  The synthetic local is the JVM value
-     * produced by the original field read; both the post hook and the original
-     * statement consume that same local.  Consequently a concurrent putfield
-     * after the read cannot change either the program value or the VM array
-     * expression associated with it.
-     */
-    private static void instrumentConsumedArrayFieldRead(
-            Body body, SootMethod method, Stmt stmt, int unitIndex,
-            InstanceFieldRef field, HookCatalog refs) {
-        if (!(stmt instanceof AssignStmt)
-                || ((AssignStmt) stmt).getRightOp() != field) {
-            throw new IllegalStateException(
-                    "ARRAY_FIELD_READ_SHAPE_UNSUPPORTED: "
-                            + field.getFieldRef().getSignature() + " at "
-                            + method.getSignature() + "#u" + unitIndex);
-        }
-
-        AssignStmt assignment = (AssignStmt) stmt;
-        Local consumed = newTraceLocal(body, field.getType(),
-                "$causynthConsumedArrayField");
-        Unit exactGetField = Jimple.v().newAssignStmt(consumed, field);
-        assignment.setRightOp(consumed);
-
-        List<Unit> sequence = new ArrayList<>();
-        sequence.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(
-                        refs.ref(Hook.PAUSE_OBSERVATION))));
-        Value owner = objectArg(body, field.getBase(), sequence);
-        sequence.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(
-                        refs.ref(Hook.PREPARE_FIELD_MATERIALIZATION),
-                        StringConstant.v(method.getSignature()),
-                        IntConstant.v(unitIndex), owner,
-                        StringConstant.v(field.getFieldRef().getSignature()),
-                        StringConstant.v(field.getFieldRef().name()))));
-        sequence.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(
-                        refs.ref(Hook.RESUME_OBSERVATION))));
-        sequence.add(exactGetField);
-        sequence.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(
-                        refs.ref(Hook.PAUSE_OBSERVATION))));
-        sequence.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(
-                        refs.ref(Hook.MATERIALIZE_CONSUMED_FIELD),
-                        StringConstant.v(method.getSignature()),
-                        IntConstant.v(unitIndex), owner,
-                        StringConstant.v(field.getFieldRef().getSignature()),
-                        StringConstant.v(field.getFieldRef().name()),
-                        consumed)));
-        sequence.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(
-                        refs.ref(Hook.RESUME_OBSERVATION))));
-        insertBeforeSequence(body, stmt, sequence);
     }
 
     private void instrumentRegionExitFieldCaptures(
@@ -883,113 +819,6 @@ public final class CausynthPipeline {
                 + target.captureBindingId();
         return cause == null ? new IllegalStateException(detail)
                 : new IllegalStateException(detail, cause);
-    }
-
-    /**
-     * Instruments non-mutating Map entry observations. Static analysis
-     * deliberately supplies a broad set of same-thread region methods; the
-     * runtime's active activation and identity bindings decide which concrete
-     * views actually belong to the selected heap state.
-     */
-    private void instrumentConcolicMapEntryObservations(
-            Set<String> methods, HookCatalog refs) {
-        for (String signature : methods) {
-            try {
-                SootMethod method = Scene.v().getMethod(signature);
-                if (method == null || !method.isConcrete()) {
-                    continue;
-                }
-                Body body = method.retrieveActiveBody();
-                List<Unit> units = snapshotUnits(body);
-                tagOriginalUnits(units);
-                for (Unit unit : units) {
-                    if (!(unit instanceof Stmt)) {
-                        continue;
-                    }
-                    Stmt stmt = (Stmt) unit;
-                    if (!stmt.containsInvokeExpr()
-                            || !(stmt.getInvokeExpr()
-                            instanceof InstanceInvokeExpr)) {
-                        continue;
-                    }
-                    InvokeExpr invoke = stmt.getInvokeExpr();
-                    InstanceInvokeExpr instance = (InstanceInvokeExpr) invoke;
-                    String name = invoke.getMethodRef().name();
-                    int unitIndex = originalUnitIndex(unit);
-                    if (unitIndex < 0 || invoke.getArgCount() != 0) {
-                        continue;
-                    }
-
-                    List<Unit> after = new ArrayList<>();
-                    after.add(Jimple.v().newInvokeStmt(
-                            Jimple.v().newStaticInvokeExpr(
-                                    refs.ref(Hook.PAUSE_OBSERVATION))));
-                    boolean recognized = false;
-                    if (stmt instanceof AssignStmt
-                            && isBackedMapViewFactory(name)) {
-                        Value view = ((AssignStmt) stmt).getLeftOp();
-                        after.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.REGISTER_MAP_VIEW),
-                                        StringConstant.v(method.getSignature()),
-                                        IntConstant.v(unitIndex),
-                                        objectArg(body, instance.getBase(), after),
-                                        objectArg(body, view, after),
-                                        StringConstant.v(mapViewKind(name)))));
-                        recognized = true;
-                    } else if (stmt instanceof AssignStmt
-                            && isIteratorFactory(name)) {
-                        Value iterator = ((AssignStmt) stmt).getLeftOp();
-                        after.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.REGISTER_MAP_VIEW_ITERATOR),
-                                        StringConstant.v(method.getSignature()),
-                                        IntConstant.v(unitIndex),
-                                        objectArg(body, instance.getBase(), after),
-                                        objectArg(body, iterator, after))));
-                        recognized = true;
-                    } else if (stmt instanceof AssignStmt
-                            && "next".equals(name)) {
-                        Value element = ((AssignStmt) stmt).getLeftOp();
-                        after.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.RECORD_MAP_ITERATOR_NEXT),
-                                        StringConstant.v(method.getSignature()),
-                                        IntConstant.v(unitIndex),
-                                        objectArg(body, instance.getBase(), after),
-                                        objectArg(body, element, after))));
-                        recognized = true;
-                    }
-                    if (!recognized) {
-                        continue;
-                    }
-                    after.add(Jimple.v().newInvokeStmt(
-                            Jimple.v().newStaticInvokeExpr(
-                                    refs.ref(Hook.RESUME_OBSERVATION))));
-                    insertAfterSequence(body, stmt, after);
-                }
-            } catch (RuntimeException exception) {
-                LOG.debug("Skipping backed-view concolic instrumentation for {}",
-                        signature, exception);
-            }
-        }
-    }
-
-    private static boolean isBackedMapViewFactory(String name) {
-        return "entrySet".equals(name) || "keySet".equals(name)
-                || "values".equals(name);
-    }
-
-    private static boolean isIteratorFactory(String name) {
-        return "iterator".equals(name) || "listIterator".equals(name)
-                || "descendingIterator".equals(name);
-    }
-
-    private static String mapViewKind(String name) {
-        if ("entrySet".equals(name)) return "ENTRY_SET";
-        if ("keySet".equals(name)) return "KEY_SET";
-        if ("values".equals(name)) return "VALUES";
-        return "UNKNOWN";
     }
 
     private static void addPrimitiveMaterialization(
@@ -2082,11 +1911,6 @@ public final class CausynthPipeline {
         MATERIALIZE_PRIMITIVE,
         MATERIALIZE_STATIC_PRIMITIVE_FIELD,
         MATERIALIZE_FIELD,
-        PREPARE_FIELD_MATERIALIZATION,
-        MATERIALIZE_CONSUMED_FIELD,
-        REGISTER_MAP_VIEW,
-        REGISTER_MAP_VIEW_ITERATOR,
-        RECORD_MAP_ITERATOR_NEXT,
         RECORD_REGION_EXIT_FIELD_OUTPUT,
         PAUSE_OBSERVATION,
         RESUME_OBSERVATION,
@@ -2191,21 +2015,6 @@ public final class CausynthPipeline {
                     .add(Hook.MATERIALIZE_FIELD, runtime, "materializeField",
                             VoidType.v(), string, IntType.v(), object, string,
                             string)
-                    .add(Hook.PREPARE_FIELD_MATERIALIZATION, runtime,
-                            "prepareFieldMaterialization", VoidType.v(), string,
-                            IntType.v(), object, string, string)
-                    .add(Hook.MATERIALIZE_CONSUMED_FIELD, runtime,
-                            "materializeConsumedField", VoidType.v(), string,
-                            IntType.v(), object, string, string, object)
-                    .add(Hook.REGISTER_MAP_VIEW, runtime, "registerMapView",
-                            VoidType.v(), string, IntType.v(), object, object,
-                            string)
-                    .add(Hook.REGISTER_MAP_VIEW_ITERATOR, runtime,
-                            "registerMapViewIterator", VoidType.v(), string,
-                            IntType.v(), object, object)
-                    .add(Hook.RECORD_MAP_ITERATOR_NEXT, runtime,
-                            "recordMapIteratorNext", VoidType.v(), string,
-                            IntType.v(), object, object)
                     .add(Hook.RECORD_REGION_EXIT_FIELD_OUTPUT, runtime,
                             "recordRegionExitFieldOutput", VoidType.v(),
                             string, string, string, string, object, object)

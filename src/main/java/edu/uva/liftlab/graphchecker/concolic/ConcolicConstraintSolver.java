@@ -6,7 +6,6 @@ import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingK
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.DynamicBindingSpec;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 
 import java.io.ByteArrayOutputStream;
@@ -72,19 +71,8 @@ public final class ConcolicConstraintSolver {
                     replayContract);
         }
 
-        DynamicBindingRegistry dynamicBindings =
-                DynamicBindingRegistry.from(task);
-        if (!dynamicBindings.valid) {
-            record.addProperty("status", "MATERIALIZATION_GAP");
-            record.addProperty("reason",
-                    "INVALID_DYNAMIC_FIELD_BINDING_REGISTRY");
-            return new Result(record, smt, new JsonArray(),
-                    replayContract);
-        }
-
         List<JsonObject> actions = materializationActions(activation);
-        if (hasMaterializationGap(targetSymbols, actions, dynamicBindings,
-                true)) {
+        if (hasMaterializationGap(targetSymbols, actions, true)) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
                     "FLIP_CONDITION_DEPENDS_ON_UNMATERIALIZABLE_SYMBOLS");
@@ -94,7 +82,7 @@ public final class ConcolicConstraintSolver {
 
         // Prefix inputs need real targets; environment terms remain unforced.
         if (hasMaterializationGap(encoder.controlledSymbols, actions,
-                dynamicBindings, false)) {
+                false)) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
                     "PATH_CONSTRAINT_DEPENDS_ON_UNMATERIALIZABLE_"
@@ -149,7 +137,7 @@ public final class ConcolicConstraintSolver {
             // all-path-input completeness check below will fail closed.
         }
         JsonArray assignments = modelAssignments(encoder, values, actions,
-                dynamicBindings, projectedControlledSymbols);
+                projectedControlledSymbols);
         if (targetControlledSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
@@ -181,7 +169,11 @@ public final class ConcolicConstraintSolver {
 
     private static final class Encoder {
         private final Map<String, Sort> declarations = new LinkedHashMap<>();
+        private final Map<String, String> functionDeclarations =
+                new LinkedHashMap<>();
         private final Map<String, SymbolNames> names =
+                new LinkedHashMap<>();
+        private final Map<String, String> containerStates =
                 new LinkedHashMap<>();
         private final List<String> assertions = new ArrayList<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
@@ -198,9 +190,6 @@ public final class ConcolicConstraintSolver {
                 String type = string(object, "_type");
                 if ("MethodExpression".equals(type)) {
                     String constraint = methodConstraint(object, origin);
-                    if (!constraint.isEmpty()) assertions.add(constraint);
-                } else if ("_array_expr".equals(type)) {
-                    String constraint = arrayConstraint(object, origin);
                     if (!constraint.isEmpty()) assertions.add(constraint);
                 } else {
                     Term term = term(expression, null, origin);
@@ -258,9 +247,243 @@ public final class ConcolicConstraintSolver {
             if ("MethodExpression".equals(type)) {
                 return methodTerm(object, origin);
             }
+            if (ContainerSmtCodec.handles(object)) {
+                return containerTerm(object, origin);
+            }
+            if (ContainerSmtCodec.handlesField(object)) {
+                return containerFieldTerm(object, origin);
+            }
             unsupported.add(origin + ":TYPE:" + firstNonBlank(type,
                     "MISSING"));
             return null;
+        }
+
+        private Term containerTerm(JsonObject expression, String origin) {
+            return fromContainerTerm(ContainerSmtCodec.term(
+                    expression, containerHost(origin)), origin);
+        }
+
+        private Term containerFieldTerm(
+                JsonObject expression, String origin) {
+            return fromContainerTerm(ContainerSmtCodec.field(
+                    expression, containerHost(origin)), origin);
+        }
+
+        private ContainerSmtCodec.Host containerHost(final String origin) {
+            return new ContainerSmtCodec.Host() {
+                @Override
+                public ContainerSmtCodec.Term state(
+                        JsonElement identity,
+                        ContainerSmtCodec.Sort shape) {
+                    Sort stateSort = shape == ContainerSmtCodec.Sort.INDEXED
+                            ? Sort.INDEXED : Sort.ASSOCIATIVE;
+                    if (identity != null && identity.isJsonObject()
+                            && "SymbolExpression".equals(string(
+                            identity.getAsJsonObject(), "_type"))) {
+                        String raw = string(identity.getAsJsonObject(), "_exp");
+                        if (raw.isEmpty()) {
+                            unsupported("ContainerStateIdentity:" + shape);
+                            return null;
+                        }
+                        String key = shape + "\u0000" + raw;
+                        String name = containerStates.get(key);
+                        if (name == null) {
+                            name = "container__" + safeName(raw) + "__"
+                                    + sha256(key).substring(0, 10);
+                            containerStates.put(key, name);
+                            declarations.put(name, stateSort);
+                        }
+                        return new ContainerSmtCodec.Term(name, shape);
+                    }
+                    Term reference = term(identity, Sort.REF,
+                            origin + ":container-state");
+                    if (reference == null || reference.sort != Sort.REF) {
+                        unsupported("ContainerStateIdentity:" + shape);
+                        return null;
+                    }
+                    return new ContainerSmtCodec.Term(
+                            (shape == ContainerSmtCodec.Sort.INDEXED
+                                    ? "(indexed_state_of "
+                                    : "(assoc_state_of ")
+                                    + reference.text + ")", shape);
+                }
+
+                @Override
+                public ContainerSmtCodec.Term operand(
+                        JsonElement expression,
+                        ContainerSmtCodec.Sort expected) {
+                    if (ContainerSmtCodec.handles(expression)) {
+                        return ContainerSmtCodec.term(
+                                expression.getAsJsonObject(), this);
+                    }
+                    if (ContainerSmtCodec.handlesField(expression)) {
+                        return ContainerSmtCodec.field(
+                                expression.getAsJsonObject(), this);
+                    }
+                    Sort nativeExpected = expected == ContainerSmtCodec.Sort.INT
+                            ? Sort.INT
+                            : expected == ContainerSmtCodec.Sort.BOOL
+                            ? Sort.BOOL
+                            : expected == ContainerSmtCodec.Sort.REF
+                            ? Sort.REF
+                            : expected == ContainerSmtCodec.Sort.INDEXED
+                            ? Sort.INDEXED
+                            : expected == ContainerSmtCodec.Sort.ASSOCIATIVE
+                            ? Sort.ASSOCIATIVE : null;
+                    return toContainerTerm(term(expression, nativeExpected,
+                            origin + ":container-operand"));
+                }
+
+                @Override
+                public ContainerSmtCodec.Term box(JsonElement expression) {
+                    Term value = term(expression, null,
+                            origin + ":container-value");
+                    if (value == null) return null;
+                    String boxed = value.sort == Sort.INT
+                            ? "(VInt " + value.text + ")"
+                            : value.sort == Sort.BOOL
+                            ? "(VBool " + value.text + ")"
+                            : value.sort == Sort.REF
+                            ? "(VRef " + value.text + ")"
+                            : value.sort == Sort.STRING
+                            ? "(VString " + value.text + ")"
+                            : value.sort == Sort.FLOAT32
+                            ? "(VFloat " + value.text + ")"
+                            : value.sort == Sort.FLOAT64
+                            ? "(VDouble " + value.text + ")" : "";
+                    if (boxed.isEmpty()) {
+                        unsupported("ContainerBox:" + value.sort);
+                        return null;
+                    }
+                    return new ContainerSmtCodec.Term(boxed,
+                            ContainerSmtCodec.Sort.VALUE);
+                }
+
+                @Override
+                public ContainerSmtCodec.Term unbox(
+                        ContainerSmtCodec.Term value, String javaType) {
+                    if (value == null
+                            || value.sort != ContainerSmtCodec.Sort.VALUE) {
+                        return value;
+                    }
+                    Sort sort = sortOfJava(javaType);
+                    if (sort == Sort.INT) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueInt " + value.text + ")",
+                                ContainerSmtCodec.Sort.INT,
+                                JavaPrimitiveSmtSemantics.widthOfJavaType(
+                                        javaType));
+                    }
+                    if (sort == Sort.BOOL) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueBool " + value.text + ")",
+                                ContainerSmtCodec.Sort.BOOL);
+                    }
+                    if (sort == Sort.REF) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueRef " + value.text + ")",
+                                ContainerSmtCodec.Sort.REF);
+                    }
+                    if (sort == Sort.FLOAT32) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueFloat " + value.text + ")",
+                                ContainerSmtCodec.Sort.FLOAT32);
+                    }
+                    if (sort == Sort.FLOAT64) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueDouble " + value.text + ")",
+                                ContainerSmtCodec.Sort.FLOAT64);
+                    }
+                    if (sort == Sort.STRING) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueString " + value.text + ")",
+                                ContainerSmtCodec.Sort.STRING);
+                    }
+                    return value;
+                }
+
+                @Override
+                public ContainerSmtCodec.Term field(
+                        ContainerSmtCodec.Term owner, String ownerClass,
+                        int fieldOffset, String javaType) {
+                    Sort result = sortOfJava(javaType);
+                    if (owner == null
+                            || owner.sort != ContainerSmtCodec.Sort.REF
+                            || fieldOffset < 0 || result == Sort.UNKNOWN
+                            || result.containerState()) {
+                        unsupported("FieldAccessExpression:" + ownerClass
+                                + "@" + fieldOffset + ":" + javaType);
+                        return null;
+                    }
+                    String identity = ownerClass + "\u0000" + fieldOffset
+                            + "\u0000" + javaType;
+                    String accessor = "container_field__"
+                            + sha256(identity).substring(0, 16);
+                    functionDeclarations.put(accessor,
+                            "(declare-fun " + accessor + " (Ref) "
+                                    + result.smt + ")");
+                    return toContainerTerm(new Term("(" + accessor + " "
+                            + owner.text + ")", result));
+                }
+
+                @Override
+                public void unsupported(String reason) {
+                    Encoder.this.unsupported.add(origin + ":" + reason);
+                }
+            };
+        }
+
+        private ContainerSmtCodec.Term toContainerTerm(Term value) {
+            if (value == null) return null;
+            ContainerSmtCodec.Sort sort = value.sort == Sort.BOOL
+                    ? ContainerSmtCodec.Sort.BOOL
+                    : value.sort == Sort.INT
+                    ? ContainerSmtCodec.Sort.INT
+                    : value.sort == Sort.FLOAT32
+                    ? ContainerSmtCodec.Sort.FLOAT32
+                    : value.sort == Sort.FLOAT64
+                    ? ContainerSmtCodec.Sort.FLOAT64
+                    : value.sort == Sort.STRING
+                    ? ContainerSmtCodec.Sort.STRING
+                    : value.sort == Sort.REF
+                    ? ContainerSmtCodec.Sort.REF
+                    : value.sort == Sort.VALUE
+                    ? ContainerSmtCodec.Sort.VALUE
+                    : value.sort == Sort.INDEXED
+                    ? ContainerSmtCodec.Sort.INDEXED
+                    : value.sort == Sort.ASSOCIATIVE
+                    ? ContainerSmtCodec.Sort.ASSOCIATIVE : null;
+            return sort == null ? null
+                    : new ContainerSmtCodec.Term(value.text, sort,
+                    value.integralWidth);
+        }
+
+        private Term fromContainerTerm(
+                ContainerSmtCodec.Term value, String origin) {
+            if (value == null) return null;
+            Sort sort = value.sort == ContainerSmtCodec.Sort.BOOL
+                    ? Sort.BOOL
+                    : value.sort == ContainerSmtCodec.Sort.INT
+                    ? Sort.INT
+                    : value.sort == ContainerSmtCodec.Sort.FLOAT32
+                    ? Sort.FLOAT32
+                    : value.sort == ContainerSmtCodec.Sort.FLOAT64
+                    ? Sort.FLOAT64
+                    : value.sort == ContainerSmtCodec.Sort.STRING
+                    ? Sort.STRING
+                    : value.sort == ContainerSmtCodec.Sort.REF
+                    ? Sort.REF
+                    : value.sort == ContainerSmtCodec.Sort.VALUE
+                    ? Sort.VALUE
+                    : value.sort == ContainerSmtCodec.Sort.INDEXED
+                    ? Sort.INDEXED
+                    : value.sort == ContainerSmtCodec.Sort.ASSOCIATIVE
+                    ? Sort.ASSOCIATIVE : Sort.UNKNOWN;
+            if (sort == Sort.UNKNOWN) {
+                unsupported.add(origin + ":CONTAINER_STATE_USED_AS_VALUE");
+                return null;
+            }
+            return new Term(value.text, sort, value.integralWidth);
         }
 
         private Term symbol(JsonObject expression, String origin) {
@@ -901,39 +1124,22 @@ public final class ConcolicConstraintSolver {
             return null;
         }
 
-        private String arrayConstraint(JsonObject expression, String origin) {
-            if (!bool(expression, "_is_load", false)) {
-                unsupported.add(origin + ":ARRAY_STORE_UNSUPPORTED");
-                return "";
-            }
-            Term index = term(expression.get("_index_exp"), Sort.INT,
-                    origin + ":index");
-            Term value = term(expression.get("_value_exp"), null,
-                    origin + ":value");
-            if (index == null || value == null) return "";
-            String raw = string(expression, "_arr_str");
-            if (raw.isEmpty()) {
-                unsupported.add(origin + ":MISSING_ARRAY_ID");
-                return "";
-            }
-            String name = "array__" + safeName(raw) + "__"
-                    + sha256(raw + value.sort).substring(0, 8);
-            Sort arraySort = value.sort.arraySort();
-            if (arraySort == Sort.UNKNOWN) {
-                unsupported.add(origin + ":ARRAY_VALUE_SORT:" + value.sort);
-                return "";
-            }
-            declarations.put(name, arraySort);
-            return "(= " + value.text + " (select " + name + " "
-                    + index.text + "))";
-        }
-
         private String finish() {
             StringBuilder result = new StringBuilder();
             result.append("(set-option :produce-models true)\n");
             result.append("(set-logic ALL)\n");
             result.append("(declare-sort Ref 0)\n");
             result.append("(declare-const nullRef Ref)\n");
+            result.append("(declare-datatypes () ((Value"
+                    + " (VInt (valueInt Int))"
+                    + " (VFloat (valueFloat (_ FloatingPoint 8 24)))"
+                    + " (VDouble (valueDouble (_ FloatingPoint 11 53)))"
+                    + " (VBool (valueBool Bool))"
+                    + " (VRef (valueRef Ref))"
+                    + " (VString (valueString String)))))\n");
+            for (String declaration : ContainerSmtCodec.preamble()) {
+                result.append(declaration).append('\n');
+            }
             result.append(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION)
                     .append('\n');
             result.append(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION)
@@ -943,6 +1149,9 @@ public final class ConcolicConstraintSolver {
                 result.append("(declare-const ").append(declaration.getKey())
                         .append(' ').append(declaration.getValue().smt)
                         .append(")\n");
+            }
+            for (String declaration : functionDeclarations.values()) {
+                result.append(declaration).append('\n');
             }
             for (SymbolNames symbol : names.values()) {
                 if (symbol.sort != Sort.REF) continue;
@@ -977,7 +1186,7 @@ public final class ConcolicConstraintSolver {
             List<String> modelNames = new ArrayList<>();
             for (String raw : controlledSymbols) {
                 Sort sort = names(raw).sort;
-                if (sort != null && !sort.isArray()) {
+                if (sort != null && !sort.containerState()) {
                     SymbolNames names = names(raw);
                     if (sort.floating()) {
                         modelNames.add(names.floatingBits);
@@ -1009,11 +1218,8 @@ public final class ConcolicConstraintSolver {
         BOOL("Bool"), INT("Int"),
         FLOAT32("(_ FloatingPoint 8 24)"),
         FLOAT64("(_ FloatingPoint 11 53)"), STRING("String"),
-        REF("Ref"), INT_ARRAY("(Array Int Int)"),
-        FLOAT32_ARRAY("(Array Int (_ FloatingPoint 8 24))"),
-        FLOAT64_ARRAY("(Array Int (_ FloatingPoint 11 53))"),
-        BOOL_ARRAY("(Array Int Bool)"),
-        STRING_ARRAY("(Array Int String)"), REF_ARRAY("(Array Int Ref)"),
+        REF("Ref"), VALUE("Value"),
+        INDEXED("IndexedState"), ASSOCIATIVE("AssocState"),
         UNKNOWN("");
 
         private final String smt;
@@ -1022,18 +1228,8 @@ public final class ConcolicConstraintSolver {
             this.smt = smt;
         }
 
-        private Sort arraySort() {
-            if (this == INT) return INT_ARRAY;
-            if (this == FLOAT32) return FLOAT32_ARRAY;
-            if (this == FLOAT64) return FLOAT64_ARRAY;
-            if (this == BOOL) return BOOL_ARRAY;
-            if (this == STRING) return STRING_ARRAY;
-            if (this == REF) return REF_ARRAY;
-            return UNKNOWN;
-        }
-
-        private boolean isArray() {
-            return name().endsWith("_ARRAY");
+        private boolean containerState() {
+            return this == INDEXED || this == ASSOCIATIVE;
         }
 
         private boolean floating() {
@@ -1095,7 +1291,6 @@ public final class ConcolicConstraintSolver {
     private static JsonArray modelAssignments(Encoder encoder,
                                               Map<String, String> values,
                                               List<JsonObject> actions,
-                                              DynamicBindingRegistry registry,
                                               Set<String> projectedSymbols)
             {
         JsonArray result = new JsonArray();
@@ -1112,7 +1307,7 @@ public final class ConcolicConstraintSolver {
             String nullValue = sort == Sort.STRING || sort == Sort.REF
                     ? values.get(names.nullness) : "";
             boolean reference = sort == Sort.REF;
-            if ((!reference && value == null) || sort.isArray()
+            if ((!reference && value == null) || sort.containerState()
                     || sort.floating() && !("true".equals(nanValue)
                     || "false".equals(nanValue))
                     || sort == Sort.STRING
@@ -1127,8 +1322,7 @@ public final class ConcolicConstraintSolver {
             // object.  A target reference is materializable exactly when the
             // model selects null, which has a real runtime action.
             if (reference && !"true".equals(nullValue)) continue;
-            ActionMatch match = materializationResolution(raw, actions,
-                    registry);
+            ActionMatch match = materializationResolution(raw, actions);
             if (match == null) continue;
             JsonObject assignment = new JsonObject();
             assignment.addProperty("engineSymbol", raw);
@@ -1185,14 +1379,6 @@ public final class ConcolicConstraintSolver {
             if (!replayPath.isEmpty()) {
                 assignment.add("materializationPath",
                         strings(replayPath));
-            }
-            if (match.binding != null) {
-                match.binding.copySelectorTo(assignment);
-                List<String> bindingPath = match.binding.fieldPath();
-                if (!bindingPath.isEmpty()) {
-                    assignment.add("materializationPath",
-                            strings(bindingPath));
-                }
             }
             result.add(assignment);
         }
@@ -1275,7 +1461,7 @@ public final class ConcolicConstraintSolver {
                 if (segments.size() != path.size()) continue;
                 String label = symbol + (segments.isEmpty() ? ""
                         : "." + String.join(".", segments));
-                if (exactEngineSymbol(raw, label)
+                if (matchesEngineSymbol(raw, label)
                         && label.length() > bestLength) {
                     best = new ActionMatch(action, segments);
                     bestLength = label.length();
@@ -1286,287 +1472,57 @@ public final class ConcolicConstraintSolver {
     }
 
     private static ActionMatch materializationResolution(
-            String raw, List<JsonObject> actions,
-            DynamicBindingRegistry registry) {
-        DynamicFieldBinding exact = registry.exact(raw);
-        if (exact != null) {
-            List<JsonObject> exactActions = new ArrayList<>();
-            for (JsonObject action : actions) {
-                if (!executable(action)) continue;
-                if (exact.spec.baseInputSymbol().equals(string(action,
-                        "symbol"))) {
-                    exactActions.add(action);
-                }
-            }
-            if (exactActions.isEmpty() && exact.isContainerElement()) {
-                for (JsonObject action : actions) {
-                    if (exact.matchesSelectorOnlyDeclaration(action)) {
-                        exactActions.add(action);
-                    }
-                }
-            }
-            if (exactActions.size() != 1) {
-                return null;
-            }
-            if (exact.isContainerElement()) {
-                int containerActions = 0;
-                for (JsonObject action : actions) {
-                    if (!executable(action)) continue;
-                    if (exact.containerInputPort().equals(string(action,
-                            "symbol"))
-                            && exact.containerInputCell().equals(string(
-                            action, "cell"))) {
-                        containerActions++;
-                    }
-                }
-                if (containerActions != 1) {
-                    return null;
-                }
-            }
-            return new ActionMatch(exactActions.get(0), exact.fieldPath(),
-                    exact);
-        }
-
-        ActionMatch direct = bestAction(raw, actions);
-        if (direct == null) {
-            return null;
-        }
-        String base = string(direct.action, "symbol");
-        List<DynamicFieldBinding> candidates = registry.forBase(base);
-        if (!candidates.isEmpty()) {
-            if (exactEngineSymbol(raw, base)) {
-                return null;
-            }
-            // Once runtime evidence has split a static field-family input
-            // into concrete entry bindings, a model symbol for that family
-            // may only select a binding by the binding's complete dynamic
-            // symbol.  Falling back through bestAction's substring match
-            // would silently attach a prefix collision or malformed VM name
-            // to the sole entry in a family.
-            return null;
-        }
-        return direct;
+            String raw, List<JsonObject> actions) {
+        return bestAction(raw, actions);
     }
 
     private static boolean hasMaterializationGap(
             Set<String> symbols, List<JsonObject> actions,
-            DynamicBindingRegistry registry, boolean requireRegionInput) {
+            boolean requireRegionInput) {
         for (String symbol : symbols) {
             if ("N".equals(symbol) || "V".equals(symbol)) continue;
-            ActionMatch resolution = materializationResolution(symbol,
-                    actions, registry);
             if ((requireRegionInput && !regionInput(symbol))
-                    || resolution == null) {
+                    || materializationResolution(symbol, actions) == null) {
                 return true;
             }
         }
         return false;
     }
 
-    private static boolean exactEngineSymbol(String raw, String symbol) {
-        if (raw == null || symbol == null || symbol.isEmpty()) return false;
-        if (raw.equals(symbol)) return true;
+    private static boolean matchesEngineSymbol(
+            String engine, String semantic) {
+        if (engine == null || semantic == null || semantic.isEmpty()) {
+            return false;
+        }
+        if (engine.equals(semantic)) return true;
         String payload = "";
-        if (raw.length() > 10 && raw.charAt(0) == 'M'
-                && raw.charAt(1) == '_'
-                && "ZCBSIFJDL".indexOf(raw.charAt(2)) >= 0
-                && raw.startsWith("_field_", 3)) {
-            payload = raw.substring(10);
-        } else if (raw.startsWith("M_L'")) {
-            int runtimeTypeEnd = raw.indexOf("'_", 4);
-            if (runtimeTypeEnd > 4 && raw.substring(4, runtimeTypeEnd)
-                    .matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
-                payload = raw.substring(runtimeTypeEnd + 2);
+        if (engine.length() > 10 && engine.charAt(0) == 'M'
+                && engine.charAt(1) == '_'
+                && "ZCBSIFJDL".indexOf(engine.charAt(2)) >= 0
+                && engine.startsWith("_field_", 3)) {
+            payload = engine.substring(10);
+        } else if (engine.startsWith("M_L'")) {
+            int runtimeTypeEnd = engine.indexOf("'_", 4);
+            if (runtimeTypeEnd > 4) {
+                payload = engine.substring(runtimeTypeEnd + 2);
             }
         }
-        if (payload.isEmpty()) return false;
-        if (payload.equals(symbol)) return true;
-        String boundary = symbol + "_";
-        return payload.startsWith(boundary)
-                && legalVmOwnerSuffix(payload.substring(boundary.length()));
+        return payload.equals(semantic)
+                || payload.startsWith(semantic + "_");
     }
 
-    private static boolean legalVmOwnerSuffix(String suffix) {
-        return suffix != null && suffix.matches(
-                "[A-Za-z_$][A-Za-z0-9_$]*"
-                        + "(?:/[A-Za-z_$][A-Za-z0-9_$]*)*");
-    }
 
     private static boolean executable(JsonObject action) {
         return "SYMBOLIC".equals(string(action, "mode"));
     }
 
-    private static final class DynamicBindingRegistry {
-        private final Map<String, DynamicFieldBinding> byDynamicSymbol =
-                new LinkedHashMap<>();
-        private final Map<String, List<DynamicFieldBinding>> byBase =
-                new LinkedHashMap<>();
-        private boolean valid = true;
-
-        private static DynamicBindingRegistry from(JsonObject summary) {
-            DynamicBindingRegistry result = new DynamicBindingRegistry();
-            JsonArray rows = array(summary, "dynamicFieldBindings");
-            Set<String> ids = new LinkedHashSet<>();
-            Set<String> siteOccurrences = new LinkedHashSet<>();
-            for (int index = 0; index < rows.size(); index++) {
-                JsonElement element = rows.get(index);
-                if (!element.isJsonObject()) {
-                    result.valid = false;
-                    continue;
-                }
-                final DynamicFieldBinding binding;
-                try {
-                    DynamicBindingSpec spec = DynamicBindingSpec.decode(
-                            element.getAsJsonObject());
-                    if (DynamicBindingSpec.MAP_OUTPUT_ELEMENT_KIND.equals(
-                            spec.kind())) {
-                        continue;
-                    }
-                    binding = new DynamicFieldBinding(spec);
-                } catch (IllegalArgumentException malformed) {
-                    result.valid = false;
-                    continue;
-                }
-                if (!ids.add(binding.spec.dynamicBindingId())) {
-                    result.valid = false;
-                }
-                if (result.byDynamicSymbol.put(
-                        binding.spec.dynamicFieldSymbol(),
-                        binding) != null) {
-                    result.valid = false;
-                }
-                String siteOccurrence = binding.spec.baseInputSymbol() + "\n"
-                        + binding.spec.materializationSiteId() + "\n"
-                        + binding.spec.materializationOccurrence();
-                if (!siteOccurrences.add(siteOccurrence)) {
-                    result.valid = false;
-                }
-                result.byBase.computeIfAbsent(binding.spec.baseInputSymbol(),
-                        ignored -> new ArrayList<>()).add(binding);
-            }
-            return result;
-        }
-
-        private DynamicFieldBinding exact(String raw) {
-            DynamicFieldBinding direct = byDynamicSymbol.get(raw);
-            if (direct != null) return direct;
-            DynamicFieldBinding selected = null;
-            for (DynamicFieldBinding binding : byDynamicSymbol.values()) {
-                if (!exactEngineSymbol(raw,
-                        binding.spec.dynamicFieldSymbol())) {
-                    continue;
-                }
-                if (selected != null) return null;
-                selected = binding;
-            }
-            return selected;
-        }
-
-        private List<DynamicFieldBinding> forBase(String base) {
-            List<DynamicFieldBinding> values = byBase.get(base);
-            return values == null
-                    ? Collections.<DynamicFieldBinding>emptyList() : values;
-        }
-    }
-
-    private static final class DynamicFieldBinding {
-        private static final String FRESH_MAP_ENTRY_REBINDING_AUTHORITY =
-                "EXACT_BASE_PORT_GETTER_SITE_OCCURRENCE_THEN_"
-                        + "FRESH_ENTRY_REBIND_V1";
-        private final DynamicBindingSpec spec;
-
-        private DynamicFieldBinding(DynamicBindingSpec spec) {
-            this.spec = spec;
-        }
-
-        private boolean isContainerElement() {
-            return DynamicBindingSpec.CONTAINER_ELEMENT_KIND.equals(
-                    spec.kind());
-        }
-
-        private boolean matchesSelectorOnlyDeclaration(JsonObject action) {
-            if (!isContainerElement()
-                    || !spec.baseInputSymbol().equals(string(action, "symbol"))
-                    || !"FIELD_ACCESS".equals(string(action,
-                    "bindingMode"))
-                    || !"HEAP_OBJECT_FIELD".equals(string(action,
-                    "location"))
-                    || !"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1"
-                    .equals(string(action, "fieldPathAuthority"))
-                    || !spec.materializationSiteId().equals(
-                    string(action, "accessMethod") + "#u"
-                            + integer(action, "accessUnitIndex", -1))) {
-                return false;
-            }
-            String signature = spec.fieldSignature();
-            List<String> expectedPath = spec.fieldPath();
-            List<String> actionPath = new ArrayList<>();
-            for (JsonElement segment : array(action, "fieldPath")) {
-                if (!segment.isJsonPrimitive()
-                        || !segment.getAsJsonPrimitive().isString()
-                        || segment.getAsString().isEmpty()) {
-                    return false;
-                }
-                actionPath.add(segment.getAsString());
-            }
-            return !signature.isEmpty()
-                    && expectedPath.size() >= 2
-                    && expectedPath.equals(actionPath)
-                    && signature.equals(string(action,
-                    "leafFieldSignature"));
-        }
-
-        private String containerInputPort() {
-            return spec.selector().containerInputPort();
-        }
-
-        private String containerInputCell() {
-            return spec.selector().containerInputCell();
-        }
-
-        private List<String> fieldPath() {
-            return spec.fieldPath();
-        }
-
-        private void copySelectorTo(JsonObject assignment) {
-            assignment.addProperty("dynamicBindingId",
-                    spec.dynamicBindingId());
-            assignment.addProperty("baseInputSymbol",
-                    spec.baseInputSymbol());
-            assignment.addProperty("dynamicFieldSymbol",
-                    spec.dynamicFieldSymbol());
-            assignment.addProperty("materializationSiteId",
-                    spec.materializationSiteId());
-            assignment.addProperty("materializationOccurrence",
-                    spec.materializationOccurrence());
-            if (isContainerElement()) {
-                assignment.add("containerSelector",
-                        spec.selector().toJson());
-                assignment.addProperty("containerReplayRebindingAuthority",
-                        DynamicBindingSpec.SelectorSpec
-                                .CONTAINER_REPLAY_REBINDING_AUTHORITY);
-            } else {
-                assignment.addProperty("dynamicReplayRebindingAuthority",
-                        FRESH_MAP_ENTRY_REBINDING_AUTHORITY);
-            }
-        }
-
-    }
-
     private static final class ActionMatch {
         private final JsonObject action;
         private final List<String> path;
-        private final DynamicFieldBinding binding;
 
         private ActionMatch(JsonObject action, List<String> path) {
-            this(action, path, null);
-        }
-
-        private ActionMatch(JsonObject action, List<String> path,
-                            DynamicFieldBinding binding) {
             this.action = action;
             this.path = new ArrayList<>(path);
-            this.binding = binding;
         }
     }
 

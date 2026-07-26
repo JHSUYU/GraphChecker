@@ -117,12 +117,6 @@ ArraySymbolExp::ArraySymbolExp(sym_rid_t sym_arr_oid, int version,
   _type = type2char(type);
 }
 
-ArrayLengthExp::ArrayLengthExp(sym_rid_t sym_arr_oid, BasicType type) {
-  int length = sprintf(str_buf, "A%c_%lu.length", type2char(type), sym_arr_oid);
-  set(str_buf, length);
-  _type = type2char(T_INT);
-}
-
 ElementSymbolExp::ElementSymbolExp(sym_rid_t sym_arr_oid, int version,
                                    int load_count, BasicType type) {
   int length = sprintf(str_buf, "E%c_%lu-%d-%d", type2char(type), sym_arr_oid,

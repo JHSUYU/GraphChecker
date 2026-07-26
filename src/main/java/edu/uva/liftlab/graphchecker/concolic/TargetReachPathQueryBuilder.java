@@ -107,8 +107,6 @@ public final class TargetReachPathQueryBuilder {
             String pathKey = observation.pathKey();
             path.add("constraints",
                     array(summary, "pathCondition").deepCopy());
-            path.add("engineArrayInputBindings",
-                    array(summary, "engineArrayInputBindings").deepCopy());
             JsonArray placeholderBindings = array(summary,
                     "vmIntrinsicPlaceholderBindings");
             JsonArray placeholderRequirements = array(summary,

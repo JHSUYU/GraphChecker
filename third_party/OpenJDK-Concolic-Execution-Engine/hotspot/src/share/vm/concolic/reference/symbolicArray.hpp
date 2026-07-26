@@ -17,12 +17,18 @@ private:
   int _version;
   int _load_count;
   Expression *_length_exp;
+  Expression *_ref_exp;
 
 public:
   SymArr(sym_rid_t sym_rid, Expression *length_exp);
   ~SymArr();
 
-  Expression *get_ref_exp() { return NULL; };
+  Expression *get_ref_exp() { return _ref_exp; };
+  void set_ref_exp(Expression *expression) {
+    Expression::gc(_ref_exp);
+    _ref_exp = expression;
+    if (_ref_exp != NULL) _ref_exp->inc_ref();
+  }
 
   inline void store() {
     ++_version;

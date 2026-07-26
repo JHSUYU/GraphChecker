@@ -194,21 +194,12 @@ public final class RegionInstancePlan {
             return array(encoded, "branches");
         }
 
-        public JsonArray containerElementFieldBindings() {
-            return array(encoded, "containerElementFieldBindings");
-        }
-
         public JsonArray edgeBindings() {
             return array(encoded, "edgeBindings");
         }
 
         void writeTaskPayloadTo(JsonObject target) {
             target.addProperty("goalId", goalId());
-            copyIfPresent(encoded, target,
-                    "containerElementFieldBindings");
-            copyIfPresent(encoded, target, "heapStateBindings");
-            copyIfPresent(encoded, target,
-                    "mapValueElementFieldProjections");
             if (kind().capturesOutputRelation()) {
                 OutputClosureContract contract = outputClosure();
                 if (contract != null) {

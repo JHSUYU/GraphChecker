@@ -294,11 +294,11 @@ only `BranchReplayContract.flip()` may derive the required opposite
 outcome/predicate. A zero-PC branch event stays observation-only; it cannot be
 turned into a synthetic witness by a parallel proof protocol.
 
-The producer worklist emits a schema-3 task containing that contract. A separate
-immutable typed `SolverPathContext` retains positioned non-branch
-`_array_expr`/`MethodExpression` nodes needed by the solver; it rejects an
-unwitnessed Boolean predicate and is never consumed as runtime branch evidence.
-For producer exploration, the solver, activation builder, static
+The producer worklist emits a task containing that contract. Non-branch
+constraints, including `ContainerRelation` state/element observations and
+ordinary `MethodExpression` nodes, remain in the canonical path condition; an
+unwitnessed Boolean predicate is never promoted to runtime branch evidence.
+For producer exploration, the solver, task builder, static
 instrumentation gate, runtime, importer, scheduler, and replay verifier consume
 the same replay contract. The target seed uses the same typed contract/context
 only as a candidate query and is not replayed. Neither value carries a

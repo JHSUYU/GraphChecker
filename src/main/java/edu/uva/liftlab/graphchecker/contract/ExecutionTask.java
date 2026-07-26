@@ -129,20 +129,8 @@ public final class ExecutionTask {
         return array(encoded, "modelAssignments").deepCopy();
     }
 
-    public JsonArray containerElementFieldBindings() {
-        return array(encoded, "containerElementFieldBindings").deepCopy();
-    }
-
-    public JsonArray mapValueElementFieldProjections() {
-        return array(encoded, "mapValueElementFieldProjections").deepCopy();
-    }
-
     public JsonArray edgeBindings() {
         return array(encoded, "edgeBindings").deepCopy();
-    }
-
-    public JsonArray heapStateBindings() {
-        return array(encoded, "heapStateBindings").deepCopy();
     }
 
     public JsonElement replayContract() {

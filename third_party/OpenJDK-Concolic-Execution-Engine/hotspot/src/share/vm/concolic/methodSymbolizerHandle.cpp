@@ -146,7 +146,8 @@ bool MethodSymbolizerHandle::general_check_param_symbolized_helper(BasicType typ
   return recording;
 }
 
-Expression __attribute__((optimize("O0")))  *MethodSymbolizerHandle::general_prepare_result_helper() {
+Expression __attribute__((optimize("O0")))
+*MethodSymbolizerHandle::general_result_expression() {
   Expression *exp = NULL;
   BasicType type = this->get_result_type();
   oop obj = NULL;
@@ -185,12 +186,16 @@ Expression __attribute__((optimize("O0")))  *MethodSymbolizerHandle::general_pre
     obj->print();
   }
 
-  ConcolicMngr::record_path_condition(new MethodExpression(
-      this->get_callee_holder_name(), this->get_callee_name(),
-      this->get_param_list(), exp));
-
   return exp;
 }
 
+Expression __attribute__((optimize("O0")))
+*MethodSymbolizerHandle::general_prepare_result_helper() {
+  Expression *exp = general_result_expression();
+  ConcolicMngr::record_path_condition(new MethodExpression(
+      this->get_callee_holder_name(), this->get_callee_name(),
+      this->get_param_list(), exp));
+  return exp;
+}
 
 #endif

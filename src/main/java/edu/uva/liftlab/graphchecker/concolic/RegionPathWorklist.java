@@ -316,8 +316,6 @@ public final class RegionPathWorklist {
                         path.scope().outputClosure().toJson());
             }
             replay.addTo(task);
-            task.add("dynamicFieldBindings",
-                    path.dynamicFieldBindings());
             tasks.add(task);
         }
 

@@ -155,7 +155,7 @@ public final class SolverPathContext {
         }
         JsonObject object = expression.getAsJsonObject();
         String type = primitiveString(object, "_type");
-        if (!"_array_expr".equals(type)
+        if (!ContainerSmtCodec.EXPRESSION_TYPE.equals(type)
                 && !"MethodExpression".equals(type)) {
             throw new IllegalArgumentException(
                     "unwitnessed path predicate is not an admitted "

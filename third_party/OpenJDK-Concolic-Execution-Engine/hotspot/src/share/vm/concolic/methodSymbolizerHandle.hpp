@@ -138,6 +138,7 @@ public:
 
   bool general_check_param_symbolized_helper(BasicType type, int &locals_offset);
 
+  Expression *general_result_expression();
   Expression *general_prepare_result_helper();
 
 public:

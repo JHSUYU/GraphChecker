@@ -125,29 +125,6 @@ public:
   void serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer);
 };
 
-class ArrayExpression : public Expression {
-  static const int EXP_NAME_LENGTH = 16;
-
-private:
-  char _arr_str[EXP_NAME_LENGTH];
-  bool _is_load;
-  Expression *_index_exp;
-  Expression *_value_exp;
-
-public:
-  ArrayExpression(sym_rid_t array_id, Expression *index_exp,
-                  Expression *value_exp, bool is_load, BasicType type);
-  ~ArrayExpression();
-
-public:
-  void print();
-
-  virtual void serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer);
-
-  virtual std::string get_name();
-  static Expression *get_exp_of(oop obj);
-};
-
 typedef std::vector<Expression *> exp_list_t;
 typedef std::map<int, Expression *> exp_map_t;
 

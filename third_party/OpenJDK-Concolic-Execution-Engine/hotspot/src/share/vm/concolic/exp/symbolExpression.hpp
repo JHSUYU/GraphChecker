@@ -88,11 +88,6 @@ public:
   ArraySymbolExp(sym_rid_t sym_arr_oid, int arr_version, BasicType type);
 };
 
-class ArrayLengthExp : public SymbolExpression {
-public:
-  ArrayLengthExp(sym_rid_t sym_arr_oid, BasicType type);
-};
-
 class ElementSymbolExp : public SymbolExpression {
 public:
   ElementSymbolExp(sym_rid_t sym_arr_oid, int arr_version, int load_count,

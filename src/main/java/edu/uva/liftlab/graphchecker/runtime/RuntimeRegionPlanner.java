@@ -191,9 +191,7 @@ final class RuntimeRegionPlanner {
         validateRegionEdges(regionEdges, evidenceByRegion,
                 sharedStateEvidenceByRegion, result,
                 edgeBindings, relationEvidence);
-        List<OutputGoalDraft> outputGoals = attachOutputRelationGoals(
-                edgeBindings, planDrafts);
-        refineMapValueElementProjectionGoals(outputGoals);
+        attachOutputRelationGoals(edgeBindings, planDrafts);
         for (RegionPlanDraft plan : planDrafts.values()) {
             if (!plan.goals.isEmpty()) {
                 plan.stripPlannerEvidence();
@@ -976,7 +974,6 @@ final class RuntimeRegionPlanner {
             }
             result.add(action);
         }
-        applyExactConsumedArrayFieldEvidence(result, root, fieldEvents);
         return result;
     }
 
@@ -1067,338 +1064,9 @@ final class RuntimeRegionPlanner {
         return sorted(fields);
     }
 
-    /**
-     * Completes the static array-leaf declaration with the one concrete
-     * getfield that consumed it in this region instance.  A class/name match
-     * alone is deliberately insufficient: repeated reads, a missing unit
-     * index/site id, a different object-id path, or a null array all leave the
-     * action incomplete.  Runtime materialization is one-shot, so the planner
-     * must prove one occurrence rather than silently selecting one.
-     */
-    private static void applyExactConsumedArrayFieldEvidence(
-            List<Map<String, Object>> actions, MethodEvent root,
-            List<FieldAccessEvent> fieldEvents) {
-        for (Map<String, Object> action : actions) {
-            ArrayFieldLeaf leaf = ArrayFieldLeaf.from(action);
-            if (!leaf.fieldBackedArray) {
-                continue;
-            }
-            clearConsumedFieldEvidence(action);
-            if (!leaf.complete()) {
-                markConsumedFieldIncomplete(action);
-                continue;
-            }
-
-            List<FieldAccessEvent> matches = new ArrayList<>();
-            for (FieldAccessEvent event : values(fieldEvents)) {
-                if (!"FIELD_READ".equals(event.kind)
-                        || !RuntimeTraceIndex.exactRuntimeFieldSite(event)
-                        || event.receiverObjectId == 0
-                        || event.valueObjectId == 0
-                        || !sameField(leaf.declaration,
-                        fieldCell(event.field))) {
-                    continue;
-                }
-                matches.add(event);
-            }
-            if (matches.size() != 1) {
-                markConsumedFieldIncomplete(action);
-                continue;
-            }
-
-            FieldAccessEvent consumed = matches.get(0);
-            String rootAuthority = consumedFieldRootAuthority(action, root,
-                    leaf.path, consumed, fieldEvents);
-            if (rootAuthority.isEmpty()) {
-                markConsumedFieldIncomplete(action);
-                continue;
-            }
-
-            action.put("fieldPath", new ArrayList<>(leaf.path));
-            action.put("leafFieldSignature", leaf.declaration.signature());
-            action.put("javaType", leaf.declaration.type);
-            if (!action.containsKey("fieldPathLeafDeclarations")) {
-                List<Map<String, Object>> declarations = new ArrayList<>();
-                declarations.add(object(
-                        "fieldPath", new ArrayList<>(leaf.path),
-                        "fieldSignature", leaf.declaration.signature()));
-                action.put("fieldPathLeafDeclarations", declarations);
-            }
-            action.put("consumedFieldMethod", consumed.method);
-            action.put("consumedFieldUnitIndex", consumed.unitIndex);
-            action.put("consumedFieldRootAuthority", rootAuthority);
-            if ("LOCAL_DEFINITION_ROOT_PENDING_AUTHORITATIVE_"
-                    .concat("SCHEDULER_DEFINITION_INDEX_V1").equals(
-                            rootAuthority)) {
-                action.put("consumedFieldBindingComplete", false);
-            } else {
-                action.put("consumedFieldBindingComplete", true);
-            }
-        }
-    }
-
-    private static void clearConsumedFieldEvidence(
-            Map<String, Object> action) {
-        for (String key : new String[]{
-                "consumedFieldMethod", "consumedFieldUnitIndex",
-                "consumedFieldRootAuthority",
-                "consumedFieldPendingRootKind",
-                "consumedFieldPendingRootMethod",
-                "consumedFieldPendingRootLocal"}) {
-            action.remove(key);
-        }
-        action.put("consumedFieldBindingComplete", false);
-    }
-
-    private static void markConsumedFieldIncomplete(
-            Map<String, Object> action) {
-        action.put("consumedFieldBindingComplete", false);
-    }
-
-    private static String consumedFieldRootAuthority(
-            Map<String, Object> action, MethodEvent root, List<String> path,
-            FieldAccessEvent consumed,
-            List<FieldAccessEvent> fieldEvents) {
-        String location = string(action.get("location"));
-        String mode = string(action.get("bindingMode"));
-        if ("ARGUMENT_FIELD_PATH".equals(location)) {
-            int index = action.get("index") instanceof Number
-                    ? ((Number) action.get("index")).intValue() : -1;
-            int rootObjectId = action.get("objectId") instanceof Number
-                    ? ((Number) action.get("objectId")).intValue() : 0;
-            return index >= 0 && runtimeFieldPathIdentity(rootObjectId, path,
-                    consumed, fieldEvents)
-                    ? "ROOT_ARGUMENT_IDENTITY_AT_REGION_ENTRY_AND_"
-                    + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY" : "";
-        }
-        if ("RECEIVER_FIELD".equals(location)) {
-            return root != null && runtimeFieldPathIdentity(root.objectId,
-                    path, consumed, fieldEvents)
-                    ? "ROOT_RECEIVER_IDENTITY_AT_REGION_ENTRY_AND_"
-                    + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY" : "";
-        }
-        Matcher pendingLocal = LOCAL_CELL.matcher(string(action.get(
-                "cell")));
-        if ("REGION_LIVE_IN".equals(location)
-                && pendingLocal.matches()) {
-            action.put("consumedFieldPendingRootKind",
-                    "LOCAL_DEFINITION");
-            action.put("consumedFieldPendingRootMethod",
-                    pendingLocal.group(1));
-            action.put("consumedFieldPendingRootLocal",
-                    pendingLocal.group(2));
-            return "LOCAL_DEFINITION_ROOT_PENDING_AUTHORITATIVE_"
-                    + "SCHEDULER_DEFINITION_INDEX_V1";
-        }
-        if ("CALL_RETURN".equals(location)) {
-            action.put("consumedFieldPendingRootKind",
-                    "CALL_RETURN_DEFINITION");
-            return "LOCAL_DEFINITION_ROOT_PENDING_AUTHORITATIVE_"
-                    + "SCHEDULER_DEFINITION_INDEX_V1";
-        }
-        if ("LOCAL_DEFINITION".equals(mode)) {
-            List<Map<String, Object>> definitions = mapRows(action.get(
-                    "definitionSites"));
-            String method = string(action.get("method"));
-            String local = string(action.get("local"));
-            if (method.isEmpty() || local.isEmpty()
-                    || definitions.size() != 1
-                    || !(definitions.get(0).get("unitIndex")
-                    instanceof Number)
-                    || ((Number) definitions.get(0).get("unitIndex"))
-                    .intValue() < 0) {
-                return "";
-            }
-            return "LOCAL_DEFINITION_IDENTITY_AT_EXACT_DEFINITION_SITE_"
-                    + "AND_LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
-        }
-
-        // A generic heap input may in fact be rooted at the activation's
-        // receiver.  Prefer that stronger identity proof whenever the entire
-        // runtime field path joins from the entry receiver.  Otherwise only a
-        // direct one-segment leaf can use the real getfield base itself as the
-        // input owner; no unregistered nested root is accepted.
-        if (root != null && runtimeFieldPathIdentity(root.objectId, path,
-                consumed, fieldEvents)) {
-            return "ROOT_RECEIVER_IDENTITY_AT_REGION_ENTRY_AND_"
-                    + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
-        }
-        return path.size() == 1
-                ? "DIRECT_EXACT_LEAF_GETFIELD_BASE_IS_INPUT_OWNER_V1" : "";
-    }
-
-    private static boolean runtimeFieldPathIdentity(
-            int rootObjectId, List<String> path,
-            FieldAccessEvent consumed,
-            List<FieldAccessEvent> fieldEvents) {
-        if (rootObjectId == 0 || path == null || path.isEmpty()
-                || consumed == null) {
-            return false;
-        }
-        int owner = rootObjectId;
-        for (int index = 0; index < path.size(); index++) {
-            String segment = safe(path.get(index));
-            List<FieldAccessEvent> matches = new ArrayList<>();
-            for (FieldAccessEvent event : values(fieldEvents)) {
-                FieldCell field = fieldCell(event.field);
-                if ("FIELD_READ".equals(event.kind)
-                        && event.seq <= consumed.seq
-                        && event.receiverObjectId == owner
-                        && field.declaredSignature
-                        && field.name.equals(segment)) {
-                    matches.add(event);
-                }
-            }
-            if (matches.size() != 1) {
-                return false;
-            }
-            FieldAccessEvent selected = matches.get(0);
-            boolean leaf = index == path.size() - 1;
-            if (leaf) {
-                return selected == consumed
-                        || selected.seq == consumed.seq;
-            }
-            if (selected.valueObjectId == 0) {
-                return false;
-            }
-            owner = selected.valueObjectId;
-        }
-        return false;
-    }
-
-    private static final class ArrayFieldLeaf {
-        private final boolean fieldBackedArray;
-        private final FieldCell declaration;
-        private final List<String> path;
-        private final String issue;
-
-        private ArrayFieldLeaf(boolean fieldBackedArray,
-                               FieldCell declaration,
-                               List<String> path, String issue) {
-            this.fieldBackedArray = fieldBackedArray;
-            this.declaration = declaration;
-            this.path = path;
-            this.issue = safe(issue);
-        }
-
-        private boolean complete() {
-            return fieldBackedArray && declaration.declaredSignature
-                    && !path.isEmpty() && issue.isEmpty();
-        }
-
-        private static ArrayFieldLeaf from(Map<String, Object> action) {
-            String javaType = string(action.get("javaType"));
-            String location = string(action.get("location"));
-            String mode = string(action.get("bindingMode"));
-            boolean fieldShape = "ARGUMENT_FIELD_PATH".equals(location)
-                    || "RECEIVER_FIELD".equals(location)
-                    || "HEAP_OBJECT_FIELD".equals(location)
-                    || "FIELD".equals(location)
-                    || "FIELD_ACCESS".equals(mode);
-
-            List<List<String>> paths = new ArrayList<>();
-            List<String> directPath = stringList(action.get("fieldPath"));
-            if (!directPath.isEmpty()) paths.add(directPath);
-            Object nested = action.get("fieldPaths");
-            if (paths.isEmpty() && nested instanceof Collection<?>) {
-                for (Object candidate : (Collection<?>) nested) {
-                    List<String> path = stringList(candidate);
-                    if (!path.isEmpty()) paths.add(path);
-                }
-            }
-
-            Set<String> signatures = new LinkedHashSet<>();
-            signatures.add(string(action.get("leafFieldSignature")));
-            signatures.add(string(action.get("accessFieldSignature")));
-            signatures.add(string(action.get("field")));
-            signatures.add(string(action.get("cell")));
-            for (Map<String, Object> row : mapRows(action.get(
-                    "fieldPathLeafDeclarations"))) {
-                List<String> declarationPath = stringList(row.get(
-                        "fieldPath"));
-                if (!declarationPath.isEmpty()) paths.add(declarationPath);
-                signatures.add(string(row.get("fieldSignature")));
-            }
-            signatures.remove("");
-
-            boolean declaredArray = false;
-            for (String signature : signatures) {
-                FieldCell field = fieldCell(signature);
-                if (field.declaredSignature
-                        && isArrayJavaType(field.type)) {
-                    declaredArray = true;
-                    break;
-                }
-            }
-            Matcher localCell = LOCAL_CELL.matcher(string(action.get(
-                    "cell")));
-            if (declaredArray && ("LOCAL_DEFINITION".equals(mode)
-                    || "REGION_LIVE_IN".equals(location)
-                    && localCell.matches()
-                    || "CALL_RETURN".equals(location))) {
-                fieldShape = true;
-            }
-            boolean array = isArrayJavaType(javaType) || declaredArray;
-            boolean backed = fieldShape && array;
-            if (!backed) {
-                return new ArrayFieldLeaf(false, FieldCell.unresolved(),
-                        Collections.<String>emptyList(), "");
-            }
-            if (!javaType.isEmpty() && !isArrayJavaType(javaType)) {
-                return new ArrayFieldLeaf(true, FieldCell.unresolved(),
-                        Collections.<String>emptyList(),
-                        "ACTION_TYPE_CONFLICTS_WITH_ARRAY_LEAF_DECLARATION");
-            }
-
-            Set<String> uniquePaths = new LinkedHashSet<>();
-            List<List<String>> normalizedPaths = new ArrayList<>();
-            for (List<String> path : paths) {
-                if (uniquePaths.add(joinPath(path))) {
-                    normalizedPaths.add(path);
-                }
-            }
-            Set<String> exactSignatures = new LinkedHashSet<>();
-            FieldCell selected = FieldCell.unresolved();
-            for (String signature : signatures) {
-                FieldCell field = fieldCell(signature);
-                if (field.declaredSignature && isArrayJavaType(field.type)
-                        && (javaType.isEmpty()
-                        || sameArrayJavaType(javaType, field.type))) {
-                    exactSignatures.add(field.signature());
-                    selected = field;
-                }
-            }
-            if (normalizedPaths.isEmpty() && selected.declaredSignature) {
-                normalizedPaths.add(Collections.singletonList(selected.name));
-            }
-            if (normalizedPaths.size() != 1) {
-                return new ArrayFieldLeaf(true, FieldCell.unresolved(),
-                        Collections.<String>emptyList(),
-                        "ARRAY_LEAF_PATH_NOT_UNIQUE:"
-                                + normalizedPaths.size());
-            }
-            List<String> selectedPath = normalizedPaths.get(0);
-            if (exactSignatures.size() != 1
-                    || !selected.declaredSignature
-                    || !selected.name.equals(selectedPath.get(
-                    selectedPath.size() - 1))) {
-                return new ArrayFieldLeaf(true, FieldCell.unresolved(),
-                        selectedPath,
-                        "ARRAY_LEAF_DECLARATION_NOT_UNIQUE_OR_MISMATCHED:"
-                                + exactSignatures.size());
-            }
-            return new ArrayFieldLeaf(true, selected, selectedPath, "");
-        }
-    }
-
     private static boolean isArrayJavaType(String type) {
         String value = safe(type).trim();
         return value.startsWith("[") || value.endsWith("[]");
-    }
-
-    private static boolean sameArrayJavaType(String left, String right) {
-        return safe(left).replace(" ", "").equals(
-                safe(right).replace(" ", ""));
     }
 
     private static void collectGetters(String expression,
@@ -1890,10 +1558,9 @@ final class RuntimeRegionPlanner {
      * preserves goal-local input, branch, admission, and output-closure
      * scope without copying the region instance plan.</p>
      */
-    private static List<OutputGoalDraft> attachOutputRelationGoals(
+    private static void attachOutputRelationGoals(
             List<UpstreamEdgeBinding> bindings,
             Map<String, RegionPlanDraft> plansByInstance) {
-        List<OutputGoalDraft> outputGoals = new ArrayList<>();
         Map<String, List<UpstreamEdgeBinding>> grouped = new LinkedHashMap<>();
         Set<String> seen = new LinkedHashSet<>();
         for (UpstreamEdgeBinding binding : bindings) {
@@ -1978,13 +1645,9 @@ final class RuntimeRegionPlanner {
             if (issues.isEmpty()) {
                 outputGoal.put(OutputClosureContract.FIELD,
                         outputClosure.toJson());
-                outputGoals.add(new OutputGoalDraft(
-                        base, outputGoal, members));
             } else {
                 outputGoal.put("symbolize", Collections.emptyList());
                 outputGoal.put("branches", Collections.emptyList());
-                outputGoal.remove("containerElementFieldBindings");
-                outputGoal.remove("heapStateBindings");
             }
 
             outputGoal.put("admission", admission(writerPathReplayable,
@@ -2001,7 +1664,6 @@ final class RuntimeRegionPlanner {
             outputGoal.put("edgeBindings", bindingRows);
             base.goals.add(outputGoal);
         }
-        return outputGoals;
     }
 
     private static UpstreamOutputMemberPlan upstreamOutputMemberPlan(
@@ -2027,31 +1689,8 @@ final class RuntimeRegionPlanner {
         boolean inputSelectionComplete = selectedInputPorts.containsAll(
                 outputSlice.inputPorts);
         applySliceDrivenArgumentFieldPaths(selectedInputs, outputSlice);
-        List<Map<String, Object>> containerBindings = copyRows(
-                outputSlice.containerElementFieldBindings);
-        applyExactConsumedArrayFieldEvidence(selectedInputs,
-                first.upstream.root, first.upstream.fieldEvents);
-        boolean inputAliasesReady = canonicalizeExactRuntimeInputAliases(
-                selectedInputs, outputSlice, containerBindings,
-                first.upstream.fieldEvents);
-        boolean containerBindingsReady = inputAliasesReady
-                && applyContainerElementFieldBindings(selectedInputs,
-                containerBindings);
-        if (containerBindingsReady) {
-            applyExactConsumedArrayFieldEvidence(selectedInputs,
-                    first.upstream.root, first.upstream.fieldEvents);
-        }
-        List<Map<String, Object>> heapBindings = new ArrayList<>();
         StaticPort input = first.upstream.region.exactInputFor(
                 first.output.cell);
-        if (input != null && outputSlice.inputPorts.contains(input.portId)) {
-            heapBindings.add(object(
-                    "inputPort", input.portId,
-                    "outputPort", first.output.portId,
-                    "cell", first.output.cell,
-                    "bindingAuthority",
-                    "STATIC_CELL_IDENTITY_PLUS_RUNTIME_READ_FROM"));
-        }
         outputSlice.validateNormalExitFieldCapture(input, selectedInputs);
         Set<String> outputBranchSites = new LinkedHashSet<>(
                 outputSlice.staticSites);
@@ -2062,7 +1701,6 @@ final class RuntimeRegionPlanner {
         boolean sliceReady = outputSlice.complete
                 && outputSlice.captureBindingIssues.isEmpty()
                 && inputSelectionComplete
-                && containerBindingsReady
                 && inputsReady;
         if (!sliceReady) {
             List<String> causes = new ArrayList<>();
@@ -2080,12 +1718,6 @@ final class RuntimeRegionPlanner {
                 missing.removeAll(selectedInputPorts);
                 causes.add("MISSING_INPUT_PORTS=" + missing);
             }
-            if (!inputAliasesReady) {
-                causes.add("INPUT_ALIASES_UNRESOLVED");
-            }
-            if (!containerBindingsReady) {
-                causes.add("CONTAINER_BINDINGS_UNRESOLVED");
-            }
             if (!inputsReady) {
                 List<String> unready = new ArrayList<>();
                 for (Map<String, Object> action : selectedInputs) {
@@ -2099,8 +1731,7 @@ final class RuntimeRegionPlanner {
                 causes.add("SYMBOLIZE_ACTIONS_INCOMPLETE=" + unready);
             }
             return new UpstreamOutputMemberPlan(first.output, outputSlice,
-                    selectedInputs, selectedBranches, containerBindings,
-                    heapBindings, null,
+                    selectedInputs, selectedBranches, null,
                     "OUTPUT_MEMBER_INCOMPLETE:" + first.output.portId
                             + ":" + String.join(",", causes));
         }
@@ -2115,15 +1746,13 @@ final class RuntimeRegionPlanner {
                     GSON.toJsonTree(outputSlice.toMap()).getAsJsonObject());
         } catch (RuntimeException malformed) {
             return new UpstreamOutputMemberPlan(first.output, outputSlice,
-                    selectedInputs, selectedBranches, containerBindings,
-                    heapBindings, null,
+                    selectedInputs, selectedBranches, null,
                     "OUTPUT_MEMBER_CONTRACT_INVALID:"
                             + first.output.portId + ":"
                             + safe(malformed.getMessage()));
         }
         return new UpstreamOutputMemberPlan(first.output, outputSlice,
-                selectedInputs, selectedBranches, containerBindings,
-                heapBindings, contract, "");
+                selectedInputs, selectedBranches, contract, "");
     }
 
     private static boolean mergeOutputGoalExecution(
@@ -2131,33 +1760,15 @@ final class RuntimeRegionPlanner {
             List<UpstreamOutputMemberPlan> members, List<String> issues) {
         Map<String, Map<String, Object>> inputs = new LinkedHashMap<>();
         Map<String, Map<String, Object>> branches = new LinkedHashMap<>();
-        Map<String, Map<String, Object>> containers = new LinkedHashMap<>();
-        Map<String, Map<String, Object>> heaps = new LinkedHashMap<>();
         for (UpstreamOutputMemberPlan member : members) {
             mergeExactRows(inputs, member.selectedInputs, "symbol",
                     "SYMBOLIZE_ACTION", issues);
             mergeExactRows(branches, member.selectedBranches, "siteId",
                     "BRANCH_ACTION", issues);
-            mergeExactRows(containers, member.containerBindings, "bindingId",
-                    "CONTAINER_BINDING", issues);
-            mergeExactRows(heaps, member.heapBindings, "outputPort",
-                    "HEAP_STATE_BINDING", issues);
         }
         if (!issues.isEmpty()) return false;
         goal.put("symbolize", new ArrayList<>(inputs.values()));
         goal.put("branches", new ArrayList<>(branches.values()));
-        if (containers.isEmpty()) {
-            goal.remove("containerElementFieldBindings");
-        } else {
-            goal.put("containerElementFieldBindings",
-                    new ArrayList<>(containers.values()));
-        }
-        if (heaps.isEmpty()) {
-            goal.remove("heapStateBindings");
-        } else {
-            goal.put("heapStateBindings",
-                    new ArrayList<>(heaps.values()));
-        }
         return true;
     }
 
@@ -2180,8 +1791,6 @@ final class RuntimeRegionPlanner {
         private final StaticOutputSlice outputSlice;
         private final List<Map<String, Object>> selectedInputs;
         private final List<Map<String, Object>> selectedBranches;
-        private final List<Map<String, Object>> containerBindings;
-        private final List<Map<String, Object>> heapBindings;
         private final OutputClosureContract contract;
         private final String issue;
 
@@ -2189,15 +1798,11 @@ final class RuntimeRegionPlanner {
                 StaticPort output, StaticOutputSlice outputSlice,
                 List<Map<String, Object>> selectedInputs,
                 List<Map<String, Object>> selectedBranches,
-                List<Map<String, Object>> containerBindings,
-                List<Map<String, Object>> heapBindings,
                 OutputClosureContract contract, String issue) {
             this.output = output;
             this.outputSlice = outputSlice;
             this.selectedInputs = selectedInputs;
             this.selectedBranches = selectedBranches;
-            this.containerBindings = containerBindings;
-            this.heapBindings = heapBindings;
             this.contract = contract;
             this.issue = issue;
         }
@@ -2207,535 +1812,11 @@ final class RuntimeRegionPlanner {
             return new UpstreamOutputMemberPlan(output, null,
                     Collections.<Map<String, Object>>emptyList(),
                     Collections.<Map<String, Object>>emptyList(),
-                    Collections.<Map<String, Object>>emptyList(),
-                    Collections.<Map<String, Object>>emptyList(),
                     null, issue);
         }
     }
 
     /**
-     * Coalesces a projected nested-field input with an exact primitive field
-     * or consumed array leaf that denotes the same live Java field in this
-     * region instance.
-     *
-     * <p>Symbolizing the same field through two region ports does not create
-     * two independent inputs: it creates an alias that the importer
-     * intentionally rejects. Canonicalization must therefore happen before
-     * replay, while the discovery execution's exact receiver/value identities
-     * are still available. A field name or Java type alone is never
-     * sufficient.</p>
-     */
-    private static boolean canonicalizeExactRuntimeInputAliases(
-            List<Map<String, Object>> selectedInputs,
-            StaticOutputSlice outputSlice,
-            List<Map<String, Object>> containerBindings,
-            List<FieldAccessEvent> fieldEvents) {
-        Map<String, List<Map<String, Object>>> actionsByPort =
-                new LinkedHashMap<>();
-        for (Map<String, Object> action : values(selectedInputs)) {
-            add(actionsByPort, string(action.get("symbol")), action);
-        }
-
-        Map<String, String> canonicalByAlias = new LinkedHashMap<>();
-        List<String> issues = new ArrayList<>();
-        for (Map<String, Object> aliasAction : values(selectedInputs)) {
-            String aliasPort = string(aliasAction.get("symbol"));
-            String aliasCell = string(aliasAction.get("cell"));
-            List<String> path = dependencyFieldPath(aliasCell);
-            FieldCell baseField = fieldCell(aliasCell);
-            if (aliasPort.isEmpty() || path.size() != 2
-                    || !baseField.declaredSignature
-                    || !path.get(0).equals(baseField.name)) {
-                continue;
-            }
-
-            List<Map<String, Object>> staticCandidates = new ArrayList<>();
-            for (Map<String, Object> candidate : values(selectedInputs)) {
-                if (candidate == aliasAction) continue;
-                FieldCell leaf = exactRuntimeAliasLeaf(candidate);
-                if (leaf.declaredSignature
-                        && baseField.type.equals(leaf.owner)
-                        && path.get(1).equals(leaf.name)) {
-                    staticCandidates.add(candidate);
-                }
-            }
-            if (staticCandidates.isEmpty()) {
-                // This projection has no exact selected leaf representation.
-                continue;
-            }
-
-            FieldCell leaf = exactRuntimeAliasLeaf(staticCandidates.get(0));
-            boolean arrayAlias = isArrayJavaType(leaf.type);
-            String aliasKind = arrayAlias ? "ARRAY" : "PRIMITIVE";
-            String authorityIssue = projectedAliasAuthorityIssue(
-                    outputSlice, aliasAction, path, aliasKind);
-            if (!authorityIssue.isEmpty()) {
-                issues.add(aliasPort + ":" + authorityIssue);
-                continue;
-            }
-            if (staticCandidates.size() != 1) {
-                issues.add(aliasPort
-                        + ":EXACT_" + aliasKind
-                        + "_ALIAS_CANONICAL_PORT_NOT_UNIQUE:"
-                        + staticCandidates.size());
-                continue;
-            }
-
-            Map<String, Object> canonicalAction = staticCandidates.get(0);
-            String canonicalPort = string(canonicalAction.get("symbol"));
-            leaf = exactRuntimeAliasLeaf(canonicalAction);
-            String runtimeIssue = hasExactCellIdentityBinding(outputSlice,
-                    canonicalPort)
-                    ? arrayAlias
-                    ? exactRuntimeArrayAliasIssue(aliasAction,
-                    canonicalAction, baseField, leaf, fieldEvents)
-                    : exactRuntimePrimitiveAliasIssue(aliasAction,
-                    canonicalAction, baseField, leaf, fieldEvents)
-                    : "CANONICAL_" + aliasKind
-                    + "_PORT_LACKS_EXACT_CELL_IDENTITY";
-            if (!runtimeIssue.isEmpty()) {
-                issues.add(aliasPort + ":" + runtimeIssue);
-                continue;
-            }
-            String old = canonicalByAlias.put(aliasPort, canonicalPort);
-            if (old != null && !old.equals(canonicalPort)) {
-                issues.add(aliasPort
-                        + ":" + aliasKind
-                        + "_ALIAS_CANONICALIZATION_NOT_FUNCTIONAL");
-                continue;
-            }
-
-        }
-
-        if (!issues.isEmpty()) {
-            for (String issue : issues) {
-                outputSlice.inputGaps.add(object(
-                        "kind", "INPUT_ALIAS_CANONICALIZATION",
-                        "detail", issue));
-            }
-            outputSlice.runtimeRefinementComplete = false;
-            outputSlice.complete = false;
-            return false;
-        }
-        if (canonicalByAlias.isEmpty()) {
-            return true;
-        }
-
-        // The canonical exact binding already exists.  Promoted/projected
-        // rows are proof of the alias, not additional definitions of the
-        // canonical input; retaining them under the canonical port would
-        // manufacture duplicate input bindings.
-        List<Map<String, Object>> retainedBindings = new ArrayList<>();
-        for (Map<String, Object> binding : outputSlice.inputBindings) {
-            if (!canonicalByAlias.containsKey(string(binding.get(
-                    "inputPort")))) {
-                retainedBindings.add(binding);
-            }
-        }
-        outputSlice.inputBindings.clear();
-        outputSlice.inputBindings.addAll(retainedBindings);
-        for (Map<String, Object> declaration : values(containerBindings)) {
-            rewriteContainerAlias(declaration, canonicalByAlias,
-                    actionsByPort);
-        }
-        for (Map<String, Object> declaration
-                : outputSlice.containerElementFieldBindings) {
-            rewriteContainerAlias(declaration, canonicalByAlias,
-                    actionsByPort);
-        }
-        outputSlice.inputPorts.removeAll(canonicalByAlias.keySet());
-        selectedInputs.removeIf(action -> canonicalByAlias.containsKey(
-                string(action.get("symbol"))));
-        return true;
-    }
-
-    private static FieldCell exactRuntimeAliasLeaf(
-            Map<String, Object> action) {
-        FieldCell primitive = exactRuntimePrimitiveLeaf(action);
-        return primitive.declaredSignature
-                ? primitive : exactConsumedArrayLeaf(action);
-    }
-
-    /** Returns the exact observed primitive field represented by an action. */
-    private static FieldCell exactRuntimePrimitiveLeaf(
-            Map<String, Object> action) {
-        FieldCell cell = fieldCell(string(action.get("cell")));
-        FieldCell observed = fieldCell(string(action.get(
-                "accessFieldSignature")));
-        String javaType = string(action.get("javaType"));
-        return Boolean.TRUE.equals(action.get("observed"))
-                && "HEAP_OBJECT_FIELD".equals(string(action.get(
-                "location")))
-                && "FIELD_READ".equals(string(action.get("accessKind")))
-                && cell.declaredSignature && observed.declaredSignature
-                && cell.signature().equals(observed.signature())
-                && primitiveType(cell.type) && cell.type.equals(javaType)
-                && exactPrimitiveValue(cell.type, string(action.get(
-                "primitiveValue")))
-                && number(action, "fieldReceiverObjectId") != 0
-                ? cell : FieldCell.unresolved();
-    }
-
-    private static FieldCell exactConsumedArrayLeaf(
-            Map<String, Object> action) {
-        if (!Boolean.TRUE.equals(action.get("observed"))
-                || !Boolean.TRUE.equals(action.get(
-                "consumedFieldBindingComplete"))) {
-            return FieldCell.unresolved();
-        }
-        String signature = firstNonBlank(
-                string(action.get("leafFieldSignature")),
-                string(action.get("accessFieldSignature")),
-                string(action.get("field")),
-                string(action.get("cell")));
-        FieldCell leaf = fieldCell(signature);
-        List<String> path = stringList(action.get("fieldPath"));
-        String javaType = string(action.get("javaType"));
-        return leaf.declaredSignature && isArrayJavaType(leaf.type)
-                && sameArrayJavaType(leaf.type, javaType)
-                && path.size() == 1 && leaf.name.equals(path.get(0))
-                ? leaf : FieldCell.unresolved();
-    }
-
-    private static String projectedAliasAuthorityIssue(
-            StaticOutputSlice slice, Map<String, Object> aliasAction,
-            List<String> path, String aliasKind) {
-        String aliasPort = string(aliasAction.get("symbol"));
-        String aliasCell = string(aliasAction.get("cell"));
-        String projection = string(aliasAction.get("projection"));
-        if (path.size() != 2
-                || !projection.equals("field:" + path.get(1))) {
-            return "PROJECTED_" + aliasKind
-                    + "_ALIAS_ACTION_PATH_MISMATCH";
-        }
-        int count = 0;
-        for (Map<String, Object> binding : slice.inputBindings) {
-            if (!aliasPort.equals(string(binding.get("inputPort")))) {
-                continue;
-            }
-            count++;
-            if (!aliasCell.equals(string(binding.get("dependencyCell")))) {
-                return "PROJECTED_" + aliasKind
-                        + "_ALIAS_DEPENDENCY_CELL_MISMATCH";
-            }
-            String authority = string(binding.get("bindingAuthority"));
-            boolean exactChain = "UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN".equals(
-                    authority);
-            boolean arrayPromotion = "ARRAY".equals(aliasKind)
-                    && "OUTPUT_SLICE_FRONTIER_PROMOTION".equals(authority);
-            if (!exactChain && !arrayPromotion) {
-                return "PROJECTED_" + aliasKind
-                        + "_ALIAS_AUTHORITY_INVALID:" + authority;
-            }
-        }
-        if (count == 0) {
-            return "PROJECTED_" + aliasKind + "_ALIAS_BINDING_MISSING";
-        }
-        return "PRIMITIVE".equals(aliasKind) && count != 1
-                ? "PROJECTED_PRIMITIVE_ALIAS_BINDING_COUNT:" + count : "";
-    }
-
-    private static String exactRuntimePrimitiveAliasIssue(
-            Map<String, Object> alias, Map<String, Object> canonical,
-            FieldCell baseField, FieldCell leaf,
-            List<FieldAccessEvent> fieldEvents) {
-        FieldCell observedBase = fieldCell(string(alias.get(
-                "accessFieldSignature")));
-        int baseReceiver = number(alias, "fieldReceiverObjectId");
-        int intermediateOwner = number(alias, "valueObjectId");
-        int leafReceiver = number(canonical, "fieldReceiverObjectId");
-        if (!Boolean.TRUE.equals(alias.get("observed"))
-                || !"HEAP_OBJECT_FIELD".equals(string(alias.get(
-                "location")))
-                || !"FIELD_READ".equals(string(alias.get("accessKind")))
-                || !baseField.signature().equals(observedBase.signature())) {
-            return "PROJECTED_PRIMITIVE_BASE_FIELD_OBSERVATION_NOT_EXACT";
-        }
-        if (!baseField.type.equals(leaf.owner)
-                || !primitiveType(leaf.type)) {
-            return "PROJECTED_PRIMITIVE_LEAF_DECLARATION_MISMATCH";
-        }
-        if (baseReceiver == 0 || intermediateOwner == 0
-                || leafReceiver == 0) {
-            return "PROJECTED_PRIMITIVE_RUNTIME_IDENTITY_MISSING";
-        }
-        if (intermediateOwner != leafReceiver) {
-            return "PROJECTED_PRIMITIVE_RUNTIME_FIELD_CHAIN_MISMATCH";
-        }
-        return exactRuntimeFieldAliasCutIssue(alias, canonical, leaf,
-                fieldEvents, "PRIMITIVE");
-    }
-
-    private static String exactRuntimeFieldAliasCutIssue(
-            Map<String, Object> alias, Map<String, Object> canonical,
-            FieldCell leaf, List<FieldAccessEvent> fieldEvents,
-            String aliasKind) {
-        FieldAccessEvent baseRead = exactActionFieldEvent(alias, fieldEvents);
-        FieldAccessEvent leafRead = exactActionFieldEvent(canonical,
-                fieldEvents);
-        if (baseRead == null || leafRead == null
-                || baseRead.seq >= leafRead.seq) {
-            return "PROJECTED_" + aliasKind
-                    + "_RUNTIME_EVENT_ORDER_MISMATCH";
-        }
-        for (FieldAccessEvent event : values(fieldEvents)) {
-            if (event.seq > baseRead.seq && event.seq < leafRead.seq
-                    && "FIELD_WRITE".equals(event.kind)
-                    && event.receiverObjectId == leafRead.receiverObjectId
-                    && leaf.signature().equals(
-                    event.parsedField.signature())) {
-                return "PROJECTED_" + aliasKind
-                        + "_INTERVENING_LEAF_WRITE";
-            }
-        }
-        return "";
-    }
-
-    private static FieldAccessEvent exactActionFieldEvent(
-            Map<String, Object> action,
-            List<FieldAccessEvent> fieldEvents) {
-        long seq = longNumber(action, "fieldEventSeq");
-        FieldCell field = fieldCell(string(action.get(
-                "accessFieldSignature")));
-        int receiver = number(action, "fieldReceiverObjectId");
-        if (seq <= 0L || !field.declaredSignature || receiver == 0) {
-            return null;
-        }
-        FieldAccessEvent selected = null;
-        for (FieldAccessEvent event : values(fieldEvents)) {
-            if (event.seq != seq || !"FIELD_READ".equals(event.kind)
-                    || event.receiverObjectId != receiver
-                    || !field.signature().equals(
-                    event.parsedField.signature())) {
-                continue;
-            }
-            if (selected != null) {
-                return null;
-            }
-            selected = event;
-        }
-        return selected;
-    }
-
-    private static String exactRuntimeArrayAliasIssue(
-            Map<String, Object> alias, Map<String, Object> canonical,
-            FieldCell baseField, FieldCell leaf,
-            List<FieldAccessEvent> fieldEvents) {
-        FieldCell observedBase = fieldCell(string(alias.get(
-                "accessFieldSignature")));
-        int baseReceiver = number(alias, "fieldReceiverObjectId");
-        int intermediateOwner = number(alias, "valueObjectId");
-        int leafReceiver = number(canonical, "fieldReceiverObjectId");
-        int arrayValue = number(canonical, "valueObjectId");
-        if (!Boolean.TRUE.equals(alias.get("observed"))
-                || !baseField.signature().equals(observedBase.signature())) {
-            return "PROJECTED_ARRAY_BASE_FIELD_OBSERVATION_NOT_EXACT";
-        }
-        if (!baseField.type.equals(leaf.owner)
-                || !isArrayJavaType(leaf.type)) {
-            return "PROJECTED_ARRAY_LEAF_DECLARATION_MISMATCH";
-        }
-        if (baseReceiver == 0 || intermediateOwner == 0
-                || leafReceiver == 0 || arrayValue == 0) {
-            return "PROJECTED_ARRAY_RUNTIME_IDENTITY_MISSING";
-        }
-        if (intermediateOwner != leafReceiver) {
-            return "PROJECTED_ARRAY_RUNTIME_FIELD_CHAIN_MISMATCH";
-        }
-        return exactRuntimeFieldAliasCutIssue(alias, canonical, leaf,
-                fieldEvents, "ARRAY");
-    }
-
-    private static boolean hasExactCellIdentityBinding(
-            StaticOutputSlice slice, String canonicalPort) {
-        int count = 0;
-        for (Map<String, Object> binding : slice.inputBindings) {
-            if (!canonicalPort.equals(string(binding.get("inputPort")))) {
-                continue;
-            }
-            if (!"EXACT_CELL_IDENTITY".equals(string(binding.get(
-                    "bindingAuthority")))) {
-                return false;
-            }
-            count++;
-        }
-        return count == 1;
-    }
-
-    private static void rewriteContainerAlias(
-            Map<String, Object> declaration,
-            Map<String, String> canonicalByAlias,
-            Map<String, List<Map<String, Object>>> actionsByPort) {
-        String alias = string(declaration.get("containerInputPort"));
-        String canonical = canonicalByAlias.get(alias);
-        if (canonical == null) return;
-        declaration.put("containerInputPort", canonical);
-        List<Map<String, Object>> actions = actionsByPort.get(canonical);
-        if (actions != null && actions.size() == 1) {
-            declaration.put("containerInputCell", string(actions.get(0).get(
-                    "cell")));
-        }
-    }
-
-    private static int number(Map<String, Object> row, String field) {
-        Object value = row == null ? null : row.get(field);
-        return value instanceof Number ? ((Number) value).intValue() : 0;
-    }
-
-    private static long longNumber(Map<String, Object> row, String field) {
-        Object value = row == null ? null : row.get(field);
-        return value instanceof Number ? ((Number) value).longValue() : 0L;
-    }
-
-    /**
-     * Lifts an exact downstream array-element field demand back through a
-     * producer's Map view/toArray projection.  This is deliberately a second
-     * pass: every confirmed read-from activation must exist before we decide
-     * which downstream output slice is actually selected for the same region
-     * instance.  A region-wide static field family is not sufficient.
-     *
-     * <p>The emitted declaration is the static half of the recursive runtime
-     * evidence contract.  The runtime snapshots the finite backing-map view
-     * while the producer input is materialized, symbolizes the demanded
-     * fields, and later verifies the real output array index-by-index by
-     * object identity.  Import remains independently fail-closed until those
-     * same-execution observations are complete.</p>
-     */
-    private static void refineMapValueElementProjectionGoals(
-            List<OutputGoalDraft> outputGoals) {
-        Map<String, List<OutputGoalDraft>> selectedByInstance =
-                new LinkedHashMap<>();
-        for (OutputGoalDraft context : outputGoals) {
-            UpstreamOutputMemberPlan member = context.singleMember();
-            if (member == null || !member.outputSlice.complete) {
-                continue;
-            }
-            String instance = context.plan.instance.instanceId;
-            if (!instance.isEmpty()) {
-                add(selectedByInstance, instance, context);
-            }
-        }
-
-        for (OutputGoalDraft context : outputGoals) {
-            Map<String, Object> goal = context.goal;
-            UpstreamOutputMemberPlan producerMember =
-                    context.singleMember();
-            StaticOutputSlice producerSlice = producerMember == null
-                    ? null : producerMember.outputSlice;
-            List<Map<String, Object>> edgeBindings = mapRows(
-                    goal.get("edgeBindings"));
-            if (producerSlice == null || edgeBindings.isEmpty()) {
-                continue;
-            }
-
-            List<DownstreamContainerDemand> demands = new ArrayList<>();
-            Set<String> demandIds = new LinkedHashSet<>();
-            List<String> issues = new ArrayList<>();
-            for (Map<String, Object> edge : edgeBindings) {
-                String downstreamInstance = string(edge.get(
-                        "toRegionInstance"));
-                String downstreamInput = string(edge.get("toInputPort"));
-                List<OutputGoalDraft> selected = values(
-                        selectedByInstance.get(downstreamInstance));
-                for (OutputGoalDraft downstream : selected) {
-                    UpstreamOutputMemberPlan downstreamMember =
-                            downstream.singleMember();
-                    if (downstreamMember == null) {
-                        continue;
-                    }
-                    for (Map<String, Object> declaration
-                            : downstreamMember.outputSlice
-                            .containerElementFieldBindings) {
-                        if (!downstreamInput.equals(string(declaration.get(
-                                "containerInputPort")))) {
-                            continue;
-                        }
-                        DownstreamContainerDemand demand =
-                                DownstreamContainerDemand.from(edge,
-                                        downstream.plan.toMap(), declaration);
-                        if (!demand.complete()) {
-                            issues.add("INCOMPLETE_DOWNSTREAM_CONTAINER_DEMAND:"
-                                    + firstNonBlank(demand.bindingId,
-                                    downstreamInput));
-                            continue;
-                        }
-                        if (demandIds.add(demand.identity())) {
-                            demands.add(demand);
-                        }
-                    }
-                }
-            }
-            if (demands.isEmpty() && issues.isEmpty()) {
-                continue;
-            }
-
-            MapValueProjectionProof proof =
-                    MapValueProjectionProof.from(producerSlice);
-            if (!proof.complete) {
-                issues.add(firstNonBlank(proof.issue,
-                        "INCOMPLETE_MAP_VIEW_TO_ARRAY_PROJECTION_PROOF"));
-            }
-
-            List<Map<String, Object>> declarations = new ArrayList<>();
-            if (issues.isEmpty()) {
-                for (DownstreamContainerDemand demand : demands) {
-                    Map<String, Object> declaration = object(
-                            "schemaVersion", 1,
-                            "kind",
-                            "MAP_VALUE_TO_OUTPUT_ARRAY_ELEMENT_FIELD",
-                            "bindingId", "MAP_OUTPUT_ELEMENT:"
-                                    + demand.edgeId + ":" + demand.bindingId,
-                            "mapInputPort", proof.mapInputPort,
-                            "mapInputCell", proof.mapInputCell,
-                            "outputPort", producerMember.output.portId,
-                            "outputCell", producerMember.output.cell,
-                            "outputFieldPath", proof.outputFieldPath,
-                            "outputValidationMode",
-                            !producerMember.outputSlice.captureBindings
-                                    .isEmpty()
-                                    ? "EXACT_REQUESTED_OUTPUT_CAPTURE"
-                                    : "ROOT_RETURN_PROJECTED_FIELD",
-                            "mapProjectionOperation", proof.operation,
-                            "mapViewSiteId", proof.mapViewSiteId,
-                            "snapshotSiteId", proof.snapshotSiteId,
-                            "downstreamRegion",
-                            string(demand.downstreamActivation.get(
-                                    "regionId")),
-                            "downstreamRegionInstance",
-                            string(demand.downstreamActivation.get(
-                                    "regionInstanceId")),
-                            "downstreamInputPort",
-                            demand.downstreamInputPort,
-                            "downstreamBaseInputSymbol",
-                            demand.baseInputSymbol,
-                            "downstreamContainerBindingId",
-                            demand.bindingId,
-                            "declaredFieldSignature",
-                            demand.declaredFieldSignature,
-                            "fieldPath", demand.fieldPath,
-                            "selectorAuthority",
-                            "CURRENT_EXECUTION_ENTRY_SNAPSHOT_THEN_EXACT_"
-                                    + "OUTPUT_INDEX_IDENTITY",
-                            "projectionProofCausalEdgeIds",
-                            proof.causalEdgeIds);
-                    declarations.add(declaration);
-                }
-            }
-
-            goal.put("mapValueElementFieldProjections",
-                    declarations);
-            boolean composable = issues.isEmpty()
-                    && !declarations.isEmpty();
-            // Preserve all pre-existing readiness decisions when the static
-            // declaration is complete. Runtime identity evidence is checked
-            // later by the importer. A static proof/declaration failure still
-            // closes this goal before scheduling.
-            if (!composable) {
-                goal.put("admission", admission(false, false,
-                        admissionMode(goal), issues));
-            }
-        }
-    }
 
     private static String targetReachGoalId(
             String regionInstanceId, String targetMethod) {
@@ -2834,24 +1915,6 @@ final class RuntimeRegionPlanner {
         }
     }
 
-    private static final class OutputGoalDraft {
-        private final RegionPlanDraft plan;
-        private final Map<String, Object> goal;
-        private final List<UpstreamOutputMemberPlan> members;
-
-        private OutputGoalDraft(RegionPlanDraft plan,
-                                Map<String, Object> goal,
-                                List<UpstreamOutputMemberPlan> members) {
-            this.plan = plan;
-            this.goal = goal;
-            this.members = members;
-        }
-
-        private UpstreamOutputMemberPlan singleMember() {
-            return members.size() == 1 ? members.get(0) : null;
-        }
-    }
-
     private static List<Map<String, Object>> selectActivationRows(
             Object value, Set<String> selected, String key) {
         List<Map<String, Object>> result = new ArrayList<>();
@@ -2881,118 +1944,6 @@ final class RuntimeRegionPlanner {
         }
         return result;
     }
-
-    /**
-     * Binds runtime actions to the exact static declaration endpoints.  The
-     * declaration itself has already survived observed-method and retained-
-     * port refinement; this final check prevents an activation with duplicate
-     * or mismatched actions from falling back to field-name materialization.
-     */
-    private static boolean applyContainerElementFieldBindings(
-            List<Map<String, Object>> actions,
-            List<Map<String, Object>> declarations) {
-        Set<String> bindingIds = new LinkedHashSet<>();
-        for (Map<String, Object> declaration : declarations) {
-            String bindingId = string(declaration.get("bindingId"));
-            String base = string(declaration.get("baseInputSymbol"));
-            String container = string(declaration.get(
-                    "containerInputPort"));
-            String fieldSignature = string(declaration.get(
-                    "declaredFieldSignature"));
-            String containerCell = string(declaration.get(
-                    "containerInputCell"));
-            Map<String, Object> baseAction = uniqueAction(actions, base);
-            Map<String, Object> containerAction = uniqueAction(actions,
-                    container);
-            boolean directPathSnapshot =
-                    "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_"
-                    .concat("CHAIN_V1").equals(string(declaration.get(
-                    "proofAuthority")));
-            if (bindingId.isEmpty() || !bindingIds.add(bindingId)
-                    || baseAction == null || containerAction == null
-                    || baseAction == containerAction
-                    || !directPathSnapshot
-                    && !fieldSignature.equals(string(baseAction.get(
-                    "cell")))
-                    || !containerCell.equals(string(containerAction.get(
-                    "cell")))) {
-                return false;
-            }
-            String observedBaseField = string(baseAction.get("field"));
-            String observedContainerField = string(containerAction.get(
-                    "field"));
-            if (!directPathSnapshot && !observedBaseField.isEmpty()
-                    && !fieldSignature.equals(observedBaseField)
-                    || !observedContainerField.isEmpty()
-                    && !containerCell.equals(observedContainerField)) {
-                return false;
-            }
-            FieldCell field = fieldCell(fieldSignature);
-            FieldCell containerField = fieldCell(containerCell);
-            if (!field.declaredSignature
-                    || !containerField.declaredSignature) {
-                return false;
-            }
-            @SuppressWarnings("unchecked")
-            List<String> path = declaration.get("fieldPath")
-                    instanceof Collection<?> ? new ArrayList<>((Collection<
-                    String>) declaration.get("fieldPath"))
-                    : Collections.<String>emptyList();
-            if (path.isEmpty() || path.size() > 4
-                    || !field.name.equals(path.get(path.size() - 1))) {
-                return false;
-            }
-            FieldCell accessField = field;
-            if (directPathSnapshot) {
-                String baseCell = string(baseAction.get("cell"));
-                accessField = fieldCell(baseCell);
-                if (!accessField.declaredSignature
-                        || !path.equals(dependencyFieldPath(baseCell))
-                        || !path.equals(stringList(baseAction.get(
-                        "fieldPath")))
-                        || !fieldSignature.equals(string(baseAction.get(
-                        "leafFieldSignature")))
-                        || !accessField.signature().equals(string(
-                        baseAction.get("accessFieldSignature")))) {
-                    return false;
-                }
-                baseAction.put("leafFieldSignature", field.signature());
-            }
-            // The hook stays on the first declared field, but the symbolic
-            // identity denotes only the final scalar leaf.
-            baseAction.put("field", directPathSnapshot
-                    ? field.signature() : accessField.signature());
-            baseAction.put("fieldPath", path);
-            baseAction.put("bindingMode", "FIELD_ACCESS");
-            baseAction.put("javaType", field.type);
-            baseAction.put("accessFieldSignature", accessField.signature());
-
-            containerAction.put("field", containerCell);
-            containerAction.put("fieldPath", Collections.singletonList(
-                    containerField.name));
-            containerAction.put("bindingMode", "FIELD_ACCESS");
-            containerAction.put("javaType", containerField.type);
-            containerAction.put("accessFieldSignature",
-                    containerField.signature());
-        }
-        return true;
-    }
-
-    private static Map<String, Object> uniqueAction(
-            List<Map<String, Object>> actions, String symbol) {
-        Map<String, Object> match = null;
-        for (Map<String, Object> action : actions) {
-            if (!symbol.equals(string(action.get("symbol")))) {
-                continue;
-            }
-            if (match != null) {
-                return null;
-            }
-            match = action;
-        }
-        return match;
-    }
-
     /**
      * Refines a root-argument carrier using only the dependency paths proven
      * by the requested output slice.  The static planner may bind several
@@ -3127,6 +2078,7 @@ final class RuntimeRegionPlanner {
         return true;
     }
 
+
     private static String joinPath(List<String> path) {
         StringBuilder result = new StringBuilder();
         for (String segment : path) {
@@ -3150,12 +2102,6 @@ final class RuntimeRegionPlanner {
                     && (!(action.get("fieldPaths")
                     instanceof Collection<?>)
                     || ((Collection<?>) action.get("fieldPaths")).isEmpty())) {
-                return false;
-            }
-            ArrayFieldLeaf leaf = ArrayFieldLeaf.from(action);
-            if (leaf.fieldBackedArray && (!leaf.complete()
-                    || !Boolean.TRUE.equals(action.get(
-                    "consumedFieldBindingComplete")))) {
                 return false;
             }
         }
@@ -5200,293 +4146,6 @@ final class RuntimeRegionPlanner {
 
     }
 
-    private static final class DownstreamContainerDemand {
-        private final Map<String, Object> downstreamActivation;
-        private final String edgeId;
-        private final String downstreamInputPort;
-        private final String bindingId;
-        private final String baseInputSymbol;
-        private final String declaredFieldSignature;
-        private final FieldCell declaredField;
-        private final List<String> fieldPath;
-        private final boolean declarationComplete;
-
-        private DownstreamContainerDemand(
-                Map<String, Object> downstreamActivation, String edgeId,
-                String downstreamInputPort, String bindingId,
-                String baseInputSymbol, String declaredFieldSignature,
-                List<String> fieldPath,
-                boolean declarationComplete) {
-            this.downstreamActivation = downstreamActivation;
-            this.edgeId = edgeId;
-            this.downstreamInputPort = downstreamInputPort;
-            this.bindingId = bindingId;
-            this.baseInputSymbol = baseInputSymbol;
-            this.declaredFieldSignature = declaredFieldSignature;
-            this.declaredField = fieldCell(declaredFieldSignature);
-            this.fieldPath = fieldPath;
-            this.declarationComplete = declarationComplete;
-        }
-
-        private static DownstreamContainerDemand from(
-                Map<String, Object> edge,
-                Map<String, Object> downstreamActivation,
-                Map<String, Object> declaration) {
-            return new DownstreamContainerDemand(downstreamActivation,
-                    string(edge.get("edgeId")),
-                    string(edge.get("toInputPort")),
-                    string(declaration.get("bindingId")),
-                    string(declaration.get("baseInputSymbol")),
-                    string(declaration.get("declaredFieldSignature")),
-                    new ArrayList<>(stringSet(declaration.get("fieldPath"))),
-                    Boolean.TRUE.equals(declaration.get("complete"))
-                            && Integer.valueOf(1).equals(declaration.get(
-                            "schemaVersion"))
-                            && "ARRAY_ELEMENT_FIELD".equals(string(
-                            declaration.get("kind"))));
-        }
-
-        private boolean complete() {
-            return declarationComplete && !edgeId.isEmpty()
-                    && !downstreamInputPort.isEmpty()
-                    && !bindingId.isEmpty() && !baseInputSymbol.isEmpty()
-                    && declaredField.declaredSignature
-                    && fieldPath.equals(Collections.singletonList(
-                    declaredField.name));
-        }
-
-        private String identity() {
-            return edgeId + "\n" + downstreamInputPort + "\n" + bindingId
-                    + "\n" + declaredFieldSignature;
-        }
-    }
-
-    private static final class MapValueProjectionProof {
-        private final boolean complete;
-        private final String issue;
-        private final String operation;
-        private final String mapInputPort;
-        private final String mapInputCell;
-        private final String mapViewSiteId;
-        private final String snapshotSiteId;
-        private final List<String> outputFieldPath;
-        private final List<String> causalEdgeIds;
-
-        private MapValueProjectionProof(boolean complete, String issue,
-                                        String operation,
-                                        String mapInputPort,
-                                        String mapInputCell,
-                                        String mapViewSiteId,
-                                        String snapshotSiteId,
-                                        List<String> outputFieldPath,
-                                        List<String> causalEdgeIds) {
-            this.complete = complete;
-            this.issue = issue;
-            this.operation = operation;
-            this.mapInputPort = mapInputPort;
-            this.mapInputCell = mapInputCell;
-            this.mapViewSiteId = mapViewSiteId;
-            this.snapshotSiteId = snapshotSiteId;
-            this.outputFieldPath = outputFieldPath;
-            this.causalEdgeIds = causalEdgeIds;
-        }
-
-        private static MapValueProjectionProof from(
-                StaticOutputSlice slice) {
-            List<Map<String, Object>> edges = slice.causalEdges;
-            List<Map<String, Object>> views = new ArrayList<>();
-            List<Map<String, Object>> snapshots = new ArrayList<>();
-            for (Map<String, Object> edge : edges) {
-                if (!Integer.valueOf(1).equals(edge.get(
-                        "containerProjectionContractVersion"))
-                        || !Boolean.TRUE.equals(edge.get(
-                        "receiverValueDependencyComplete"))
-                        || !"JAVA_COLLECTION_API_EXACT_SIGNATURE_WHITELIST_V1"
-                        .equals(string(edge.get(
-                                "containerProjectionAuthority")))) {
-                    continue;
-                }
-                String operation = string(edge.get(
-                        "containerProjectionOperation"));
-                if ("COLLECTION_TO_ARRAY".equals(operation)
-                        && Boolean.TRUE.equals(edge.get("snapshot"))) {
-                    snapshots.add(edge);
-                } else if (("MAP_VALUES_VIEW".equals(operation)
-                        || "MAP_KEY_SET_VIEW".equals(operation)
-                        || "MAP_ENTRY_SET_VIEW".equals(operation))
-                        && Boolean.TRUE.equals(edge.get("backedView"))) {
-                    views.add(edge);
-                }
-            }
-
-            List<Map<String, Object>[]> pairs = new ArrayList<>();
-            for (Map<String, Object> view : views) {
-                for (Map<String, Object> snapshot : snapshots) {
-                    if (string(view.get("toCell")).equals(string(
-                            snapshot.get("fromCell")))) {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object>[] pair = new Map[]{view, snapshot};
-                        pairs.add(pair);
-                    }
-                }
-            }
-            if (pairs.size() != 1) {
-                return incomplete(pairs.isEmpty()
-                        ? "MISSING_EXACT_MAP_VIEW_TO_ARRAY_CHAIN"
-                        : "AMBIGUOUS_MAP_VIEW_TO_ARRAY_CHAIN");
-            }
-            Map<String, Object> view = pairs.get(0)[0];
-            Map<String, Object> snapshot = pairs.get(0)[1];
-            String operation = string(view.get(
-                    "containerProjectionOperation"));
-            if ("MAP_ENTRY_SET_VIEW".equals(operation)
-                    || !Boolean.TRUE.equals(view.get(
-                    "elementIdentityPreserving"))) {
-                return incomplete("MAP_ENTRY_SET_REQUIRES_KEY_VALUE_"
-                        + "ASSOCIATION_PROOF");
-            }
-
-            String outputCell = slice.outputCell;
-            String arrayCell = string(snapshot.get("toCell"));
-            List<String> outputPath = exactValuePath(arrayCell, outputCell,
-                    edges);
-            if (outputPath == null) {
-                return incomplete("SNAPSHOT_ARRAY_DOES_NOT_REACH_"
-                        + "REQUESTED_OUTPUT_BY_EXACT_VALUE_FLOW");
-            }
-
-            String mapCell = string(view.get("fromCell"));
-            List<Map<String, Object>> matchingInputs = new ArrayList<>();
-            Map<Map<String, Object>, List<String>> inputPaths =
-                    new LinkedHashMap<>();
-            for (Map<String, Object> input : slice.inputBindings) {
-                List<String> path = exactValuePath(string(input.get(
-                        "dependencyCell")), mapCell, edges);
-                if (path != null) {
-                    matchingInputs.add(input);
-                    inputPaths.put(input, path);
-                }
-            }
-            if (matchingInputs.size() != 1) {
-                return incomplete(matchingInputs.isEmpty()
-                        ? "MAP_VIEW_RECEIVER_HAS_NO_EXACT_INPUT_PORT"
-                        : "MAP_VIEW_RECEIVER_INPUT_PORT_IS_AMBIGUOUS");
-            }
-            Map<String, Object> input = matchingInputs.get(0);
-            String inputPort = string(input.get("inputPort"));
-            String inputCell = string(input.get("dependencyCell"));
-            if (inputPort.isEmpty() || !fieldCell(inputCell)
-                    .declaredSignature) {
-                return incomplete("MAP_VIEW_RECEIVER_INPUT_IS_NOT_AN_EXACT_"
-                        + "DECLARED_FIELD");
-            }
-
-            FieldCell outputField = fieldCell(outputCell);
-            List<String> outputFieldPath = outputField.declaredSignature
-                    ? Collections.singletonList(outputField.name)
-                    : Collections.<String>emptyList();
-            Set<String> proofSet = new LinkedHashSet<>();
-            String viewId = edgeId(view);
-            String snapshotId = edgeId(snapshot);
-            if (viewId.isEmpty() || snapshotId.isEmpty()) {
-                return incomplete("MAP_VIEW_PROJECTION_HAS_NO_CAUSAL_EDGE_IDS");
-            }
-            proofSet.addAll(inputPaths.get(input));
-            proofSet.add(viewId);
-            proofSet.add(snapshotId);
-            proofSet.addAll(outputPath);
-            return new MapValueProjectionProof(true, "", operation,
-                    inputPort, inputCell, string(view.get("siteId")),
-                    string(snapshot.get("siteId")), outputFieldPath,
-                    new ArrayList<>(proofSet));
-        }
-
-        private static MapValueProjectionProof incomplete(String issue) {
-            return new MapValueProjectionProof(false, issue, "", "", "",
-                    "", "", Collections.<String>emptyList(),
-                    Collections.<String>emptyList());
-        }
-
-        private static List<String> exactValuePath(
-                String from, String to, List<Map<String, Object>> edges) {
-            if (from.isEmpty() || to.isEmpty()) return null;
-            Set<String> reached = new LinkedHashSet<>();
-            List<String> pending = new ArrayList<>();
-            Map<String, String> previousCell = new LinkedHashMap<>();
-            Map<String, String> previousEdge = new LinkedHashMap<>();
-            reached.add(from);
-            pending.add(from);
-            for (int index = 0; index < pending.size(); index++) {
-                String current = pending.get(index);
-                if (to.equals(current)) break;
-                for (Map<String, Object> edge : edges) {
-                    if (!exactValueFlowEdge(edge)
-                            || !current.equals(string(edge.get(
-                            "fromCell")))) {
-                        continue;
-                    }
-                    String next = string(edge.get("toCell"));
-                    if (!next.isEmpty() && reached.add(next)) {
-                        previousCell.put(next, current);
-                        previousEdge.put(next, edgeId(edge));
-                        pending.add(next);
-                    }
-                }
-            }
-            if (!reached.contains(to)) return null;
-            List<String> reversed = new ArrayList<>();
-            String current = to;
-            while (!from.equals(current)) {
-                String edge = previousEdge.get(current);
-                String previous = previousCell.get(current);
-                if (edge == null || edge.isEmpty() || previous == null) {
-                    return null;
-                }
-                reversed.add(edge);
-                current = previous;
-            }
-            Collections.reverse(reversed);
-            return reversed;
-        }
-
-        private static boolean exactValueFlowEdge(
-                Map<String, Object> edge) {
-            if (Integer.valueOf(1).equals(edge.get(
-                    "containerProjectionContractVersion"))) {
-                return Boolean.TRUE.equals(edge.get(
-                        "receiverValueDependencyComplete"))
-                        && "JAVA_COLLECTION_API_EXACT_SIGNATURE_WHITELIST_V1"
-                        .equals(string(edge.get(
-                                "containerProjectionAuthority")));
-            }
-            String transfer = string(edge.get("transferKind"));
-            String kind = string(edge.get("kind"));
-            if ("VALUE_PASS".equals(transfer)) {
-                return "local_def_use".equals(kind)
-                        || "projected_local_def_use".equals(kind);
-            }
-            if ("HEAP_READ".equals(transfer)) {
-                return "field_read".equals(kind)
-                        || "projected_field_read".equals(kind);
-            }
-            if ("HEAP_WRITE".equals(transfer)) {
-                return "field_write".equals(kind)
-                        || "projected_field_write".equals(kind);
-            }
-            if ("IDENTITY_BINDING".equals(transfer)) {
-                return "call_argument".equals(kind)
-                        || "caller_argument".equals(kind);
-            }
-            return "CONSTRUCT".equals(transfer)
-                    && "constructor_caller_argument".equals(kind);
-        }
-
-        private static String edgeId(Map<String, Object> edge) {
-            return firstNonBlank(string(edge.get("edgeId")),
-                    string(edge.get("id")));
-        }
-    }
-
     private static final class StaticOutputSlice {
         private String outputPort = "";
         private String outputCell = "";
@@ -5501,20 +4160,9 @@ final class RuntimeRegionPlanner {
                 new ArrayList<>();
         private final List<Map<String, Object>> inputBindings =
                 new ArrayList<>();
-        private boolean requestedStateTransformerContractPresent;
-        private final List<String> requestedStateTransformerContractIssues =
-                new ArrayList<>();
-        private boolean requestedStateTransformerContractComplete;
-        private final List<Map<String, Object>> heapInitializers =
-                new ArrayList<>();
         private final List<Map<String, Object>> captureBindings =
                 new ArrayList<>();
-        private final List<Map<String, Object>>
-                containerElementFieldBindings = new ArrayList<>();
         private final List<String> captureBindingIssues = new ArrayList<>();
-        private boolean captureDischargedByHeapEffectTransformer;
-        private String captureDischargeInputPort = "";
-        private String captureDischargeAuthority = "";
         private final List<Map<String, Object>> inputGaps =
                 new ArrayList<>();
         private boolean runtimeRefinementComplete = true;
@@ -5558,25 +4206,9 @@ final class RuntimeRegionPlanner {
                 }
                 slice.inputBindings.add(parsed);
             }
-            slice.requestedStateTransformerContractPresent = jsonHasField(
-                    json, "requestedStateTransformerContractComplete");
-            slice.requestedStateTransformerContractIssues.addAll(
-                    jsonStringArray(json,
-                            "requestedStateTransformerContractIssues"));
-            slice.requestedStateTransformerContractComplete = jsonBoolean(
-                    json, "requestedStateTransformerContractComplete",
-                    false);
-            for (JsonObject initializer : jsonObjectArray(json,
-                    "heapInitializers")) {
-                slice.heapInitializers.add(jsonMap(initializer));
-            }
             for (JsonObject binding : jsonObjectArray(json,
                     "captureBindings")) {
                 slice.captureBindings.add(jsonMap(binding));
-            }
-            for (JsonObject binding : jsonObjectArray(json,
-                    "containerElementFieldBindings")) {
-                slice.containerElementFieldBindings.add(jsonMap(binding));
             }
             slice.captureBindingIssues.addAll(jsonStringArray(json,
                     "captureBindingIssues"));
@@ -5586,135 +4218,6 @@ final class RuntimeRegionPlanner {
             slice.structuralIssues.addAll(jsonStringArray(json,
                     "truncationReasons"));
             return slice;
-        }
-
-        private Map<String, Object> copyContainerElementFieldBinding(
-                Map<String, Object> declaration) {
-            Map<String, Object> copy = new LinkedHashMap<>(declaration);
-            copy.put("fieldPath", new ArrayList<>(stringList(
-                    declaration.get("fieldPath"))));
-            Object proof = declaration.get("proofCausalEdgeIds");
-            copy.put("proofCausalEdgeIds", proof instanceof Collection<?>
-                    ? new ArrayList<>((Collection<?>) proof)
-                    : new ArrayList<Object>());
-            return copy;
-        }
-
-        private boolean completeContainerElementFieldDeclaration(
-                Map<String, Object> declaration,
-                Set<String> retainedStaticInputPorts, String method) {
-            String base = string(declaration.get("baseInputSymbol"));
-            String container = string(declaration.get(
-                    "containerInputPort"));
-            String containerCell = string(declaration.get(
-                    "containerInputCell"));
-            String fieldSignature = string(declaration.get(
-                    "declaredFieldSignature"));
-            FieldCell field = fieldCell(fieldSignature);
-            FieldCell containerField = fieldCell(containerCell);
-            String selector = string(declaration.get(
-                    "selectorAuthority"));
-            int index = intValue(declaration.get("elementIndex"), -2);
-            int occurrence = intValue(declaration.get(
-                    "elementOccurrence"), -2);
-            boolean selectorComplete = "EXACT_ARRAY_INDEX".equals(selector)
-                    ? index >= 0 && occurrence > 0
-                    : "DISCOVER_UNIQUE_IDENTITY_INDEX".equals(selector)
-                    && index == -1 && occurrence == -1;
-            List<String> path = stringList(declaration.get("fieldPath"));
-            List<String> proofRows = stringList(declaration.get(
-                    "proofCausalEdgeIds"));
-            Set<String> proof = new LinkedHashSet<>(proofRows);
-            int schemaVersion = intValue(declaration.get(
-                    "schemaVersion"), -1);
-            String materializationMode = string(declaration.get(
-                    "materializationMode"));
-            boolean direct = schemaVersion == 1
-                    && (materializationMode.isEmpty()
-                    || "FIELD_ACCESS_HOOK".equals(materializationMode))
-                    && path.equals(Collections.singletonList(field.name))
-                    && !proof.isEmpty()
-                    && proofRows.size() == proof.size()
-                    && "STATIC_EXACT_CONTAINER_ARRAY_FIELD_TO_MAP_PUT_"
-                    .concat("KEY_VALUE_V1").equals(string(declaration.get(
-                    "proofAuthority")))
-                    && exactContainerTransformerSite(declaration, method,
-                    proof);
-            boolean snapshot = schemaVersion == 2
-                    && "CONTAINER_SNAPSHOT".equals(materializationMode)
-                    && !path.isEmpty() && path.size() <= 4
-                    && field.name.equals(path.get(path.size() - 1))
-                    && proof.size() == 5
-                    && "STATIC_EXACT_ARRAY_ELEMENT_MAP_PUT_VALUE_AND_"
-                    .concat("DECLARED_FIELD_FIVE_EDGE_JOIN_V1").equals(
-                    string(declaration.get("proofAuthority")));
-            boolean directPathSnapshot = schemaVersion == 2
-                    && "CONTAINER_SNAPSHOT".equals(materializationMode)
-                    && path.size() >= 2 && path.size() <= 4
-                    && field.name.equals(path.get(path.size() - 1))
-                    && primitiveType(field.type)
-                    && proofRows.size() == proof.size()
-                    && proof.size() == 4 * path.size()
-                    && "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_"
-                    .concat("CHAIN_V1").equals(string(declaration.get(
-                    "proofAuthority")));
-            return (direct || snapshot || directPathSnapshot)
-                    && "ARRAY_ELEMENT_FIELD".equals(string(declaration.get(
-                    "kind")))
-                    && Boolean.TRUE.equals(declaration.get("complete"))
-                    && !string(declaration.get("bindingId")).isEmpty()
-                    && !base.isEmpty() && !container.isEmpty()
-                    && !base.equals(container)
-                    && retainedStaticInputPorts.contains(base)
-                    && retainedStaticInputPorts.contains(container)
-                    && selectorComplete
-                    && field.declaredSignature
-                    && containerField.declaredSignature
-                    && containerField.type.endsWith("[]")
-                    && method.equals(string(declaration.get("method")))
-                    && exactUnitSite(method, string(declaration.get(
-                    "fieldMaterializationSiteId")))
-                    && sites.contains(string(declaration.get(
-                    "fieldMaterializationSiteId")))
-                    && exactUnitSite(method, string(declaration.get(
-                    "arrayLoadSiteId")))
-                    && sites.contains(string(declaration.get(
-                    "arrayLoadSiteId")))
-                    && !proof.contains("")
-                    && new LinkedHashSet<>(causalEdgeIds).containsAll(proof);
-        }
-
-        private boolean exactContainerTransformerSite(
-                Map<String, Object> declaration, String method,
-                Set<String> proofEdgeIds) {
-            String site = string(declaration.get(
-                    "requestedStateTransformerSiteId"));
-            if (!exactUnitSite(method, site) || !sites.contains(site)) {
-                return false;
-            }
-            int matches = 0;
-            for (Map<String, Object> edge : causalEdges) {
-                if (!site.equals(string(edge.get("siteId")))
-                        || !method.equals(string(edge.get("method")))
-                        || !outputCell.equals(string(edge.get("toCell")))
-                        || !"HEAP_WRITE".equals(string(edge.get(
-                        "transferKind")))
-                        || !"field_mutation".equals(string(edge.get(
-                        "kind")))) {
-                    continue;
-                }
-                String edgeId = string(edge.get("edgeId"));
-                if (edgeId.isEmpty() || !proofEdgeIds.contains(edgeId)) {
-                    return false;
-                }
-                matches++;
-            }
-            return matches == 1;
-        }
-
-        private int intValue(Object value, int fallback) {
-            return value instanceof Number
-                    ? ((Number) value).intValue() : fallback;
         }
 
         private boolean exactUnitSite(String method, String site) {
@@ -5736,14 +4239,6 @@ final class RuntimeRegionPlanner {
                     java.util.Arrays.asList(
                             "edgeId", "method", "siteId", "fromCell", "toCell",
                             "transferKind", "kind", "invoke",
-                            "containerProjectionContractVersion",
-                            "containerProjectionOperation",
-                            "containerProjectionAuthority", "elementRelation",
-                            "iterationOrderAuthority",
-                            "receiverValueDependencyComplete",
-                            "elementIdentityPreserving",
-                            "mappingAssociationPreserving", "backedView",
-                            "snapshot", "containerEqualityAsserted",
                             "guardSiteId", "guardedMutationSiteId",
                             "requiredOutcome", "guardedMutations")));
             return result;
@@ -5816,13 +4311,6 @@ final class RuntimeRegionPlanner {
             refined.structuralIssues.addAll(structuralIssues);
             refined.staticSites.addAll(sites);
             refined.captureBindingIssues.addAll(captureBindingIssues);
-            refined.requestedStateTransformerContractPresent =
-                    requestedStateTransformerContractPresent;
-            refined.requestedStateTransformerContractIssues.addAll(
-                    requestedStateTransformerContractIssues);
-            refined.requestedStateTransformerContractComplete =
-                    requestedStateTransformerContractComplete;
-
             // The semantic backward slice is the region boundary authority.
             // Runtime evidence selects one path through that declared slice;
             // it must neither grow the slice with incidental callees nor
@@ -5906,61 +4394,6 @@ final class RuntimeRegionPlanner {
                 }
             }
 
-            for (Map<String, Object> initializer : heapInitializers) {
-                String method = string(initializer.get("allocationMethod"));
-                if (!filtersAlternatives || observed.contains(method)) {
-                    refined.heapInitializers.add(
-                            new LinkedHashMap<>(initializer));
-                } else if (method.isEmpty()) {
-                    refined.heapInitializers.add(
-                            new LinkedHashMap<>(initializer));
-                    refined.runtimeRefinementComplete = false;
-                }
-            }
-
-            // A retained fresh-allocation proof supersedes an otherwise
-            // conservative old-state port for this same selected path.
-            boolean selectedFreshInitializer = false;
-            for (Map<String, Object> initializer : refined.heapInitializers) {
-                if (outputCell.equals(string(initializer.get("outputCell")))
-                        && Boolean.TRUE.equals(initializer.get(
-                        "proofComplete"))
-                        && evidence.root.method.equals(string(initializer.get(
-                        "allocationMethod")))) {
-                    for (FieldAccessEvent event : evidence.fieldEvents) {
-                        if ("FIELD_WRITE".equals(event.kind)
-                                && event.receiverObjectId
-                                == evidence.root.objectId
-                                && sameField(fieldCell(outputCell),
-                                fieldCell(event.field))) {
-                            selectedFreshInitializer = true;
-                            break;
-                        }
-                    }
-                    if (selectedFreshInitializer) {
-                        break;
-                    }
-                }
-            }
-            if (selectedFreshInitializer) {
-                List<Map<String, Object>> withoutPrestate = new ArrayList<>();
-                for (Map<String, Object> binding : retainedBindings) {
-                    if (outputCell.equals(string(binding.get(
-                            "dependencyCell")))) {
-                        continue;
-                    } else {
-                        withoutPrestate.add(binding);
-                    }
-                }
-                retainedBindings = withoutPrestate;
-                retainedPorts.clear();
-                for (Map<String, Object> binding : retainedBindings) {
-                    String port = string(binding.get("inputPort"));
-                    if (!port.isEmpty()) {
-                        retainedPorts.add(port);
-                    }
-                }
-            }
             collapseRuntimeConfirmedFieldPathAliases(evidence,
                     retainedBindings);
             retainedPorts.clear();
@@ -5972,41 +4405,6 @@ final class RuntimeRegionPlanner {
             }
             refined.inputBindings.addAll(retainedBindings);
             refined.inputPorts.addAll(sorted(retainedPorts));
-
-            // A container-element declaration is path-specific.  Retain it
-            // only when its exact materialization method was observed and
-            // both of its statically named input ports survived runtime
-            // alternative refinement.  Malformed production declarations
-            // fail the requested-output activation closed; they are never
-            // silently downgraded to the legacy one-static-field symbol.
-            for (Map<String, Object> declaration
-                    : containerElementFieldBindings) {
-                String method = string(declaration.get("method"));
-                boolean methodObserved = !method.isEmpty()
-                        && observed.contains(method);
-                if (!methodObserved) {
-                    if (methods.contains(method)) {
-                        // This is an unobserved static alternative, so its
-                        // exact selector is irrelevant to this activation.
-                        continue;
-                    }
-                    refined.runtimeRefinementComplete = false;
-                    continue;
-                }
-                String base = string(declaration.get("baseInputSymbol"));
-                String container = string(declaration.get(
-                        "containerInputPort"));
-                boolean portsRetained = refined.inputPorts.contains(base)
-                        && refined.inputPorts.contains(container);
-                if (!portsRetained
-                        || !completeContainerElementFieldDeclaration(
-                        declaration, inputPorts, method)) {
-                    refined.runtimeRefinementComplete = false;
-                    continue;
-                }
-                refined.containerElementFieldBindings.add(
-                        copyContainerElementFieldBinding(declaration));
-            }
 
             Map<String, Map<String, Object>> causalById =
                     new LinkedHashMap<>();
@@ -6049,27 +4447,12 @@ final class RuntimeRegionPlanner {
             refined.structuralComplete = structuralIssues.isEmpty()
                     && !causalEdgeIds.isEmpty()
                     && !refined.causalEdgeIds.isEmpty();
-            boolean staticTransformerContractLedgerComplete =
-                    requestedStateTransformerContractComplete
-                            && requestedStateTransformerContractIssues
-                            .isEmpty();
-            // This fact is deliberately independent of
-            // runtimeRefinementComplete.  Capture discharge consumes both
-            // facts as siblings below; making either one define the other
-            // creates a cycle in which a missing capture prevents the
-            // mutation transformer from being selected in the first place.
-            refined.requestedStateTransformerContractComplete =
-                    refined.runtimeRefinedTransformerContractComplete(
-                            staticTransformerContractLedgerComplete);
-            refineRuntimeCapture(refined, evidence, observed,
-                    retainedBindings, retainedPorts);
-            boolean transformerContractReady =
-                    !requestedStateTransformerContractPresent
-                            || refined.requestedStateTransformerContractComplete;
+            for (Map<String, Object> binding : captureBindings) {
+                refined.captureBindings.add(new LinkedHashMap<>(binding));
+            }
             refined.complete = refined.structuralComplete
                     && refined.runtimeRefinementComplete
                     && refined.inputGaps.isEmpty()
-                    && transformerContractReady
                     && refined.captureBindingIssues.isEmpty();
             return refined;
         }
@@ -6162,94 +4545,10 @@ final class RuntimeRegionPlanner {
         }
 
         /**
-         * Revalidates the exact transformer ledger after static alternatives
-         * have been removed.  This validation intentionally does not read or
-         * write {@link #runtimeRefinementComplete}; the final readiness gate
-         * requires the two independent facts together.
-         */
-        private boolean runtimeRefinedTransformerContractComplete(
-                boolean staticContractLedgerComplete) {
-            if (!requestedStateTransformerContractPresent) {
-                return false;
-            }
-            if (!staticContractLedgerComplete
-                    || !requestedStateTransformerContractIssues.isEmpty()) {
-                return false;
-            }
-
-            Set<String> edgeIds = new LinkedHashSet<>();
-            Map<String, String> transformerBySite = new LinkedHashMap<>();
-            for (Map<String, Object> edge : causalEdges) {
-                String id = string(edge.get("edgeId"));
-                if (id.isEmpty() || !edgeIds.add(id)) {
-                    return false;
-                }
-                if (!"HEAP_WRITE".equals(string(edge.get("transferKind")))
-                        || !outputCell.equals(string(edge.get("toCell")))) {
-                    continue;
-                }
-                String site = string(edge.get("siteId"));
-                String method = string(edge.get("method"));
-                String kind = string(edge.get("kind"));
-                if (site.isEmpty() || method.isEmpty()
-                        || !methods.contains(method)
-                        || !("field_write".equals(kind)
-                        || "field_mutation".equals(kind))) {
-                    return false;
-                }
-                String identity = method + "\n" + kind;
-                String previous = transformerBySite.putIfAbsent(
-                        site, identity);
-                if (previous != null && !previous.equals(identity)) {
-                    return false;
-                }
-            }
-            return !transformerBySite.isEmpty();
-        }
-
-        /**
-         * Finalizes the output capture only after path alternatives, inputs,
-         * initializers, and causal edges have all been runtime-refined.
-         */
-        private void refineRuntimeCapture(StaticOutputSlice refined,
-                                          InstanceEvidence evidence,
-                                          Set<String> observed,
-                                          List<Map<String, Object>>
-                                                  retainedBindings,
-                                          Set<String> retainedPorts) {
-            String heapEffectCaptureInput =
-                    refined.heapEffectCaptureDischargeInput(
-                            retainedBindings, retainedPorts);
-            boolean heapEffectCaptureDischarged =
-                    mutationCaptureDischargeReady(refined, evidence,
-                            observed, heapEffectCaptureInput);
-            if (heapEffectCaptureDischarged) {
-                // In-place containers use the exact same-cell pre-state plus
-                // importer-validated, path-ordered heap effects. They do not
-                // need a separate scalar output capture.
-                refined.captureBindings.clear();
-                refined.captureBindingIssues.clear();
-                refined.captureDischargedByHeapEffectTransformer = true;
-                refined.captureDischargeInputPort = heapEffectCaptureInput;
-                refined.captureDischargeAuthority =
-                        "HEAP_EFFECT_STATE_TRANSFORMER";
-                return;
-            }
-
-            if (!captureBindings.isEmpty()) {
-                refined.captureBindings.clear();
-                for (Map<String, Object> binding : captureBindings) {
-                    refined.captureBindings.add(
-                            new LinkedHashMap<>(binding));
-                }
-            }
-        }
-
-        /**
-         * A scalar/reference field output is read once from its exact
+         * A field output is read once from its exact
          * receiver path at normal region exit. This directly observes the
-         * final symbolic heap state, so assignment sites and seed-path write
-         * occurrences are not capture identities.
+         * final symbolic value or ContainerRelation, so assignment sites and
+         * seed-path write occurrences are not capture identities.
          */
         private void validateNormalExitFieldCapture(
                 StaticPort input, List<Map<String, Object>> actions) {
@@ -6257,7 +4556,7 @@ final class RuntimeRegionPlanner {
                 return;
             }
             FieldCell field = fieldCell(outputCell);
-            Map<String, Object> action = captureDischargeAction(actions,
+            Map<String, Object> action = regionExitCaptureAction(actions,
                     input == null ? "" : input.portId);
             Map<String, Object> request = captureBindings.size() == 1
                     ? captureBindings.get(0) : null;
@@ -6268,8 +4567,6 @@ final class RuntimeRegionPlanner {
                     ? Collections.<String>emptyList()
                     : stringList(request.get("fieldPath"));
             boolean supported = field.declaredSignature
-                    && !isArrayJavaType(field.type)
-                    && !supportedMapStateCell(outputCell)
                     && input != null
                     && action != null && request != null
                     && input.portId.equals(string(request.get(
@@ -6282,9 +4579,7 @@ final class RuntimeRegionPlanner {
                     && !declaredPath.isEmpty() && !exactPath.isEmpty()
                     && declaredPath.get(declaredPath.size() - 1).equals(
                     exactPath.get(exactPath.size() - 1));
-            if (!supported || !captureBindingIssues.isEmpty()
-                    || requestedStateTransformerContractPresent
-                    && !requestedStateTransformerContractComplete) {
+            if (!supported || !captureBindingIssues.isEmpty()) {
                 runtimeRefinementComplete = false;
                 captureBindingIssues.add(
                         "NORMAL_EXIT_FIELD_PATH_CAPTURE_NOT_PROVEN");
@@ -6294,7 +4589,7 @@ final class RuntimeRegionPlanner {
             captureBindingIssues.clear();
         }
 
-        private Map<String, Object> captureDischargeAction(
+        private Map<String, Object> regionExitCaptureAction(
                 List<Map<String, Object>> actions, String inputPort) {
             Map<String, Object> match = null;
             for (Map<String, Object> action : actions) {
@@ -6317,131 +4612,6 @@ final class RuntimeRegionPlanner {
             return match;
         }
 
-        private boolean mutationCaptureDischargeReady(
-                StaticOutputSlice refined, InstanceEvidence evidence,
-                Set<String> observed, String heapEffectCaptureInput) {
-            if (captureBindingIssues.isEmpty()
-                    || heapEffectCaptureInput.isEmpty()
-                    || !evidence.runtimePathEvidenceComplete
-                    || !refined.structuralComplete
-                    || !refined.runtimeRefinementComplete
-                    || !refined.inputGaps.isEmpty()
-                    || !refined.requestedStateTransformerContractComplete) {
-                return false;
-            }
-
-            // A retained exact capture is authoritative and must not be
-            // replaced by heap effects.  Capture declarations belonging only
-            // to methods excluded as static alternatives are irrelevant to
-            // this concrete runtime path.
-            for (Map<String, Object> binding : captureBindings) {
-                String method = string(binding.get("callerMethod"));
-                if (method.isEmpty() || observed.contains(method)) {
-                    return false;
-                }
-            }
-
-            Set<String> allMutationSites = transformerSites(
-                    "field_mutation");
-            Set<String> retainedMutationSites = refined.transformerSites(
-                    "field_mutation");
-            if (retainedMutationSites.isEmpty()
-                    || retainedMutationSites.contains("")
-                    || !refined.onlyTransformerKind("field_mutation")
-                    || captureBindingIssues.isEmpty()) {
-                return false;
-            }
-
-            String prefix =
-                    "REQUESTED_TRANSFORMER_HAS_NO_FINAL_STATE_CAPTURE:";
-            Set<String> retainedIssueSites = new LinkedHashSet<>();
-            for (String issue : captureBindingIssues) {
-                if (!issue.startsWith(prefix)) {
-                    return false;
-                }
-                String site = issue.substring(prefix.length());
-                if (!allMutationSites.contains(site)) {
-                    return false;
-                }
-                if (retainedMutationSites.contains(site)
-                        && !retainedIssueSites.add(site)) {
-                    return false;
-                }
-            }
-            return retainedIssueSites.equals(retainedMutationSites);
-        }
-
-        /**
-         * Returns the one exact requested-field pre-state input that can be
-         * threaded through the existing heap-effect SSA model.  This is only
-         * a capture-plan discharge: the importer must still prove every
-         * retained mutation is a supported, runtime-observed transformer.
-         */
-        private String heapEffectCaptureDischargeInput(
-                List<Map<String, Object>> retainedBindings,
-                Set<String> retainedPorts) {
-            if (!requestedStateTransformerContractPresent
-                    || !requestedStateTransformerContractComplete
-                    || !onlyTransformerKind("field_mutation")
-                    || !supportedMapStateCell(outputCell)) {
-                return "";
-            }
-            if (transformerSites("field_mutation").isEmpty()) {
-                return "";
-            }
-            String match = "";
-            for (Map<String, Object> binding : retainedBindings) {
-                if (!outputCell.equals(string(binding.get(
-                        "dependencyCell")))
-                        || !"EXACT_CELL_IDENTITY".equals(string(binding.get(
-                        "bindingAuthority")))) {
-                    continue;
-                }
-                String port = string(binding.get("inputPort"));
-                if (port.isEmpty() || !retainedPorts.contains(port)
-                        || !match.isEmpty()) {
-                    return "";
-                }
-                match = port;
-            }
-            return match;
-        }
-
-        private Set<String> transformerSites(String kind) {
-            Set<String> result = new LinkedHashSet<>();
-            for (Map<String, Object> edge : causalEdges) {
-                if ("HEAP_WRITE".equals(string(edge.get("transferKind")))
-                        && outputCell.equals(string(edge.get("toCell")))
-                        && kind.equals(string(edge.get("kind")))) {
-                    result.add(string(edge.get("siteId")));
-                }
-            }
-            return result;
-        }
-
-        private boolean onlyTransformerKind(String kind) {
-            boolean found = false;
-            for (Map<String, Object> edge : causalEdges) {
-                if (!"HEAP_WRITE".equals(string(edge.get("transferKind")))
-                        || !outputCell.equals(string(edge.get("toCell")))) {
-                    continue;
-                }
-                if (!kind.equals(string(edge.get("kind")))
-                        || string(edge.get("siteId")).isEmpty()
-                        || string(edge.get("method")).isEmpty()) {
-                    return false;
-                }
-                found = true;
-            }
-            return found;
-        }
-
-        private static boolean supportedMapStateCell(String cell) {
-            FieldCell field = fieldCell(cell);
-            return field.declaredSignature
-                    && JavaContainerTypes.isMap(field.type);
-        }
-
         private Map<String, Object> toMap() {
             Map<String, Object> result = object(
                     "outputPort", outputPort,
@@ -6452,26 +4622,11 @@ final class RuntimeRegionPlanner {
                     "sites", new ArrayList<>(sites),
                     "causalEdgeIds", causalEdgeIds,
                     "causalEdges", causalEdges,
-                    "heapInitializers", heapInitializers,
                     "captureBindings", captureBindings,
                     "captureBindingIssues", captureBindingIssues,
-                    "captureDischargedByHeapEffectTransformer",
-                    captureDischargedByHeapEffectTransformer,
-                    "captureDischargeInputPort",
-                    captureDischargeInputPort,
-                    "captureDischargeAuthority",
-                    captureDischargeAuthority,
-                    "containerElementFieldBindings",
-                    containerElementFieldBindings,
                     "inputGaps", inputGaps,
                     "truncationReasons", structuralIssues,
                     "complete", complete);
-            if (requestedStateTransformerContractPresent) {
-                result.put("requestedStateTransformerContractIssues",
-                        requestedStateTransformerContractIssues);
-                result.put("requestedStateTransformerContractComplete",
-                        requestedStateTransformerContractComplete);
-            }
             result.put("staticSites", new ArrayList<>(staticSites));
             return result;
         }

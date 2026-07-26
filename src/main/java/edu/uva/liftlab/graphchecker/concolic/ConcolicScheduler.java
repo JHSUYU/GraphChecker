@@ -59,8 +59,6 @@ public final class ConcolicScheduler {
     private static final String LOCAL_FIELD_ROOT_AUTHORITY =
             "LOCAL_DEFINITION_IDENTITY_AT_EXACT_DEFINITION_SITE_AND_"
                     + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
-    private static final String MAP_STATE_INPUT_OBSERVATION_MODE =
-            "MAP_STATE_INPUT_OBSERVATION";
     private ConcolicScheduler() {
     }
 
@@ -342,12 +340,6 @@ public final class ConcolicScheduler {
         Set<String> represented = new LinkedHashSet<>();
         OutputClosureContract.ExecutionScope scope = outputClosure == null
                 ? null : outputClosure.executionScope();
-        JsonArray containerBindings =
-                goal.containerElementFieldBindings();
-        Set<String> containerBaseInputs = containerBindingSymbols(
-                containerBindings, "baseInputSymbol");
-        Set<String> containerInputPorts = containerBindingSymbols(
-                containerBindings, "containerInputPort");
         for (JsonElement element : sourceActions) {
             if (!element.isJsonObject()) {
                 continue;
@@ -360,22 +352,10 @@ public final class ConcolicScheduler {
                     location, cell);
             if (action.has("observed")
                     && !bool(action, "observed", false)
-                    && !containerBaseInputs.contains(string(action,
-                    "symbol"))
                     && !authoritativeDefinitionResolutionRequested(action)
                     && !vmIntrinsic) {
                 addInputAction(result, represented, binding,
                         InputActionCatalog.Mode.CONCRETE);
-                continue;
-            }
-            if (exactContainerSnapshotLeafDeclaration(
-                    containerBindings, action)) {
-                // Schema-v2 snapshots are materialized dynamically when the
-                // observation-only container is consumed.  Keep the exact
-                // leaf in the declared symbolize catalog, but do not install
-                // an owner-wide FIELD_ACCESS hook or misclassify it as a
-                // concrete fallback merely because the static cell starts at
-                // an intermediate reference owner.
                 continue;
             }
             if ("ARGUMENT".equals(location)
@@ -394,13 +374,6 @@ public final class ConcolicScheduler {
                 JsonArray sites = definitions.returnSites(cell,
                         scope == null ? regionMethods : scope.methods(),
                         scope);
-                boolean pendingArrayFieldRoot =
-                        pendingArrayFieldCallReturnRoot(action);
-                if (pendingArrayFieldRoot && sites.size() != 1) {
-                    addInputAction(result, represented, binding,
-                            InputActionCatalog.Mode.CONCRETE);
-                    continue;
-                }
                 if (sites.size() == 0) {
                     addInputAction(result, represented, binding,
                             InputActionCatalog.Mode.CONCRETE);
@@ -420,7 +393,6 @@ public final class ConcolicScheduler {
                     localBinding.add("definitionSites", oneSite);
                     dischargeDeferredResolution(localBinding);
                     localBinding.addProperty("lazy", true);
-                    finalizePendingLocalArrayRoot(localBinding);
                     addInputAction(result, represented, localBinding,
                             InputActionCatalog.Mode.SYMBOLIC);
                 }
@@ -430,8 +402,6 @@ public final class ConcolicScheduler {
                         "VM_INTRINSIC_PLACEHOLDER");
                 binding.addProperty("placeholderFunction",
                         SymbolicEnvironment.CURRENT_TIME_MILLIS_PLACEHOLDER);
-                binding.addProperty("captureAuthority",
-                        "CUSTOM_JDK_SYMBOLIC_ND_FUNC");
                 binding.addProperty("modelControllable", false);
                 binding.addProperty("replayPolicy",
                         "UNFORCED_CONCRETE_ENVIRONMENT_VALIDATION");
@@ -471,7 +441,6 @@ public final class ConcolicScheduler {
                     if (sites.size() == 1) {
                         dischargeDeferredResolution(binding);
                     }
-                    finalizePendingLocalArrayRoot(binding);
                     if (sites.size() == 0) {
                         addInputAction(result, represented, binding,
                                 InputActionCatalog.Mode.CONCRETE);
@@ -488,21 +457,6 @@ public final class ConcolicScheduler {
                         InputActionCatalog.Mode.CONCRETE);
                 continue;
             }
-            if (containerInputPorts.contains(string(binding, "symbol"))
-                    && fieldBackedArray(binding)) {
-                binding.addProperty("bindingMode",
-                        "CONTAINER_INPUT_OBSERVATION");
-                addInputAction(result, represented, binding,
-                        InputActionCatalog.Mode.SYMBOLIC);
-                continue;
-            }
-            if (requestedMapState(outputClosure, binding)) {
-                binding.addProperty("bindingMode",
-                        MAP_STATE_INPUT_OBSERVATION_MODE);
-                addInputAction(result, represented, binding,
-                        InputActionCatalog.Mode.SYMBOLIC);
-                continue;
-            }
             addInputAction(result, represented, binding,
                     InputActionCatalog.Mode.SYMBOLIC);
         }
@@ -517,112 +471,6 @@ public final class ConcolicScheduler {
                     InputActionCatalog.Mode.DECLARATION_ONLY);
         }
         return result;
-    }
-
-    private static Set<String> containerBindingSymbols(
-            JsonArray containerBindings, String member) {
-        Set<String> result = new LinkedHashSet<>();
-        for (JsonElement element : containerBindings) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject binding = element.getAsJsonObject();
-            String symbol = string(binding, member);
-            if (bool(binding, "complete", false) && !symbol.isEmpty()) {
-                result.add(symbol);
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Recognizes only the strict direct-field-path schema whose runtime
-     * materializer is the exact container snapshot, not a getfield hook.
-     */
-    private static boolean exactContainerSnapshotLeafDeclaration(
-            JsonArray containerBindings, JsonObject action) {
-        String symbol = string(action, "symbol");
-        if (symbol.isEmpty()
-                || !"HEAP_OBJECT_FIELD".equals(string(action,
-                "location"))
-                || !"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1".equals(
-                string(action, "fieldPathAuthority"))) {
-            return false;
-        }
-        JsonObject selected = null;
-        for (JsonElement element : containerBindings) {
-            if (!element.isJsonObject()) continue;
-            JsonObject declaration = element.getAsJsonObject();
-            if (!symbol.equals(string(declaration, "baseInputSymbol"))) {
-                continue;
-            }
-            if (selected != null) return false;
-            selected = declaration;
-        }
-        if (selected == null) return false;
-        return integer(selected, "schemaVersion", -1) == 2
-                && "ARRAY_ELEMENT_FIELD".equals(string(selected, "kind"))
-                && "CONTAINER_SNAPSHOT".equals(string(selected,
-                "materializationMode"))
-                && "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_CHAIN_V1"
-                .equals(string(selected, "proofAuthority"))
-                && bool(selected, "complete", false)
-                && "EXACT_ARRAY_INDEX".equals(string(selected,
-                "selectorAuthority"))
-                && integer(selected, "elementIndex", -1) >= 0
-                && integer(selected, "elementOccurrence", -1) > 0
-                && array(selected, "fieldPath").equals(array(action,
-                "fieldPath"))
-                && string(selected, "declaredFieldSignature").equals(
-                string(action, "field"))
-                && !string(selected, "containerInputPort").isEmpty()
-                && !symbol.equals(string(selected, "containerInputPort"));
-    }
-
-    /**
-     * A requested Map heap state is a versioned container value, not a
-     * scalar reference that the VM must make controllable.  Keep the real
-     * getfield hook so runtime identity and mutations remain observable, but
-     * never ask the VM to symbolize the Map reference itself.
-     */
-    private static boolean requestedMapState(
-            OutputClosureContract contract,
-            JsonObject binding) {
-        if (contract == null) {
-            return false;
-        }
-        String cell = string(binding, "cell");
-        if (cell.isEmpty()
-                || !"HEAP_OBJECT_FIELD".equals(string(binding, "location"))
-                || !"FIELD_ACCESS".equals(string(binding, "bindingMode"))
-                || fieldPath(cell).size() != 1
-                || !declaresMapReference(binding)) {
-            return false;
-        }
-        for (OutputClosureContract.Member member : contract.members()) {
-            if ("HEAP_STATE".equals(member.outputKind())
-                    && cell.equals(member.cell())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean declaresMapReference(JsonObject binding) {
-        if (JavaContainerTypes.isMap(string(binding, "javaType"))) {
-            return true;
-        }
-        for (String candidate : new String[]{
-                string(binding, "leafFieldSignature"),
-                string(binding, "accessFieldSignature"),
-                string(binding, "field"), string(binding, "cell")}) {
-            DeclaredField declared = FieldPathSpec.declaredField(candidate);
-            if (declared != null && JavaContainerTypes.isMap(
-                    declared.type())) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static void addInputAction(
@@ -676,103 +524,8 @@ public final class ConcolicScheduler {
         return bool(action, "deferredResolution", false);
     }
 
-    /**
-     * A runtime-proven consumed array field can be rooted in a call-return
-     * local only after the authoritative static DefinitionIndex identifies
-     * that local's one exact return assignment.  The leaf getfield event does
-     * not distinguish two candidate return definitions, so splitting them
-     * would turn ambiguity into two false claims of unique root identity.
-     */
-    private static boolean pendingArrayFieldCallReturnRoot(
-            JsonObject action) {
-        if (!"CALL_RETURN".equals(string(action, "location"))
-                || !"CALL_RETURN_DEFINITION".equals(string(action,
-                "consumedFieldPendingRootKind"))
-                || !"LOCAL_DEFINITION_ROOT_PENDING_AUTHORITATIVE_"
-                .concat("SCHEDULER_DEFINITION_INDEX_V1").equals(
-                        string(action, "consumedFieldRootAuthority"))) {
-            return false;
-        }
-        return fieldBackedArray(action);
-    }
-
     private static boolean validFieldPaths(JsonObject action) {
         return FieldPathSpec.hasNonEmptyPaths(action, "fieldPaths");
-    }
-
-    private static void finalizePendingLocalArrayRoot(JsonObject binding) {
-        if (!"LOCAL_DEFINITION_ROOT_PENDING_AUTHORITATIVE_"
-                .concat("SCHEDULER_DEFINITION_INDEX_V1").equals(
-                        string(binding, "consumedFieldRootAuthority"))) {
-            return;
-        }
-        JsonArray sites = array(binding, "definitionSites");
-        String method = string(binding, "method");
-        String local = string(binding, "local");
-        if (sites.size() != 1 || !sites.get(0).isJsonObject()
-                || method.isEmpty() || local.isEmpty()) {
-            return;
-        }
-        JsonObject site = sites.get(0).getAsJsonObject();
-        int unit = integer(site, "unitIndex", -1);
-        if (unit < 0 || !method.equals(string(site, "method"))
-                || !local.equals(string(site, "local"))) {
-            return;
-        }
-        String kind = string(binding, "consumedFieldPendingRootKind");
-        if ("LOCAL_DEFINITION".equals(kind)) {
-            if (!method.equals(string(binding,
-                    "consumedFieldPendingRootMethod"))
-                    || !local.equals(string(binding,
-                    "consumedFieldPendingRootLocal"))) {
-                return;
-            }
-        } else if (!"CALL_RETURN_DEFINITION".equals(kind)
-                || !"CALL_RETURN".equals(string(binding, "location"))) {
-            return;
-        }
-        binding.addProperty("consumedFieldRootAuthority",
-                LOCAL_FIELD_ROOT_AUTHORITY);
-        binding.addProperty("consumedFieldBindingComplete", true);
-        binding.remove("consumedFieldBindingIssue");
-    }
-
-    private static boolean fieldBackedArray(JsonObject binding) {
-        String location = string(binding, "location");
-        String mode = string(binding, "bindingMode");
-        boolean fieldShape = "ARGUMENT_FIELD".equals(location)
-                || "ARGUMENT_FIELD_PATH".equals(location)
-                || "RECEIVER_FIELD".equals(location)
-                || "HEAP_OBJECT_FIELD".equals(location)
-                || "FIELD".equals(location)
-                || "FIELD_ACCESS".equals(mode)
-                || "LOCAL_DEFINITION".equals(mode)
-                || "CALL_RETURN_DEFINITION".equals(string(binding,
-                "consumedFieldPendingRootKind"));
-        if (!fieldShape) return false;
-        for (String member : new String[]{"leafFieldSignature",
-                "accessFieldSignature", "field", "cell"}) {
-            DeclaredField declaration = FieldPathSpec.declaredField(
-                    string(binding, member));
-            if (declaration != null
-                    && (declaration.type().startsWith("[")
-                    || declaration.type().endsWith("[]"))) {
-                return true;
-            }
-        }
-        for (JsonElement element : array(binding,
-                "fieldPathLeafDeclarations")) {
-            if (!element.isJsonObject()) continue;
-            DeclaredField declaration = FieldPathSpec.declaredField(string(
-                    element.getAsJsonObject(), "fieldSignature"));
-            if (declaration != null
-                    && (declaration.type().startsWith("[")
-                    || declaration.type().endsWith("[]"))) {
-                return true;
-            }
-        }
-        String type = string(binding, "javaType");
-        return type.startsWith("[") || type.endsWith("[]");
     }
 
     private static List<String> fieldPath(String cell) {
@@ -949,8 +702,6 @@ public final class ConcolicScheduler {
             query.addProperty("readyForSolver", false);
             query.addProperty("blocker", incompleteWitness.getMessage());
         }
-        query.add("engineArrayInputBindings", array(summary,
-                "engineArrayInputBindings").deepCopy());
         query.add("symbolicContext",
                 mergePlan.contextFor(candidate.goal.plan().regionId(),
                         candidate.goal.plan().regionInstanceId()));

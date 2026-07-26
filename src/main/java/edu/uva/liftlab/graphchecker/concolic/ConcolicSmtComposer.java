@@ -4,7 +4,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.ja
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.artifact;
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 
-import edu.uva.liftlab.graphchecker.contract.DynamicBindingSpec;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
@@ -70,20 +69,6 @@ public final class ConcolicSmtComposer {
             .disableHtmlEscaping().serializeNulls().setPrettyPrinting()
             .create();
     private ConcolicSmtComposer() {
-    }
-
-    static String heapObservationStatePortForTests(
-            String region, String observationId, String baseInputSymbol,
-            String dynamicBindingId) {
-        return heapObservationStatePort(region, observationId,
-                baseInputSymbol, dynamicBindingId);
-    }
-
-    static String heapObservationStateSelectorDigestForTests(
-            String observationId, String baseInputSymbol,
-            String dynamicBindingId) {
-        return heapObservationStateSelectorDigest(observationId,
-                baseInputSymbol, dynamicBindingId);
     }
 
     public static void main(String[] argv) throws Exception {
@@ -189,7 +174,6 @@ public final class ConcolicSmtComposer {
                 for (JsonElement element : array(fatal, "paths")) {
                     JsonObject path = element.getAsJsonObject();
                     String label = "fatal target path " + pathOrdinal++;
-                    emitter.registerEngineArrayInputBindings(path, label);
                     emitter.registerVmIntrinsicPlaceholderBindings(path,
                             label);
                     List<String> pathTerms = new ArrayList<>();
@@ -200,8 +184,6 @@ public final class ConcolicSmtComposer {
                     fatalTerms.add(and(pathTerms));
                 }
             } else {
-                emitter.registerEngineArrayInputBindings(fatal,
-                        "fatal query");
                 for (JsonElement constraint : fatalConstraints) {
                     fatalTerms.add(emitter.constraint(constraint,
                             "fatal query"));
@@ -1172,14 +1154,6 @@ public final class ConcolicSmtComposer {
                 new LinkedHashMap<>();
         private final Set<String> emittedExactCausalInputAliasKeys =
                 new LinkedHashSet<>();
-        private final Set<String> emittedContainerElementBindingKeys =
-                new LinkedHashSet<>();
-        private final Map<String, EngineArrayInputBridge>
-                engineArrayInputBridges = new LinkedHashMap<>();
-        private final Map<String, String> canonicalFieldAccessors =
-                new LinkedHashMap<>();
-        private final Map<String, Sort> canonicalFieldAccessorSorts =
-                new LinkedHashMap<>();
         private final Map<String, Map<String, String>>
                 vmIntrinsicPlaceholderBindingsByScope =
                 new LinkedHashMap<>();
@@ -1187,7 +1161,6 @@ public final class ConcolicSmtComposer {
         private final Set<String> suppliedInputs = new LinkedHashSet<>();
         private String currentGuard = "";
         private String currentSymbolScope = "global";
-        private CaseProjectionCapture currentCaseProjection;
 
         private Emitter(PortIndex ports) {
             this.ports = ports;
@@ -1214,55 +1187,9 @@ public final class ConcolicSmtComposer {
                     + " (VDouble (valueDouble (_ FloatingPoint 11 53)))"
                     + " (VBool (valueBool Bool))"
                     + " (VRef (valueRef Ref))"
-                    + " (VString (valueString String))"
-                    + " (VMapBoolean (valueMapBoolean Bool))"
-                    + " (VMapByte (valueMapByte Int))"
-                    + " (VMapChar (valueMapChar Int))"
-                    + " (VMapShort (valueMapShort Int))"
-                    + " (VMapInteger (valueMapInteger Int))"
-                    + " (VMapLong (valueMapLong Int))"
-                    + " (VMapString (valueMapString String)))))");
-            preamble.add("(declare-datatypes () ((FiniteArrayValue"
-                    + " (mkFiniteArrayValue"
-                    + " (finite_array_length Int)"
-                    + " (finite_array_elements (Array Int Value))))))");
-            preamble.add("(define-fun finite_array_select"
-                    + " ((a FiniteArrayValue) (i Int)) Value"
-                    + " (select (finite_array_elements a) i))");
-            preamble.add("(declare-datatypes () ((MapState"
-                    + " (mkMapState"
-                    + " (map_members (Array Value Bool))"
-                    + " (map_values (Array Value Value))))))");
+                    + " (VString (valueString String)))))");
             preamble.add("(declare-const nullRef Ref)");
-            preamble.add("(define-fun map_has ((s MapState) (k Value)) Bool"
-                    + " (select (map_members s) k))");
-            preamble.add("(define-fun map_select ((s MapState) (k Value)) Value"
-                    + " (select (map_values s) k))");
-            preamble.add("(define-fun map_put ((s MapState) (k Value)"
-                    + " (v Value)) MapState (mkMapState"
-                    + " (store (map_members s) k true)"
-                    + " (store (map_values s) k v)))");
-            preamble.add("(define-fun map_remove ((s MapState) (k Value))"
-                    + " MapState (mkMapState"
-                    + " (store (map_members s) k false)"
-                    + " (map_values s)))");
-            preamble.add("(declare-fun map_state_of (Ref) MapState)");
-            preamble.add("(declare-const emptyMapState MapState)");
-            preamble.add("(assert (= (map_members emptyMapState)"
-                    + " ((as const (Array Value Bool)) false)))");
-            preamble.add("(assert (= (map_values emptyMapState)"
-                    + " ((as const (Array Value Value)) (VRef nullRef))))");
-            preamble.add("(define-fun map_clear ((s MapState)) MapState"
-                    + " emptyMapState)");
-            preamble.add("(define-fun map_put_all ((dst MapState)"
-                    + " (src MapState)) MapState (mkMapState"
-                    + " (lambda ((q Value)) (or"
-                    + " (select (map_members dst) q)"
-                    + " (select (map_members src) q)))"
-                    + " (lambda ((q Value)) (ite"
-                    + " (select (map_members src) q)"
-                    + " (select (map_values src) q)"
-                    + " (select (map_values dst) q)))))");
+            preamble.addAll(ContainerSmtCodec.preamble());
             // SMT-LIB's str.from_int is defined only for non-negative
             // integers.  Java's decimal Integer.toString additionally emits
             // a leading '-' for negative values.  Keeping this definition in
@@ -1338,9 +1265,6 @@ public final class ConcolicSmtComposer {
             String type = string(object, "_type");
             if ("MethodExpression".equals(type)) {
                 return methodConstraint(object, origin);
-            }
-            if ("_array_expr".equals(type)) {
-                return arrayConstraint(object, origin);
             }
             Term term = term(expression, null);
             if (term.sort == Sort.BOOL) return condition(term);
@@ -1420,11 +1344,7 @@ public final class ConcolicSmtComposer {
                 String inputPort = scopeBindings == null ? null
                         : scopeBindings.get(identity);
                 if (inputPort != null) {
-                    Term result = canonicalPortTerm(inputPort, Sort.INT);
-                    recordCaseSymbol(identity, result,
-                            "VM_INTRINSIC_PLACEHOLDER_CANONICAL_PORT",
-                            inputPort);
-                    return result;
+                    return canonicalPortTerm(inputPort, Sort.INT);
                 }
                 unsupported.add("PlaceholderExpression:" + function
                         + "#" + count);
@@ -1436,22 +1356,226 @@ public final class ConcolicSmtComposer {
             if ("MethodExpression".equals(type)) {
                 return methodTerm(object);
             }
+            if (ContainerSmtCodec.handles(object)) {
+                return containerTerm(object);
+            }
+            if (ContainerSmtCodec.handlesField(object)) {
+                return containerFieldTerm(object);
+            }
             unsupported.add(type.isEmpty() ? "MISSING_TYPE" : type);
             Sort sort = expected == null ? Sort.VALUE : expected;
             return unsupportedTerm(sort);
         }
 
+        private Term containerTerm(JsonObject expression) {
+            return fromContainerTerm(ContainerSmtCodec.term(
+                    expression, containerHost()));
+        }
+
+        private Term containerFieldTerm(JsonObject expression) {
+            return fromContainerTerm(ContainerSmtCodec.field(
+                    expression, containerHost()));
+        }
+
+        private ContainerSmtCodec.Host containerHost() {
+            return new ContainerSmtCodec.Host() {
+                @Override
+                public ContainerSmtCodec.Term state(
+                        JsonElement identity,
+                        ContainerSmtCodec.Sort shape) {
+                    if (identity != null && identity.isJsonObject()
+                            && "SymbolExpression".equals(string(
+                            identity.getAsJsonObject(), "_type"))) {
+                        String port = findPort(string(
+                                identity.getAsJsonObject(), "_exp"));
+                        Sort required = shape
+                                == ContainerSmtCodec.Sort.INDEXED
+                                ? Sort.ARRAY_VALUE : Sort.MAP;
+                        if (!port.isEmpty() && portSort(port) == required) {
+                            ContainerSmtCodec.Term encoded = toContainerTerm(
+                                    term(identity, required));
+                            if (encoded != null && encoded.sort == shape) {
+                                return encoded;
+                            }
+                        }
+                    }
+                    Term reference = term(identity, Sort.REF);
+                    if (reference == null || reference.sort != Sort.REF) {
+                        unsupported("ContainerStateIdentity:" + shape);
+                        return null;
+                    }
+                    return new ContainerSmtCodec.Term(
+                            (shape == ContainerSmtCodec.Sort.INDEXED
+                                    ? "(indexed_state_of "
+                                    : "(assoc_state_of ")
+                                    + reference.text + ")",
+                            shape);
+                }
+
+                @Override
+                public ContainerSmtCodec.Term operand(
+                        JsonElement expression,
+                        ContainerSmtCodec.Sort expected) {
+                    if (ContainerSmtCodec.handles(expression)) {
+                        return ContainerSmtCodec.term(
+                                expression.getAsJsonObject(), this);
+                    }
+                    if (ContainerSmtCodec.handlesField(expression)) {
+                        return ContainerSmtCodec.field(
+                                expression.getAsJsonObject(), this);
+                    }
+                    Sort nativeExpected = expected == ContainerSmtCodec.Sort.INT
+                            ? Sort.INT
+                            : expected == ContainerSmtCodec.Sort.BOOL
+                            ? Sort.BOOL
+                            : expected == ContainerSmtCodec.Sort.REF
+                            ? Sort.REF
+                            : expected == ContainerSmtCodec.Sort.INDEXED
+                            ? Sort.ARRAY_VALUE
+                            : expected
+                            == ContainerSmtCodec.Sort.ASSOCIATIVE
+                            ? Sort.MAP : null;
+                    return toContainerTerm(term(expression, nativeExpected));
+                }
+
+                @Override
+                public ContainerSmtCodec.Term box(JsonElement expression) {
+                    return toContainerTerm(asValue(term(expression, null)));
+                }
+
+                @Override
+                public ContainerSmtCodec.Term unbox(
+                        ContainerSmtCodec.Term value, String javaType) {
+                    if (value == null
+                            || value.sort != ContainerSmtCodec.Sort.VALUE) {
+                        return value;
+                    }
+                    Sort sort = sortOfJava(javaType);
+                    if (sort == Sort.INT) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueInt " + value.text + ")",
+                                ContainerSmtCodec.Sort.INT,
+                                JavaPrimitiveSmtSemantics.widthOfJavaType(
+                                        javaType));
+                    }
+                    if (sort == Sort.BOOL) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueBool " + value.text + ")",
+                                ContainerSmtCodec.Sort.BOOL);
+                    }
+                    if (sort == Sort.REF) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueRef " + value.text + ")",
+                                ContainerSmtCodec.Sort.REF);
+                    }
+                    if (sort == Sort.FLOAT32) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueFloat " + value.text + ")",
+                                ContainerSmtCodec.Sort.FLOAT32);
+                    }
+                    if (sort == Sort.FLOAT64) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueDouble " + value.text + ")",
+                                ContainerSmtCodec.Sort.FLOAT64);
+                    }
+                    if (sort == Sort.STRING) {
+                        return new ContainerSmtCodec.Term(
+                                "(valueString " + value.text + ")",
+                                ContainerSmtCodec.Sort.STRING);
+                    }
+                    return value;
+                }
+
+                @Override
+                public ContainerSmtCodec.Term field(
+                        ContainerSmtCodec.Term owner, String ownerClass,
+                        int fieldOffset, String javaType) {
+                    Sort result = sortOfJava(javaType);
+                    if (owner == null
+                            || owner.sort != ContainerSmtCodec.Sort.REF
+                            || fieldOffset < 0 || result == Sort.VALUE
+                            || result == Sort.MAP
+                            || result == Sort.ARRAY_VALUE) {
+                        unsupported("FieldAccessExpression:"
+                                + ownerClass + "@" + fieldOffset + ":"
+                                + javaType);
+                        return null;
+                    }
+                    String identity = ownerClass + "\u0000" + fieldOffset
+                            + "\u0000" + javaType;
+                    String accessor = "container_field__"
+                            + scopeToken(identity);
+                    declareFunction(accessor, Collections.singletonList(
+                            new Term("", Sort.REF)), result);
+                    return toContainerTerm(new Term("(" + accessor + " "
+                            + owner.text + ")", result));
+                }
+
+                @Override
+                public void unsupported(String reason) {
+                    Emitter.this.unsupported.add(
+                            "MODEL_SEMANTICS_MISSING:" + reason);
+                }
+            };
+        }
+
+        private ContainerSmtCodec.Term toContainerTerm(Term value) {
+            if (value == null) return null;
+            ContainerSmtCodec.Sort sort = value.sort == Sort.BOOL
+                    ? ContainerSmtCodec.Sort.BOOL
+                    : value.sort == Sort.INT
+                    ? ContainerSmtCodec.Sort.INT
+                    : value.sort == Sort.REF
+                    ? ContainerSmtCodec.Sort.REF
+                    : value.sort == Sort.VALUE
+                    ? ContainerSmtCodec.Sort.VALUE : null;
+            if (value.sort == Sort.ARRAY_VALUE) {
+                sort = ContainerSmtCodec.Sort.INDEXED;
+            } else if (value.sort == Sort.MAP) {
+                sort = ContainerSmtCodec.Sort.ASSOCIATIVE;
+            } else if (value.sort == Sort.FLOAT32) {
+                sort = ContainerSmtCodec.Sort.FLOAT32;
+            } else if (value.sort == Sort.FLOAT64) {
+                sort = ContainerSmtCodec.Sort.FLOAT64;
+            } else if (value.sort == Sort.STRING) {
+                sort = ContainerSmtCodec.Sort.STRING;
+            }
+            if (sort == null) {
+                unsupported.add("ContainerOperandSort:" + value.sort);
+                return null;
+            }
+            return new ContainerSmtCodec.Term(value.text, sort,
+                    value.integralWidth);
+        }
+
+        private Term fromContainerTerm(ContainerSmtCodec.Term value) {
+            if (value == null) return unsupportedTerm(Sort.VALUE);
+            Sort sort = value.sort == ContainerSmtCodec.Sort.BOOL
+                    ? Sort.BOOL
+                    : value.sort == ContainerSmtCodec.Sort.INT
+                    ? Sort.INT
+                    : value.sort == ContainerSmtCodec.Sort.REF
+                    ? Sort.REF
+                    : value.sort == ContainerSmtCodec.Sort.FLOAT32
+                    ? Sort.FLOAT32
+                    : value.sort == ContainerSmtCodec.Sort.FLOAT64
+                    ? Sort.FLOAT64
+                    : value.sort == ContainerSmtCodec.Sort.STRING
+                    ? Sort.STRING
+                    : value.sort == ContainerSmtCodec.Sort.INDEXED
+                    ? Sort.ARRAY_VALUE
+                    : value.sort == ContainerSmtCodec.Sort.ASSOCIATIVE
+                    ? Sort.MAP : Sort.VALUE;
+            return new Term(value.text, sort, value.integralWidth);
+        }
+
         private Term symbol(JsonObject expression, Sort expected) {
             String raw = string(expression, "_exp");
             if ("N".equals(raw)) {
-                Term result = new Term("nullRef", Sort.REF);
-                recordCaseSymbol(raw, result, "SPECIAL_CONSTANT", "");
-                return result;
+                return new Term("nullRef", Sort.REF);
             }
             if ("V".equals(raw)) {
-                Term result = new Term("true", Sort.BOOL);
-                recordCaseSymbol(raw, result, "SPECIAL_CONSTANT", "");
-                return result;
+                return new Term("true", Sort.BOOL);
             }
 
             String port = findPort(raw);
@@ -1461,9 +1585,7 @@ public final class ConcolicSmtComposer {
                     promotePort(port, Sort.MAP);
                     declarePort(port, Sort.MAP);
                     boundPorts.add(port);
-                    Term result = new Term(portName(port), Sort.MAP);
-                    recordCaseSymbol(raw, result, "CANONICAL_MAP_PORT", port);
-                    return result;
+                    return new Term(portName(port), Sort.MAP);
                 }
                 if (expected == Sort.ARRAY_VALUE) {
                     if (portSort(port) != Sort.ARRAY_VALUE) {
@@ -1472,29 +1594,19 @@ public final class ConcolicSmtComposer {
                     } else {
                         declarePort(port, Sort.ARRAY_VALUE);
                         boundPorts.add(port);
-                        Term result = new Term(portName(port),
-                                Sort.ARRAY_VALUE);
-                        recordCaseSymbol(raw, result,
-                                "CANONICAL_ARRAY_VALUE_PORT", port);
-                        return result;
+                        return new Term(portName(port), Sort.ARRAY_VALUE);
                     }
                 }
                 Port schema = ports.get(port);
                 if (schema != null && portSort(port) == Sort.MAP) {
                     declarePort(port, Sort.MAP);
                     boundPorts.add(port);
-                    Term result = new Term(portName(port), Sort.MAP);
-                    recordCaseSymbol(raw, result, "CANONICAL_MAP_PORT", port);
-                    return result;
+                    return new Term(portName(port), Sort.MAP);
                 }
                 if (schema != null && portSort(port) == Sort.ARRAY_VALUE) {
                     declarePort(port, Sort.ARRAY_VALUE);
                     boundPorts.add(port);
-                    Term result = new Term(portName(port),
-                            Sort.ARRAY_VALUE);
-                    recordCaseSymbol(raw, result,
-                            "CANONICAL_ARRAY_VALUE_PORT", port);
-                    return result;
+                    return new Term(portName(port), Sort.ARRAY_VALUE);
                 }
             }
 
@@ -1507,17 +1619,12 @@ public final class ConcolicSmtComposer {
                 if (sort == Sort.VALUE || sort == Sort.MAP) sort = Sort.REF;
             }
             if (!port.isEmpty()) {
-                Term result = canonicalPortTerm(port, sort,
-                        expressionJavaType);
-                recordCaseSymbol(raw, result, "CANONICAL_PORT_TERM", port);
-                return result;
+                return canonicalPortTerm(port, sort, expressionJavaType);
             }
 
-            Term result = scopedSymbol(raw, "sym", sort,
+            return scopedSymbol(raw, "sym", sort,
                     expressionJavaType, "scoped_symbol_" + smtName(raw),
                     "ScopedSymbol", "scoped:");
-            recordCaseSymbol(raw, result, "SCOPED_ENGINE_SYMBOL", "");
-            return result;
         }
 
         /**
@@ -1533,8 +1640,8 @@ public final class ConcolicSmtComposer {
                                        String expressionJavaType) {
             Port schema = ports.get(port);
             String schemaJavaType = schema == null ? "" : schema.javaType;
-            String javaType = firstNonBlank(schemaJavaType,
-                    expressionJavaType);
+            String integralJavaType = canonicalIntegralJavaType(
+                    schemaJavaType, expressionJavaType);
             if (sort == Sort.REF
                     && sortOfJava(schemaJavaType) == Sort.STRING) {
                 return canonicalNullableStringReferenceTerm(port,
@@ -1586,13 +1693,13 @@ public final class ConcolicSmtComposer {
                         "canonical-port:" + port);
             } else {
                 term = new Term(name, sort,
-                        integralWidthOfJava(javaType));
+                        integralWidthOfJava(integralJavaType));
             }
             if (canonicalPortTermBindings.add(bindingKey)) {
                 String previousGuard = currentGuard;
                 currentGuard = "";
                 try {
-                    assertJavaIntegralDomain(name, sort, javaType,
+                    assertJavaIntegralDomain(name, sort, integralJavaType,
                             "canonical_port_" + smtName(port));
                     if (emitPortBinding(port, term)) {
                         boundPorts.add(port);
@@ -1633,42 +1740,6 @@ public final class ConcolicSmtComposer {
             return new Term(name, Sort.REF);
         }
 
-        /**
-         * Materializes an occurrence-specific VM symbol without the normal
-         * substring-to-port lookup.  Dynamic field names intentionally retain
-         * their static base port as a prefix; resolving that prefix as a scalar
-         * port would collapse every map entry back into one expiry value.
-         */
-        private Term exactDynamicFieldTerm(JsonObject expression,
-                                           String dynamicFieldSymbol,
-                                           Sort sort) {
-            String raw = string(expression, "_exp");
-            String javaType = string(expression, "_java_type");
-            Term result = scopedSymbol(raw, "dynamic_field", sort, javaType,
-                    "dynamic_field_" + smtName(dynamicFieldSymbol),
-                    "DynamicField", "dynamic:");
-            recordCaseSymbol(raw, result, "SCOPED_DYNAMIC_FIELD", "");
-            return result;
-        }
-
-        /** Declares an importer-admitted runtime field symbol. */
-        private Term runtimeDynamicFieldTerm(
-                JsonObject binding, Sort sort) {
-            String raw = string(binding, "dynamicFieldSymbol");
-            String javaType = firstNonBlank(string(binding,
-                    "fieldJavaType"), string(binding,
-                    "javaTypeDescriptor"));
-            if (raw.isEmpty()) {
-                unsupported.add("MissingRuntimeDynamicFieldSymbol");
-            }
-            Term result = scopedSymbol(raw, "runtime_dynamic_field", sort,
-                    javaType, "runtime_dynamic_field_" + smtName(raw),
-                    "RuntimeDynamicField", "runtime-dynamic:");
-            recordCaseSymbol(raw, result,
-                    "AUTHORIZED_RUNTIME_DYNAMIC_FIELD", "");
-            return result;
-        }
-
         private Term scopedSymbol(String raw, String prefix, Sort requested,
                                   String javaType, String domainLabel,
                                   String conflictLabel, String sourcePrefix) {
@@ -1694,49 +1765,6 @@ public final class ConcolicSmtComposer {
             }
             return new Term(symbol.name, symbol.sort,
                     integralWidthOfJava(javaType));
-        }
-
-        private void recordCaseSymbol(String raw, Term term, String kind,
-                                      String canonicalPort) {
-            // Literals participate in the emitted formula, but they are not
-            // projection roots.  In particular, one VM boolean literal such
-            // as Y_Z_0 can be lowered to Int 0 for a Java boolean-as-int port
-            // and to Bool false for a predicate result.  Requiring one
-            // context-independent solver term for that literal creates a
-            // false catalog conflict without adding any input evidence.
-            if ("ENGINE_LITERAL".equals(kind)
-                    || "SPECIAL_CONSTANT".equals(kind)) {
-                return;
-            }
-            if (currentCaseProjection != null && raw != null
-                    && !raw.isEmpty() && term != null) {
-                currentCaseProjection.record(raw, term, canonicalPort);
-            }
-        }
-
-        private static boolean rawSymbolReferences(JsonElement expression,
-                                                   String dynamicSymbol) {
-            if (expression == null || !expression.isJsonObject()
-                    || dynamicSymbol == null || dynamicSymbol.isEmpty()) {
-                return false;
-            }
-            JsonObject object = expression.getAsJsonObject();
-            if (!("SymbolExpression".equals(string(object, "_type"))
-                    || "ConSymbolExp".equals(string(object, "_type")))) {
-                return false;
-            }
-            String raw = string(object, "_exp");
-            int start = raw.indexOf(dynamicSymbol);
-            while (start >= 0) {
-                int end = start + dynamicSymbol.length();
-                boolean left = start == 0 || !Character.isLetterOrDigit(
-                        raw.charAt(start - 1));
-                boolean right = end == raw.length()
-                        || !Character.isLetterOrDigit(raw.charAt(end));
-                if (left && right) return true;
-                start = raw.indexOf(dynamicSymbol, start + 1);
-            }
-            return false;
         }
 
         private Term constant(JsonObject expression, Sort expected) {
@@ -1778,7 +1806,6 @@ public final class ConcolicSmtComposer {
                 result = new Term(name,
                         sort == Sort.VALUE ? Sort.REF : sort);
             }
-            recordCaseSymbol(raw, result, "ENGINE_LITERAL", "");
             return result;
         }
 
@@ -2530,124 +2557,9 @@ public final class ConcolicSmtComposer {
                         boxedResult.precondition, "(= " + boxedResult.text
                                 + " " + boxedPrefix.text + ")"));
             }
-            if (isMapGet(name)) {
-                JsonArray params = array(expression, "_param_list");
-                if (params.size() < 2) {
-                    return unknownConstraint(origin + ": malformed Map.get",
-                            expression);
-                }
-                Term receiver = mapState(params.get(0));
-                Term key = mapKeyTerm(params.get(1), origin + "_map_get");
-                if (key == null) {
-                    return unknownConstraint(origin
-                            + ": unsupported Java Map.get key", expression);
-                }
-                Term result = term(expression.get("_res_exp"), Sort.REF);
-                Term boxedResult = asValue(result);
-                return "(= " + boxedResult.text + " (ite (map_has "
-                        + receiver.text + " " + key.text + ") (map_select "
-                        + receiver.text + " " + key.text
-                        + ") (VRef nullRef)))";
-            }
             unsupported.add("MODEL_SEMANTICS_MISSING:MethodExpression:"
                     + firstNonBlank(name, "unknown"));
             return "false";
-        }
-
-        private String arrayConstraint(JsonObject expression, String origin) {
-            String rawArray = string(expression, "_arr_str");
-            if (expression.has("_is_load")
-                    && !bool(expression, "_is_load", false)) {
-                unsupported.add("EngineArrayStoreUnsupported:"
-                        + firstNonBlank(rawArray, "<unnamed>") + ":"
-                        + origin);
-                return unknownConstraint(origin
-                        + ": engine array store unsupported", expression);
-            }
-            if (!bool(expression, "_is_load", false)
-                    || !hasExpression(expression, "_index_exp")
-                    || !hasExpression(expression, "_value_exp")) {
-                return unknownConstraint(origin + ": malformed array event",
-                        expression);
-            }
-            if (rawArray.isEmpty()) {
-                return unknownConstraint(origin + ": unnamed array event",
-                        expression);
-            }
-            EngineArrayInputBridge bridge = engineArrayInputBridges.get(
-                    currentSymbolScope + "\u0000" + rawArray);
-            if (bridge == null) {
-                unsupported.add("EngineArrayInputBridgeMissing:" + rawArray
-                        + ":" + currentSymbolScope);
-                return unknownConstraint(origin
-                        + ": engine array input bridge missing", expression);
-            }
-            String array = bridge.arrayTerm;
-            recordCaseSymbol(rawArray, new Term(array, Sort.ARRAY),
-                    "CANONICAL_ARRAY_INPUT_ELEMENTS", bridge.inputPort);
-            Term index = term(expression.get("_index_exp"), Sort.INT);
-            Term value = asValue(term(expression.get("_value_exp"), null));
-            return "(and (<= 0 " + index.text + ") (< " + index.text
-                    + " (finite_array_length " + portName(bridge.inputPort)
-                    + ")) (= " + value.text + " (select " + array + " "
-                    + index.text + ")))";
-        }
-
-        private void registerEngineArrayInputBindings(
-                JsonObject container, String origin) {
-            JsonArray rows = array(container, "engineArrayInputBindings");
-            for (int ordinal = 0; ordinal < rows.size(); ordinal++) {
-                if (!rows.get(ordinal).isJsonObject()) {
-                    unsupported.add("MalformedEngineArrayInputBinding:"
-                            + origin + ":" + ordinal);
-                    continue;
-                }
-                JsonObject row = rows.get(ordinal).getAsJsonObject();
-                String port = string(row, "inputPort");
-                String arrayId = string(row, "engineArrayId");
-                String bridgeKey = currentSymbolScope + "\u0000" + arrayId;
-                if (port.isEmpty() || arrayId.isEmpty()
-                        || portSort(port) != Sort.ARRAY_VALUE
-                        || engineArrayInputBridges.containsKey(bridgeKey)) {
-                    unsupported.add("MalformedAdmittedEngineArrayBinding:"
-                            + origin + ":" + ordinal);
-                    continue;
-                }
-
-                declarePort(port, Sort.ARRAY_VALUE);
-                mentionedPorts.add(port);
-                boundPorts.add(port);
-                String arrayTerm = scopedName("array", arrayId);
-                declare(arrayTerm, Sort.ARRAY);
-                EngineArrayInputBridge bridge =
-                        new EngineArrayInputBridge(arrayTerm, port,
-                                integer(object(row,
-                                "arrayValueExpression"),
-                                "_concrete_length", -1));
-                engineArrayInputBridges.put(bridgeKey, bridge);
-                recordCaseSymbol(arrayId, new Term(arrayTerm, Sort.ARRAY),
-                        "CANONICAL_ARRAY_INPUT_ELEMENTS", port);
-                String previousGuard = currentGuard;
-                try {
-                    // The VM bridge is execution identity, not one branch's
-                    // semantic consequence.  It therefore remains active
-                    // independently of a guarded merge selector.
-                    currentGuard = "";
-                    assertNamed("engine_array_input_bridge_"
-                                    + scopeToken(currentSymbolScope) + "_"
-                                    + arrayId,
-                            "(= " + arrayTerm
-                                    + " (finite_array_elements "
-                                    + portName(port) + "))");
-                    assertNamed("engine_array_input_length_"
-                                    + scopeToken(currentSymbolScope) + "_"
-                                    + arrayId,
-                            "(= (finite_array_length " + portName(port)
-                                    + ") " + bridge.concreteLength + ")");
-                } finally {
-                    currentGuard = previousGuard;
-                }
-            }
         }
 
         private void registerVmIntrinsicPlaceholderBindings(
@@ -2719,8 +2631,6 @@ public final class ConcolicSmtComposer {
                     + firstNonBlank(string(summary, "summaryId"),
                     region, "selected"));
             try {
-                registerEngineArrayInputBindings(summary,
-                        "summary " + region);
                 registerVmIntrinsicPlaceholderBindings(summary,
                         "summary " + region);
                 guardedRegionRelation(region, relation, outputClosure);
@@ -2772,15 +2682,8 @@ public final class ConcolicSmtComposer {
                 String caseIdentity = "region:" + region + "/case:"
                         + firstNonBlank(string(item, "caseId"),
                         String.valueOf(index));
-                CaseProjectionCapture capture = new CaseProjectionCapture(
-                        region, item, caseIdentity,
-                        projectCaseDynamicBindings(item));
                 String previousScope = enterSymbolScope(caseIdentity);
-                CaseProjectionCapture previousCapture = currentCaseProjection;
-                currentCaseProjection = capture;
                 try {
-                    registerEngineArrayInputBindings(item,
-                            "region " + region + " case " + index);
                     registerVmIntrinsicPlaceholderBindings(item,
                             "region " + region + " case " + index);
                     List<String> conditionTerms = new ArrayList<>();
@@ -2792,9 +2695,9 @@ public final class ConcolicSmtComposer {
                     String guard = and(conditionTerms);
                     String selector = "case_selector__"
                             + scopeToken(caseIdentity);
-                    capture.selector(selector, guard);
                     if (!selectorSymbols.add(selector)) {
-                        capture.gap("DUPLICATE_CASE_SELECTOR_SYMBOL");
+                        heapGap("DuplicateCaseSelector@" + region + ":"
+                                + index);
                     }
                     selectors.add(selector);
                     declare(selector, Sort.BOOL);
@@ -2802,36 +2705,10 @@ public final class ConcolicSmtComposer {
                                     + index,
                             "(= " + selector + " " + guard + ")");
                     currentGuard = selector;
-                    JsonArray initializers = array(item,
-                            "heapStateInitializers");
-                    JsonArray effects = array(item, "heapEffects");
-                    finiteMapSnapshots(region, item);
-                    heapObservations(region, item);
-                    for (JsonElement initializer : initializers) {
-                        if (initializer.isJsonObject()) heapInitializer(region,
-                                initializer.getAsJsonObject());
-                    }
-                    for (JsonElement effect : effects) {
-                        if (effect.isJsonObject()) heapEffect(region,
-                                effect.getAsJsonObject());
-                    }
                     bindOutputExpressions(region, item);
-                    bindContainerElementFields(region, item);
-                    bindMapProjectionElementFields(region, item);
                 } finally {
-                    capture.finish();
-                    bindDynamicProjectionRoots(capture);
                     currentGuard = previousGuard;
-                    currentCaseProjection = previousCapture;
                     restoreSymbolScope(previousScope);
-                    if (!capture.complete()) {
-                        for (String gap : capture.gaps) {
-                            heapGap("CaseProjectionCatalogGap@"
-                                    + region + ":"
-                                    + firstNonBlank(string(item, "caseId"),
-                                    String.valueOf(index)) + ":" + gap);
-                        }
-                    }
                 }
             }
             currentGuard = previousGuard;
@@ -2848,846 +2725,20 @@ public final class ConcolicSmtComposer {
             }
         }
 
-        /**
-         * Gives an occurrence-specific dynamic leaf a canonical projection
-         * port only after the selected case proves a one-to-one base/leaf
-         * relation.  In particular, two map entries rooted at the same static
-         * input are not collapsed into one scalar.  The exact emitted guarded
-         * assertion is retained in the case catalog so downstream projection
-         * can attest the bridge without guessing from symbol names.
-         */
-        private void bindDynamicProjectionRoots(
-                CaseProjectionCapture capture) {
-            for (SymbolProjection projection
-                    : capture.dynamicRootProjections()) {
-                String port = projection.canonicalPort;
-                Port schema = ports.get(port);
-                Sort expected = schema == null ? null
-                        : sortOfJava(schema.javaType);
-                if (schema == null || !schema.input
-                        || expected == Sort.VALUE || expected == Sort.MAP
-                        || expected == Sort.ARRAY_VALUE
-                        || expected == Sort.ARRAY
-                        || expected != projection.sort) {
-                    capture.gap("DYNAMIC_ROOT_PORT_OR_SORT_MISMATCH:"
-                            + port);
-                    continue;
-                }
-                Term canonical = canonicalPortTerm(port, expected);
-                String equality;
-                if (expected == Sort.STRING) {
-                    if (projection.stringNullnessSolverTerm.isEmpty()
-                            || canonical.stringNullness.isEmpty()) {
-                        capture.gap("DYNAMIC_ROOT_STRING_NULLNESS_MISSING:"
-                                + port);
-                        continue;
-                    }
-                    equality = and(Arrays.asList(
-                            "(= " + projection.solverTerm + " "
-                                    + canonical.text + ")",
-                            "(= " + projection.stringNullnessSolverTerm
-                                    + " " + canonical.stringNullness + ")"));
-                } else {
-                    equality = "(= " + projection.solverTerm + " "
-                            + canonical.text + ")";
-                }
-                assertNamed(
-                        "case_dynamic_root_bridge_" + capture.regionId + "_"
-                                + capture.caseId + "_" + port,
-                        equality);
-            }
-        }
-
-        /**
-         * Projects already-admitted dynamic bindings onto the exact VM terms
-         * consumed by this case.  Replay identity and cardinality are owned by
-         * the importer; composition only requires a term for each admitted
-         * leaf.
-         */
-        private CaseDynamicValidation projectCaseDynamicBindings(
-                JsonObject item) {
-            CaseDynamicValidation result = new CaseDynamicValidation();
-            Map<String, JsonObject> observedMapFields =
-                    admittedMapFieldExpressions(item);
-            JsonArray bindings = array(item, "dynamicFieldBindings");
-            for (int index = 0; index < bindings.size(); index++) {
-                if (!bindings.get(index).isJsonObject()) {
-                    result.gap("MALFORMED_ADMITTED_DYNAMIC_BINDING:"
-                            + index);
-                    continue;
-                }
-                JsonObject row = bindings.get(index).getAsJsonObject();
-                final DynamicBindingSpec binding;
-                try {
-                    binding = DynamicBindingSpec.decode(row);
-                } catch (IllegalArgumentException malformed) {
-                    result.gap("MALFORMED_ADMITTED_DYNAMIC_BINDING:"
-                            + index);
-                    continue;
-                }
-                JsonObject metadata = new JsonObject();
-                metadata.addProperty("kind", binding.kind());
-                metadata.addProperty("dynamicBindingId",
-                        binding.dynamicBindingId());
-                metadata.addProperty("baseInputSymbol",
-                        binding.baseInputSymbol());
-                metadata.addProperty("dynamicFieldSymbol",
-                        binding.dynamicFieldSymbol());
-                JsonObject expression = null;
-                String javaType = "";
-                if (DynamicBindingSpec.MAP_ENTRY_KIND.equals(
-                        binding.kind())) {
-                    JsonObject observed = observedMapFields.get(
-                            binding.dynamicBindingId());
-                    if (observed != null) {
-                        expression = object(observed, "fieldExpression");
-                        javaType = string(observed, "fieldJavaType");
-                    }
-                } else if (DynamicBindingSpec.CONTAINER_ELEMENT_KIND.equals(
-                        binding.kind())) {
-                    List<JsonObject> expressions = new ArrayList<>();
-                    collectExactDynamicExpressions(object(item, "guard").get(
-                                    "conditions"),
-                            binding.dynamicFieldSymbol(), expressions,
-                            new LinkedHashSet<String>());
-                    if (expressions.size() == 1) {
-                        expression = expressions.get(0);
-                        javaType = string(expression, "_java_type");
-                    }
-                } else {
-                    metadata.addProperty(
-                            "fieldExpressionRawEngineSymbol",
-                            binding.dynamicFieldSymbol());
-                    javaType = string(row, "fieldJavaType");
-                }
-                if (expression != null && expression.size() > 0) {
-                    metadata.add("fieldExpression", expression.deepCopy());
-                    metadata.addProperty(
-                            "fieldExpressionRawEngineSymbol",
-                            string(expression, "_exp"));
-                }
-                if (string(metadata,
-                        "fieldExpressionRawEngineSymbol").isEmpty()
-                        || javaType.isEmpty()) {
-                    result.gap("DYNAMIC_FIELD_EXPRESSION_MISSING:"
-                            + binding.dynamicBindingId());
-                } else {
-                    metadata.addProperty("fieldJavaType", javaType);
-                }
-                result.dynamicBindings.add(metadata);
-            }
-            return result;
-        }
-
-        private Map<String, JsonObject> admittedMapFieldExpressions(
-                JsonObject item) {
-            Map<String, JsonObject> result = new LinkedHashMap<>();
-            for (JsonElement observation : array(item, "heapObservations")) {
-                if (!observation.isJsonObject()) continue;
-                for (JsonElement binding : array(
-                        observation.getAsJsonObject(),
-                        "entryFieldBindings")) {
-                    if (!binding.isJsonObject()) continue;
-                    JsonObject row = binding.getAsJsonObject();
-                    if (DynamicBindingSpec.MAP_ENTRY_KIND.equals(
-                            string(row, "kind"))) {
-                        result.put(string(row, "dynamicBindingId"), row);
-                    }
-                }
-            }
-            return result;
-        }
-
-        private static void collectExactDynamicExpressions(
-                JsonElement value, String dynamic,
-                List<JsonObject> result, Set<String> seen) {
-            if (value == null || value.isJsonNull()) return;
-            if (value.isJsonArray()) {
-                for (JsonElement child : value.getAsJsonArray()) {
-                    collectExactDynamicExpressions(child, dynamic, result,
-                            seen);
-                }
-                return;
-            }
-            if (!value.isJsonObject()) return;
-            JsonObject object = value.getAsJsonObject();
-            if (rawSymbolReferences(object, dynamic)) {
-                String canonical = CanonicalJson.render(object);
-                if (seen.add(canonical)) result.add(object);
-            }
-            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-                if (!"_code_position".equals(entry.getKey())) {
-                    collectExactDynamicExpressions(entry.getValue(), dynamic,
-                            result, seen);
-                }
-            }
-        }
-
-        private void finiteMapSnapshots(String region, JsonObject summary) {
-            JsonArray snapshots = array(summary, "finiteMapSnapshots");
-            for (int index = 0; index < snapshots.size(); index++) {
-                JsonElement element = snapshots.get(index);
-                if (!element.isJsonObject()) {
-                    heapGap("MalformedFiniteMapSnapshot@" + region
-                            + ":" + index);
-                    continue;
-                }
-                JsonObject snapshot = element.getAsJsonObject();
-                String id = string(snapshot, "snapshotId");
-                String rawStatePort = string(snapshot, "statePort");
-                List<Term> keys = new ArrayList<>();
-                List<Term> values = new ArrayList<>();
-                JsonArray entries = array(snapshot, "entries");
-                for (int entryIndex = 0; entryIndex < entries.size();
-                     entryIndex++) {
-                    JsonElement entryElement = entries.get(entryIndex);
-                    if (!entryElement.isJsonObject()) {
-                        heapGap("MalformedFiniteMapSnapshotEntry@" + region
-                                + ":" + id + ":" + entryIndex);
-                        continue;
-                    }
-                    JsonObject entry = entryElement.getAsJsonObject();
-                    Term key = mapKeyTerm(entry.get("keyExpression"),
-                            "finite_snapshot_" + region + "_" + id + "_"
-                                    + entryIndex);
-                    Term value = term(entry.get("valueExpression"), Sort.REF);
-                    if (key == null || key.sort != Sort.VALUE
-                            || value.sort != Sort.REF) {
-                        heapGap("FiniteMapSnapshotEntrySortGap@" + region
-                                + ":" + id + ":" + entryIndex);
-                        continue;
-                    }
-                    keys.add(key);
-                    values.add(asValue(value));
-                }
-                if (id.isEmpty() || rawStatePort.isEmpty()
-                        || keys.size() != entries.size()
-                        || values.size() != entries.size()) {
-                    heapGap("InvalidFiniteMapSnapshot@" + region + ":"
-                            + firstNonBlank(id, String.valueOf(index)));
-                    continue;
-                }
-
-                String statePort = scopedHeapPort(rawStatePort);
-                if (ports.contains(rawStatePort)
-                        && ports.sort(rawStatePort) != Sort.MAP) {
-                    heapGap("FiniteMapSnapshotStateSortGap@"
-                            + region + ":" + id);
-                    continue;
-                }
-                declarePort(statePort, Sort.MAP);
-                mentionedPorts.add(statePort);
-                boundPorts.add(statePort);
-                if (keys.size() > 1) {
-                    StringBuilder distinct = new StringBuilder("(distinct");
-                    for (Term key : keys) distinct.append(' ')
-                            .append(key.text);
-                    assertNamed("finite_map_snapshot_distinct_" + id,
-                            distinct.append(')').toString());
-                }
-                String exactState = "emptyMapState";
-                for (int entryIndex = 0; entryIndex < keys.size();
-                     entryIndex++) {
-                    exactState = "(map_put " + exactState + " "
-                            + keys.get(entryIndex).text + " "
-                            + values.get(entryIndex).text + ")";
-                }
-                assertNamed("finite_map_snapshot_exact_" + id,
-                        "(= " + portName(statePort) + " " + exactState
-                                + ")");
-            }
-        }
-
-        private void heapObservations(String region, JsonObject summary) {
-            JsonArray observations = array(summary, "heapObservations");
-            for (int index = 0; index < observations.size(); index++) {
-                JsonElement element = observations.get(index);
-                if (!element.isJsonObject()) {
-                    heapGap("MalformedHeapObservation@" + region
-                            + ":" + index);
-                    continue;
-                }
-                JsonObject observation = element.getAsJsonObject();
-                String id = string(observation, "observationId");
-                String statePort = string(observation, "statePort");
-                JsonArray bindings = array(observation,
-                        "entryFieldBindings");
-
-                Term key = mapKeyTerm(observation.get("keyExpression"),
-                        "heap_observation_" + region + "_" + id);
-                Term valueRef = term(observation.get("valueExpression"),
-                        Sort.REF);
-                if (id.isEmpty() || statePort.isEmpty() || key == null
-                        || valueRef.sort != Sort.REF) {
-                    heapGap("MalformedAdmittedHeapObservation@" + region
-                            + ":" + firstNonBlank(id,
-                            String.valueOf(index)));
-                    continue;
-                }
-                String effectiveStatePort = scopedHeapPort(statePort);
-                declarePort(effectiveStatePort, Sort.MAP);
-                mentionedPorts.add(effectiveStatePort);
-                boundPorts.add(effectiveStatePort);
-                assertNamed("heap_observation_key_present_" + id,
-                        "(map_has " + portName(effectiveStatePort) + " "
-                                + key.text + ")");
-                assertNamed("heap_observation_value_" + id,
-                        "(= (map_select " + portName(effectiveStatePort) + " "
-                                + key.text + ") "
-                                + asValue(valueRef).text + ")");
-                assertNamed("heap_observation_value_non_null_" + id,
-                        "(not (= " + valueRef.text + " nullRef))");
-
-                int bindingIndex = 0;
-                for (JsonElement bindingElement : bindings) {
-                    if (!bindingElement.isJsonObject()) {
-                        heapGap("MalformedAdmittedEntryFieldBinding@" + id);
-                        continue;
-                    }
-                    JsonObject binding = bindingElement.getAsJsonObject();
-                    String fieldSymbol = string(binding, "fieldSymbol");
-                    String fieldSignature = string(binding, "fieldSignature");
-                    String dynamicFieldSymbol = string(binding,
-                            "dynamicFieldSymbol");
-                    boolean dynamicBinding = !dynamicFieldSymbol.isEmpty();
-                    Sort resultSort = sortOfJava(string(binding,
-                            "fieldJavaType"));
-                    String accessor = canonicalExactFieldAccessor(
-                            fieldSignature, array(binding, "fieldPath"),
-                            resultSort, "heap observation " + id);
-                    if (accessor.isEmpty()) {
-                        heapGap("CanonicalExactFieldAccessorGap@" + region
-                                        + ":" + id + ":" + fieldSignature);
-                        continue;
-                    }
-                    String fieldValue;
-                    if (dynamicBinding) {
-                        fieldValue = exactDynamicFieldTerm(
-                                binding.getAsJsonObject("fieldExpression"),
-                                dynamicFieldSymbol, resultSort).text;
-                    } else {
-                        Term fieldPort = canonicalPortTerm(fieldSymbol,
-                                resultSort);
-                        if (fieldPort.sort != resultSort) {
-                            heapGap("HeapObservationFieldPortSortGap@"
-                                            + region + ":" + id + ":"
-                                            + fieldSymbol);
-                            continue;
-                        }
-                        fieldValue = fieldPort.text;
-                    }
-                    assertNamed("heap_observation_field_" + id + "_"
-                                    + bindingIndex++,
-                            "(= (" + accessor + " " + valueRef.text + ") "
-                                    + fieldValue + ")");
-                }
-            }
-        }
-
-        private void heapInitializer(String region, JsonObject initializer) {
-            String rawStatePort = string(initializer, "statePort");
-            if (rawStatePort.isEmpty()) {
-                heapGap("MalformedAdmittedHeapInitializer@" + region);
-                return;
-            }
-            String statePort = scopedHeapPort(rawStatePort);
-            declarePort(statePort, Sort.MAP);
-            mentionedPorts.add(statePort);
-            assertNamed("heap_initializer_" + region + "_"
-                            + string(initializer, "initializerId"),
-                    "(= " + portName(statePort) + " emptyMapState)");
-            boundPorts.add(statePort);
-        }
-
         private void bindOutputExpressions(String region,
                                            JsonObject summary) {
             JsonObject outputs = object(summary, "outputExpressions");
-            for (Map.Entry<String, JsonElement> entry : outputs.entrySet()) {
+            for (Map.Entry<String, JsonElement> entry
+                    : outputs.entrySet()) {
                 String port = entry.getKey();
-                if (!ports.contains(port) || !entry.getValue().isJsonObject()) {
+                if (!ports.contains(port)
+                        || !entry.getValue().isJsonObject()) {
+                    heapGap("OutputExpressionEndpoint@" + region + ":"
+                            + port);
                     continue;
                 }
-                JsonObject expression = entry.getValue().getAsJsonObject();
-                String kind = string(expression, "kind");
-                if ("EXIT_OBSERVATION".equals(kind)
-                        || "HEAP_STATE_VERSION".equals(kind)) {
-                    continue;
-                }
-                boolean arrayExpression = "ArrayValueExpression".equals(
-                        string(expression, "_type"));
-                if (arrayExpression) {
-                    Term value = finiteArrayValue(region, port, expression);
-                    if (value != null) bindPort(port, value);
-                    continue;
-                }
-                if (portSort(port) == Sort.ARRAY_VALUE) {
-                    heapGap("ArrayValueExpressionRequired@" + region
-                            + ":" + port);
-                    continue;
-                }
-                Term value = term(entry.getValue(), null);
-                bindPort(port, value);
+                bindPort(port, term(entry.getValue(), portSort(port)));
             }
-        }
-
-        /**
-         * Consumes the frozen VM finite-array snapshot contract.  Array-valued
-         * ports use a dedicated relation sort: treating the snapshot as the
-         * scalar {@code Value} carrier would erase both its length and the
-         * selected element identities before a recursive read-from edge is
-         * emitted.
-         */
-        private Term finiteArrayValue(String region, String port,
-                                      JsonObject expression) {
-            String component = javaTypeDescriptor(string(expression,
-                    "_component_java_type"));
-            int length = integer(expression, "_concrete_length", -1);
-            JsonElement lengthExpression = expression.get("_length_exp");
-            JsonArray elements = array(expression, "_elements");
-            if (portSort(port) != Sort.ARRAY_VALUE || component.isEmpty()
-                    || length < 0 || elements.size() != length) {
-                heapGap("MalformedAdmittedArrayValue@" + region + ":"
-                        + port);
-                return null;
-            }
-
-            Term lengthTerm = term(lengthExpression, Sort.INT);
-            if (lengthTerm.sort != Sort.INT) {
-                heapGap("ArrayValueExpression@" + region + ":"
-                        + port + ":LENGTH_TERM_NOT_INT");
-                return null;
-            }
-            assertNamed("finite_array_length_" + port,
-                    "(= " + lengthTerm.text + " " + length + ")");
-
-            String elementArray = "((as const (Array Int Value))"
-                    + " (VRef nullRef))";
-            // Array component descriptors carry JVM storage semantics.  Every
-            // L*/[ component is a reference even when the class happens to be
-            // String or a boxed primitive; applying scalar value semantics
-            // here would destroy the object identity needed by element-field
-            // selectors.
-            Sort componentSort = referenceDescriptor(component)
-                    ? Sort.REF : sortOfJava(component);
-            for (int index = 0; index < elements.size(); index++) {
-                JsonElement encoded = elements.get(index);
-                if (!encoded.isJsonObject()) {
-                    heapGap("MalformedAdmittedArrayElement@" + region + ":"
-                            + port + ":" + index);
-                    return null;
-                }
-                JsonObject element = encoded.getAsJsonObject();
-                Term value = term(element.get("expression"), componentSort);
-                if (value.sort != componentSort
-                        || value.sort == Sort.ARRAY_VALUE
-                        || value.sort == Sort.ARRAY
-                        || value.sort == Sort.MAP
-                        || value.sort == Sort.VALUE) {
-                    heapGap("ArrayValueExpression@" + region + ":"
-                            + port + ":ELEMENT_TERM_SORT_MISMATCH:" + index
-                            + ":" + value.sort + "!=" + componentSort);
-                    return null;
-                }
-                elementArray = "(store " + elementArray + " " + index
-                        + " " + asValue(value).text + ")";
-            }
-            return new Term("(mkFiniteArrayValue " + lengthTerm.text + " "
-                    + elementArray + ")", Sort.ARRAY_VALUE);
-        }
-
-        /**
-         * Emits only the runtime binding admitted by the importer. Static
-         * selector and slice proof were already joined while constructing the
-         * PathObservation; composition does not repeat that proof.
-         */
-        private void bindContainerElementFields(
-                String region, JsonObject summary) {
-            for (JsonElement element : array(summary,
-                    "dynamicFieldBindings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject row = element.getAsJsonObject();
-                if (!DynamicBindingSpec.CONTAINER_ELEMENT_KIND.equals(
-                        string(row, "kind"))) continue;
-                final DynamicBindingSpec binding;
-                try {
-                    binding = DynamicBindingSpec.decode(row);
-                } catch (IllegalArgumentException malformed) {
-                    heapGap("MalformedAdmittedContainerBinding@" + region);
-                    continue;
-                }
-                DynamicBindingSpec.SelectorSpec selector = binding.selector();
-                String bindingId = firstNonBlank(selector.bindingId(),
-                        binding.dynamicBindingId());
-                String containerPort = selector.containerInputPort();
-                Sort fieldSort = containerFieldSort(
-                        binding.baseInputSymbol(),
-                        selector.declaredFieldType());
-                List<JsonObject> expressions = new ArrayList<>();
-                collectExactDynamicExpressions(object(summary, "guard").get(
-                                "conditions"), binding.dynamicFieldSymbol(),
-                        expressions, new LinkedHashSet<String>());
-                if (bindingId.isEmpty() || containerPort.isEmpty()
-                        || selector.elementIndex() < 0
-                        || expressions.size() != 1) {
-                    heapGap("IncompleteAdmittedContainerBinding@" + region
-                            + ":" + bindingId);
-                    continue;
-                }
-                String emissionKey = currentGuard + "\u0000" + region
-                        + "\u0000" + binding.dynamicBindingId();
-                if (!emittedContainerElementBindingKeys.add(emissionKey)) {
-                    continue;
-                }
-
-                declarePort(containerPort, Sort.ARRAY_VALUE);
-                mentionedPorts.add(containerPort);
-                boundPorts.add(containerPort);
-                String container = portName(containerPort);
-                int index = selector.elementIndex();
-                String selected = "(finite_array_select " + container + " "
-                        + index + ")";
-                assertNamed("container_index_bounds_" + bindingId,
-                        "(and (<= 0 " + index + ") (< " + index
-                                + " (finite_array_length " + container
-                                + ")))");
-                assertNamed("container_element_is_ref_" + bindingId,
-                        "((_ is VRef) " + selected + ")");
-                String owner = "(valueRef " + selected + ")";
-                assertNamed("container_element_non_null_" + bindingId,
-                        "(not (= " + owner + " nullRef))");
-
-                String accessor = canonicalExactFieldAccessor(
-                        binding.fieldSignature(), array(row, "fieldPath"),
-                        fieldSort, "container element field " + bindingId);
-                Term dynamic = exactDynamicFieldTerm(expressions.get(0),
-                        binding.dynamicFieldSymbol(), fieldSort);
-                if (accessor.isEmpty() || dynamic.sort != fieldSort) {
-                    heapGap("ContainerElementFieldBinding@" + region + ":"
-                            + bindingId + ":FIELD_OR_TERM_GAP");
-                    continue;
-                }
-                String projected = "(" + accessor + " " + owner + ")";
-                assertNamed("container_element_field_" + bindingId,
-                        "(= " + projected + " " + dynamic.text + ")");
-            }
-        }
-
-        /** Emits the finite, same-execution Map-view projection certified by
-         * schema-v3 runtime bindings.  Every assertion is emitted while the
-         * selected guarded case is active. */
-        private void bindMapProjectionElementFields(
-                String region, JsonObject item) {
-            Map<String, List<JsonObject>> groups = new LinkedHashMap<>();
-            for (JsonElement element : array(item,
-                    "dynamicFieldBindings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binding = element.getAsJsonObject();
-                if (!DynamicBindingSpec.MAP_OUTPUT_ELEMENT_KIND.equals(
-                        string(binding, "kind"))) continue;
-                try {
-                    DynamicBindingSpec.SelectorSpec selector =
-                            DynamicBindingSpec.decode(binding).selector();
-                    String group = selector.mapInputPort() + "\u0000"
-                            + selector.outputPort();
-                    groups.computeIfAbsent(group,
-                            ignored -> new ArrayList<>()).add(binding);
-                } catch (IllegalArgumentException malformed) {
-                    mapProjectionGap(region,
-                            "MALFORMED_ADMITTED_DYNAMIC_BINDING");
-                }
-            }
-
-            int groupOrdinal = 0;
-            for (List<JsonObject> rows : groups.values()) {
-                if (rows.isEmpty()) continue;
-                JsonObject first = rows.get(0);
-                DynamicBindingSpec.SelectorSpec firstSelector =
-                        DynamicBindingSpec.decode(first).selector();
-                String mapPort = firstSelector.mapInputPort();
-                String outputPort = firstSelector.outputPort();
-                JsonArray keyExpressions = array(first,
-                        "entrySnapshotMapKeyExpressions");
-                int count = keyExpressions.size();
-                if (count <= 0 || portSort(mapPort) != Sort.MAP
-                        || portSort(outputPort) != Sort.ARRAY_VALUE) {
-                    mapProjectionGap(region,
-                            "ENDPOINT_SORT_OR_LENGTH_MISMATCH:"
-                                    + mapPort + "->" + outputPort);
-                    continue;
-                }
-
-                declarePort(mapPort, Sort.MAP);
-                declarePort(outputPort, Sort.ARRAY_VALUE);
-                mentionedPorts.add(mapPort);
-                mentionedPorts.add(outputPort);
-                boundPorts.add(mapPort);
-                boundPorts.add(outputPort);
-                String map = portName(mapPort);
-                String output = portName(outputPort);
-                String label = "map_projection_" + region + "_"
-                        + groupOrdinal++;
-                assertNamed(label + "_entry_snapshot_length",
-                        "(= (finite_array_length " + output + ") "
-                                + count + ")");
-
-                List<String> keys = new ArrayList<>();
-                List<String> selectedValues = new ArrayList<>();
-                List<String> selectedRefs = new ArrayList<>();
-                for (int index = 0; index < count; index++) {
-                    Term keyTerm = mapKeyTerm(keyExpressions.get(index),
-                            label + "_key_" + index);
-                    if (keyTerm == null) {
-                        mapProjectionGap(region,
-                                "EXPECTED_MAP_KEY_TERM_SORT_UNSUPPORTED:"
-                                        + index);
-                        break;
-                    }
-                    String key = keyTerm.text;
-                    keys.add(key);
-                    String selected = "(finite_array_select " + output
-                            + " " + index + ")";
-                    String ref = "(valueRef " + selected + ")";
-                    selectedValues.add(selected);
-                    selectedRefs.add(ref);
-                    assertNamed(label + "_selected_ref_" + index,
-                            "((_ is VRef) " + selected + ")");
-                    assertNamed(label + "_selected_non_null_" + index,
-                            "(not (= " + ref + " nullRef))");
-                    assertNamed(label + "_key_present_" + index,
-                            "(map_has " + map + " " + key + ")");
-                    assertNamed(label + "_value_at_key_" + index,
-                            "(= (map_select " + map + " " + key
-                                    + ") " + selected + ")");
-                }
-                if (keys.size() != count) continue;
-                if (count > 1) {
-                    assertNamed(label + "_keys_distinct",
-                            distinct(keys));
-                    assertNamed(label + "_selected_values_distinct",
-                            distinct(selectedValues));
-                    assertNamed(label + "_selected_refs_distinct",
-                            distinct(selectedRefs));
-                }
-                StringBuilder finiteDomain = new StringBuilder(
-                        "(forall ((q Value)) (= (map_has ")
-                        .append(map).append(" q) (or");
-                for (String key : keys) {
-                    finiteDomain.append(" (= q ").append(key).append(')');
-                }
-                finiteDomain.append(")))");
-                assertNamed(label + "_finite_map_domain",
-                        finiteDomain.toString());
-
-                for (JsonObject binding : rows) {
-                    DynamicBindingSpec decoded =
-                            DynamicBindingSpec.decode(binding);
-                    DynamicBindingSpec.SelectorSpec selector =
-                            decoded.selector();
-                    int index = selector.elementIndex();
-                    if (index < 0 || index >= selectedRefs.size()) {
-                        mapProjectionGap(region, "INDEX_OUT_OF_RANGE:"
-                                + decoded.dynamicBindingId());
-                        continue;
-                    }
-                    Sort fieldSort = sortOfJava(string(binding,
-                            "fieldJavaType"));
-                    String accessor = canonicalExactFieldAccessor(
-                            decoded.fieldSignature(),
-                            array(binding, "fieldPath"), fieldSort,
-                            "map projection " + decoded.dynamicBindingId());
-                    Term dynamic = runtimeDynamicFieldTerm(
-                            binding, fieldSort);
-                    if (accessor.isEmpty() || dynamic.sort != fieldSort) {
-                        mapProjectionGap(region,
-                                "CANONICAL_FIELD_OR_TERM_GAP:"
-                                        + decoded.dynamicBindingId());
-                        continue;
-                    }
-                    String equality = "(= (" + accessor + " "
-                            + selectedRefs.get(index) + ") "
-                            + dynamic.text + ")";
-                    assertNamed(label + "_field_" + selector.bindingId()
-                            + "_" + index, equality);
-                }
-            }
-        }
-
-        private void mapProjectionGap(String region, String detail) {
-            heapGap("MapProjectionElementField@" + region + ":"
-                    + detail);
-            if (currentCaseProjection != null) {
-                currentCaseProjection.gap("MAP_PROJECTION:" + detail);
-            }
-        }
-
-        private static String distinct(List<String> terms) {
-            StringBuilder result = new StringBuilder("(distinct");
-            for (String term : terms) result.append(' ').append(term);
-            return result.append(')').toString();
-        }
-
-        /**
-         * Returns the one global accessor for an exact declared Java field.
-         * Runtime map-entry observations and finite-array element projections
-         * intentionally meet here: using emitter-specific UF families would
-         * sever object-field identity across recursively composed regions.
-         */
-        private String canonicalExactFieldAccessor(
-                String signature, JsonArray fieldPath, Sort resultSort,
-                String origin) {
-            String identity = normalizedExactFieldIdentity(signature,
-                    fieldPath);
-            Sort declaredSort = declaredExactFieldSort(signature);
-            if (identity.isEmpty() || declaredSort == null
-                    || declaredSort != resultSort) {
-                unsupported.add("CanonicalExactFieldAccessorIdentity:"
-                        + origin + ":" + firstNonBlank(signature,
-                        "<missing>") + ":" + resultSort);
-                return "";
-            }
-            Sort previousSort = canonicalFieldAccessorSorts.get(identity);
-            if (previousSort != null && previousSort != resultSort) {
-                unsupported.add("CanonicalExactFieldAccessorSortConflict:"
-                        + origin + ":" + identity + ":" + previousSort
-                        + "!=" + resultSort);
-                return "";
-            }
-            canonicalFieldAccessorSorts.put(identity, resultSort);
-            String key = identity + "\u0000" + resultSort.name();
-            String accessor = canonicalFieldAccessors.get(key);
-            if (accessor == null) {
-                accessor = "exact_field__" + scopeToken(key);
-                canonicalFieldAccessors.put(key, accessor);
-                declareFunction(accessor, Collections.singletonList(
-                        new Term("", Sort.REF)), resultSort);
-            }
-            return accessor;
-        }
-
-        private String normalizedExactFieldIdentity(
-                String signature, JsonArray fieldPath) {
-            Matcher field = Pattern.compile(
-                    "^<([^:]+):\\s+([^\\s]+)\\s+([^\\s()>]+)>$")
-                    .matcher(firstNonBlank(signature));
-            if (!field.matches() || fieldPath == null
-                    || fieldPath.size() == 0) {
-                return "";
-            }
-            JsonArray normalizedPath = new JsonArray();
-            for (JsonElement element : fieldPath) {
-                if (!element.isJsonPrimitive()
-                        || !element.getAsJsonPrimitive().isString()
-                        || element.getAsString().isEmpty()) {
-                    return "";
-                }
-                normalizedPath.add(element.getAsString());
-            }
-            if (!field.group(3).equals(normalizedPath.get(
-                    normalizedPath.size() - 1).getAsString())) {
-                return "";
-            }
-            String owner = field.group(1).replace('.', '/');
-            String descriptor = javaTypeDescriptor(field.group(2));
-            if (owner.isEmpty() || descriptor.isEmpty()) return "";
-            return owner + "\u0000" + descriptor + "\u0000"
-                    + field.group(3) + "\u0000"
-                    + GSON.toJson(normalizedPath);
-        }
-
-        private Sort declaredExactFieldSort(String signature) {
-            Matcher field = Pattern.compile(
-                    "^<([^:]+):\\s+([^\\s]+)\\s+([^\\s()>]+)>$")
-                    .matcher(firstNonBlank(signature));
-            if (!field.matches()) return null;
-            String type = field.group(2);
-            return isMapType(type) ? Sort.MAP : sortOfJava(type);
-        }
-
-        private Sort containerFieldSort(String basePort,
-                                        String declaredType) {
-            Sort carrier = portSort(basePort);
-            if (carrier == Sort.MAP) {
-                return isMapType(declaredType) ? Sort.MAP : Sort.VALUE;
-            }
-            return sortOfJava(declaredType);
-        }
-
-        private void heapEffect(String region, JsonObject effect) {
-            String kind = string(effect, "kind");
-            String rawInput = string(effect, "inputPort");
-            String rawOutput = string(effect, "outputPort");
-            if (rawInput.isEmpty() || rawOutput.isEmpty()) {
-                heapGap("HeapEffectWithoutPorts:" + kind + "@" + region);
-                return;
-            }
-            String input = scopedHeapPort(rawInput);
-            String output = scopedHeapPort(rawOutput);
-            declarePort(input, Sort.MAP);
-            declarePort(output, Sort.MAP);
-            mentionedPorts.add(input);
-            mentionedPorts.add(output);
-            // The semantic effect consumes the pre-state port directly; no
-            // separate engine-symbol binding is required for that free input.
-            boundPorts.add(input);
-            String rhs;
-            if ("MAP_PUT".equals(kind)) {
-                if (!hasExpression(effect, "keyExpression")
-                        || !hasExpression(effect, "valueExpression")) {
-                    heapGap("MalformedHeapEffect:" + kind + "@"
-                            + region);
-                    return;
-                }
-                Term key = mapKeyTerm(effect.get("keyExpression"),
-                        "heap_effect_" + region + "_" + kind);
-                if (key == null) {
-                    heapGap("HeapEffectKeyTypeUnsupported:" + kind
-                            + "@" + region);
-                    return;
-                }
-                Term value = asValue(term(effect.get("valueExpression"), null));
-                rhs = "(map_put " + portName(input) + " " + key.text
-                        + " " + value.text + ")";
-            } else if ("MAP_REMOVE".equals(kind)) {
-                if (!hasExpression(effect, "keyExpression")) {
-                    heapGap("MalformedHeapEffect:" + kind + "@"
-                            + region);
-                    return;
-                }
-                Term key = mapKeyTerm(effect.get("keyExpression"),
-                        "heap_effect_" + region + "_" + kind);
-                if (key == null) {
-                    heapGap("HeapEffectKeyTypeUnsupported:" + kind
-                            + "@" + region);
-                    return;
-                }
-                rhs = "(map_remove " + portName(input) + " "
-                        + key.text + ")";
-            } else if ("MAP_CLEAR".equals(kind)) {
-                rhs = "(map_clear " + portName(input) + ")";
-            } else if ("MAP_IDENTITY".equals(kind)) {
-                rhs = portName(input);
-            } else if ("MAP_PUT_ALL".equals(kind)) {
-                if (!hasExpression(effect, "sourceExpression")) {
-                    heapGap("MalformedHeapEffect:" + kind + "@"
-                            + region);
-                    return;
-                }
-                Term source = mapState(effect.get("sourceExpression"));
-                rhs = "(map_put_all " + portName(input) + " "
-                        + source.text + ")";
-            } else {
-                heapGap("HeapEffect:" + kind);
-                return;
-            }
-            assertNamed("heap_effect_" + region + "_"
-                            + assertionNames.size(),
-                    "(= " + portName(output) + " " + rhs + ")");
-            boundPorts.add(output);
-        }
-
-        private boolean hasExpression(JsonObject effect, String field) {
-            JsonElement expression = effect.get(field);
-            return expression != null && expression.isJsonObject();
         }
 
         private void heapGap(String detail) {
@@ -4253,204 +3304,6 @@ public final class ConcolicSmtComposer {
             }
         }
 
-        private Term mapState(JsonElement expression) {
-            Term receiver = term(expression, Sort.MAP);
-            if (receiver.sort == Sort.MAP) return receiver;
-            if (receiver.sort == Sort.REF) {
-                return new Term("(map_state_of " + receiver.text + ")",
-                        Sort.MAP);
-            }
-            unsupported.add("MapReceiverSort:" + receiver.sort);
-            return unsupportedTerm(Sort.MAP);
-        }
-
-        /**
-         * Encodes a Java Map key without erasing wrapper identity.  Java's
-         * equals contract makes Integer(1) and Long(1) different keys even
-         * though both have the same mathematical payload, so ordinary VInt
-         * boxing is unsound at every Map boundary.
-         */
-        private Term mapKeyTerm(JsonElement expression, String origin) {
-            if (expression == null || !expression.isJsonObject()) {
-                unsupported.add("MAP_KEY_EXPRESSION_MISSING:" + origin);
-                return null;
-            }
-            JsonObject object = expression.getAsJsonObject();
-            JsonObject encodedExpression = object;
-            String kind = mapKeyKind(string(object, "_java_type"));
-            boolean opaqueComputedKey = false;
-
-            /*
-             * Customized-JDK MethodExpression records put the Java type on
-             * _res_exp, not necessarily on the enclosing computation.  A Map
-             * lookup needs only the key value observed at this call, so a
-             * typed result symbol is a safe bounded over-approximation when
-             * the computation itself has no declared key type.  In
-             * particular, this preserves a prefix `get(k) != null` as one
-             * satisfiable membership/value observation without pretending to
-             * know the semantics of an otherwise unsupported string/codec
-             * operation.  Unsupported result types still fail closed below.
-             */
-            if (kind.isEmpty()
-                    && "MethodExpression".equals(string(object, "_type"))) {
-                JsonObject result = object(object, "_res_exp");
-                String resultKind = mapKeyKind(string(result,
-                        "_java_type"));
-                if (!resultKind.isEmpty()) {
-                    kind = resultKind;
-                    encodedExpression = result;
-                    opaqueComputedKey = true;
-                }
-            }
-            // Preserve the engine expression's own admission diagnostics
-            // (notably PlaceholderExpression) in addition to the Java Map
-            // key-type diagnostic below.
-            Term raw = term(opaqueComputedKey ? encodedExpression
-                    : expression, null);
-            if (kind.isEmpty()) {
-                unsupported.add("MAP_KEY_TYPE_UNSUPPORTED:" + origin + ":"
-                        + string(object, "_java_type"));
-                return null;
-            }
-            if (!validMapKeyLiteral(encodedExpression, kind)) {
-                unsupported.add("MAP_KEY_LITERAL_INVALID:" + origin + ":"
-                        + string(encodedExpression, "_java_type") + ":"
-                        + string(encodedExpression, "_exp"));
-                return null;
-            }
-            if ("STRING".equals(kind)) {
-                if (raw.sort != Sort.STRING) {
-                    unsupported.add("MAP_KEY_TERM_SORT_MISMATCH:" + origin
-                            + ":STRING:" + raw.sort);
-                    return null;
-                }
-                return new Term("(VMapString " + raw.text + ")",
-                        Sort.VALUE);
-            }
-            if (raw.sort != Sort.INT) {
-                unsupported.add("MAP_KEY_TERM_SORT_MISMATCH:" + origin + ":"
-                        + kind + ":" + raw.sort);
-                return null;
-            }
-            String lower = "";
-            String upper = "";
-            String constructor;
-            if ("BOOLEAN".equals(kind)) {
-                lower = "0";
-                upper = "1";
-                constructor = "VMapBoolean";
-            } else if ("BYTE".equals(kind)) {
-                lower = "-128";
-                upper = "127";
-                constructor = "VMapByte";
-            } else if ("CHAR".equals(kind)) {
-                lower = "0";
-                upper = "65535";
-                constructor = "VMapChar";
-            } else if ("SHORT".equals(kind)) {
-                lower = "-32768";
-                upper = "32767";
-                constructor = "VMapShort";
-            } else if ("INTEGER".equals(kind)) {
-                lower = "-2147483648";
-                upper = "2147483647";
-                constructor = "VMapInteger";
-            } else if ("LONG".equals(kind)) {
-                lower = "-9223372036854775808";
-                upper = "9223372036854775807";
-                constructor = "VMapLong";
-            } else {
-                unsupported.add("MAP_KEY_KIND_UNSUPPORTED:" + origin + ":"
-                        + kind);
-                return null;
-            }
-            assertNamed("map_key_domain_" + origin + "_"
-                            + assertionNames.size(),
-                    "(and (<= " + lower + " " + raw.text + ") (<= "
-                            + raw.text + " " + upper + "))");
-            if ("BOOLEAN".equals(kind)) {
-                return new Term("(VMapBoolean (= " + raw.text + " 1))",
-                        Sort.VALUE);
-            }
-            return new Term("(" + constructor + " " + raw.text + ")",
-                    Sort.VALUE);
-        }
-
-        private static String mapKeyKind(String javaType) {
-            String type = firstNonBlank(javaType).trim().replace('.', '/');
-            if (type.startsWith("L") && type.endsWith(";")
-                    && type.length() > 2) {
-                type = type.substring(1, type.length() - 1);
-            }
-            if ("Z".equals(type) || "boolean".equals(type)
-                    || "java/lang/Boolean".equals(type)) return "BOOLEAN";
-            if ("B".equals(type) || "byte".equals(type)
-                    || "java/lang/Byte".equals(type)) return "BYTE";
-            if ("C".equals(type) || "char".equals(type)
-                    || "java/lang/Character".equals(type)) return "CHAR";
-            if ("S".equals(type) || "short".equals(type)
-                    || "java/lang/Short".equals(type)) return "SHORT";
-            if ("I".equals(type) || "int".equals(type)
-                    || "java/lang/Integer".equals(type)) return "INTEGER";
-            if ("J".equals(type) || "long".equals(type)
-                    || "java/lang/Long".equals(type)) return "LONG";
-            if ("String".equals(type)
-                    || "java/lang/String".equals(type)) return "STRING";
-            return "";
-        }
-
-        private static boolean validMapKeyLiteral(JsonObject expression,
-                                                  String kind) {
-            String expressionType = string(expression, "_type");
-            if (!("ConstExpr".equals(expressionType)
-                    || "ConSymbolExp".equals(expressionType)
-                    || "ConStringSymbolExp".equals(expressionType))) {
-                return true;
-            }
-            String raw = string(expression, "_exp");
-            if (!raw.startsWith("Y_") || raw.length() < 4) return false;
-            char expected = "BOOLEAN".equals(kind) ? 'Z'
-                    : "BYTE".equals(kind) ? 'B'
-                    : "CHAR".equals(kind) ? 'C'
-                    : "SHORT".equals(kind) ? 'S'
-                    : "INTEGER".equals(kind) ? 'I'
-                    : "LONG".equals(kind) ? 'J'
-                    : "STRING".equals(kind) ? 'L' : 0;
-            if (expected == 0 || raw.charAt(2) != expected) return false;
-            if ("STRING".equals(kind)) return true;
-            if (raw.charAt(3) != '_') return false;
-            String payload = raw.substring(4);
-            try {
-                BigInteger value = new BigInteger(payload);
-                if (!value.toString().equals(payload)) return false;
-                BigInteger lower;
-                BigInteger upper;
-                if ("BOOLEAN".equals(kind)) {
-                    lower = BigInteger.ZERO;
-                    upper = BigInteger.ONE;
-                } else if ("BYTE".equals(kind)) {
-                    lower = BigInteger.valueOf(Byte.MIN_VALUE);
-                    upper = BigInteger.valueOf(Byte.MAX_VALUE);
-                } else if ("CHAR".equals(kind)) {
-                    lower = BigInteger.ZERO;
-                    upper = BigInteger.valueOf(Character.MAX_VALUE);
-                } else if ("SHORT".equals(kind)) {
-                    lower = BigInteger.valueOf(Short.MIN_VALUE);
-                    upper = BigInteger.valueOf(Short.MAX_VALUE);
-                } else if ("INTEGER".equals(kind)) {
-                    lower = BigInteger.valueOf(Integer.MIN_VALUE);
-                    upper = BigInteger.valueOf(Integer.MAX_VALUE);
-                } else {
-                    lower = BigInteger.valueOf(Long.MIN_VALUE);
-                    upper = BigInteger.valueOf(Long.MAX_VALUE);
-                }
-                return value.compareTo(lower) >= 0
-                        && value.compareTo(upper) <= 0;
-            } catch (RuntimeException malformed) {
-                return false;
-            }
-        }
-
         private Term asValue(Term term) {
             if (term.sort == Sort.VALUE) return term;
             if (term.sort == Sort.INT) return dependent(new Term("(VInt "
@@ -4492,7 +3345,8 @@ public final class ConcolicSmtComposer {
             if (portSort == Sort.MAP) {
                 Term state = value.sort == Sort.MAP ? value
                         : value.sort == Sort.REF
-                        ? new Term("(map_state_of " + value.text + ")", Sort.MAP)
+                        ? new Term("(assoc_state_of " + value.text + ")",
+                        Sort.MAP)
                         : null;
                 if (state == null) {
                     unsupported.add("MapPortBinding:" + port + ":" + value.sort);
@@ -4513,8 +3367,7 @@ public final class ConcolicSmtComposer {
                 assertNamed("bind_" + port, formula);
                 return true;
             } else {
-                if (value.sort == Sort.ARRAY_VALUE
-                        || value.sort == Sort.ARRAY) {
+                if (value.sort == Sort.ARRAY_VALUE) {
                     unsupported.add("UnsupportedArrayToScalarBinding:" + port
                             + ":" + value.sort);
                     return false;
@@ -4525,12 +3378,6 @@ public final class ConcolicSmtComposer {
                 assertNamed("bind_" + port, formula);
                 return true;
             }
-        }
-
-        private String scopedHeapPort(String rawPort) {
-            if (ports.contains(rawPort)) return rawPort;
-            return "local_heap__" + scopeToken(currentSymbolScope) + "__"
-                    + rawPort;
         }
 
         private void declarePort(String port, Sort requested) {
@@ -4639,14 +3486,22 @@ public final class ConcolicSmtComposer {
                 return Term.nonNullString("\"\"", "true");
             }
             if (sort == Sort.REF) return new Term("nullRef", sort);
-            if (sort == Sort.MAP) return new Term("emptyMapState", sort);
+            String nullValues = "((as const (Array Value Value))"
+                    + " (VRef nullRef))";
+            if (sort == Sort.MAP) {
+                return new Term("(mkAssocState 0"
+                        + " ((as const (Array Value Bool)) false)"
+                        + " " + nullValues
+                        + " ((as const (Array Int Value))"
+                        + " (VRef nullRef))"
+                        + " ((as const (Array Value Int)) (- 1)))", sort);
+            }
             if (sort == Sort.VALUE) {
                 return new Term("(VRef nullRef)", sort);
             }
             String elements = "((as const (Array Int Value))"
                     + " (VRef nullRef))";
-            if (sort == Sort.ARRAY) return new Term(elements, sort);
-            return new Term("(mkFiniteArrayValue 0 " + elements + ")", sort);
+            return new Term("(mkIndexedState 0 " + elements + ")", sort);
         }
 
         /** A readable prefix plus a reversible UTF-8 encoding avoids scope
@@ -4778,20 +3633,6 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    private static final class EngineArrayInputBridge {
-        private final String arrayTerm;
-        private final String inputPort;
-        private final int concreteLength;
-
-        private EngineArrayInputBridge(String arrayTerm,
-                                       String inputPort,
-                                       int concreteLength) {
-            this.arrayTerm = arrayTerm;
-            this.inputPort = inputPort;
-            this.concreteLength = concreteLength;
-        }
-    }
-
     private static final class RawSymbol {
         private final String name;
         private final Sort sort;
@@ -4807,9 +3648,8 @@ public final class ConcolicSmtComposer {
         BOOL("Bool"), INT("Int"),
         FLOAT32("(_ FloatingPoint 8 24)"),
         FLOAT64("(_ FloatingPoint 11 53)"), STRING("String"),
-        REF("Ref"), MAP("MapState"), VALUE("Value"),
-        ARRAY_VALUE("FiniteArrayValue"),
-        ARRAY("(Array Int Value)");
+        REF("Ref"), MAP("AssocState"), VALUE("Value"),
+        ARRAY_VALUE("IndexedState");
 
         private final String smt;
 
@@ -4933,219 +3773,6 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    private static final class CaseDynamicValidation {
-        private final JsonArray dynamicBindings = new JsonArray();
-        private final Set<String> gaps = new LinkedHashSet<>();
-
-        private void gap(String value) {
-            if (value != null && !value.isEmpty()) gaps.add(value);
-        }
-    }
-
-    /** Captures the exact terms emitted while one guarded case is active. */
-    private static final class CaseProjectionCapture {
-        private final String regionId;
-        private final String caseId;
-        private final JsonArray dynamicBindings;
-        private final Map<String, SymbolProjection> symbols =
-                new LinkedHashMap<>();
-        private final Set<String> gaps = new LinkedHashSet<>();
-        private String selectorSolverSymbol = "";
-
-        private CaseProjectionCapture(String regionId, JsonObject item,
-                                      String symbolScope,
-                                      CaseDynamicValidation validation) {
-            this.regionId = regionId;
-            this.caseId = firstNonBlank(string(item, "caseId"), symbolScope);
-            this.dynamicBindings = validation.dynamicBindings.deepCopy();
-            this.gaps.addAll(validation.gaps);
-        }
-
-        private void selector(String solverSymbol, String guardFormula) {
-            this.selectorSolverSymbol = firstNonBlank(solverSymbol);
-            if (this.selectorSolverSymbol.isEmpty()) {
-                gap("MISSING_CASE_SELECTOR_SYMBOL");
-            }
-            if (firstNonBlank(guardFormula).isEmpty()) {
-                gap("MISSING_CASE_GUARD_FORMULA");
-            }
-        }
-
-        private void record(String raw, Term term,
-                            String canonicalPort) {
-            SymbolProjection projection = symbols.get(raw);
-            if (projection == null) {
-                projection = new SymbolProjection(raw, term.text, term.sort,
-                        term.stringNullness, canonicalPort);
-                symbols.put(raw, projection);
-            } else {
-                if (!projection.solverTerm.equals(term.text)
-                        || projection.sort != term.sort
-                        || !projection.stringNullnessSolverTerm.equals(
-                        term.stringNullness)) {
-                    gap("RAW_SYMBOL_TERM_CONFLICT:" + raw);
-                }
-                if (!canonicalPort.isEmpty()) {
-                    if (!projection.canonicalPort.isEmpty()
-                            && !projection.canonicalPort.equals(
-                            canonicalPort)) {
-                        gap("RAW_SYMBOL_PORT_CONFLICT:" + raw);
-                    } else {
-                        projection.canonicalPort = canonicalPort;
-                    }
-                }
-            }
-            for (JsonElement element : dynamicBindings) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binding = element.getAsJsonObject();
-                String dynamic = string(binding, "dynamicFieldSymbol");
-                if (rawReferences(raw, dynamic)) {
-                    projection.dynamicBindingIds.add(string(binding,
-                            "dynamicBindingId"));
-                }
-            }
-        }
-
-        private void finish() {
-            if (selectorSolverSymbol.isEmpty()) {
-                gap("MISSING_CASE_SELECTOR_SYMBOL");
-            }
-            Map<String, Integer> eligibleBaseCounts =
-                    new LinkedHashMap<>();
-            Set<String> strictUniqueBases = new LinkedHashSet<>();
-            for (JsonElement element : dynamicBindings) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binding = element.getAsJsonObject();
-                if (!rootProjectableDynamicKind(string(binding, "kind"))) {
-                    continue;
-                }
-                String base = string(binding, "baseInputSymbol");
-                if (base.isEmpty()) {
-                    gap("DYNAMIC_ROOT_WITHOUT_BASE_INPUT:"
-                            + string(binding, "dynamicBindingId"));
-                    continue;
-                }
-                Integer previous = eligibleBaseCounts.get(base);
-                eligibleBaseCounts.put(base, previous == null ? 1
-                        : previous + 1);
-                if ("DYNAMIC_MAP_ENTRY_FIELD_BINDING".equals(
-                        string(binding, "kind"))) {
-                    strictUniqueBases.add(base);
-                }
-            }
-            for (Map.Entry<String, Integer> entry
-                    : eligibleBaseCounts.entrySet()) {
-                if (entry.getValue() != 1
-                        && strictUniqueBases.contains(entry.getKey())) {
-                    gap("AMBIGUOUS_DYNAMIC_BASE_ROOT:" + entry.getKey()
-                            + ":" + entry.getValue());
-                }
-            }
-            for (JsonElement element : dynamicBindings) {
-                if (!element.isJsonObject()) {
-                    gap("NON_OBJECT_PROJECTION_DYNAMIC_BINDING");
-                    continue;
-                }
-                JsonObject binding = element.getAsJsonObject();
-                String id = string(binding, "dynamicBindingId");
-                String raw = string(binding,
-                        "fieldExpressionRawEngineSymbol");
-                SymbolProjection projection = symbols.get(raw);
-                if (raw.isEmpty() || projection == null) {
-                    gap("UNMAPPED_DYNAMIC_FIELD_EXPRESSION:" + id);
-                    continue;
-                }
-                if (!projection.dynamicBindingIds.contains(id)) {
-                    gap("DYNAMIC_TERM_SELECTOR_MISMATCH:" + id);
-                    continue;
-                }
-                String base = string(binding, "baseInputSymbol");
-                if (rootProjectableDynamicKind(string(binding, "kind"))
-                        && eligibleBaseCounts.get(base) != null
-                        && eligibleBaseCounts.get(base) == 1) {
-                    if (!projection.canonicalPort.isEmpty()
-                            && !projection.canonicalPort.equals(base)) {
-                        gap("DYNAMIC_ROOT_CANONICAL_PORT_CONFLICT:" + id);
-                    } else {
-                        projection.canonicalPort = base;
-                    }
-                }
-            }
-        }
-
-        private List<SymbolProjection> dynamicRootProjections() {
-            List<SymbolProjection> result = new ArrayList<>();
-            Set<String> seen = new LinkedHashSet<>();
-            for (SymbolProjection projection : symbols.values()) {
-                if (projection.canonicalPort.isEmpty()
-                        || projection.dynamicBindingIds.isEmpty()) {
-                    continue;
-                }
-                String key = projection.rawEngineSymbol + "\u0000"
-                        + projection.canonicalPort;
-                if (seen.add(key)) result.add(projection);
-            }
-            Collections.sort(result, (left, right) -> {
-                int byPort = left.canonicalPort.compareTo(
-                        right.canonicalPort);
-                return byPort != 0 ? byPort
-                        : left.rawEngineSymbol.compareTo(
-                        right.rawEngineSymbol);
-            });
-            return result;
-        }
-
-        private static boolean rootProjectableDynamicKind(String kind) {
-            return "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(kind)
-                    || "DYNAMIC_MAP_ENTRY_FIELD_BINDING".equals(kind);
-        }
-
-        private boolean complete() {
-            return gaps.isEmpty();
-        }
-
-        private void gap(String value) {
-            if (value != null && !value.isEmpty()) gaps.add(value);
-        }
-
-        private static boolean rawReferences(String raw, String symbol) {
-            if (raw == null || symbol == null || symbol.isEmpty()) return false;
-            int start = raw.indexOf(symbol);
-            while (start >= 0) {
-                int end = start + symbol.length();
-                boolean left = start == 0 || !Character.isLetterOrDigit(
-                        raw.charAt(start - 1));
-                boolean right = end == raw.length()
-                        || !Character.isLetterOrDigit(raw.charAt(end));
-                if (left && right) return true;
-                start = raw.indexOf(symbol, start + 1);
-            }
-            return false;
-        }
-    }
-
-    private static final class SymbolProjection {
-        private final String rawEngineSymbol;
-        private final String solverTerm;
-        private final Sort sort;
-        private final String stringNullnessSolverTerm;
-        private String canonicalPort;
-        private final Set<String> dynamicBindingIds = new LinkedHashSet<>();
-
-        private SymbolProjection(String rawEngineSymbol, String solverTerm,
-                                 Sort sort,
-                                 String stringNullnessSolverTerm,
-                                 String canonicalPort) {
-            this.rawEngineSymbol = rawEngineSymbol;
-            this.solverTerm = solverTerm;
-            this.sort = sort;
-            this.stringNullnessSolverTerm = sort == Sort.STRING
-                    ? firstNonBlank(stringNullnessSolverTerm) : "";
-            this.canonicalPort = firstNonBlank(canonicalPort);
-        }
-
-    }
-
     public static final class Result {
         public final String smtLib;
         public final JsonObject manifest;
@@ -5225,16 +3852,17 @@ public final class ConcolicSmtComposer {
                 && normalized.endsWith(";") && normalized.length() > 2
                 ? normalized.substring(1, normalized.length() - 1)
                 : normalized;
-        if ("Z".equals(type) || "B".equals(type) || "C".equals(type)
+        if ("Z".equals(type) || "boolean".equals(type)) return Sort.BOOL;
+        if ("B".equals(type) || "C".equals(type)
                 || "S".equals(type) || "I".equals(type)
-                || "J".equals(type) || "boolean".equals(type)
+                || "J".equals(type)
                 || "byte".equals(type) || "char".equals(type)
                 || "short".equals(type) || "int".equals(type)
                 || "long".equals(type)) return Sort.INT;
         if ("F".equals(type) || "float".equals(type)) return Sort.FLOAT32;
         if ("D".equals(type) || "double".equals(type)) return Sort.FLOAT64;
-        if ("java/lang/Boolean".equals(className)
-                || "java/lang/Byte".equals(className)
+        if ("java/lang/Boolean".equals(className)) return Sort.BOOL;
+        if ("java/lang/Byte".equals(className)
                 || "java/lang/Character".equals(className)
                 || "java/lang/Short".equals(className)
                 || "java/lang/Integer".equals(className)
@@ -5280,10 +3908,6 @@ public final class ConcolicSmtComposer {
         return JavaContainerTypes.isMap(type);
     }
 
-    private static boolean isMapGet(String name) {
-        return firstNonBlank(name).endsWith(" get");
-    }
-
     private static boolean isJavaParseInt(String name) {
         return "java/lang/Integer parseInt".equals(firstNonBlank(name));
     }
@@ -5318,6 +3942,12 @@ public final class ConcolicSmtComposer {
 
     private static IntegralWidth integralWidthOfJava(String javaType) {
         return JavaPrimitiveSmtSemantics.widthOfJavaType(javaType);
+    }
+
+    static String canonicalIntegralJavaType(String schemaJavaType,
+                                            String expressionJavaType) {
+        return integralWidthOfJava(schemaJavaType) == IntegralWidth.NONE
+                ? expressionJavaType : schemaJavaType;
     }
 
     private static FloatingKind floatingKind(Sort sort) {
@@ -5422,24 +4052,6 @@ public final class ConcolicSmtComposer {
         if (path == null || !Files.isRegularFile(path)) {
             throw new IOException(label + " not found: " + path);
         }
-    }
-
-    private static String heapObservationStateSelectorDigest(
-            String observationId, String baseInputSymbol,
-            String dynamicBindingId) {
-        String material = firstNonBlank(observationId, "") + "\n"
-                + firstNonBlank(baseInputSymbol, "") + "\n"
-                + firstNonBlank(dynamicBindingId, "");
-        return sha256(material.getBytes(StandardCharsets.UTF_8));
-    }
-
-    private static String heapObservationStatePort(
-            String region, String observationId, String baseInputSymbol,
-            String dynamicBindingId) {
-        String digest = heapObservationStateSelectorDigest(observationId,
-                baseInputSymbol, dynamicBindingId);
-        return firstNonBlank(region, "") + ".state.heapObservation."
-                + digest.substring(0, 12);
     }
 
 }

@@ -158,7 +158,6 @@ public class OutputClosureCodecTest {
         String site = method + "#u2";
         String region = port.substring(0, port.indexOf(".out."));
         JsonObject activation = new JsonObject();
-        activation.addProperty("activationId", "ACT.1");
         activation.addProperty("regionId", region);
         activation.addProperty("regionInstanceId",
                 region + "@test#call7");

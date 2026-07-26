@@ -1,11 +1,22 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/exp/methodExpression.hpp"
+#include "concolic/exp/containerExpression.hpp"
+#include "concolic/exp/symbolExpression.hpp"
+#include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicList.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "concolic/utils.hpp"
 
-bool SymList::need_recording = false;
+static bool is_root_indexed_container(oop receiver) {
+  if (receiver == NULL || receiver->klass() == NULL
+      || receiver->klass()->name() == NULL) return false;
+  Symbol *name = receiver->klass()->name();
+  return name->equals("java/util/ArrayList")
+      || name->equals("java/util/AbstractList")
+      || name->equals("java/util/ArrayDeque")
+      || name->equals("java/util/concurrent/ConcurrentLinkedQueue");
+}
 
 std::set<std::string> SymList::target_class_names = init_target_class_names();
 
@@ -13,6 +24,13 @@ std::set<std::string> SymList::init_target_class_names() {
   std::set<std::string> set;
   set.insert("java/util/List");
   set.insert("java/util/ArrayList");
+  set.insert("java/util/AbstractList");
+  set.insert("java/util/ArrayList$Itr");
+  set.insert("java/util/ArrayList$ListItr");
+  set.insert("java/util/ArrayDeque");
+  set.insert("java/util/ArrayDeque$DeqIterator");
+  set.insert("java/util/concurrent/ConcurrentLinkedQueue");
+  set.insert("java/util/concurrent/ConcurrentLinkedQueue$Itr");
   return set;
 }
 
@@ -20,17 +38,20 @@ std::set<std::string> SymList::handle_method_names = init_handle_method_names();
 
 std::set<std::string> SymList::init_handle_method_names() {
   std::set<std::string> set;
-//  set.insert("add");
-//  set.insert("get");
-//  set.insert("remove");
-//  set.insert("removeAll");
-//  set.insert("addAll");
-//  set.insert("contains");
-//  set.insert("isEmpty");
-//  set.insert("clear");
-//  set.insert("size");
-//  set.insert("toArray");
-//  set.insert("empty");
+  set.insert("add");
+  set.insert("set");
+  set.insert("get");
+  set.insert("remove");
+  set.insert("contains");
+  set.insert("isEmpty");
+  set.insert("clear");
+  set.insert("size");
+  set.insert("iterator");
+  set.insert("next");
+  set.insert("offer");
+  set.insert("poll");
+  set.insert("peek");
+  set.insert("element");
   return set;
 }
 
@@ -67,11 +88,10 @@ void SymList::init_register_class(MethodSymbolizer *m_symbolizer) {
 bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &callee_name = handle.get_callee_name();
   bool need_symbolize = true;
-  need_recording = false;
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
-    need_recording = handle.general_check_param_symbolized();
-    if (need_recording) {
-//      handle.general_prepare_param();
+    bool recording = handle.general_check_param_symbolized();
+    if (recording) {
+      handle.general_prepare_param();
     }
   } else {
     std::map<std::string, bool>::iterator iter = skip_method_names.find(callee_name);
@@ -89,15 +109,166 @@ bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
 
 
 Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
-  if (!need_recording) {
+  const std::string &method = handle.get_callee_name();
+  exp_list_t &parameters = handle.get_param_list();
+  if (parameters.empty()) return NULL;
+  oop receiver_object = handle.get_param<oop>(0);
+  Expression *receiver = parameters[0];
+  bool root_container = is_root_indexed_container(receiver_object);
+  bool list_operation = root_container && (method == "add"
+      || method == "offer"
+      || method == "poll" || method == "peek" || method == "element"
+      || method == "set"
+      || method == "get" || method == "remove"
+      || method == "contains" || method == "isEmpty"
+      || method == "clear" || method == "size"
+      || method == "iterator");
+  if (list_operation) {
+    receiver = ConcolicMngr::ctx->container_state(
+        receiver_object, "INDEXED");
+  }
+  if (receiver == NULL) return NULL;
+
+  exp_list_t arguments;
+  for (size_t index = 1; index < parameters.size(); ++index) {
+    arguments.push_back(parameters[index]);
+  }
+  if ((method == "add" || method == "offer") && root_container) {
+    const char *operation = arguments.size() == 1 ? "APPEND" : "INSERT";
+    if (arguments.size() == 2) {
+      ContainerSupport::constrain_position(
+          "INDEXED", receiver, arguments[0], true);
+    }
+    Expression *next = new ContainerExpression(
+        "INDEXED", operation, receiver, arguments);
+    ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    return new ConExpression((jboolean)true);
+  }
+  if (method == "set" && root_container && arguments.size() == 2) {
+    ContainerSupport::constrain_position(
+        "INDEXED", receiver, arguments[0]);
+    exp_list_t index;
+    index.push_back(arguments[0]);
+    oop result_object = handle.get_result_type() == T_OBJECT
+        ? handle.get_result<oop>(T_OBJECT) : NULL;
+    Expression *old = new ContainerExpression(
+        "INDEXED", "READ", receiver, index,
+        ContainerSupport::result_type(
+            result_object, handle.get_result_type()),
+        ContainerSupport::java_type(
+            result_object, handle.get_result_type()));
+    ContainerSupport::constrain_result(handle, old);
+    ContainerSupport::attach_result(result_object, old);
+    Expression *next = new ContainerExpression(
+        "INDEXED", "WRITE", receiver, arguments);
+    ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    return old;
+  }
+  if (method == "remove" && root_container && arguments.size() == 1) {
+    ResourceMark rm;
+    const char *signature =
+        handle.get_callee_method()->signature()->as_C_string();
+    if (signature != NULL && signature[0] == '(' && signature[1] == 'I') {
+      ContainerSupport::constrain_position(
+          "INDEXED", receiver, arguments[0]);
+      oop result_object = handle.get_result_type() == T_OBJECT
+          ? handle.get_result<oop>(T_OBJECT) : NULL;
+      Expression *old = new ContainerExpression(
+          "INDEXED", "READ", receiver, arguments,
+          ContainerSupport::result_type(
+              result_object, handle.get_result_type()),
+          ContainerSupport::java_type(
+              result_object, handle.get_result_type()));
+      ContainerSupport::constrain_result(handle, old);
+      ContainerSupport::attach_result(result_object, old);
+      Expression *next = new ContainerExpression(
+          "INDEXED", "REMOVE", receiver, arguments);
+      ConcolicMngr::ctx->set_container_state(receiver_object, next);
+      return old;
+    }
+    ConcolicMngr::ctx->abort_symbolic_execution(
+        "INDEXED_REMOVE_OBJECT_UNSUPPORTED");
+    return NULL;
+  }
+  if (root_container && (method == "poll"
+      || (method == "remove" && arguments.empty()))) {
+    oop result_object = handle.get_result_type() == T_OBJECT
+        ? handle.get_result<oop>(T_OBJECT) : NULL;
+    if (method == "poll" && result_object == NULL) {
+      return SymbolExpression::get(Sym_NULL);
+    }
+    exp_list_t first;
+    first.push_back(new ConExpression((jint)0));
+    ContainerSupport::constrain_position(
+        "INDEXED", receiver, first[0]);
+    Expression *old = new ContainerExpression(
+        "INDEXED", "READ", receiver, first,
+        ContainerSupport::result_type(
+            result_object, handle.get_result_type()),
+        ContainerSupport::java_type(
+            result_object, handle.get_result_type()));
+    ContainerSupport::constrain_result(handle, old);
+    ContainerSupport::attach_result(result_object, old);
+    Expression *next = new ContainerExpression(
+        "INDEXED", "REMOVE", receiver, first);
+    ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    return old;
+  }
+  if (method == "clear" && root_container) {
+    Expression *next = new ContainerExpression(
+        "INDEXED", "CLEAR", receiver, arguments);
+    ConcolicMngr::ctx->set_container_state(receiver_object, next);
     return NULL;
   }
 
-  Expression *exp = NULL;
-//  if (handle_method_names.find(handle.get_callee_name()) != handle_method_names.end()) {
-//    exp = handle.general_prepare_result_helper();
-//  }
-  return exp;
+  if ((method == "peek" || method == "element")
+      && arguments.empty()) {
+    if (method == "peek" && handle.get_result_type() == T_OBJECT
+        && handle.get_result<oop>(T_OBJECT) == NULL) {
+      return SymbolExpression::get(Sym_NULL);
+    }
+    arguments.push_back(new ConExpression((jint)0));
+    ContainerSupport::constrain_position(
+        "INDEXED", receiver, arguments[0]);
+  }
+  if (method == "remove" && !root_container) {
+    ConcolicMngr::ctx->abort_symbolic_execution(
+        "ITERATOR_REMOVE_UNSUPPORTED");
+    return NULL;
+  }
+  const char *operation = method == "get"
+          || method == "peek" || method == "element" ? "READ"
+      : method == "contains" ? "CONTAINS"
+      : method == "size" ? "SIZE"
+      : method == "isEmpty" ? "IS_EMPTY"
+      : method == "iterator" ? "ITERATOR"
+      : method == "next" ? "NEXT" : NULL;
+  if (operation == NULL) return NULL;
+  if (method == "next") {
+    arguments.clear();
+    arguments.push_back(new ConExpression(
+        ConcolicMngr::ctx->next_container_position(receiver_object)));
+    ContainerSupport::constrain_position(
+        "INDEXED", receiver, arguments[0]);
+  } else if (method == "get" && arguments.size() == 1) {
+    ContainerSupport::constrain_position(
+        "INDEXED", receiver, arguments[0]);
+  }
+  oop result_object = handle.get_result_type() == T_OBJECT
+      ? handle.get_result<oop>(T_OBJECT) : NULL;
+  BasicType result_type = ContainerSupport::result_type(
+      result_object, handle.get_result_type());
+  Expression *result = new ContainerExpression(
+      "INDEXED", operation, receiver, arguments, result_type,
+      ContainerSupport::java_type(result_object,
+                                  handle.get_result_type()));
+  if (method != "iterator") {
+    ContainerSupport::constrain_result(handle, result);
+  }
+  if (result_object != NULL) {
+    ContainerSupport::attach_result(result_object, result);
+  }
+  return result;
 }
 
 #endif // ENABLE_CONCOLIC

@@ -33,6 +33,8 @@ class ThreadContext {
   // identity behind a GC-stable handle instead.  SymStore remains the sole
   // owner of the SymInstance; this map is only an identity lookup index.
   typedef std::map<jobject, SymInstance *> DetachedObjectStore;
+  typedef std::map<sym_rid_t, Expression *> ContainerStateStore;
+  typedef std::map<sym_rid_t, int> ContainerPositionStore;
 
   struct BranchEvent {
     jlong event_id;
@@ -59,6 +61,8 @@ private:
   JdbcMngr _jdbc_mngr;
   ArrayStore _array_store;
   DetachedObjectStore _detached_object_store;
+  ContainerStateStore _container_states;
+  ContainerPositionStore _container_positions;
 
   sym_rid_t _sym_rid_counter;
   sym_tmp_id_t _sym_tmp_id_counter;
@@ -227,6 +231,10 @@ public:
                         int length);
   void invalidate_arraycopy_shadow(arrayOop destination,
                                    int destination_pos, int length);
+  Expression *container_state(oop container, const char *shape);
+  Expression *find_container_state(oop container) const;
+  void set_container_state(oop container, Expression *state);
+  int next_container_position(oop cursor);
 public:
   inline ShadowStack &get_shadow_stack() { return _s_stack; }
   /**

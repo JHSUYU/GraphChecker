@@ -6,7 +6,6 @@
 #include "memory/resourceArea.hpp"
 #include "oops/arrayKlass.hpp"
 #include "oops/objArrayOop.hpp"
-#include "oops/typeArrayOop.hpp"
 #include "runtime/thread.hpp"
 #include "webridge/webridgeMngr.hpp"
 #include "utilities/ostream.hpp"
@@ -23,7 +22,7 @@ __thread ThreadContext *ConcolicMngr::ctx = NULL;
 
 namespace {
 
-typedef rapidjson::Writer<rapidjson::StringBuffer> ArrayValueWriter;
+typedef rapidjson::Writer<rapidjson::StringBuffer> ExpressionWriter;
 
 Expression *existing_object_reference_expression(oop element) {
   if (element == NULL) return SymbolExpression::get(Sym_NULL);
@@ -32,7 +31,7 @@ Expression *existing_object_reference_expression(oop element) {
   return instance == NULL ? NULL : instance->get_ref_exp();
 }
 
-void serialize_temporary_expression(ArrayValueWriter &writer,
+void serialize_temporary_expression(ExpressionWriter &writer,
                                     Expression *expression) {
   guarantee(expression != NULL, "temporary expression required");
   expression->inc_ref();
@@ -80,59 +79,6 @@ BasicType boxed_primitive_type(oop value) {
       std::string(value->klass()->name()->as_C_string()));
 }
 
-void serialize_concrete_primitive(ArrayValueWriter &writer,
-                                  typeArrayOop array, BasicType type,
-                                  int index) {
-  switch (type) {
-    case T_BOOLEAN:
-      serialize_temporary_expression(
-          writer, new ConExpression(array->bool_at(index)));
-      return;
-    case T_BYTE:
-      serialize_temporary_expression(
-          writer, new ConExpression(array->byte_at(index)));
-      return;
-    case T_CHAR:
-      serialize_temporary_expression(
-          writer, new ConExpression(array->char_at(index)));
-      return;
-    case T_SHORT:
-      serialize_temporary_expression(
-          writer, new ConExpression(array->short_at(index)));
-      return;
-    case T_INT:
-      serialize_temporary_expression(
-          writer, new ConExpression(array->int_at(index)));
-      return;
-    case T_LONG:
-      serialize_temporary_expression(
-          writer, new ConExpression(array->long_at(index)));
-      return;
-    case T_FLOAT:
-      serialize_temporary_expression(
-          writer, new ConExpression(array->float_at(index)));
-      return;
-    case T_DOUBLE:
-      serialize_temporary_expression(
-          writer, new ConExpression(array->double_at(index)));
-      return;
-    default:
-      writer.Null();
-      return;
-  }
-}
-
-bool array_element_complete(arrayOop array, BasicType component_type,
-                            const ArrayInternal *internal, int index) {
-  if (internal != NULL && !internal->is_valid(index)) return false;
-  if (internal != NULL && internal->load(index) != NULL) return true;
-  if (component_type != T_OBJECT && component_type != T_ARRAY) return true;
-
-  oop element = objArrayOop(array)->obj_at(index);
-  return element == NULL
-      || existing_object_reference_expression(element) != NULL;
-}
-
 bool array_value_is_symbolic(arrayOop array, BasicType component_type,
                              const ArrayInternal *internal) {
   if (array->is_symbolic()) return true;
@@ -147,111 +93,6 @@ bool array_value_is_symbolic(arrayOop array, BasicType component_type,
     }
   }
   return false;
-}
-
-void serialize_array_value(ArrayValueWriter &writer, arrayOop array) {
-  ResourceMark rm;
-  Symbol *array_name_symbol = array->klass()->name();
-  const char *array_descriptor = array_name_symbol == NULL
-      ? "" : array_name_symbol->as_C_string();
-  const char *component_descriptor = array_descriptor[0] == '['
-      ? array_descriptor + 1 : "";
-  BasicType component_type =
-      ArrayKlass::cast(array->klass())->element_type();
-  ArrayInternal *internal =
-      ConcolicMngr::ctx->find_array_internal(array);
-  SymArr *symbolic_array = ConcolicMngr::ctx->find_sym_array(array);
-  bool elements_complete = true;
-  for (int index = 0; index < array->length(); ++index) {
-    if (!array_element_complete(array, component_type, internal, index)) {
-      elements_complete = false;
-      break;
-    }
-  }
-
-  writer.StartObject();
-  writer.Key("_type");
-  writer.String("ArrayValueExpression");
-  writer.Key("_schema_version");
-  writer.Int(1);
-  writer.Key("_java_type");
-  writer.String(array_descriptor);
-  writer.Key("_component_java_type");
-  writer.String(component_descriptor);
-  writer.Key("_concrete_length");
-  writer.Int(array->length());
-  writer.Key("_length_exp");
-  // V1 is a finite snapshot of the concrete JVM value at this observation
-  // point.  Its exact extent is therefore the concrete length even when the
-  // source array has a symbolic length expression elsewhere in the PC.
-  serialize_temporary_expression(
-      writer, new ConExpression((jint) array->length()));
-  writer.Key("_elements_complete");
-  writer.Bool(elements_complete);
-  writer.Key("_elements");
-  writer.StartArray();
-  for (int index = 0; index < array->length(); ++index) {
-    writer.StartObject();
-    writer.Key("index");
-    writer.Int(index);
-    writer.Key("expression");
-
-    Expression *shadow = internal == NULL ? NULL : internal->load(index);
-    const char *provenance = NULL;
-    const char *source_provenance = NULL;
-    if (internal != NULL && !internal->is_valid(index)) {
-      writer.Null();
-      provenance = "ARRAY_SHADOW";
-      source_provenance = internal->provenance(index);
-    } else if (shadow != NULL) {
-      shadow->serialize(writer);
-      provenance = "ARRAY_SHADOW";
-    } else if (component_type != T_OBJECT && component_type != T_ARRAY) {
-      serialize_concrete_primitive(writer, typeArrayOop(array),
-                                   component_type, index);
-      provenance = "CONCRETE_PRIMITIVE";
-    } else {
-      oop element = objArrayOop(array)->obj_at(index);
-      Expression *reference =
-          existing_object_reference_expression(element);
-      if (reference != NULL) {
-        reference->serialize(writer);
-        provenance = element == NULL
-            ? "CONCRETE_NULL" : "SYMBOLIC_ELEMENT";
-      } else {
-        writer.Null();
-        provenance = "SYMBOLIC_ELEMENT";
-        source_provenance = "OPAQUE_CONCRETE_NON_NULL_REFERENCE";
-      }
-    }
-
-    writer.Key("provenance");
-    writer.String(provenance == NULL ? "UNAVAILABLE" : provenance);
-    if (source_provenance != NULL) {
-      // Parsers ignore unknown fields; retain a precise reason only on
-      // already-incomplete elements for diagnostics without changing the
-      // four-value canonical provenance contract.
-      writer.Key("source_provenance");
-      writer.String(source_provenance);
-    }
-    writer.EndObject();
-  }
-  writer.EndArray();
-  if (symbolic_array != NULL) {
-    char engine_array_id[64];
-    int written = snprintf(engine_array_id, sizeof(engine_array_id),
-                           "A%c_%lu", type2char(component_type),
-                           symbolic_array->get_sym_rid());
-    guarantee(written > 0 && written < (int) sizeof(engine_array_id),
-              "engine array id overflow");
-    writer.Key("_engine_array_id");
-    writer.String(engine_array_id);
-    writer.Key("_engine_array_id_authority");
-    writer.String("VM_ACTIVE_SYM_ARRAY_ID_V1");
-  }
-  writer.Key("_authority");
-  writer.String("VM_EXACT_FINITE_ARRAY_VALUE_V1");
-  writer.EndObject();
 }
 
 } // anonymous namespace
@@ -361,6 +202,8 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   BasicType primitive_type = boxed_primitive_type(obj);
   SymInstance *object_instance = obj->is_array()
       ? NULL : ctx->find_sym_inst(obj);
+  Expression *container_state = obj->is_array()
+      ? NULL : ctx->find_container_state(obj);
   bool symbolic = object_instance != NULL;
   if (obj->is_array()) {
     arrayOop array = arrayOop(obj);
@@ -368,14 +211,19 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
         ArrayKlass::cast(array->klass())->element_type();
     symbolic = array_value_is_symbolic(
         array, component_type, ctx->find_array_internal(array));
+    if (symbolic) {
+      container_state = ctx->container_state(obj, "INDEXED");
+    }
   }
+  if (container_state != NULL) symbolic = true;
   writer.Key("symbolic");
   writer.Bool(symbolic);
   Expression *expression = NULL;
   bool temporary_expression = false;
-  if (obj->is_array()) {
+  if (container_state != NULL) {
     writer.Key("kind");
-    writer.String("ARRAY_VALUE");
+    writer.String("CONTAINER_RELATION");
+    expression = container_state;
   } else if (symbolic) {
     writer.Key("kind");
     writer.String("SYMBOLIC_OBJECT");
@@ -405,9 +253,7 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   }
 
   writer.Key("expression");
-  if (obj->is_array()) {
-    serialize_array_value(writer, arrayOop(obj));
-  } else if (expression == NULL) {
+  if (expression == NULL) {
     writer.Null();
   } else if (temporary_expression) {
     serialize_temporary_expression(writer, expression);

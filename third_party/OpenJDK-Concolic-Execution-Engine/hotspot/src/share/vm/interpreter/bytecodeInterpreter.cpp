@@ -25,6 +25,9 @@
 // no precompiled headers
 #include "classfile/vmSymbols.hpp"
 #include "concolic/concolicMngr.hpp"
+#include "concolic/exp/containerExpression.hpp"
+#include "concolic/exp/fieldAccessExpression.hpp"
+#include "concolic/reference/containerSupport.hpp"
 #include "gc_interface/collectedHeap.hpp"
 #include "interpreter/bytecodeHistogram.hpp"
 #include "interpreter/bytecodeInterpreter.hpp"
@@ -2398,21 +2401,40 @@ run:
     if (arrObj->is_symbolic()) {                                              \
       SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(arrObj);     \
       sym_rid_t sym_arr_oid = arrObj->get_sym_rid();                           \
+      Expression *observed_value_exp = value_exp;                              \
                                                                                \
       if (!index_exp) {                                                        \
         index_exp = new ConExpression(index);                                  \
       }                                                                        \
+      if (observed_value_exp == NULL) {                                         \
+        T2 concrete_value = *(T2 *)(((address)arrObj->base(T))                  \
+            + index * sizeof(T2));                                             \
+        observed_value_exp = arrObj->klass()                                   \
+                == Universe::boolArrayKlassObj()                               \
+            ? (Expression *)new ConExpression((jboolean)concrete_value)         \
+            : (Expression *)new ConExpression(concrete_value);                 \
+      }                                                                        \
                                                                                \
-      value_exp = new ElementSymbolExp(sym_arr_oid, sym_arr->get_version(),    \
-                                       sym_arr->get_and_inc_load_count(), T);  \
+      exp_list_t container_arguments;                                         \
+      container_arguments.push_back(index_exp);                               \
+      Expression *container_state =                                           \
+          ConcolicMngr::ctx->container_state(arrObj, "INDEXED");              \
+      ContainerSupport::constrain_position(                                   \
+          "INDEXED", container_state, index_exp);                             \
+      value_exp = new ContainerExpression(                                    \
+          "INDEXED", "READ",                                                 \
+          container_state,                                                     \
+          container_arguments, arrObj->klass()                                \
+                  == Universe::boolArrayKlassObj()                             \
+              ? T_BOOLEAN : T);                                                \
+      ConcolicMngr::ctx->record_path_condition(                                \
+          new OpSymExpression(value_exp, observed_value_exp, op_eq, true));    \
       ConcolicMngr::ctx->store_array_element_shadow(                           \
           arrObj, index, value_exp, "SYMBOLIC_ARRAY_LOAD");                  \
       ConcolicMngr::ctx->set_stack_value(                                     \
           stack_offset + res_off, (res_slots), value_exp,                     \
           sym_arr_oid, index);                                                \
                                                                                \
-      ConcolicMngr::record_path_condition(                                     \
-          new ArrayExpression(sym_arr_oid, index_exp, value_exp, true, T));    \
     } else if (index_exp) {                                                    \
       ConcolicMngr::ctx->record_path_condition( \
         new OpSymExpression(  \
@@ -2478,27 +2500,27 @@ run:
               SymArr *sym_arr =
                   ConcolicMngr::ctx->get_or_alloc_sym_array(arrObj);
               sym_rid_t sym_arr_oid = arrObj->get_sym_rid();
+              Expression *observed_value_exp = value_exp == NULL
+                  ? ContainerSupport::concrete_value(obj) : value_exp;
 
               if (!index_exp) {
                 index_exp = new ConExpression(index);
               }
 
-              SymbolExpression *element_value_exp = new ElementSymbolExp(
-                  sym_arr_oid, sym_arr->get_version(),
-                  sym_arr->get_and_inc_load_count(), T_OBJECT);
-              {
-                ResourceMark rm;
-                Symbol *array_descriptor = arrObj->klass()->name();
-                const char *descriptor = array_descriptor == NULL
-                    ? NULL : array_descriptor->as_C_string();
-                if (descriptor != NULL && descriptor[0] == '[') {
-                  // Object ElementSymbolExp historically advertised only
-                  // generic "L", which cannot type-check against a finite
-                  // array component such as Lorg/example/BlockKey;.
-                  element_value_exp->set_type(descriptor + 1);
-                }
-              }
-              value_exp = element_value_exp;
+              exp_list_t container_arguments;
+              container_arguments.push_back(index_exp);
+              Expression *container_state =
+                  ConcolicMngr::ctx->container_state(arrObj, "INDEXED");
+              ContainerSupport::constrain_position(
+                  "INDEXED", container_state, index_exp);
+              value_exp = new ContainerExpression(
+                  "INDEXED", "READ",
+                  container_state,
+                  container_arguments, T_OBJECT,
+                  ContainerSupport::java_type(obj, T_OBJECT));
+              ConcolicMngr::ctx->record_path_condition(
+                  new OpSymExpression(
+                      value_exp, observed_value_exp, op_eq, true));
               value_exp->set_java_code_position(ConcolicMngr::ctx->get_current_code_pos());
 
               ConcolicMngr::ctx->store_array_element_shadow(
@@ -2519,9 +2541,6 @@ run:
                   sym_inst->enable_demand_symbolic_fields();
                 }
               }
-
-              ConcolicMngr::record_path_condition(new ArrayExpression(
-                  arrObj->get_sym_rid(), index_exp, value_exp, true, T_OBJECT));
             } else if (index_exp) {
               ConcolicMngr::ctx->record_path_condition(
                   new OpSymExpression(  \
@@ -2576,8 +2595,19 @@ run:
         index_exp = new ConExpression(index);                                  \
       }                                                                        \
                                                                                \
-      ConcolicMngr::record_path_condition(                                     \
-          new ArrayExpression(sym_arr_oid, index_exp, value_exp, false, T));   \
+      exp_list_t container_arguments;                                         \
+      container_arguments.push_back(index_exp);                               \
+      container_arguments.push_back(value_exp);                               \
+      Expression *container_state =                                           \
+          ConcolicMngr::ctx->container_state(arrObj, "INDEXED");              \
+      ContainerSupport::constrain_position(                                   \
+          "INDEXED", container_state, index_exp);                             \
+      Expression *next_container_state = new ContainerExpression(             \
+          "INDEXED", "WRITE",                                                \
+          container_state,                                                     \
+          container_arguments, T);                                            \
+      ConcolicMngr::ctx->set_container_state(                                 \
+          arrObj, next_container_state);                                      \
                                                                                \
       ConcolicMngr::ctx->store_array_element_shadow(                           \
           arrObj, index, value_exp, "SYMBOLIC_PRIMITIVE_ARRAY_STORE");        \
@@ -2701,8 +2731,19 @@ run:
                 }
               }
 
-              ConcolicMngr::record_path_condition(new ArrayExpression(
-                  sym_arr_oid, index_exp, value_exp, false, T_OBJECT));
+              exp_list_t container_arguments;
+              container_arguments.push_back(index_exp);
+              container_arguments.push_back(value_exp);
+              Expression *container_state =
+                  ConcolicMngr::ctx->container_state(arrObj, "INDEXED");
+              ContainerSupport::constrain_position(
+                  "INDEXED", container_state, index_exp);
+              Expression *next_container_state = new ContainerExpression(
+                  "INDEXED", "WRITE",
+                  container_state,
+                  container_arguments, T_OBJECT);
+              ConcolicMngr::ctx->set_container_state(
+                  arrObj, next_container_state);
               if (value_complete) {
                 ConcolicMngr::ctx->store_array_element_shadow(
                     arrObj, index, value_exp, "SYMBOLIC_OBJECT_ARRAY_STORE");
@@ -2776,9 +2817,14 @@ run:
           if (ConcolicMngr::can_do_concolic()) {
             if (ary->is_symbolic()) {
               sym_rid_t sym_arr_oid = ary->get_sym_rid();
-
-              SymArr* sym_arr = ConcolicMngr::ctx->get_sym_array(sym_arr_oid);
-              Expression *length_exp = sym_arr->get_length_exp();
+              exp_list_t no_arguments;
+              Expression *length_exp = new ContainerExpression(
+                  "INDEXED", "SIZE",
+                  ConcolicMngr::ctx->container_state(ary, "INDEXED"),
+                  no_arguments, T_INT);
+              ConcolicMngr::ctx->record_path_condition(
+                  new OpSymExpression(length_exp,
+                      new ConExpression((jint)ary->length()), op_eq, true));
               ConcolicMngr::ctx->set_stack_value(
                   GET_STACK_OFFSET - 1, 1, length_exp, sym_arr_oid,
                   FIELD_INDEX_ARRAY_LENGTH);
@@ -3023,8 +3069,28 @@ run:
               if (sym_exp == NULL
                   && sym_inst->demand_symbolic_fields_enabled()) {
                 BasicType field_type = as_BasicType(tos_type);
-                sym_inst->init_sym_exp(field_offset, field_type);
+                ResourceMark rm;
+                const char *owner_class = obj->klass()->name() == NULL
+                    ? "" : obj->klass()->name()->as_C_string();
+                sym_inst->init_sym_exp(field_offset,
+                    new FieldAccessExpression(
+                        sym_inst->get_or_create_ref_exp(obj), owner_class,
+                        field_offset, field_type));
                 sym_exp = sym_inst->get(field_offset);
+              }
+              if (sym_exp != NULL) {
+                ResourceMark rm;
+                Expression *owner =
+                    sym_inst->get_or_create_ref_exp(obj);
+                if (owner != NULL) {
+                  ConcolicMngr::ctx->record_path_condition(
+                      new OpSymExpression(
+                          new FieldAccessExpression(
+                              owner,
+                              obj->klass()->name()->as_C_string(),
+                              field_offset, as_BasicType(tos_type)),
+                          sym_exp, op_eq, true));
+                }
               }
               // Reference-valued fields are branch inputs too.  Propagating
               // their shadow through getfield/getstatic lets ifnull,

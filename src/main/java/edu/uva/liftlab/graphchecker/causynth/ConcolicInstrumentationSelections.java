@@ -9,7 +9,6 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import soot.SootClass;
@@ -241,22 +240,6 @@ final class ConcolicInstrumentationSelections {
     static final class ConcolicMaterializationSelection {
         private static final Pattern LOCAL = Pattern.compile(
                 "^(<.+>)::([^#]+)(?:#.*)?$");
-        static final String DIRECT_ROOT_AUTHORITY =
-                "DIRECT_EXACT_LEAF_GETFIELD_BASE_IS_INPUT_OWNER_V1";
-        static final String ARGUMENT_ROOT_AUTHORITY =
-                "ROOT_ARGUMENT_IDENTITY_AT_REGION_ENTRY_AND_"
-                        + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
-        static final String RECEIVER_ROOT_AUTHORITY =
-                "ROOT_RECEIVER_IDENTITY_AT_REGION_ENTRY_AND_"
-                        + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
-        static final String LOCAL_ROOT_AUTHORITY =
-                "LOCAL_DEFINITION_IDENTITY_AT_EXACT_DEFINITION_SITE_AND_"
-                        + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
-        static final String CONTAINER_INPUT_OBSERVATION_MODE =
-                "CONTAINER_INPUT_OBSERVATION";
-        static final String MAP_STATE_INPUT_OBSERVATION_MODE =
-                "MAP_STATE_INPUT_OBSERVATION";
-
         private final Map<String, Map<String, Set<Integer>>> localsByMethod =
                 new LinkedHashMap<>();
         private final List<FieldTarget> fields = new ArrayList<>();
@@ -305,62 +288,9 @@ final class ConcolicInstrumentationSelections {
                         }
                     }
                 }
-                if (declaresArrayValue(action)
-                        && !exactArrayFieldPath(action).isEmpty()) {
-                    addExactArrayLeafTarget(action);
-                }
                 return;
             }
             String location = jsonString(action, "location");
-            if (MAP_STATE_INPUT_OBSERVATION_MODE.equals(mode)) {
-                if (!declaresMapValue(action)) {
-                    throw unsupported(action);
-                }
-                FieldTarget target = concolicFieldTarget(action);
-                if (target == null) {
-                    throw unsupported(action);
-                }
-                // Keep the ordinary getfield split.  Runtime consumes the
-                // exact field value as an identity/snapshot observation and
-                // deliberately does not invoke VM reference symbolization.
-                fields.add(target);
-                return;
-            }
-            if (CONTAINER_INPUT_OBSERVATION_MODE.equals(mode)) {
-                if (!declaresArrayValue(action)) {
-                    throw unsupported(action);
-                }
-                FieldTarget target = concolicFieldTarget(action);
-                if (target == null) {
-                    throw unsupported(action);
-                }
-                // Observation-only arrays deliberately use the declaration
-                // as a field family.  Every concrete read is joined to its
-                // actual post-getfield value by the existing split hook; the
-                // runtime's explicit first-instance authority selects the
-                // bounded container and treats later reads as aliases or
-                // ignored outer-loop instances.
-                fields.add(target);
-                return;
-            }
-            if (declaresArrayValue(action)) {
-                List<String> fieldPath = exactArrayFieldPath(action);
-                boolean fieldBacked = !fieldPath.isEmpty()
-                        || "FIELD_ACCESS".equals(mode)
-                        || "FIELD".equals(location)
-                        || "HEAP_OBJECT_FIELD".equals(location)
-                        || "RECEIVER_FIELD".equals(location)
-                        || "ARGUMENT_FIELD_PATH".equals(location);
-                if (fieldBacked) {
-                    addExactArrayLeafTarget(action);
-                }
-                // A field-backed ARRAY_VALUE action must be hooked at the
-                // actual leaf getfield, never at an earlier object-valued
-                // component of a nested path.  Direct array arguments and
-                // call returns have no getfield and remain handled by their
-                // existing boundary hooks.
-                return;
-            }
             if (!"FIELD_ACCESS".equals(mode)
                     && !"HEAP_OBJECT_FIELD".equals(location)) {
                 return;
@@ -406,114 +336,9 @@ final class ConcolicInstrumentationSelections {
             }
         }
 
-        void addExactArrayLeafTarget(JsonObject action) throws IOException {
-            FieldTarget leaf = exactArrayLeafTarget(action);
-            if (leaf == null) {
-                throw unsupported(action);
-            } else {
-                fields.add(leaf);
-            }
-        }
-
         private static IOException unsupported(JsonObject action) {
             return new IOException("Unsupported concolic materialization "
                     + jsonString(action, "symbol"));
-        }
-
-        static boolean declaresArrayValue(JsonObject action) {
-            return looksLikeArrayType(jsonString(action, "javaType"))
-                    || looksLikeArrayType(canonicalFieldType(action));
-        }
-
-        static boolean declaresMapValue(JsonObject action) {
-            return JavaContainerTypes.isMap(jsonString(action, "javaType"))
-                    || JavaContainerTypes.isMap(canonicalFieldType(action));
-        }
-
-        private static String canonicalFieldType(JsonObject action) {
-            DeclaredField field = FieldPathSpec.declaredField(firstNonBlank(
-                    jsonString(action, "leafFieldSignature"),
-                    jsonString(action, "accessFieldSignature")));
-            return field == null ? "" : field.type();
-        }
-
-        static FieldTarget exactArrayLeafTarget(JsonObject action) {
-            String consumedMethod = jsonString(action,
-                    "consumedFieldMethod");
-            int consumedUnit = intJson(action, "consumedFieldUnitIndex", -1);
-            if (!jsonBoolean(action, "consumedFieldBindingComplete", false)
-                    || consumedMethod.isEmpty() || consumedUnit < 0) {
-                return null;
-            }
-            List<String> exactPath = exactArrayFieldPath(action);
-            String rootAuthority = jsonString(action,
-                    "consumedFieldRootAuthority");
-            String location = jsonString(action, "location");
-            String bindingMode = jsonString(action, "bindingMode");
-            boolean argumentRoot = "ARGUMENT_FIELD_PATH".equals(location);
-            boolean receiverRoot = "RECEIVER_FIELD".equals(location);
-            boolean localRoot = "LOCAL_DEFINITION".equals(bindingMode);
-            boolean fieldAccessRoot = !argumentRoot && !receiverRoot
-                    && !localRoot && ("FIELD_ACCESS".equals(bindingMode)
-                    || "FIELD".equals(location)
-                    || "HEAP_OBJECT_FIELD".equals(location));
-            // A generic HEAP_OBJECT_FIELD can still be proven to be rooted at
-            // the region receiver by runtime object identity.  The Runtime
-            // registers receiver-authority actions at enterRegion regardless
-            // of their observational location.  A direct field root has no
-            // such entry identity and is intentionally limited to one leaf.
-            boolean rootAuthorityMatches = argumentRoot
-                    ? ARGUMENT_ROOT_AUTHORITY.equals(rootAuthority)
-                    : receiverRoot
-                    ? RECEIVER_ROOT_AUTHORITY.equals(rootAuthority)
-                    : localRoot
-                    ? LOCAL_ROOT_AUTHORITY.equals(rootAuthority)
-                    : fieldAccessRoot && (RECEIVER_ROOT_AUTHORITY.equals(
-                    rootAuthority) || exactPath.size() == 1
-                    && DIRECT_ROOT_AUTHORITY.equals(rootAuthority));
-            boolean rootBindingComplete = !argumentRoot
-                    || intJson(action, "index", -1) >= 0;
-            if (localRoot) {
-                rootBindingComplete = hasOneExactLocalDefinition(action);
-            }
-            if (exactPath.isEmpty() || !rootAuthorityMatches
-                    || !rootBindingComplete) {
-                return null;
-            }
-            DeclaredField leaf = FieldPathSpec.declaredField(
-                    jsonString(action, "leafFieldSignature"));
-            String expectedLeaf = exactPath.get(exactPath.size() - 1);
-            return leaf == null || !looksLikeArrayType(leaf.type())
-                    || !expectedLeaf.equals(leaf.name())
-                    ? null : new FieldTarget(leaf.owner(), leaf.name(),
-                    consumedMethod, consumedUnit, true);
-        }
-
-        static boolean hasOneExactLocalDefinition(JsonObject action) {
-            String method = jsonString(action, "method");
-            String local = jsonString(action, "local");
-            Matcher localCell = LOCAL.matcher(jsonString(action, "cell"));
-            if (localCell.matches()) {
-                method = firstNonBlank(method, localCell.group(1));
-                local = firstNonBlank(local, localCell.group(2));
-            }
-            JsonElement definitions = action.get("definitionSites");
-            return !method.isEmpty() && !local.isEmpty()
-                    && definitions != null && definitions.isJsonArray()
-                    && definitions.getAsJsonArray().size() == 1
-                    && definitions.getAsJsonArray().get(0).isJsonObject()
-                    && intJson(definitions.getAsJsonArray().get(0)
-                    .getAsJsonObject(), "unitIndex", -1) >= 0;
-        }
-
-        static List<String> exactArrayFieldPath(JsonObject action) {
-            return FieldPathSpec.stringArray(action, "fieldPath");
-        }
-
-        static boolean looksLikeArrayType(String javaType) {
-            String normalized = firstNonBlank(javaType);
-            return normalized != null && (normalized.startsWith("[")
-                    || normalized.endsWith("[]"));
         }
 
         boolean isEmpty() {
@@ -563,10 +388,7 @@ final class ConcolicInstrumentationSelections {
             for (FieldTarget target : fields) {
                 if (target.name.equals(fieldName)
                         && (target.owner.isEmpty()
-                        || target.owner.equals(owner))
-                        && (!target.exactSite
-                        || target.method.equals(method)
-                        && target.unitIndex == unitIndex)) {
+                        || target.owner.equals(owner))) {
                     return true;
                 }
             }
@@ -611,35 +433,18 @@ final class ConcolicInstrumentationSelections {
     private static final class FieldTarget {
         final String owner;
         final String name;
-        final String method;
-        final int unitIndex;
-        final boolean exactSite;
 
         FieldTarget(String owner, String name) {
-            this(owner, name, "", -1, false);
-        }
-
-        FieldTarget(String owner, String name, String method,
-                            int unitIndex, boolean exactSite) {
             String normalizedOwner = firstNonBlank(owner);
             String normalizedName = firstNonBlank(name);
             this.owner = normalizedOwner == null ? "" : normalizedOwner;
             this.name = normalizedName == null ? "" : normalizedName;
-            String normalizedMethod = firstNonBlank(method);
-            this.method = normalizedMethod == null ? "" : normalizedMethod;
-            this.unitIndex = unitIndex;
-            this.exactSite = exactSite;
         }
     }
 
 
     private static String jsonString(JsonObject object, String field) {
         return JsonFields.string(object, field);
-    }
-
-    private static boolean jsonBoolean(JsonObject object, String field,
-                                       boolean fallback) {
-        return JsonFields.bool(object, field, fallback);
     }
 
     static String stringValue(Object value) {

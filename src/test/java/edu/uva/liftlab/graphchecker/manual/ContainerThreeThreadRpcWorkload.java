@@ -94,6 +94,7 @@ public final class ContainerThreeThreadRpcWorkload {
             Iterator<Map.Entry<Integer, StateNode>> iterator =
                     values.entrySet().iterator();
             Map.Entry<Integer, StateNode> entry = iterator.next();
+            Integer key = entry.getKey();
             StateNode value = entry.getValue();
             boolean enabled = value.state.guard.enabled;
             if(input1<10){
@@ -110,13 +111,15 @@ public final class ContainerThreeThreadRpcWorkload {
             if(input4 >0){
                 input4 =- input4;
             }
-            if (enabled || ((input1-input3-input4)>10)) {
+            if (enabled || ((input1-input3-input4)>10) ||(input1+input3)>16) {
+                if(input1>100) input1=100;
+
 //                if(input1>100) input1=100;
 //                if(input2>100) input2=100;
 //                if(-input3>100) input3=-100;
 //                if(-input4>100) input4=-100;
 
-                return 0+input1+input2;
+                return 0+input1+key.intValue();
             }
             return 10;
         }

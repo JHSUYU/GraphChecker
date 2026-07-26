@@ -1,8 +1,8 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/threadContext.hpp"
-#include "concolic/exp/arrayInitExpression.hpp"
 #include "concolic/exp/expression.hpp"
+#include "concolic/exp/containerExpression.hpp"
 #include "concolic/fieldTraverser.hpp"
 #include "concolic/jdbc/reference/symbolicResultSet.hpp"
 #include "concolic/jdbc/reference/symbolicStatement.hpp"
@@ -247,6 +247,12 @@ ThreadContext::~ThreadContext() {
   }
   _array_store.clear();
 
+  for (ContainerStateStore::iterator state = _container_states.begin();
+       state != _container_states.end(); ++state) {
+    Expression::gc(state->second);
+  }
+  _container_states.clear();
+
   // DetachedObjectStore does not own its SymInstance values.  Release its GC
   // roots before deleting the instances from SymStore so no stale oop can be
   // resolved during the remaining teardown.
@@ -279,6 +285,91 @@ ThreadContext::~ThreadContext() {
 
   Expression::finalize_dangling_objects();
   SymStmt::resetGlobalCounter();
+}
+
+Expression *ThreadContext::container_state(oop container,
+                                           const char *shape) {
+  if (container == NULL) return NULL;
+  sym_rid_t id;
+  Expression *identity;
+  SymArr *array = NULL;
+  if (container->is_array()) {
+    array = get_or_alloc_sym_array((arrayOop)container);
+    if (array == NULL) return NULL;
+    id = array->get_sym_rid();
+    identity = array->get_ref_exp();
+    if (identity == NULL) {
+      identity = new ArraySymbolExp(id, array->get_version(), T_OBJECT);
+    }
+  } else {
+    SymInstance *instance = get_or_alloc_sym_inst(container);
+    if (instance == NULL) return NULL;
+    id = instance->get_sym_rid();
+    identity = instance->get_or_create_ref_exp(container);
+  }
+  ContainerStateStore::iterator existing = _container_states.find(id);
+  if (existing != _container_states.end()) return existing->second;
+
+  exp_list_t state_arguments;
+  if (container->is_array()) {
+    Expression *declared_length = array->get_length_exp();
+    state_arguments.push_back(declared_length == NULL
+        ? (Expression *)new ConExpression(
+            (jint)((arrayOop)container)->length())
+        : declared_length);
+  }
+  Expression *state = new ContainerExpression(shape, "STATE",
+      identity, state_arguments);
+  state->inc_ref();
+  _container_states[id] = state;
+  return state;
+}
+
+Expression *ThreadContext::find_container_state(oop container) const {
+  if (container == NULL) return NULL;
+  sym_rid_t id = NULL_SYM_RID;
+  if (container->is_array()) {
+    if (!container->is_symbolic()) return NULL;
+    id = container->get_sym_rid();
+  } else {
+    SymInstance *instance = find_sym_inst(container);
+    if (instance == NULL) return NULL;
+    id = instance->get_sym_rid();
+  }
+  ContainerStateStore::const_iterator state = _container_states.find(id);
+  return state == _container_states.end() ? NULL : state->second;
+}
+
+void ThreadContext::set_container_state(oop container, Expression *state) {
+  if (container == NULL || state == NULL) return;
+  sym_rid_t id;
+  if (container->is_array()) {
+    SymArr *array = get_or_alloc_sym_array((arrayOop)container);
+    if (array == NULL) return;
+    id = array->get_sym_rid();
+  } else {
+    SymInstance *instance = get_or_alloc_sym_inst(container);
+    if (instance == NULL) return;
+    id = instance->get_sym_rid();
+  }
+  ContainerStateStore::iterator existing = _container_states.find(id);
+  if (existing != _container_states.end()) {
+    Expression::gc(existing->second);
+    existing->second = state;
+  } else {
+    _container_states[id] = state;
+  }
+  state->inc_ref();
+}
+
+int ThreadContext::next_container_position(oop cursor) {
+  if (cursor == NULL || cursor->is_array()) return -1;
+  SymInstance *instance = get_or_alloc_sym_inst(cursor);
+  if (instance == NULL) return -1;
+  sym_rid_t id = instance->get_sym_rid();
+  int position = _container_positions[id];
+  _container_positions[id] = position + 1;
+  return position;
 }
 
 SymInstance *ThreadContext::get_or_alloc_sym_inst(oop obj) {
@@ -437,14 +528,6 @@ SymArr *ThreadContext::alloc_sym_array(arrayOop array, Expression *length_exp) {
   SymArr *sym_arr = new SymArr(sym_rid, length_exp);
   this->set_sym_ref(sym_rid, sym_arr);
 
-  ArrayInitExpression *array_init =
-      new ArrayInitExpression(sym_arr->get_sym_rid(), array);
-  this->record_path_condition(array_init);
-  ArrayInternal *internal = get_or_create_array_internal(array);
-  for (int index = 0; index < array_init->element_count(); ++index) {
-    internal->store(index, array_init->element_expression_at(index),
-                    "SYMBOLIC_ARRAY_INIT");
-  }
 //  _allocated_objs.insert(array);
   return sym_arr;
 }
@@ -488,6 +571,20 @@ void ThreadContext::symbolize_recursive(oop obj, std::string prefix) {
 
   FieldSymbolizer field_symbolzier(obj, *this, prefix);
   field_symbolzier.do_recursive();
+  if (obj != NULL && obj->is_array()) {
+    SymArr *array = find_sym_array((arrayOop)obj);
+    if (array != NULL) {
+      array->set_ref_exp(new FieldSymbolExp(
+          array->get_sym_rid(), prefix, T_ARRAY));
+    }
+  } else if (obj != NULL) {
+    SymInstance *instance = find_sym_inst(obj);
+    if (instance != NULL
+        && obj->klass()->name() != vmSymbols::java_lang_String()) {
+      instance->set_ref_exp(new FieldSymbolExp(
+          instance->get_sym_rid(), prefix, T_OBJECT));
+    }
+  }
   // OopTraverser oop_traverser;
   // tty->print_cr(CL_CYAN"================================================================="CNONE);
   // obj->oop_iterate(&oop_traverser);

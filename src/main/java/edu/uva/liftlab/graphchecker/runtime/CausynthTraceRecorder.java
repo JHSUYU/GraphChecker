@@ -286,10 +286,6 @@ public final class CausynthTraceRecorder {
         if (method == null || field == null) {
             return;
         }
-        // Keep this before trace truncation: concolic soundness must not turn
-        // a max-events diagnostic limit into a false no-write proof.
-        ConcolicRegionRuntime.observeRuntimeFieldEvent(kind, fieldReceiver,
-                field);
         initialize();
         if (contextOnlyConcolicReplay) {
             return;

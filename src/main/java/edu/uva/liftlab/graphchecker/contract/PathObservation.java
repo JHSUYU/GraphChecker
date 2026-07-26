@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
@@ -32,14 +31,11 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  */
 public final class PathObservation {
     private static final String[] RELATION_EVIDENCE_FIELDS = {
-            "heapStateInitializers", "heapObservations",
-            "finiteMapSnapshots", "dynamicFieldBindings",
-            "engineArrayInputBindings", "vmIntrinsicPlaceholderBindings",
-            "unforcedEnvironmentValidationRequirements", "heapEffects"
+            "vmIntrinsicPlaceholderBindings",
+            "unforcedEnvironmentValidationRequirements"
     };
     private static final String[] STABLE_CASE_FIELDS = {
-            "heapStateInitializers", "heapObservations",
-            "finiteMapSnapshots", "vmIntrinsicPlaceholderBindings",
+            "vmIntrinsicPlaceholderBindings",
             "unforcedEnvironmentValidationRequirements"
     };
     private static final Gson GSON = new GsonBuilder()
@@ -50,7 +46,6 @@ public final class PathObservation {
     private final List<SummaryBranchMapping> branchMappings;
     private final String branchMappingIssue;
     private final AlphaNormalizer alpha;
-    private final String runtimeBindingIdentity;
     private final String pathKey;
     private final String stableCaseFingerprint;
 
@@ -72,9 +67,7 @@ public final class PathObservation {
         this.branchMappings = Collections.unmodifiableList(decoded);
         this.branchMappingIssue = issue;
         this.alpha = new AlphaNormalizer(raw);
-        this.runtimeBindingIdentity = stableRuntimeBindings(raw, alpha);
-        this.pathKey = stablePathKey(raw, scope, alpha,
-                runtimeBindingIdentity);
+        this.pathKey = stablePathKey(raw, scope, alpha);
     }
 
     public static PathObservation decode(JsonObject summary, JsonObject task) {
@@ -146,15 +139,10 @@ public final class PathObservation {
         component(value, mapping.siteId());
         component(value, String.valueOf(mapping.occurrence()));
         component(value, String.valueOf(desiredOutcome));
-        component(value, runtimeBindingIdentity);
         return CanonicalJson.sha256(value.toString());
     }
 
     public JsonObject replayPayload() { return raw.deepCopy(); }
-    public JsonArray dynamicFieldBindings() {
-        return array(raw, "dynamicFieldBindings").deepCopy();
-    }
-
     public static final class Scope {
         private final ClosureGoalKind goalKind;
         private final String goalId;
@@ -232,8 +220,7 @@ public final class PathObservation {
     }
 
     private static String stablePathKey(
-            JsonObject summary, Scope scope, AlphaNormalizer alpha,
-            String runtimeBindings) {
+            JsonObject summary, Scope scope, AlphaNormalizer alpha) {
         StringBuilder value = new StringBuilder();
         component(value, scope.outputClosure == null
                 ? string(summary, "regionId")
@@ -242,77 +229,9 @@ public final class PathObservation {
         component(value, alphaCanonical(summary.get("pathCondition"), alpha));
         component(value, alphaCanonical(summary.get("outputExpressions"),
                 alpha));
-        component(value, alphaCanonical(summary.get("heapEffects"), alpha));
-        component(value, runtimeBindings);
         component(value, string(summary, "normalExit"));
         component(value, string(summary, "exceptionType"));
         return CanonicalJson.sha256(value.toString());
-    }
-
-    private static String stableDynamicBindings(
-            JsonObject summary, AlphaNormalizer alpha) {
-        List<String> bindings = new ArrayList<>();
-        for (JsonElement element : array(summary, "dynamicFieldBindings")) {
-            bindings.add(alphaCanonical(stripVolatileIdentity(element),
-                    alpha));
-        }
-        Collections.sort(bindings);
-        return CanonicalJson.render(GSON.toJsonTree(bindings));
-    }
-
-    private static String stableRuntimeBindings(
-            JsonObject summary, AlphaNormalizer alpha) {
-        return stableDynamicBindings(summary, alpha) + "\n"
-                + stableEngineArrayBindings(summary, alpha);
-    }
-
-    private static String stableEngineArrayBindings(
-            JsonObject summary, AlphaNormalizer alpha) {
-        List<String> bindings = new ArrayList<>();
-        for (JsonElement element : array(summary,
-                "engineArrayInputBindings")) {
-            if (!element.isJsonObject()) {
-                bindings.add(alphaCanonical(element, alpha));
-                continue;
-            }
-            JsonObject source = element.getAsJsonObject();
-            JsonObject stable = new JsonObject();
-            stable.addProperty("inputPort", string(source, "inputPort"));
-            stable.addProperty("inputJavaTypeDescriptor", string(source,
-                    "inputJavaTypeDescriptor"));
-            stable.addProperty("engineArrayId", alpha.arrayId(string(source,
-                    "engineArrayId")));
-            bindings.add(alphaCanonical(stable, alpha));
-        }
-        Collections.sort(bindings);
-        return CanonicalJson.render(GSON.toJsonTree(bindings));
-    }
-
-    private static JsonElement stripVolatileIdentity(JsonElement value) {
-        if (value == null || value.isJsonNull() || value.isJsonPrimitive()) {
-            return value == null ? JsonNull.INSTANCE : value.deepCopy();
-        }
-        if (value.isJsonArray()) {
-            JsonArray result = new JsonArray();
-            for (JsonElement element : value.getAsJsonArray()) {
-                result.add(stripVolatileIdentity(element));
-            }
-            return result;
-        }
-        JsonObject result = new JsonObject();
-        for (Map.Entry<String, JsonElement> entry
-                : value.getAsJsonObject().entrySet()) {
-            String key = entry.getKey().toLowerCase();
-            if (key.contains("objecttoken")
-                    || "entryreadobservationid".equals(key)
-                    || "sourcetaskid".equals(key)
-                    || "sourceactivationid".equals(key)
-                    || "activationid".equals(key)
-                    || "taskid".equals(key)) continue;
-            result.add(entry.getKey(), stripVolatileIdentity(
-                    entry.getValue()));
-        }
-        return result;
     }
 
     private static String alphaCanonical(
@@ -352,11 +271,6 @@ public final class PathObservation {
                 result.append(GSON.toJson(alpha.placeholder(
                         string(object, "_place_holder_func"),
                         field.getAsString())));
-            } else if ("_arr_str".equals(key)
-                    && "_array_expr".equals(type)
-                    && field != null && field.isJsonPrimitive()) {
-                result.append(GSON.toJson(alpha.arrayId(
-                        field.getAsString())));
             } else {
                 result.append(alphaCanonical(field, alpha));
             }
@@ -368,7 +282,6 @@ public final class PathObservation {
         private final Set<String> canonicalPorts = new LinkedHashSet<>();
         private final Map<String, String> symbols = new LinkedHashMap<>();
         private final Map<String, String> placeholders = new LinkedHashMap<>();
-        private final Map<String, String> arrays = new LinkedHashMap<>();
 
         private AlphaNormalizer(JsonObject summary) {
             collectPortArray(summary.get("symbolicInputs"));
@@ -377,33 +290,6 @@ public final class PathObservation {
                 for (String port : outputs.getAsJsonObject().keySet()) {
                     addPort(port);
                 }
-            }
-            for (JsonElement element : array(summary, "heapEffects")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject effect = element.getAsJsonObject();
-                addPort(string(effect, "inputPort"));
-                addPort(string(effect, "outputPort"));
-            }
-            for (JsonElement element : array(summary,
-                    "heapStateInitializers")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject initializer = element.getAsJsonObject();
-                addPort(string(initializer, "statePort"));
-                addPort(string(initializer, "requestedOutputPort"));
-            }
-            for (JsonElement element : array(summary,
-                    "engineArrayInputBindings")) {
-                if (element.isJsonObject()) {
-                    addPort(string(element.getAsJsonObject(), "inputPort"));
-                }
-            }
-            for (JsonElement element : array(summary,
-                    "dynamicFieldBindings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject selector = object(element.getAsJsonObject(),
-                        "mapProjectionSelector");
-                addPort(string(selector, "mapInputPort"));
-                addPort(string(selector, "outputPort"));
             }
         }
 
@@ -440,10 +326,6 @@ public final class PathObservation {
             return alpha(placeholders, firstNonBlank(function, "unknown")
                     + "\u0000" + firstNonBlank(count, "0"),
                     "@placeholder.");
-        }
-
-        private String arrayId(String raw) {
-            return alpha(arrays, raw, "@array.");
         }
 
         private boolean containsCanonicalPort(String raw) {
