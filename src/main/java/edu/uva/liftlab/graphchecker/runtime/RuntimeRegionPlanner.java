@@ -1816,8 +1816,6 @@ final class RuntimeRegionPlanner {
         }
     }
 
-    /**
-
     private static String targetReachGoalId(
             String regionInstanceId, String targetMethod) {
         return "GOAL.TARGET_REACH." + stableId(regionInstanceId + "\n"

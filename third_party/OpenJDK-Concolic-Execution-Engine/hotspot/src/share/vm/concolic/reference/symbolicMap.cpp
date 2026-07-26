@@ -6,19 +6,6 @@
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/utils.hpp"
 
-static bool is_root_map(oop receiver) {
-  if (receiver == NULL || receiver->klass() == NULL
-      || receiver->klass()->name() == NULL) return false;
-  Symbol *name = receiver->klass()->name();
-  return name->equals("java/util/HashMap")
-      || name->equals("java/util/LinkedHashMap")
-      || name->equals("java/util/Hashtable")
-      || name->equals("java/util/concurrent/ConcurrentHashMap")
-      || name->equals(
-          "org/hibernate/internal/util/collections/"
-          "ConcurrentReferenceHashMap");
-}
-
 static bool is_scalar_map_iterator(oop receiver) {
   if (receiver == NULL || receiver->klass() == NULL
       || receiver->klass()->name() == NULL) return false;
@@ -33,17 +20,16 @@ std::set<std::string> SymMap::target_class_names = init_target_class_names();
 
 std::set<std::string> SymMap::init_target_class_names() {
   std::set<std::string> set;
+  set.insert("java/util/Map");
   set.insert("java/util/HashMap");
   set.insert("java/util/LinkedHashMap");
-  set.insert("org/hibernate/internal/util/collections/ConcurrentReferenceHashMap");
-  set.insert("java/util/Hashtable");
-  set.insert("java/util/concurrent/ConcurrentHashMap");
   set.insert("java/util/HashMap$EntrySet");
   set.insert("java/util/HashMap$KeySet");
   set.insert("java/util/HashMap$Values");
   set.insert("java/util/HashMap$EntryIterator");
   set.insert("java/util/HashMap$KeyIterator");
   set.insert("java/util/HashMap$ValueIterator");
+  set.insert("java/util/HashMap$HashIterator");
   set.insert("java/util/HashMap$Node");
   set.insert("java/util/LinkedHashMap$LinkedEntrySet");
   set.insert("java/util/LinkedHashMap$LinkedKeySet");
@@ -51,6 +37,7 @@ std::set<std::string> SymMap::init_target_class_names() {
   set.insert("java/util/LinkedHashMap$LinkedEntryIterator");
   set.insert("java/util/LinkedHashMap$LinkedKeyIterator");
   set.insert("java/util/LinkedHashMap$LinkedValueIterator");
+  set.insert("java/util/LinkedHashMap$LinkedHashIterator");
   set.insert("java/util/LinkedHashMap$Entry");
   return set;
 }
@@ -70,6 +57,7 @@ std::set<std::string> SymMap::init_handle_method_names() {
   set.insert("keySet");
   set.insert("values");
   set.insert("iterator");
+  set.insert("hasNext");
   set.insert("next");
   set.insert("getKey");
   set.insert("getValue");
@@ -84,16 +72,6 @@ std::set<std::string> SymMap::init_handle_method_names() {
   return set;
 }
 
-std::map<std::string, bool> SymMap::skip_method_names = init_skip_method_names();
-
-std::map<std::string, bool> SymMap::init_skip_method_names() {
-  std::map<std::string, bool> map;
-  map["<init>"] = true; //really??
-  map["hash"] = true;
-  map["forEach"] = false; // really?
-  return map;
-}
-
 void SymMap::init_register_class(MethodSymbolizer *m_symbolizer) {
   for(std::set<std::string>::iterator it = target_class_names.begin(); it != target_class_names.end(); it++) {
     m_symbolizer->add_invoke_helper_methods(*it, invoke_method_helper);
@@ -103,23 +81,18 @@ void SymMap::init_register_class(MethodSymbolizer *m_symbolizer) {
 
 bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &callee_name = handle.get_callee_name();
-  bool need_symbolize = true;
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
-    // Treat public Map operations as semantic boundaries.  Besides lookups,
-    // mutators must be recorded so producer regions can export relational
-    // heap summaries such as M' = put(M, key, value).
     bool recording = handle.general_check_param_symbolized();
     if (recording) {
       handle.general_prepare_param();
     }
-  } else {
-    std::map<std::string, bool>::iterator iter = skip_method_names.find(callee_name);
-    if (iter != skip_method_names.end()) {
-      need_symbolize = iter->second;
-    }
+    return recording;
   }
-
-  return need_symbolize;
+  if (handle.general_check_param_symbolized()) {
+    ConcolicMngr::ctx->abort_symbolic_execution(
+        "ASSOCIATIVE_OPERATION_UNSUPPORTED");
+  }
+  return false;
 }
 
 Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
@@ -137,7 +110,7 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
 
   oop receiver_object = handle.get_param<oop>(0);
   Expression *receiver = parameters[0];
-  bool root_map = is_root_map(receiver_object);
+  bool root_map = ContainerSupport::associative(receiver_object);
   bool map_operation = root_map && (method == "get"
       || method == "containsKey"
       || method == "size" || method == "isEmpty"
@@ -219,6 +192,37 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     ConcolicMngr::ctx->set_container_state(receiver_object, new_state);
     return NULL;
   }
+  if (method == "remove" && !root_map && arguments.empty()) {
+    int position =
+        ConcolicMngr::ctx->current_container_position(receiver_object) - 1;
+    Expression *root = ConcolicMngr::ctx->container_state(
+        receiver_object, "ASSOCIATIVE");
+    if (root == NULL || position < 0) {
+      ConcolicMngr::ctx->abort_symbolic_execution(
+          "ASSOCIATIVE_ITERATOR_REMOVE_WITHOUT_NEXT");
+      return NULL;
+    }
+    exp_list_t remove_arguments;
+    remove_arguments.push_back(new ConExpression((jint)position));
+    Expression *next = new ContainerExpression(
+        "ASSOCIATIVE", "REMOVE_AT", root, remove_arguments);
+    ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    ConcolicMngr::ctx->rewind_container_position(receiver_object);
+    return NULL;
+  }
+  if (method == "clear" && !root_map && arguments.empty()) {
+    Expression *root = ConcolicMngr::ctx->container_state(
+        receiver_object, "ASSOCIATIVE");
+    if (root == NULL) {
+      ConcolicMngr::ctx->abort_symbolic_execution(
+          "ASSOCIATIVE_VIEW_OWNER_MISSING");
+      return NULL;
+    }
+    Expression *next = new ContainerExpression(
+        "ASSOCIATIVE", "CLEAR", root, arguments);
+    ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    return NULL;
+  }
   if (method == "remove" && (!root_map || arguments.size() != 1)) {
     ConcolicMngr::ctx->abort_symbolic_execution(
         "ASSOCIATIVE_REMOVE_OVERLOAD_UNSUPPORTED");
@@ -228,6 +232,14 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     ConcolicMngr::ctx->abort_symbolic_execution(
         "ASSOCIATIVE_VIEW_CLEAR_UNSUPPORTED");
     return NULL;
+  }
+  if (method == "hasNext" && arguments.empty()) {
+    arguments.push_back(new ConExpression((jint)
+        ConcolicMngr::ctx->current_container_position(receiver_object)));
+    Expression *result = new ContainerExpression(
+        "ASSOCIATIVE", "HAS_NEXT", receiver, arguments, T_BOOLEAN);
+    ContainerSupport::constrain_result(handle, result);
+    return result;
   }
   if (operation == NULL) return NULL;
 
@@ -260,7 +272,11 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
   }
   if (handle.get_result_type() == T_OBJECT) {
     if (result_object != NULL) {
-      ContainerSupport::attach_result(result_object, result);
+      bool derived_container = method == "entrySet"
+          || method == "keySet" || method == "values"
+          || method == "iterator";
+      ContainerSupport::attach_result(result_object, result,
+          derived_container ? receiver_object : NULL);
     }
   }
   return result;

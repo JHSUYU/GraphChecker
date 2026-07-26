@@ -2,7 +2,6 @@
 
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/concolicMngr.hpp"
-#include "concolic/exp/arrayInitExpression.hpp"
 #include "concolic/utils.hpp"
 #include "oops/objArrayOop.hpp"
 #include <concolic/exp/methodExpression.hpp>
@@ -189,13 +188,7 @@ int SymString::prepare_param_helper(MethodSymbolizerHandle &handle,
     tty->cr();
 
     arrayOop arr_obj = handle.get_param<arrayOop>(locals_offset);
-    if (arr_obj->is_symbolic()) {
-      SymArr *sym_arr = ConcolicMngr::ctx->get_sym_array(arr_obj);
-      exp = new ArraySymbolExp(arr_obj->get_sym_rid(), sym_arr->get_version(),
-                               type);
-    } else {
-      exp = new ArrayInitExpression(NULL_SYM_RID, arr_obj);
-    }
+    exp = ConcolicMngr::ctx->container_state(arr_obj, "INDEXED");
   } else {
     tty->print_cr("unhandled String parameter types!");
     ShouldNotCallThis();
@@ -305,9 +298,9 @@ void SymString::symbolize_split_elements(MethodSymbolizerHandle &handle,
     }
     element_params.push_back(new ConExpression((jint) index));
 
-    // Keep split provenance on the concrete array edge first.  A split
-    // element may be the receiver, an existing symbolic alias, or an interned
-    // String; none of those identities may be overwritten object-wide.
+    // A split element may be the receiver, an existing symbolic alias, or an
+    // interned String; none of those identities may be overwritten
+    // object-wide. The result array is promoted to the shared indexed state.
     SymInstance *existing = ConcolicMngr::ctx->find_sym_inst(element);
     Expression *element_result = existing == NULL
         ? static_cast<Expression *>(new ConStringSymbolExp(element))
@@ -315,8 +308,7 @@ void SymString::symbolize_split_elements(MethodSymbolizerHandle &handle,
     Expression *derived = new MethodExpression(
         handle.get_callee_holder_name(), "splitElement", element_params,
         element_result, false);
-    ConcolicMngr::ctx->store_array_element_shadow(
-        result, index, derived, "STRING_SPLIT_ELEMENT");
+    ConcolicMngr::ctx->write_array_element(result, index, derived);
 
     bool aliases_input = result_aliases_reference_input(handle, element);
     if (existing == NULL && !aliases_input

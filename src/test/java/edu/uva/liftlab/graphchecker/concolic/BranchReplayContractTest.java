@@ -77,6 +77,30 @@ public class BranchReplayContractTest {
                 "TARGET_BEFORE_PREFIX"));
     }
 
+    @Test
+    public void explicitFieldBindingIsSolverContextNotBranchEvidence() {
+        JsonObject field = new JsonObject();
+        field.addProperty("_type", "FieldAccessExpression");
+        field.addProperty("_java_type", "I");
+        field.addProperty("ownerClass", "example.Input");
+        field.addProperty("fieldOffset", 24);
+        field.add("owner", symbol("M_L'example.Input'_1"));
+        JsonObject binding = predicate("==", field,
+                symbol("M_I_field_input"));
+        binding.addProperty("_code_position",
+                "static void java.lang.System.symbolizeField"
+                        + "(jobject, jobject, jobject):-1");
+        JsonArray path = new JsonArray();
+        path.add(binding);
+        path.add(predicate(">", "M_I_field_input", "7"));
+
+        SolverPathContext context = SolverPathContext.fromPath(path,
+                Collections.<Integer>emptySet(), 1);
+
+        assertEquals(1, context.size());
+        assertEquals(binding, context.expressions().get(0));
+    }
+
     private static BranchWitness witness(String site, int unit,
                                          int occurrence, boolean outcome,
                                          String operator) {
@@ -89,17 +113,24 @@ public class BranchReplayContractTest {
 
     private static JsonObject predicate(String operator, String left,
                                         String right) {
+        return predicate(operator, symbol(left), symbol(right));
+    }
+
+    private static JsonObject predicate(String operator,
+                                        JsonObject leftExpression,
+                                        JsonObject rightExpression) {
         JsonObject result = new JsonObject();
-        JsonObject rightExpression = new JsonObject();
-        rightExpression.addProperty("_exp", right);
-        rightExpression.addProperty("_type", "SymbolExpression");
-        JsonObject leftExpression = new JsonObject();
-        leftExpression.addProperty("_type", "SymbolExpression");
-        leftExpression.addProperty("_exp", left);
         result.add("_right", rightExpression);
         result.addProperty("_op", operator);
         result.add("_left", leftExpression);
         result.addProperty("_type", "BinaryExpression");
+        return result;
+    }
+
+    private static JsonObject symbol(String value) {
+        JsonObject result = new JsonObject();
+        result.addProperty("_type", "SymbolExpression");
+        result.addProperty("_exp", value);
         return result;
     }
 

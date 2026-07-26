@@ -129,7 +129,7 @@ target/three-thread-rpc/candidate/candidate_result_manifest.json
 The schema-2 manifests use `state=CANDIDATE_READY` and
 `trustState=CANDIDATE_ONLY`; the Boolean and result artifacts additionally
 record `reachability=REACHABLE|UNREACHABLE`. The result manifest binds its four
-supporting artifacts by path, byte size, and SHA-256. The schema-2 relationship
+supporting artifacts by path and SHA-256. The schema-2 relationship
 catalog contains only `schemaVersion`, `kind`, `trustState`, and
 `relationships`. A discovered root may legitimately be non-influential when
 other scalar inputs remain existential, so the workflow reports exact rows
@@ -176,8 +176,8 @@ existential `int` roots, `input1` and `input2`: values below 10 are clamped to
 cross-method `producer#field:inputN` ports are canonicalized to the declared
 primitive fields only after exact static-chain and runtime owner-identity
 checks, with the base read preceding the leaf read and no intervening write to
-that exact leaf. The array relation closes with 2 cases and the map relation
-with 10.
+that exact leaf. Each relation closes over the feasible paths discovered for
+its requested output; the artifact does not promise a fixed case count.
 `dependent-scalar/` exercises a non-Boolean free scalar that affects a
 producer relation. `cross-method-fields/` crosses several helper calls and
 reads genuine instance/static field live-ins. `multitype/` combines Boolean,

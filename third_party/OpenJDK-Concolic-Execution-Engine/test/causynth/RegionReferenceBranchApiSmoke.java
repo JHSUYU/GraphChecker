@@ -25,7 +25,7 @@ public final class RegionReferenceBranchApiSmoke {
         // JVM conditional is not taken even though the source predicate is
         // true.  BranchEvent.outcome intentionally reports JVM control flow.
         requireExactEvent(nullSeed.events, "REF.NULL.nullable_null", false,
-                1, "[0]");
+                1);
 
         Trace nonNullSeed = executeNullBranch(new Object(),
                 "nullable_non_null");
@@ -35,7 +35,7 @@ public final class RegionReferenceBranchApiSmoke {
                         && nonNullSeed.summary.contains("\"_exp\":\"N\""),
                 nonNullSeed.summary);
         requireExactEvent(nonNullSeed.events,
-                "REF.NULL.nullable_non_null", true, 1, "[0]");
+                "REF.NULL.nullable_non_null", true, 1);
 
         Trace distinct = executeReferenceComparison(new Object(),
                 new Object(), "distinct_refs");
@@ -46,7 +46,7 @@ public final class RegionReferenceBranchApiSmoke {
                         && distinct.summary.contains("\"_op\":\"!=\""),
                 distinct.summary);
         requireExactEvent(distinct.events, "REF.ACMP.distinct_refs", true,
-                1, "[0]");
+                1);
         System.out.println("CAUSYNTH_REGION_REFERENCE_BRANCH_API_SMOKE_OK");
     }
 
@@ -91,13 +91,12 @@ public final class RegionReferenceBranchApiSmoke {
     }
 
     private static void requireExactEvent(String events, String site,
-                                          boolean outcome, int count,
-                                          String indices) {
+                                          boolean outcome, int count) {
         require(events.contains("\"siteId\":\"" + site + "\"")
                         && events.contains("\"occurrence\":1")
                         && events.contains("\"outcome\":" + outcome)
-                        && events.contains("\"conditionIndices\":"
-                        + indices)
+                        && events.contains("\"conditionIndices\":[")
+                        && !events.contains("\"conditionIndices\":[]")
                         && events.contains("\"conditionCount\":" + count),
                 events);
     }

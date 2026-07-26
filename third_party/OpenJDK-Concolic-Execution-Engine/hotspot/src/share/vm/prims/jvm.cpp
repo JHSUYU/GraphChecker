@@ -337,22 +337,22 @@ JVM_END
 
 JVM_ENTRY(jlong, JVM_StartConcolicRegion(JNIEnv *env, jclass ignored,
                                          jstring region_id,
-                                         jstring activation_id))
+                                         jstring task_id))
   JVMWrapper("JVM_StartConcolicRegion");
 #ifdef ENABLE_CONCOLIC
   ResourceMark rm(THREAD);
   const char *region = "";
-  const char *activation = "";
+  const char *task = "";
   if (region_id != NULL) {
     oop value = JNIHandles::resolve_non_null(region_id);
     region = java_lang_String::as_utf8_string(value);
   }
-  if (activation_id != NULL) {
-    oop value = JNIHandles::resolve_non_null(activation_id);
-    activation = java_lang_String::as_utf8_string(value);
+  if (task_id != NULL) {
+    oop value = JNIHandles::resolve_non_null(task_id);
+    task = java_lang_String::as_utf8_string(value);
   }
   return ConcolicMngr::startConcolicRegion((JavaThread*) THREAD,
-                                           region, activation);
+                                           region, task);
 #else
   return os::javaTimeNanos();
 #endif
@@ -580,25 +580,8 @@ JVM_ENTRY(void, JVM_ArrayCopy(JNIEnv *env, jclass ignored, jobject src, jint src
   arrayOop d = arrayOop(JNIHandles::resolve_non_null(dst));
   assert(s->is_oop(), "JVM_ArrayCopy: src not an oop");
   assert(d->is_oop(), "JVM_ArrayCopy: dst not an oop");
-#ifdef ENABLE_CONCOLIC
-  if (ConcolicMngr::can_do_concolic() && d->is_array()) {
-    ConcolicMngr::ctx->prepare_arraycopy_shadow(d);
-  }
-#endif
   // Do copy
   s->klass()->copy_array(s, src_pos, d, dst_pos, length, thread);
-#ifdef ENABLE_CONCOLIC
-  if (ConcolicMngr::can_do_concolic()) {
-    if (HAS_PENDING_EXCEPTION) {
-      // Object-array copies may have written a prefix before throwing an
-      // ArrayStoreException.  Without an exact copied-prefix report, the
-      // requested destination interval must be invalidated fail-closed.
-      ConcolicMngr::ctx->invalidate_arraycopy_shadow(d, dst_pos, length);
-    } else {
-      ConcolicMngr::ctx->arraycopy_shadow(s, src_pos, d, dst_pos, length);
-    }
-  }
-#endif
 JVM_END
 
 JVM_ENTRY(jstring, JVM_GetPcStr(JNIEnv *env, jclass ignored))

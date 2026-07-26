@@ -8,9 +8,7 @@ OUT=${OUT:-"$PWD/build/causynth-smoke"}
 mkdir -p "$OUT"
 "$JDK_HOME/bin/javac" -d "$OUT" \
   test/causynth/RegionApiSmoke.java \
-  test/causynth/RegionArrayCopyExceptionApiSmoke.java \
-  test/causynth/RegionArrayValueApiSmoke.java \
-  test/causynth/RegionArrayValueMapProjectionApiSmoke.java \
+  test/causynth/RegionContainerRelationApiSmoke.java \
   test/causynth/RegionBranchEventApiSmoke.java \
   test/causynth/RegionFieldApiSmoke.java \
   test/causynth/RegionMapApiSmoke.java \
@@ -21,6 +19,7 @@ mkdir -p "$OUT"
   test/causynth/RegionPausedSymbolizationSmoke.java \
   test/causynth/RegionLookupSwitchApiSmoke.java \
   test/causynth/RegionReferenceBranchApiSmoke.java \
+  test/causynth/RegionRepeatedFieldOwnerMapApiSmoke.java \
   test/causynth/RegionShadowStackLifecycleSmoke.java \
   test/causynth/RegionStringContainsApiSmoke.java \
   test/causynth/RegionStringConversionApiSmoke.java \
@@ -30,9 +29,7 @@ mkdir -p "$OUT"
 
 for smoke in \
   RegionApiSmoke \
-  RegionArrayCopyExceptionApiSmoke \
-  RegionArrayValueApiSmoke \
-  RegionArrayValueMapProjectionApiSmoke \
+  RegionContainerRelationApiSmoke \
   RegionBranchEventApiSmoke \
   RegionFieldApiSmoke \
   RegionMapApiSmoke \
@@ -43,6 +40,7 @@ for smoke in \
   RegionPausedSymbolizationSmoke \
   RegionLookupSwitchApiSmoke \
   RegionReferenceBranchApiSmoke \
+  RegionRepeatedFieldOwnerMapApiSmoke \
   RegionShadowStackLifecycleSmoke \
   RegionStringContainsApiSmoke \
   RegionStringConversionApiSmoke \

@@ -5,47 +5,41 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
-/** Canonical recognition of Map declarations carried by static artifacts. */
+/** Canonical static-type classifier for the V2 container algebra. */
 public final class JavaContainerTypes {
-    private static final Set<String> MAP_TYPES = Collections.unmodifiableSet(
-            new LinkedHashSet<>(Arrays.asList(
-                    "java.util.Map", "java.util.SortedMap",
-                    "java.util.NavigableMap", "java.util.HashMap",
-                    "java.util.LinkedHashMap", "java.util.TreeMap",
-                    "java.util.Hashtable", "java.util.WeakHashMap",
-                    "java.util.IdentityHashMap",
-                    "java.util.concurrent.ConcurrentMap",
-                    "java.util.concurrent.ConcurrentHashMap",
-                    "java.util.concurrent.ConcurrentNavigableMap",
-                    "java.util.concurrent.ConcurrentSkipListMap")));
+    public enum Shape {
+        NONE, INDEXED, ASSOCIATIVE
+    }
+
+    private static final Set<String> INDEXED =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "java.util.List", "java.util.AbstractList",
+                    "java.util.ArrayList", "java.util.Queue",
+                    "java.util.Deque", "java.util.ArrayDeque")));
+    private static final Set<String> ASSOCIATIVE =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "java.util.Map", "java.util.HashMap",
+                    "java.util.LinkedHashMap", "java.util.Set",
+                    "java.util.HashSet", "java.util.LinkedHashSet")));
 
     private JavaContainerTypes() {
     }
 
-    public static boolean isMap(String type) {
+    public static Shape shape(String type) {
+        String value = normalize(type);
+        if (value.startsWith("[") || value.endsWith("[]")) {
+            return Shape.INDEXED;
+        }
+        if (INDEXED.contains(value)) return Shape.INDEXED;
+        if (ASSOCIATIVE.contains(value)) return Shape.ASSOCIATIVE;
+        return Shape.NONE;
+    }
+
+    private static String normalize(String type) {
         String value = type == null ? "" : type.trim();
         if (value.startsWith("L") && value.endsWith(";")) {
-            value = value.substring(1, value.length() - 1)
-                    .replace('/', '.');
-        } else {
-            value = value.replace('/', '.');
+            value = value.substring(1, value.length() - 1);
         }
-        if (MAP_TYPES.contains(value)) {
-            return true;
-        }
-        if (value.isEmpty() || value.startsWith("[")
-                || value.endsWith("[]")) {
-            return false;
-        }
-        try {
-            ClassLoader loader = Thread.currentThread()
-                    .getContextClassLoader();
-            Class<?> declared = Class.forName(value, false,
-                    loader == null ? JavaContainerTypes.class
-                            .getClassLoader() : loader);
-            return java.util.Map.class.isAssignableFrom(declared);
-        } catch (Throwable unavailable) {
-            return false;
-        }
+        return value.replace('/', '.');
     }
 }

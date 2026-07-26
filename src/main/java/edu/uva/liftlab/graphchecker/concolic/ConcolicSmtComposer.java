@@ -3016,6 +3016,7 @@ public final class ConcolicSmtComposer {
                     collectExpressionInputPorts(expression,
                             selection.regionId(), consumedInputs);
                     emitExactCausalInputAliasesForMember(selection, slice,
+                            selection.outputClosure().causalEdges(),
                             consumedInputs);
                 }
             }
@@ -3023,13 +3024,14 @@ public final class ConcolicSmtComposer {
 
         private void emitExactCausalInputAliasesForMember(
                 RelationSummary selection, JsonObject slice,
+                List<JsonObject> causalEdges,
                 Set<String> consumedInputs) {
             if (consumedInputs.isEmpty()) return;
             JsonObject summary = selection.toJson();
             Map<String, List<String>> exactCells =
                     exactInputCells(slice, selection.regionId());
             Map<String, List<JsonObject>> adjacency =
-                    exactCausalAdjacency(slice);
+                    exactCausalAdjacency(slice, causalEdges);
             if (exactCells.isEmpty() || adjacency.isEmpty()) return;
 
             List<String> sources = new ArrayList<>();
@@ -3133,7 +3135,7 @@ public final class ConcolicSmtComposer {
         }
 
         private Map<String, List<JsonObject>> exactCausalAdjacency(
-                JsonObject slice) {
+                JsonObject slice, List<JsonObject> causalEdges) {
             Set<String> declared = new LinkedHashSet<>();
             for (JsonElement element : array(slice, "causalEdgeIds")) {
                 if (element.isJsonPrimitive()
@@ -3143,9 +3145,7 @@ public final class ConcolicSmtComposer {
             }
             Map<String, JsonObject> unique = new LinkedHashMap<>();
             Set<String> duplicates = new LinkedHashSet<>();
-            for (JsonElement element : array(slice, "causalEdges")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject edge = element.getAsJsonObject();
+            for (JsonObject edge : causalEdges) {
                 String id = string(edge, "edgeId");
                 if (id.isEmpty()
                         || unique.putIfAbsent(id, edge) != null) {
@@ -3596,9 +3596,10 @@ public final class ConcolicSmtComposer {
             if (id.isEmpty()) return;
             String cell = string(json, "cell");
             String javaType = materializedPortJavaType(json);
-            Sort sort = isMapCell(cell) || isMapType(javaType)
-                    ? Sort.MAP : isArrayType(javaType)
-                    ? Sort.ARRAY_VALUE : Sort.VALUE;
+            Sort sort = containerSort(javaType);
+            if (sort == Sort.VALUE) {
+                sort = containerCellSort(cell);
+            }
             ports.put(id, new Port(javaType, sort, input));
         }
 
@@ -3847,7 +3848,8 @@ public final class ConcolicSmtComposer {
     private static Sort sortOfJava(String type) {
         if (type == null) return Sort.VALUE;
         String normalized = type.replace('.', '/');
-        if (isArrayType(normalized)) return Sort.ARRAY_VALUE;
+        Sort container = containerSort(normalized);
+        if (container != Sort.VALUE) return container;
         String className = normalized.startsWith("L")
                 && normalized.endsWith(";") && normalized.length() > 2
                 ? normalized.substring(1, normalized.length() - 1)
@@ -3885,27 +3887,32 @@ public final class ConcolicSmtComposer {
         return value.startsWith("[") || value.endsWith("[]");
     }
 
-    static boolean isMapCell(String cell) {
+    private static Sort containerCellSort(String cell) {
         String value = firstNonBlank(cell).trim();
         Matcher parameter = Pattern.compile(
                 ">\\.param[0-9]+:([^#]+)(?:#.*)?$").matcher(value);
-        if (parameter.find() && isMapType(parameter.group(1))) {
-            return true;
+        if (parameter.find()) {
+            return containerSort(parameter.group(1));
         }
         Matcher field = Pattern.compile(
                 "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$")
                 .matcher(value);
-        if (field.matches() && isMapType(field.group(1))) {
-            return true;
+        if (field.matches()) {
+            return containerSort(field.group(1));
         }
         Matcher returned = Pattern.compile(
                 "^<[^:]+:\\s+([^<>\\s]+)\\s+[^<>\\s(]+\\([^>]*\\)>\\.return(?:#.*)?$")
                 .matcher(value);
-        return returned.matches() && isMapType(returned.group(1));
+        return returned.matches()
+                ? containerSort(returned.group(1)) : Sort.VALUE;
     }
 
-    private static boolean isMapType(String type) {
-        return JavaContainerTypes.isMap(type);
+    private static Sort containerSort(String type) {
+        JavaContainerTypes.Shape shape = JavaContainerTypes.shape(type);
+        return shape == JavaContainerTypes.Shape.ASSOCIATIVE
+                ? Sort.MAP
+                : shape == JavaContainerTypes.Shape.INDEXED
+                ? Sort.ARRAY_VALUE : Sort.VALUE;
     }
 
     private static boolean isJavaParseInt(String name) {

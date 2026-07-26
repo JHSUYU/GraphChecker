@@ -339,6 +339,19 @@ public final class ConcolicConstraintSolver {
                     Term value = term(expression, null,
                             origin + ":container-value");
                     if (value == null) return null;
+                    String stringValue = "";
+                    if (value.sort == Sort.STRING) {
+                        if (value.stringNullnessText.isEmpty()) {
+                            unsupported("ContainerStringNullness");
+                            return null;
+                        }
+                        stringValue = "false".equals(
+                                value.stringNullnessText)
+                                ? "(VString " + value.text + ")"
+                                : "(ite " + value.stringNullnessText
+                                + " (VRef nullRef) (VString "
+                                + value.text + "))";
+                    }
                     String boxed = value.sort == Sort.INT
                             ? "(VInt " + value.text + ")"
                             : value.sort == Sort.BOOL
@@ -346,7 +359,7 @@ public final class ConcolicConstraintSolver {
                             : value.sort == Sort.REF
                             ? "(VRef " + value.text + ")"
                             : value.sort == Sort.STRING
-                            ? "(VString " + value.text + ")"
+                            ? stringValue
                             : value.sort == Sort.FLOAT32
                             ? "(VFloat " + value.text + ")"
                             : value.sort == Sort.FLOAT64

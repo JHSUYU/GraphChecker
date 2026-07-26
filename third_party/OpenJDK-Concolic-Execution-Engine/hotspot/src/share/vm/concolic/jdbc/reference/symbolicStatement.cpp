@@ -11,6 +11,7 @@
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/reference/symbolicTimestamp.hpp"
 #include "concolic/reference/symbolicDate.hpp"
+#include "concolic/reference/containerSupport.hpp"
 
 long SymStmt::execute_counter = 0;
 int SymStmt::_global_query_id = 0;
@@ -325,7 +326,8 @@ Expression *SymStmt::get_param_exp(MethodSymbolizerHandle &handle, BasicType typ
       guarantee(false, (std::string("Not implemented setCharacterStream.cname:") + cname).c_str());
     }
   } else if (callee_name == "setBytes") {
-    value_exp = ArrayExpression::get_exp_of(handle.get_param<oop>(offset));
+    value_exp =
+        ContainerSupport::concrete_value(handle.get_param<oop>(offset));
   } else {
     guarantee(false, (std::string("Not implemented callee:") + callee_name).c_str());
   }

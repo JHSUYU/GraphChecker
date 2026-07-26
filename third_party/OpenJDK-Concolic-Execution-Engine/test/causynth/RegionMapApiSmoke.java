@@ -28,8 +28,8 @@ public final class RegionMapApiSmoke {
             throw new AssertionError("concrete lookup unexpectedly failed");
         }
         String summary = System.finishConcolicRegion();
-        require(summary.contains("java/util/HashMap get"), summary);
-        require(summary.contains("java/util/HashMap put"), summary);
+        require(summary.contains("\"operation\":\"READ\""), summary);
+        require(summary.contains("\"operation\":\"PUT\""), summary);
         require(summary.contains("map_input_allKeys"), summary);
         require(summary.contains("map_input_keyId"), summary);
         require(summary.contains("\"_op\":\"!=\""), summary);

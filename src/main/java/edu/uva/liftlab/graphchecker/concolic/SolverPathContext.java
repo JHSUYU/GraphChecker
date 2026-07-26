@@ -156,7 +156,8 @@ public final class SolverPathContext {
         JsonObject object = expression.getAsJsonObject();
         String type = primitiveString(object, "_type");
         if (!ContainerSmtCodec.EXPRESSION_TYPE.equals(type)
-                && !"MethodExpression".equals(type)) {
+                && !"MethodExpression".equals(type)
+                && !ContainerSmtCodec.handlesFieldBinding(expression)) {
             throw new IllegalArgumentException(
                     "unwitnessed path predicate is not an admitted "
                             + "non-branch constraint: " + type);

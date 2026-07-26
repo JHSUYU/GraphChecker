@@ -20,6 +20,25 @@ public final class RegionBranchEventApiSmoke {
         return count;
     }
 
+    private static boolean increasingConditionIndices(
+            String events, int expectedCount) {
+        String marker = "\"conditionIndices\":[";
+        int cursor = 0;
+        int previous = -1;
+        int count = 0;
+        while ((cursor = events.indexOf(marker, cursor)) >= 0) {
+            int start = cursor + marker.length();
+            int end = events.indexOf(']', start);
+            if (end < 0) return false;
+            int index = Integer.parseInt(events.substring(start, end));
+            if (index <= previous) return false;
+            previous = index;
+            count++;
+            cursor = end + 1;
+        }
+        return count == expectedCount;
+    }
+
     public static void main(String[] args) throws Exception {
         Input input = new Input();
         long status = System.startConcolicRegion(
@@ -234,9 +253,7 @@ public final class RegionBranchEventApiSmoke {
                 "expected five exact branch events: " + events);
         check(occurrences(events, "\"conditionCount\":1") == 5,
                 "every symbolic if must own one PC index: " + events);
-        check(events.contains("\"conditionIndices\":[0]")
-                        && events.contains("\"conditionIndices\":[1]")
-                        && events.contains("\"conditionIndices\":[4]"),
+        check(increasingConditionIndices(events, 5),
                 "PC indices are not exact/monotonic: " + events);
 
         String summary = System.finishConcolicRegion();

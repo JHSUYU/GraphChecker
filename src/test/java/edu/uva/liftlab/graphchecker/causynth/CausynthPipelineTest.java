@@ -101,7 +101,7 @@ public class CausynthPipelineTest {
                     "capture and descriptor counts differ");
         }
         JsonObject envelope = new JsonObject();
-        envelope.addProperty("schemaVersion", 1);
+        envelope.addProperty("schemaVersion", 2);
         envelope.addProperty("kind", "OUTPUT_CLOSURE_CONTRACT");
         JsonObject producer = new JsonObject();
         producer.addProperty("regionId", regionId);
@@ -109,6 +109,7 @@ public class CausynthPipelineTest {
                 regionId + "@TEST#call" + rootCallId);
         producer.addProperty("rootCallId", rootCallId);
         envelope.add("producer", producer);
+        envelope.add("causalEdges", new JsonArray());
         JsonArray members = new JsonArray();
         for (int index = 0; index < captures.size(); index++) {
             JsonObject capture = captures.get(index).getAsJsonObject();

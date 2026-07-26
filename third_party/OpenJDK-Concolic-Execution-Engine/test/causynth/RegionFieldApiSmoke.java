@@ -33,8 +33,7 @@ public final class RegionFieldApiSmoke {
         require(summary.contains("\"regionId\":\"REGION.field\""), summary);
         require(summary.contains("field_input_expiryDate"), summary);
         require(summary.contains("field_input_keyId"), summary);
-        require(summary.contains("array_init_expr"), summary);
-        require(summary.contains("_array_expr"), summary);
+        require(summary.contains("ContainerRelation"), summary);
         System.out.println("CAUSYNTH_REGION_FIELD_API_SMOKE_OK");
     }
 

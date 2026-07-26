@@ -21,7 +21,7 @@ public:
 
   static jlong startConcolic(JavaThread *thread);
   static jlong startConcolicRegion(JavaThread *thread, const char *region_id,
-                                   const char *activation_id);
+                                   const char *task_id);
   static jlong endConcolic();
   static void abandonPendingBranchForException(Thread *thread);
   static void abortCurrentContext(const char *reason);

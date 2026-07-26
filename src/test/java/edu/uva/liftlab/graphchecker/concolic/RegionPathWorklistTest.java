@@ -585,7 +585,7 @@ public class RegionPathWorklistTest {
                 : "<P: int result>::loopIndex");
         guard.addProperty("toCell", "<P: int result>");
         edges.add(guard);
-        slice.add("causalEdges", edges);
+        closure.add("causalEdges", edges);
         JsonArray edgeIds = new JsonArray();
         edgeIds.add("DF.INPUT");
         edgeIds.add("DF.LOOP.GUARD");
@@ -651,9 +651,10 @@ public class RegionPathWorklistTest {
         JsonArray members = new JsonArray();
         members.add(member);
         JsonObject closure = new JsonObject();
-        closure.addProperty("schemaVersion", 1);
+        closure.addProperty("schemaVersion", 2);
         closure.addProperty("kind", "OUTPUT_CLOSURE_CONTRACT");
         closure.add("producer", producer);
+        closure.add("causalEdges", new JsonArray());
         closure.add("members", members);
         return closure;
     }

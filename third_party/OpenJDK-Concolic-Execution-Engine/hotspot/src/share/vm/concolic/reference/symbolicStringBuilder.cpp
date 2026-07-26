@@ -3,7 +3,6 @@
 #include <concolic/exp/stringExpression.hpp>
 #include "concolic/reference/symbolicStringBuilder.hpp"
 #include "concolic/concolicMngr.hpp"
-#include "concolic/exp/arrayInitExpression.hpp"
 #include "concolic/exp/methodExpression.hpp"
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/utils.hpp"
@@ -128,13 +127,7 @@ int SymStrBuilder::prepare_param_helper(MethodSymbolizerHandle &handle,
     tty->cr();
 
     arrayOop arr_obj = handle.get_param<arrayOop>(locals_offset);
-    if (arr_obj->is_symbolic()) {
-      SymArr *sym_arr = ConcolicMngr::ctx->get_sym_array(arr_obj);
-      exp = new ArraySymbolExp(arr_obj->get_sym_rid(), sym_arr->get_version(),
-                               type);
-    } else {
-      exp = new ArrayInitExpression(NULL_SYM_RID, arr_obj);
-    }
+    exp = ConcolicMngr::ctx->container_state(arr_obj, "INDEXED");
   } else {
     tty->print_cr("unhandled String parameter types!");
     ShouldNotCallThis();

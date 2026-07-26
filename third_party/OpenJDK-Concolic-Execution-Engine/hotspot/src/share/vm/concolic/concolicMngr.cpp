@@ -1,5 +1,6 @@
 #include "concolic/concolicMngr.hpp"
 #include "concolic/exp/symbolExpression.hpp"
+#include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/threadContext.hpp"
 #include "concolic/utils.hpp"
@@ -79,17 +80,14 @@ BasicType boxed_primitive_type(oop value) {
       std::string(value->klass()->name()->as_C_string()));
 }
 
-bool array_value_is_symbolic(arrayOop array, BasicType component_type,
-                             const ArrayInternal *internal) {
-  if (array->is_symbolic()) return true;
+bool object_array_contains_symbolic_reference(arrayOop array,
+                                              BasicType component_type) {
+  if (component_type != T_OBJECT && component_type != T_ARRAY) return false;
   for (int index = 0; index < array->length(); ++index) {
-    if (internal != NULL && internal->has_expression(index)) return true;
-    if (component_type == T_OBJECT || component_type == T_ARRAY) {
-      oop element = objArrayOop(array)->obj_at(index);
-      if (existing_object_reference_expression(element) != NULL
-          && element != NULL) {
-        return true;
-      }
+    oop element = objArrayOop(array)->obj_at(index);
+    if (existing_object_reference_expression(element) != NULL
+        && element != NULL) {
+      return true;
     }
   }
   return false;
@@ -136,10 +134,10 @@ jlong ConcolicMngr::startConcolic(JavaThread *thread) {
 
 jlong ConcolicMngr::startConcolicRegion(JavaThread *thread,
                                         const char *region_id,
-                                        const char *activation_id) {
+                                        const char *task_id) {
   jlong result = startConcolic(thread);
   if (result == 0 && ctx != NULL) {
-    ctx->set_region_metadata(region_id, activation_id);
+    ctx->set_region_metadata(region_id, task_id);
   }
   return result;
 }
@@ -209,10 +207,22 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
     arrayOop array = arrayOop(obj);
     BasicType component_type =
         ArrayKlass::cast(array->klass())->element_type();
-    symbolic = array_value_is_symbolic(
-        array, component_type, ctx->find_array_internal(array));
+    symbolic = array->is_symbolic()
+        || object_array_contains_symbolic_reference(array, component_type);
+    if (symbolic && !array->is_symbolic()) {
+      for (int index = 0; index < array->length(); ++index) {
+        ctx->write_array_element(array, index,
+            ContainerSupport::concrete_value(
+                objArrayOop(array)->obj_at(index)));
+      }
+    }
     if (symbolic) {
       container_state = ctx->container_state(obj, "INDEXED");
+    }
+  } else if (symbolic && container_state == NULL) {
+    const char *shape = ContainerSupport::shape(obj);
+    if (shape != NULL) {
+      container_state = ctx->container_state(obj, shape);
     }
   }
   if (container_state != NULL) symbolic = true;
@@ -287,7 +297,7 @@ std::string ConcolicMngr::getRegionSummary() {
   writer.Key("regionId");
   writer.String(ctx == NULL ? "" : ctx->get_region_id().c_str());
   writer.Key("taskId");
-  writer.String(ctx == NULL ? "" : ctx->get_activation_id().c_str());
+  writer.String(ctx == NULL ? "" : ctx->get_task_id().c_str());
   writer.Key("threadContextId");
   writer.Int64(ctx == NULL ? 0 : ctx->get_context_id());
   writer.Key("pathConditionRecordingPaused");

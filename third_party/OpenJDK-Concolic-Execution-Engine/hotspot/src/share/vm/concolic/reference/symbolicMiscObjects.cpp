@@ -2,7 +2,6 @@
 
 #include "concolic/reference/symbolicEmailValidator.hpp"
 #include "concolic/concolicMngr.hpp"
-#include "concolic/exp/arrayInitExpression.hpp"
 #include "concolic/utils.hpp"
 
 #include "symbolicMiscObjects.h"

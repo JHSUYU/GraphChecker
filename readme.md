@@ -192,8 +192,8 @@ activation-local shadow state
       |
       +-- READ / WRITE
       +-- SIZE / IS_EMPTY / CONTAINS
-      +-- APPEND / INSERT / REMOVE / CLEAR
-      +-- VIEW / ITERATOR / NEXT / KEY / VALUE
+      +-- APPEND / INSERT / REMOVE / REMOVE_AT / CLEAR
+      +-- VIEW / ITERATOR / HAS_NEXT / NEXT / KEY / VALUE
       |
       v
 region-end ContainerRelation

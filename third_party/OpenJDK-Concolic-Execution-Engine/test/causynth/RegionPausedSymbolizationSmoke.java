@@ -39,15 +39,18 @@ public final class RegionPausedSymbolizationSmoke {
 
         System.pauseConcolicPathCondition();
         symbolizeFromPausedHelper(input);
+        String pausedBaseline = System.getPathCondition();
         // This is deliberately bookkeeping under the pause.  It must not
         // become part of the captured path condition.
         if (input != null) {
             sink++;
         }
+        require(pausedBaseline.equals(System.getPathCondition()),
+                "paused bookkeeping polluted PC");
         String whilePaused = System.getConcolicRegionSummary();
         require(has(whilePaused, "\"pathConditionRecordingPaused\":true"),
                 whilePaused);
-        require(has(whilePaused, "\"pathCondition\":[]"), whilePaused);
+        require(has(whilePaused, "paused_helper_value"), whilePaused);
         System.resumeConcolicPathCondition();
 
         boolean decision = input.value > 0;
@@ -79,12 +82,11 @@ public final class RegionPausedSymbolizationSmoke {
         require(found != null, "concrete map lookup unexpectedly failed");
         require(!"[]".equals(mapPc), "symbolic map get was not recorded");
         require(has(mapFinished, "paused_helper_values"), mapFinished);
-        require(has(mapFinished, "java/util/HashMap get"), mapFinished);
+        require(has(mapFinished, "\"operation\":\"READ\""), mapFinished);
 
-        // Array symbolization adds an explicit array-initialization
-        // constraint.  This exercises the temporary pause-depth drain: the
-        // initializer must be retained, the pause must be restored, and an
-        // ordinary Java branch while still paused must add nothing.
+        // Array symbolization installs an activation-local container state.
+        // This exercises the temporary pause-depth drain: the pause must be
+        // restored, and ordinary Java bookkeeping while paused adds nothing.
         ArrayInput arrayInput = new ArrayInput();
         started = System.startConcolicRegion(
                 "REGION.paused-array-symbolization",
@@ -101,15 +103,13 @@ public final class RegionPausedSymbolizationSmoke {
         require(beforePausedBranch.equals(afterPausedBranch),
                 "paused array bookkeeping polluted PC: "
                         + afterPausedBranch);
-        require(has(beforePausedBranch, "array_init_expr"),
-                beforePausedBranch);
         require(has(pausedArraySummary,
                 "\"pathConditionPauseDepth\":1"), pausedArraySummary);
         System.resumeConcolicPathCondition();
         boolean arrayDecision = arrayInput.entries[0].keyId > 0;
         String arrayFinished = System.finishConcolicRegion();
         require(arrayDecision, "unexpected array decision");
-        require(has(arrayFinished, "array_init_expr"), arrayFinished);
+        require(has(arrayFinished, "ContainerRelation"), arrayFinished);
         require(has(arrayFinished, "\"pathConditionPauseDepth\":0"),
                 arrayFinished);
         System.out.println("CAUSYNTH_REGION_PAUSED_SYMBOLIZATION_SMOKE_OK");

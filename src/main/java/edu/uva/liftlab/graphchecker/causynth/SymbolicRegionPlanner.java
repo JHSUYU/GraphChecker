@@ -2401,6 +2401,17 @@ final class SymbolicRegionPlanner {
                     && !string(edge.get("id")).isEmpty();
         }
 
+        private boolean exactStaticEdge(Map<String, Object> edge) {
+            String method = string(edge.get("method"));
+            int unitIndex = integer(edge.get("unitIndex"), -1);
+            return !isBoundary(edge)
+                    && exactStaticValueFlow(edge)
+                    && !method.isEmpty()
+                    && unitIndex >= 0
+                    && (method + "#u" + unitIndex).equals(string(
+                    edge.get("siteId")));
+        }
+
         /** Strict scalar allow-list; arrays, streams, maps, and opaque objects
          * deliberately do not become protocol-output demand roots. */
         private boolean closedProtocolScalarType(String type) {

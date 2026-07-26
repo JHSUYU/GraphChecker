@@ -10,6 +10,9 @@
 class MethodSymbolizerHandle;
 
 namespace ContainerSupport {
+const char *shape(oop value);
+bool indexed(oop value);
+bool associative(oop value);
 BasicType result_type(oop result, BasicType declared);
 std::string java_type(oop result, BasicType declared);
 Expression *concrete_value(oop value);
@@ -18,7 +21,7 @@ void constrain_result(MethodSymbolizerHandle &handle,
                       Expression *expression);
 void constrain_position(const char *shape, Expression *state,
                         Expression *position, bool allow_end = false);
-void attach_result(oop result, Expression *expression);
+void attach_result(oop result, Expression *expression, oop owner = NULL);
 }
 
 #endif  // ENABLE_CONCOLIC

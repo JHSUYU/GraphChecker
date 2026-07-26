@@ -121,6 +121,12 @@ public final class ConcolicSummaryImporter {
 
             JsonArray path = array(engine, "pathCondition").deepCopy();
             JsonArray mappings = branchMappings(raw, task, path, issues);
+            JsonElement replayContract = task.replayContract();
+            if (replayContract != null) {
+                issues.addAll(BranchReplayObservationValidator
+                        .validateEncoded(replayContract,
+                                array(raw, "branchMappings")));
+            }
             JsonObject outputs = outputExpressions(raw, task, issues);
             JsonArray symbolicInputs = symbolicInputs(raw);
 
@@ -149,7 +155,7 @@ public final class ConcolicSummaryImporter {
                     string(raw, "exceptionType"));
             summary.addProperty("relationallyComplete", issues.isEmpty());
 
-            if (task.replayContract() != null && !issues.isEmpty()) {
+            if (replayContract != null && !issues.isEmpty()) {
                 diagnostics.add(diagnostic(raw, index,
                         "PATH_REPLAY_ADMISSION_REJECTED",
                         String.join(";", issues)));
@@ -311,11 +317,8 @@ public final class ConcolicSummaryImporter {
         if (encoded == null || !encoded.isJsonObject()) return null;
         JsonObject wrapper = encoded.getAsJsonObject();
         JsonElement expression = wrapper.get("expression");
-        if (expression != null && !expression.isJsonNull()) {
-            return expression.deepCopy();
-        }
-        return "SYMBOLIC".equals(string(wrapper, "kind"))
-                ? wrapper.deepCopy() : null;
+        return expression != null && !expression.isJsonNull()
+                ? expression.deepCopy() : null;
     }
 
     private static JsonArray symbolicInputs(JsonObject raw) {

@@ -415,9 +415,9 @@ public final class System {
      * VM-owned thread context and are returned in the machine-readable region
      * summary.  This is the preferred entry point for graph-directed replay;
      * {@link #startConcolic()} remains available for existing clients.
-     */
+    */
     public static native long startConcolicRegion(String regionId,
-                                                   String activationId);
+                                                   String taskId);
 
     /**
      * End of our concolic execution

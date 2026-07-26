@@ -59,6 +59,8 @@ public class OutputClosureCodecTest {
         OutputClosureContract right = OutputClosureCodec.decode(
                 canonicalActivation("REGION.1.out.1", "<P: int y>", "DF.2"));
         JsonObject envelope = left.toJson();
+        JsonArray causalEdges = envelope.getAsJsonArray("causalEdges");
+        causalEdges.add(right.toJson().getAsJsonArray("causalEdges").get(0));
         JsonArray members = new JsonArray();
         members.add(right.toJson().getAsJsonArray("members").get(0));
         members.add(left.toJson().getAsJsonArray("members").get(0));
@@ -139,7 +141,7 @@ public class OutputClosureCodecTest {
                 .add("MISSING_CAPTURE");
 
         expectFailure(() -> OutputClosureCodec.decodeEnvelope(envelope),
-                "multi-output V1 requires");
+                "multi-output closure requires");
 
         JsonObject singleton = first.toJson();
         singleton.getAsJsonArray("members").get(0).getAsJsonObject()

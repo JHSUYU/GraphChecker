@@ -8,9 +8,10 @@ FieldAccessExpression::FieldAccessExpression(
     BasicType type, const std::string &java_type)
     : _owner(owner),
       _owner_class(owner_class == NULL ? "" : owner_class),
-      _field_offset(field_offset) {
-  _type = java_type.empty()
-      ? std::string(1, type2char(type)) : java_type;
+      _field_offset(field_offset),
+      _java_type(java_type.empty()
+                     ? std::string(1, type2char(type))
+                     : java_type) {
   if (_owner != NULL) _owner->inc_ref();
 }
 
@@ -29,7 +30,7 @@ void FieldAccessExpression::serialize_internal(
   writer.Key("_type");
   writer.String("FieldAccessExpression");
   writer.Key("_java_type");
-  writer.String(_type.c_str());
+  writer.String(_java_type.c_str());
   writer.Key("ownerClass");
   writer.String(_owner_class.c_str());
   writer.Key("fieldOffset");

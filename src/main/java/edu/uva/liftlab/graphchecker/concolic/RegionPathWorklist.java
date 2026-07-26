@@ -370,11 +370,9 @@ public final class RegionPathWorklist {
                         reachable.add(cell);
                     }
                 }
-                for (JsonElement element : array(slice, "causalEdges")) {
-                    if (element.isJsonObject()) {
-                        edges.add(element.getAsJsonObject());
-                    }
-                }
+            }
+            for (JsonObject edge : closure.causalEdges()) {
+                edges.add(edge);
             }
             if (!boundPorts.containsAll(execution.inputPorts())) return true;
 

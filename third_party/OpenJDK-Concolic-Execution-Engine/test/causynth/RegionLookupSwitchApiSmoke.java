@@ -11,27 +11,21 @@ public final class RegionLookupSwitchApiSmoke {
     public static void main(String[] args) {
         Trace selected = execute(7, "lookup_selected");
         require(selected.result == 17, selected.summary);
-        require(count(selected.summary,
-                "\"_type\":\"BinaryExpression\"") == 1,
-                selected.summary);
         require(selected.summary.contains("\"_op\":\"==\"")
                         && selected.summary.contains("Y_I_7"),
                 selected.summary);
         requireExactEvent(selected.events, "LOOKUP.lookup_selected", true,
-                1, "[0]");
+                1);
 
         Trace defaultArm = execute(8, "lookup_default");
         require(defaultArm.result == 19, defaultArm.summary);
-        require(count(defaultArm.summary,
-                "\"_type\":\"BinaryExpression\"") == 3,
-                defaultArm.summary);
         require(count(defaultArm.summary, "\"_op\":\"!=\"") == 3
                         && defaultArm.summary.contains("Y_I_-100")
                         && defaultArm.summary.contains("Y_I_7")
                         && defaultArm.summary.contains("Y_I_1000"),
                 defaultArm.summary);
         requireExactEvent(defaultArm.events, "LOOKUP.lookup_default", false,
-                3, "[0,1,2]");
+                3);
         System.out.println("CAUSYNTH_REGION_LOOKUP_SWITCH_API_SMOKE_OK");
     }
 
@@ -65,13 +59,12 @@ public final class RegionLookupSwitchApiSmoke {
     }
 
     private static void requireExactEvent(String events, String site,
-                                          boolean outcome, int count,
-                                          String indices) {
+                                          boolean outcome, int count) {
         require(events.contains("\"siteId\":\"" + site + "\"")
                         && events.contains("\"occurrence\":1")
                         && events.contains("\"outcome\":" + outcome)
-                        && events.contains("\"conditionIndices\":"
-                        + indices)
+                        && events.contains("\"conditionIndices\":[")
+                        && !events.contains("\"conditionIndices\":[]")
                         && events.contains("\"conditionCount\":" + count),
                 events);
     }

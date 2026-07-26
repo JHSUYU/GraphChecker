@@ -136,12 +136,61 @@ public final class ContainerSmtCodec {
                 string(expression.getAsJsonObject(), "_type"));
     }
 
+    public static boolean handlesFieldBinding(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return false;
+        JsonObject binary = expression.getAsJsonObject();
+        String position = string(binary, "_code_position");
+        if (!"BinaryExpression".equals(string(binary, "_type"))
+                || !"==".equals(string(binary, "_op"))
+                || position.indexOf("java.lang.System.symbolizeField(") < 0) {
+            return false;
+        }
+        return handlesField(binary.get("_left"))
+                && symbol(binary.get("_right"))
+                || handlesField(binary.get("_right"))
+                && symbol(binary.get("_left"));
+    }
+
+    private static boolean symbol(JsonElement expression) {
+        return expression != null && expression.isJsonObject()
+                && "SymbolExpression".equals(
+                string(expression.getAsJsonObject(), "_type"));
+    }
+
     public static Term field(JsonObject expression, Host host) {
         Term owner = host.operand(expression.get("owner"), Sort.REF);
         if (owner == null) return null;
-        return host.field(owner, string(expression, "ownerClass"),
-                JsonFields.integer(expression, "fieldOffset", -1),
-                string(expression, "_java_type"));
+        String ownerClass = string(expression, "ownerClass");
+        String javaType = string(expression, "_java_type");
+        if (boxedPrimitiveValue(owner, ownerClass, javaType)) {
+            return owner;
+        }
+        return host.field(owner, ownerClass,
+                JsonFields.integer(expression, "fieldOffset", -1), javaType);
+    }
+
+    private static boolean boxedPrimitiveValue(
+            Term owner, String ownerClass, String javaType) {
+        if ("java/lang/Boolean".equals(ownerClass)) {
+            return "Z".equals(javaType) && owner.sort == Sort.BOOL;
+        }
+        if ("java/lang/Float".equals(ownerClass)) {
+            return "F".equals(javaType) && owner.sort == Sort.FLOAT32;
+        }
+        if ("java/lang/Double".equals(ownerClass)) {
+            return "D".equals(javaType) && owner.sort == Sort.FLOAT64;
+        }
+        return ("java/lang/Byte".equals(ownerClass)
+                && "B".equals(javaType)
+                || "java/lang/Character".equals(ownerClass)
+                && "C".equals(javaType)
+                || "java/lang/Short".equals(ownerClass)
+                && "S".equals(javaType)
+                || "java/lang/Integer".equals(ownerClass)
+                && "I".equals(javaType)
+                || "java/lang/Long".equals(ownerClass)
+                && "J".equals(javaType))
+                && owner.sort == Sort.INT;
     }
 
     public static Term term(JsonObject expression, Host host) {
@@ -232,6 +281,24 @@ public final class ContainerSmtCodec {
                     + entry.index.text + ")";
             return new Term("(= " + selected + " " + value.text + ")",
                     Sort.BOOL);
+        }
+        if ("HAS_NEXT".equals(operation)) {
+            Sort stateSort = "INDEXED".equals(shape)
+                    ? Sort.INDEXED : Sort.ASSOCIATIVE;
+            Term state = host.operand(expression.get("receiver"), stateSort);
+            JsonArray positions = array(expression, "arguments");
+            Term position = positions.size() == 1
+                    ? host.operand(positions.get(0), Sort.INT) : null;
+            if (state == null || position == null) {
+                host.unsupported("ContainerRelation:" + shape
+                        + ":HAS_NEXT");
+                return null;
+            }
+            String size = stateSort == Sort.INDEXED
+                    ? "(indexed_size " + state.text + ")"
+                    : "(assoc_size " + state.text + ")";
+            return new Term("(and (<= 0 " + position.text + ") (< "
+                    + position.text + " " + size + "))", Sort.BOOL);
         }
         Term receiver = host.operand(expression.get("receiver"),
                 "INDEXED".equals(shape) ? Sort.INDEXED : Sort.ASSOCIATIVE);
@@ -328,6 +395,14 @@ public final class ContainerSmtCodec {
                         : new Term("(assoc_put " + receiver.text + " "
                         + key.text + " " + value.text + ")",
                         Sort.ASSOCIATIVE);
+            }
+            if ("REMOVE_AT".equals(operation)
+                    && arguments.size() == 1) {
+                Term index = host.operand(arguments.get(0), Sort.INT);
+                return index == null ? null
+                        : new Term("(assoc_remove " + receiver.text
+                        + " (assoc_key_at " + receiver.text + " "
+                        + index.text + "))", Sort.ASSOCIATIVE);
             }
             if ("REMOVE".equals(operation) && arguments.size() == 1) {
                 Term key = host.box(arguments.get(0));

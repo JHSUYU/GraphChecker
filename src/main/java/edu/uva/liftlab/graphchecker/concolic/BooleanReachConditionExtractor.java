@@ -178,10 +178,7 @@ public final class BooleanReachConditionExtractor {
         List<RootInput> scalarRoots = new ArrayList<>();
         for (PortInfo port : ports.sortedInputs()) {
             ScalarEncoding encoding = ScalarEncoding.of(port.descriptor);
-            if (!port.javaBoolean && encoding == null) continue;
-            if (port.javaBoolean) {
-                encoding = ScalarEncoding.INT;
-            }
+            if (encoding == null) continue;
             String solverTerm = encoding.solverTerm(port.id);
             String portTerm = "port__" + smtName(port.id);
             String nullnessSolverTerm = encoding == ScalarEncoding.STRING
@@ -384,12 +381,12 @@ public final class BooleanReachConditionExtractor {
         }
 
         private String literal(boolean value) {
-            return "(= " + solverTerm + " " + (value ? "1" : "0") + ")";
+            return "(= " + solverTerm + " "
+                    + (value ? "true" : "false") + ")";
         }
 
         private String domainFormula() {
-            return "(or (= " + solverTerm + " 0) (= " + solverTerm
-                    + " 1))";
+            return "true";
         }
 
         private JsonObject toJson() {
@@ -406,6 +403,7 @@ public final class BooleanReachConditionExtractor {
     }
 
     private enum ScalarEncoding {
+        BOOL("Bool", "bool", "VBool"),
         INT("Int", "int", "VInt"),
         FLOAT32("(_ FloatingPoint 8 24)", "float32", "VFloat"),
         FLOAT64("(_ FloatingPoint 11 53)", "float64", "VDouble"),
@@ -428,6 +426,8 @@ public final class BooleanReachConditionExtractor {
 
         private static ScalarEncoding of(String descriptor) {
             String value = firstNonBlank(descriptor);
+            if ("Z".equals(value)
+                    || "Ljava/lang/Boolean;".equals(value)) return BOOL;
             if ("B".equals(value) || "C".equals(value)
                     || "S".equals(value) || "I".equals(value)
                     || "J".equals(value)

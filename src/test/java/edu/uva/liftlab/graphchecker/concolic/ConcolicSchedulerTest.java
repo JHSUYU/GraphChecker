@@ -105,7 +105,7 @@ public class ConcolicSchedulerTest {
             JsonObject mapBinding = mapState.executionTasks.get(0)
                     .getAsJsonArray("inputActions").get(0)
                     .getAsJsonObject();
-            assertEquals("MAP_STATE_INPUT_OBSERVATION",
+            assertEquals("FIELD_ACCESS",
                     mapBinding.get("bindingMode").getAsString());
             assertFalse(mapBinding.has("mapStateObservationOnly"));
             assertFalse(mapBinding.has("modelControllable"));
@@ -356,6 +356,7 @@ public class ConcolicSchedulerTest {
         slice.add("staticSites", sites.deepCopy());
         slice.add("methods", new JsonArray());
         slice.add("causalEdgeIds", new JsonArray());
+        slice.add("causalEdges", new JsonArray());
         slice.add("captureBindings", captures.deepCopy());
         OutputClosureCodec.writeTo(activation, OutputClosureCodec.singleton(
                 "REGION.1", "REGION.1@test#call7", 7,
@@ -394,6 +395,7 @@ public class ConcolicSchedulerTest {
         slice.add("staticSites", new JsonArray());
         slice.add("methods", strings("<example.Updater: void run()>"));
         slice.add("causalEdgeIds", new JsonArray());
+        slice.add("causalEdges", new JsonArray());
         slice.add("captureBindings", new JsonArray());
         OutputClosureCodec.writeTo(goal, OutputClosureCodec.singleton(
                 "REGION.11", "REGION.11@test#call7", 7,

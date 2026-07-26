@@ -1,6 +1,5 @@
 #ifdef ENABLE_CONCOLIC
 
-#include "concolic/exp/methodExpression.hpp"
 #include "concolic/exp/containerExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
 #include "concolic/reference/containerSupport.hpp"
@@ -8,29 +7,19 @@
 #include "concolic/concolicMngr.hpp"
 #include "concolic/utils.hpp"
 
-static bool is_root_indexed_container(oop receiver) {
-  if (receiver == NULL || receiver->klass() == NULL
-      || receiver->klass()->name() == NULL) return false;
-  Symbol *name = receiver->klass()->name();
-  return name->equals("java/util/ArrayList")
-      || name->equals("java/util/AbstractList")
-      || name->equals("java/util/ArrayDeque")
-      || name->equals("java/util/concurrent/ConcurrentLinkedQueue");
-}
-
 std::set<std::string> SymList::target_class_names = init_target_class_names();
 
 std::set<std::string> SymList::init_target_class_names() {
   std::set<std::string> set;
   set.insert("java/util/List");
+  set.insert("java/util/Queue");
+  set.insert("java/util/Deque");
   set.insert("java/util/ArrayList");
   set.insert("java/util/AbstractList");
   set.insert("java/util/ArrayList$Itr");
   set.insert("java/util/ArrayList$ListItr");
   set.insert("java/util/ArrayDeque");
   set.insert("java/util/ArrayDeque$DeqIterator");
-  set.insert("java/util/concurrent/ConcurrentLinkedQueue");
-  set.insert("java/util/concurrent/ConcurrentLinkedQueue$Itr");
   return set;
 }
 
@@ -47,35 +36,13 @@ std::set<std::string> SymList::init_handle_method_names() {
   set.insert("clear");
   set.insert("size");
   set.insert("iterator");
+  set.insert("hasNext");
   set.insert("next");
   set.insert("offer");
   set.insert("poll");
   set.insert("peek");
   set.insert("element");
   return set;
-}
-
-std::map<std::string, bool> SymList::skip_method_names = init_skip_method_names();
-
-std::map<std::string, bool> SymList::init_skip_method_names() {
-  std::map<std::string, bool> map;
-  map["<init>"] = false;// really? TODO: check whether this is needed
-  map["sort"] = true;
-  map["iterator"] = true;
-  map["listIterator"] = true; // really???
-  map["spliterator"] = true; // really???
-  map["indexOf"] = true; // really???
-  map["entries"] = true; // really???
-  // not original List api, (belongs to hibernate.persistentBag)
-  map["getOrphans"] = false;
-  map["isSnapshotEmpty"] = false;
-  map["getSnapshot"] = false;
-  map["equalsSnapshot"] = false;
-  map["needsRecreate"] = false;
-  map["countOccurrences"] = false;
-  map["isWrapper"] = false;
-  map["forEach"] = false;
-  return map;
 }
 
 void SymList::init_register_class(MethodSymbolizer *m_symbolizer) {
@@ -87,24 +54,18 @@ void SymList::init_register_class(MethodSymbolizer *m_symbolizer) {
 
 bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &callee_name = handle.get_callee_name();
-  bool need_symbolize = true;
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
     bool recording = handle.general_check_param_symbolized();
     if (recording) {
       handle.general_prepare_param();
     }
-  } else {
-    std::map<std::string, bool>::iterator iter = skip_method_names.find(callee_name);
-    if (iter != skip_method_names.end()) {
-      need_symbolize = iter->second;
-    } else {
-      bool recording = handle.general_check_param_symbolized();
-//      handle.get_callee_method()->print_name(tty);
-//      tty->print_cr(" handled by SymList, need recording %c", recording ? 'Y' : 'N');
-    }
+    return recording;
   }
-
-  return need_symbolize;
+  if (handle.general_check_param_symbolized()) {
+    ConcolicMngr::ctx->abort_symbolic_execution(
+        "INDEXED_OPERATION_UNSUPPORTED");
+  }
+  return false;
 }
 
 
@@ -114,7 +75,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
   if (parameters.empty()) return NULL;
   oop receiver_object = handle.get_param<oop>(0);
   Expression *receiver = parameters[0];
-  bool root_container = is_root_indexed_container(receiver_object);
+  bool root_container = ContainerSupport::indexed(receiver_object);
   bool list_operation = root_container && (method == "add"
       || method == "offer"
       || method == "poll" || method == "peek" || method == "element"
@@ -142,7 +103,8 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *next = new ContainerExpression(
         "INDEXED", operation, receiver, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
-    return new ConExpression((jboolean)true);
+    return handle.get_result_type() == T_BOOLEAN
+        ? (Expression *)new ConExpression((jboolean)true) : NULL;
   }
   if (method == "set" && root_container && arguments.size() == 2) {
     ContainerSupport::constrain_position(
@@ -195,6 +157,9 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     oop result_object = handle.get_result_type() == T_OBJECT
         ? handle.get_result<oop>(T_OBJECT) : NULL;
     if (method == "poll" && result_object == NULL) {
+      exp_list_t no_arguments;
+      ConcolicMngr::record_path_condition(new ContainerExpression(
+          "INDEXED", "IS_EMPTY", receiver, no_arguments, T_BOOLEAN));
       return SymbolExpression::get(Sym_NULL);
     }
     exp_list_t first;
@@ -220,11 +185,32 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
     return NULL;
   }
+  if (method == "remove" && !root_container && arguments.empty()) {
+    int position =
+        ConcolicMngr::ctx->current_container_position(receiver_object) - 1;
+    Expression *root = ConcolicMngr::ctx->container_state(
+        receiver_object, "INDEXED");
+    if (root == NULL || position < 0) {
+      ConcolicMngr::ctx->abort_symbolic_execution(
+          "INDEXED_ITERATOR_REMOVE_WITHOUT_NEXT");
+      return NULL;
+    }
+    exp_list_t remove_arguments;
+    remove_arguments.push_back(new ConExpression((jint)position));
+    Expression *next = new ContainerExpression(
+        "INDEXED", "REMOVE", root, remove_arguments);
+    ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    ConcolicMngr::ctx->rewind_container_position(receiver_object);
+    return NULL;
+  }
 
   if ((method == "peek" || method == "element")
       && arguments.empty()) {
     if (method == "peek" && handle.get_result_type() == T_OBJECT
         && handle.get_result<oop>(T_OBJECT) == NULL) {
+      exp_list_t no_arguments;
+      ConcolicMngr::record_path_condition(new ContainerExpression(
+          "INDEXED", "IS_EMPTY", receiver, no_arguments, T_BOOLEAN));
       return SymbolExpression::get(Sym_NULL);
     }
     arguments.push_back(new ConExpression((jint)0));
@@ -235,6 +221,14 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     ConcolicMngr::ctx->abort_symbolic_execution(
         "ITERATOR_REMOVE_UNSUPPORTED");
     return NULL;
+  }
+  if (method == "hasNext" && arguments.empty()) {
+    arguments.push_back(new ConExpression((jint)
+        ConcolicMngr::ctx->current_container_position(receiver_object)));
+    Expression *result = new ContainerExpression(
+        "INDEXED", "HAS_NEXT", receiver, arguments, T_BOOLEAN);
+    ContainerSupport::constrain_result(handle, result);
+    return result;
   }
   const char *operation = method == "get"
           || method == "peek" || method == "element" ? "READ"
@@ -266,7 +260,8 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     ContainerSupport::constrain_result(handle, result);
   }
   if (result_object != NULL) {
-    ContainerSupport::attach_result(result_object, result);
+    ContainerSupport::attach_result(result_object, result,
+        method == "iterator" ? receiver_object : NULL);
   }
   return result;
 }

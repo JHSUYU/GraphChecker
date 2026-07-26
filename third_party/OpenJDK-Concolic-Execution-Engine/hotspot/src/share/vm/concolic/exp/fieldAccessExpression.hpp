@@ -13,6 +13,7 @@ class FieldAccessExpression : public Expression {
   Expression *_owner;
   std::string _owner_class;
   int _field_offset;
+  std::string _java_type;
 
  public:
   FieldAccessExpression(Expression *owner, const char *owner_class,

@@ -170,7 +170,7 @@ validate_cross_method_joint_output_artifacts() {
   local producer_cell='<edu.uva.liftlab.graphchecker.fixtures.CrossMethodExternalFieldThreeThreadWorkload$RpcBus: int a>'
   local witness_cell='<edu.uva.liftlab.graphchecker.fixtures.CrossMethodExternalFieldThreeThreadWorkload$RpcBus: int aWitness>'
 
-  require_file "cross-method runtime activation plan" "${region_plan}"
+  require_file "cross-method region plan" "${region_plan}"
   require_file "cross-method Producer A merged relation" "${merged}"
 
   jq -e -s --arg producer "${producer_cell}" --arg witness "${witness_cell}" \
@@ -277,7 +277,7 @@ validate_dependent_scalar_artifacts() {
   local -a path_closures merged_summaries
 
   require_file "dependent-scalar annotation target" "${target_resolution}"
-  require_file "dependent-scalar runtime activation plan" "${region_plan}"
+  require_file "dependent-scalar region plan" "${region_plan}"
   [[ -d "${campaign_root}" ]] \
     || die "dependent-scalar producer campaign not found: ${campaign_root}"
 
