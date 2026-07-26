@@ -4,6 +4,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.concolic.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
@@ -41,8 +43,12 @@ final class ConcolicInstrumentationSelections {
     }
 
     static InstrumentationPlan instrumentationPlanFromEnvironment() {
-        String planValue = taskPlanValue();
-        String selectedTask = selectedTaskValue();
+        String planValue = stringValue(firstNonBlank(
+                System.getProperty("causynth.concolic.task.plan"),
+                System.getenv("CAUSYNTH_CONCOLIC_TASK_PLAN")));
+        String selectedTask = stringValue(firstNonBlank(
+                System.getProperty("causynth.concolic.task.id"),
+                System.getenv("CAUSYNTH_CONCOLIC_TASK_ID")));
         if (planValue.isEmpty() || selectedTask.isEmpty()) {
             throw new IllegalStateException(
                     "Concolic instrumentation requires a task plan "
@@ -58,18 +64,6 @@ final class ConcolicInstrumentationSelections {
         }
     }
 
-    private static String taskPlanValue() {
-        return stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.task.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_TASK_PLAN")));
-    }
-
-    private static String selectedTaskValue() {
-        return stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.task.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_TASK_ID")));
-    }
-
     /**
      * One immutable view of the scheduler-selected execution task. The
      * instrumentation pipeline builds this once and derives every selection
@@ -78,18 +72,18 @@ final class ConcolicInstrumentationSelections {
     static final class InstrumentationPlan {
         private final Set<String> roots;
         private final ConcolicMaterializationSelection materializations;
-        private final ConcolicOutputCaptureSelection outputCaptures;
+        private final List<OutputCaptureTarget> outputCaptures;
         private final boolean boundedOutputClosureCoverageReady;
 
         private InstrumentationPlan(
                 JsonObject row, OutputClosureContract closure)
                 throws IOException {
             this.roots = Collections.singleton(
-                    jsonString(rootSelector(row), "method"));
+                    jsonString(JsonFields.object(row, "rootSelector"),
+                            "method"));
             this.materializations =
                     ConcolicMaterializationSelection.fromRow(row);
-            this.outputCaptures =
-                    ConcolicOutputCaptureSelection.from(closure);
+            this.outputCaptures = outputCaptureTargets(closure);
             this.boundedOutputClosureCoverageReady = closure != null
                     && boundedOutputClosureRowReady(row, closure);
         }
@@ -147,7 +141,8 @@ final class ConcolicInstrumentationSelections {
                 throw new IOException("Execution task " + selected
                         + " is not executable");
             }
-            String root = jsonString(rootSelector(selectedRow), "method");
+            String root = jsonString(JsonFields.object(selectedRow,
+                    "rootSelector"), "method");
             if (root.isEmpty()) {
                 throw new IOException("Execution task " + selected
                         + " has no root method");
@@ -179,7 +174,7 @@ final class ConcolicInstrumentationSelections {
             return materializations;
         }
 
-        ConcolicOutputCaptureSelection outputCaptures() {
+        List<OutputCaptureTarget> outputCaptures() {
             return outputCaptures;
         }
 
@@ -783,33 +778,15 @@ final class ConcolicInstrumentationSelections {
         }
 
         static List<String> exactArrayFieldPath(JsonObject action) {
-            List<String> path = new ArrayList<>();
             JsonElement direct = action.get("fieldPath");
-            if (direct != null && direct.isJsonArray()) {
-                for (JsonElement segment : direct.getAsJsonArray()) {
-                    if (!segment.isJsonPrimitive()
-                            || segment.getAsString().trim().isEmpty()) {
-                        return Collections.emptyList();
-                    }
-                    path.add(segment.getAsString().trim());
-                }
-                if (!path.isEmpty()) return path;
+            if (direct != null && (!direct.isJsonArray()
+                    || direct.getAsJsonArray().size() > 0)) {
+                return FieldPathSpec.stringArray(action, "fieldPath");
             }
-            JsonElement paths = action.get("fieldPaths");
-            if (paths == null || !paths.isJsonArray()
-                    || paths.getAsJsonArray().size() != 1
-                    || !paths.getAsJsonArray().get(0).isJsonArray()) {
-                return Collections.emptyList();
-            }
-            for (JsonElement segment : paths.getAsJsonArray().get(0)
-                    .getAsJsonArray()) {
-                if (!segment.isJsonPrimitive()
-                        || segment.getAsString().trim().isEmpty()) {
-                    return Collections.emptyList();
-                }
-                path.add(segment.getAsString().trim());
-            }
-            return path;
+            List<List<String>> paths = FieldPathSpec.paths(action,
+                    "fieldPaths");
+            return paths.size() == 1 ? paths.get(0)
+                    : Collections.emptyList();
         }
 
         static boolean looksLikeArrayType(String javaType) {
@@ -864,13 +841,7 @@ final class ConcolicInstrumentationSelections {
 
         static int intJson(JsonObject object, String field,
                                    int fallback) {
-            JsonElement value = object.get(field);
-            try {
-                return value == null || value.isJsonNull()
-                        ? fallback : value.getAsInt();
-            } catch (RuntimeException ignored) {
-                return fallback;
-            }
+            return JsonFields.integer(object, field, fallback);
         }
 
         boolean matches(String method, int unitIndex,
@@ -896,42 +867,22 @@ final class ConcolicInstrumentationSelections {
         }
     }
 
-    /** Exact activation-selected outbound argument sites. */
-    static final class ConcolicOutputCaptureSelection {
-        private final Map<String, OutputCaptureTarget> targetsByBindingId =
-                new LinkedHashMap<>();
-
-        private static ConcolicOutputCaptureSelection from(
-                OutputClosureContract closure) throws IOException {
-            ConcolicOutputCaptureSelection result =
-                    new ConcolicOutputCaptureSelection();
-            if (closure == null) {
-                return result;
-            }
-            for (JsonElement element : OutputClosureCodec.captures(closure)) {
-                OutputCaptureTarget target = new OutputCaptureTarget(
-                        element.getAsJsonObject());
-                if (target.occurrence <= 0) {
-                    throw new IOException("Output capture occurrence must "
-                            + "be positive: " + target.captureBindingId);
-                }
-                result.targetsByBindingId.put(
-                        target.captureBindingId, target);
-            }
-            return result;
+    private static List<OutputCaptureTarget> outputCaptureTargets(
+            OutputClosureContract closure) throws IOException {
+        if (closure == null) {
+            return Collections.emptyList();
         }
-
-        Set<String> methods() {
-            Set<String> result = new LinkedHashSet<>();
-            for (OutputCaptureTarget target : targetsByBindingId.values()) {
-                result.add(target.instrumentedMethod());
+        List<OutputCaptureTarget> result = new ArrayList<>();
+        for (JsonElement element : OutputClosureCodec.captures(closure)) {
+            OutputCaptureTarget target = new OutputCaptureTarget(
+                    element.getAsJsonObject());
+            if (target.occurrence <= 0) {
+                throw new IOException("Output capture occurrence must "
+                        + "be positive: " + target.captureBindingId);
             }
-            return result;
+            result.add(target);
         }
-
-        Collection<OutputCaptureTarget> targets() {
-            return targetsByBindingId.values();
-        }
+        return Collections.unmodifiableList(result);
     }
 
     static final class OutputCaptureTarget {
@@ -970,12 +921,9 @@ final class ConcolicInstrumentationSelections {
                     "occurrence", 0);
         }
 
-        boolean isFieldAssignmentRhs() {
-            return FIELD_ASSIGNMENT_RHS.equals(captureKind);
-        }
-
         String instrumentedMethod() {
-            return isFieldAssignmentRhs() ? method : callerMethod;
+            return FIELD_ASSIGNMENT_RHS.equals(captureKind) ? method
+                    : callerMethod;
         }
     }
 
@@ -1039,43 +987,17 @@ final class ConcolicInstrumentationSelections {
 
 
     private static String jsonString(JsonObject object, String field) {
-        if (object == null) return "";
-        JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? "" : value.getAsString();
-        } catch (RuntimeException ignored) {
-            return "";
-        }
-    }
-
-    private static JsonObject admission(JsonObject row) {
-        JsonElement value = row == null ? null : row.get("admission");
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : null;
-    }
-
-    private static JsonObject rootSelector(JsonObject row) {
-        JsonElement value = row == null ? null : row.get("rootSelector");
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : null;
+        return JsonFields.string(object, field);
     }
 
     private static boolean admissionExecutable(JsonObject row) {
-        JsonObject admission = admission(row);
-        return admission != null
-                && "EXECUTABLE".equals(jsonString(admission, "state"));
+        return "EXECUTABLE".equals(jsonString(
+                JsonFields.object(row, "admission"), "state"));
     }
 
     private static boolean jsonBoolean(JsonObject object, String field,
                                        boolean fallback) {
-        JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
+        return JsonFields.bool(object, field, fallback);
     }
 
     static String stringValue(Object value) {
@@ -1095,11 +1017,7 @@ final class ConcolicInstrumentationSelections {
     }
 
     static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) {
-                return value.trim();
-            }
-        }
-        return null;
+        String value = JsonFields.firstNonBlank(values);
+        return value.isEmpty() ? null : value;
     }
 }

@@ -12,7 +12,6 @@ import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -83,22 +82,87 @@ public final class RegionPathWorklist {
      * execution task ids.
      */
     public static String stablePathKey(JsonObject summary) {
-        return stablePathKey(summary, ExplorationScope.from(summary, null));
+        ExplorationScope scope = ExplorationScope.from(summary, null);
+        AlphaNormalizer alpha = new AlphaNormalizer(summary);
+        return stablePathKey(summary, scope, alpha,
+                stableRuntimeBindings(summary, alpha));
     }
 
     private static String stablePathKey(JsonObject summary,
-                                        ExplorationScope scope) {
-        AlphaNormalizer alpha = new AlphaNormalizer(summary);
+                                        ExplorationScope scope,
+                                        AlphaNormalizer alpha,
+                                        String runtimeBindings) {
         StringBuilder value = new StringBuilder();
         component(value, string(summary, "regionId"));
         component(value, scope.identity);
         component(value, alphaCanonical(summary.get("pathCondition"), alpha));
         component(value, alphaCanonical(summary.get("outputExpressions"), alpha));
         component(value, alphaCanonical(summary.get("heapEffects"), alpha));
-        component(value, stableRuntimeBindings(summary, alpha));
+        component(value, runtimeBindings);
         component(value, string(summary, "normalExit"));
         component(value, string(summary, "exceptionType"));
         return sha256(value.toString());
+    }
+
+    /** Canonical, once-decoded view consumed by every worklist phase. */
+    private static final class SummaryPath {
+        private final JsonObject summary;
+        private final String region;
+        private final ExplorationScope scope;
+        private final AlphaNormalizer alpha;
+        private final String runtimeBindings;
+        private final String pathKey;
+        private final List<SummaryBranchMapping> mappings;
+        private final String mappingIssue;
+
+        private SummaryPath(JsonObject summary, ExplorationScope scope,
+                            AlphaNormalizer alpha, String runtimeBindings,
+                            String pathKey,
+                            List<SummaryBranchMapping> mappings,
+                            String mappingIssue) {
+            this.summary = summary;
+            this.region = string(summary, "regionId");
+            this.scope = scope;
+            this.alpha = alpha;
+            this.runtimeBindings = runtimeBindings;
+            this.pathKey = pathKey;
+            this.mappings = mappings;
+            this.mappingIssue = mappingIssue;
+        }
+
+        private static SummaryPath from(JsonObject summary, JsonObject task) {
+            ExplorationScope scope = ExplorationScope.from(summary, task);
+            AlphaNormalizer alpha = new AlphaNormalizer(summary);
+            String bindings = stableRuntimeBindings(summary, alpha);
+            String pathKey = stablePathKey(summary, scope, alpha, bindings);
+            List<SummaryBranchMapping> mappings = Collections.emptyList();
+            String issue = "";
+            try {
+                mappings = SummaryBranchMapping.fromSummary(summary);
+            } catch (IllegalArgumentException malformed) {
+                issue = firstNonBlank(malformed.getMessage(), "UNKNOWN");
+            }
+            return new SummaryPath(summary, scope, alpha, bindings, pathKey,
+                    mappings, issue);
+        }
+
+        private JsonArray prefixBefore(int conditionIndex) {
+            JsonArray prefix = new JsonArray();
+            JsonArray conditions = array(summary, "pathCondition");
+            for (int index = 0; index < conditionIndex; index++) {
+                prefix.add(conditions.get(index).deepCopy());
+            }
+            return prefix;
+        }
+
+        private String flipKey(SummaryBranchMapping mapping,
+                               boolean desiredOutcome) {
+            return stableFlipKey(region, scope.identity, mapping.siteId(),
+                    mapping.occurrence(), desiredOutcome,
+                    alphaCanonical(prefixBefore(mapping.summaryPcIndex()),
+                            alpha),
+                    runtimeBindings);
+        }
     }
 
     private static final class Planner {
@@ -106,7 +170,7 @@ public final class RegionPathWorklist {
         private final Map<String, JsonObject> taskById =
                 new LinkedHashMap<>();
         private final Map<String, JsonObject> records = new LinkedHashMap<>();
-        private final List<JsonObject> summaries = new ArrayList<>();
+        private final List<SummaryPath> paths = new ArrayList<>();
         private final List<JsonObject> tasks = new ArrayList<>();
         private final List<JsonObject> gaps = new ArrayList<>();
         private final List<JsonObject> deferredObservations =
@@ -120,11 +184,6 @@ public final class RegionPathWorklist {
                 new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
-        private final Map<JsonObject, List<SummaryBranchMapping>>
-                branchMappings = new IdentityHashMap<>();
-        private final Map<JsonObject, String> branchMappingIssues =
-                new IdentityHashMap<>();
-
         private Planner(List<JsonObject> summaries,
                         List<JsonObject> executionTasks,
                         List<JsonObject> explorationRecords,
@@ -139,26 +198,15 @@ public final class RegionPathWorklist {
                 if (!key.isEmpty()) this.records.put(key, record);
             }
             for (JsonObject summary : safe(summaries)) {
-                ClosureGoalKind.fromTask(summary);
-                this.summaries.add(summary);
+                paths.add(SummaryPath.from(summary, taskById.get(
+                        string(summary, "taskId"))));
             }
-            for (JsonObject summary : this.summaries) {
-                try {
-                    branchMappings.put(summary,
-                            SummaryBranchMapping.fromSummary(summary));
-                } catch (IllegalArgumentException malformed) {
-                    branchMappingIssues.put(summary,
-                            malformed.getMessage());
-                }
-            }
-            Collections.sort(this.summaries, Comparator.comparing(value ->
-                    string(value, "regionId") + "\n"
-                            + stablePathKey(value)));
+            Collections.sort(paths, Comparator.comparing(value ->
+                    value.region + "\n" + value.pathKey));
         }
 
         private Result run() {
-            indexWitnessedBranchPositions();
-            indexObservedFlipCoverage();
+            indexObservedCoverage();
             Set<String> seenPaths = new LinkedHashSet<>();
             Set<String> observedRegions = new TreeSet<>();
             Map<String, ExplorationScope> observedScopes =
@@ -169,23 +217,18 @@ public final class RegionPathWorklist {
                         task);
                 observedScopes.put(scope.identity, scope);
             }
-            for (JsonObject summary : summaries) {
-                String region = string(summary, "regionId");
+            for (SummaryPath path : paths) {
+                JsonObject summary = path.summary;
+                String region = path.region;
                 if (region.isEmpty()) continue;
-                JsonObject task = taskById.get(string(summary,
-                        "taskId"));
-                ExplorationScope scope = ExplorationScope.from(summary,
-                        task);
-
-                String pathKey = stablePathKey(summary, scope);
+                String pathKey = path.pathKey;
                 if (!seenPaths.add(region + "\n" + pathKey)) continue;
                 observedRegions.add(region);
-                observedScopes.put(scope.identity, scope);
+                observedScopes.put(path.scope.identity, path.scope);
                 increment(pathCountByRegion, region);
-                String branchMappingIssue = branchMappingIssues.get(summary);
-                if (branchMappingIssue != null) {
+                if (!path.mappingIssue.isEmpty()) {
                     gap("INVALID_BRANCH_MAPPING_SCHEMA",
-                            branchMappingIssue, region, pathKey, "", -1);
+                            path.mappingIssue, region, pathKey, "", -1);
                     continue;
                 }
                 if (!bool(summary, "relationallyComplete", false)) {
@@ -199,8 +242,7 @@ public final class RegionPathWorklist {
                             pathKey, "", -1);
                     continue;
                 }
-                planSummary(summary, scope, pathKey,
-                        branchMappings.get(summary));
+                planSummary(path);
                 if (tasks.size() >= bounds.maxTasks) break;
             }
 
@@ -251,29 +293,21 @@ public final class RegionPathWorklist {
             Map<String, String> payloadByPath = new LinkedHashMap<>();
             Map<String, JsonObject> caseByPath = new LinkedHashMap<>();
             Map<String, JsonObject> bindingsByKey = new LinkedHashMap<>();
-            for (JsonObject summary : summaries) {
-                if (!ClosureGoalKind.fromTask(summary)
-                        .capturesOutputRelation()) {
+            for (SummaryPath path : paths) {
+                JsonObject summary = path.summary;
+                if (!path.scope.goalKind.capturesOutputRelation()) {
                     continue;
                 }
-                OutputClosureContract contract;
-                try {
-                    contract = OutputClosureCodec.decode(summary);
-                } catch (IllegalArgumentException malformed) {
-                    gap("INVALID_OUTPUT_CLOSURE",
-                            firstNonBlank(malformed.getMessage(), "UNKNOWN"),
-                            string(summary, "regionId"), "", "", -1);
-                    continue;
-                }
+                OutputClosureContract contract = path.scope.contract;
                 if (!outputIdentity.equals(CanonicalJson.render(
                         contract.toJson()))) {
                     gap("OUTPUT_CLOSURE_SCOPE_MISMATCH",
                             "CLOSED_PATHS_HAVE_DIFFERENT_OUTPUT_CLOSURES",
-                            string(summary, "regionId"), "", "", -1);
+                            path.region, "", "", -1);
                     continue;
                 }
 
-                String pathKey = stablePathKey(summary);
+                String pathKey = path.pathKey;
                 String payload = stableCasePayload(summary);
                 String previous = payloadByPath.putIfAbsent(pathKey, payload);
                 if (previous != null) {
@@ -385,25 +419,22 @@ public final class RegionPathWorklist {
                     .equals(new TreeSet<>(outputPorts));
         }
 
-        private void planSummary(
-                JsonObject summary, ExplorationScope scope, String pathKey,
-                List<SummaryBranchMapping> mappings) {
-            JsonArray conditions = array(summary, "pathCondition");
+        private void planSummary(SummaryPath path) {
             List<SummaryBranchMapping> candidates = new ArrayList<>();
-            for (SummaryBranchMapping mapping : mappings) {
+            for (SummaryBranchMapping mapping : path.mappings) {
                 String site = mapping.siteId();
-                if (!scope.branchSites.contains(site)) {
+                if (!path.scope.branchSites.contains(site)) {
                     continue;
                 }
                 if (mapping.isConcreteObservation()) {
                     if (!mapping.isExplore()
                             || coveredConcreteObservation(
-                            scope, mapping)) {
+                            path.scope, mapping)) {
                         continue;
                     }
                     deferObservation("UNMAPPED_BRANCH",
                             "NO_NORMALIZED_CONDITION",
-                            string(summary, "regionId"), pathKey, site,
+                            path.region, path.pathKey, site,
                             mapping.occurrence());
                     continue;
                 }
@@ -424,49 +455,37 @@ public final class RegionPathWorklist {
 
             int limit = Math.min(candidates.size(), bounds.maxFlipsPerPath);
             if (candidates.size() > limit) {
-                gap("BOUND_REACHED", "MAX_FLIPS_PER_PATH", string(summary,
-                                "regionId"), pathKey, "", -1);
+                gap("BOUND_REACHED", "MAX_FLIPS_PER_PATH", path.region,
+                        path.pathKey, "", -1);
             }
             for (int index = 0; index < limit; index++) {
                 if (tasks.size() >= bounds.maxTasks) {
-                    gap("BOUND_REACHED", "MAX_TASKS", string(summary,
-                                    "regionId"), pathKey, "", -1);
+                    gap("BOUND_REACHED", "MAX_TASKS", path.region,
+                            path.pathKey, "", -1);
                     return;
                 }
-                emitTask(summary, scope, pathKey, conditions,
-                        mappings, candidates.get(index));
+                emitTask(path, candidates.get(index));
             }
         }
 
-        private void emitTask(
-                JsonObject summary, ExplorationScope scope, String pathKey,
-                JsonArray conditions, List<SummaryBranchMapping> mappings,
-                SummaryBranchMapping mapping) {
-            int conditionIndex = mapping.summaryPcIndex();
+        private void emitTask(SummaryPath path,
+                              SummaryBranchMapping mapping) {
+            JsonObject summary = path.summary;
             BranchReplayContract replay;
             try {
-                replay = BranchReplayContract.fromSummary(summary, mappings,
+                replay = BranchReplayContract.fromSummary(summary,
+                        path.mappings,
                         mapping);
             } catch (IllegalArgumentException incompleteWitness) {
                 gap("INVALID_BRANCH_WITNESS_PREFIX",
                         "BRANCH_WITNESS_OR_NON_BRANCH_CONTEXT_DOES_NOT_"
                                 + "PARTITION_SUMMARY_PC_PREFIX",
-                        string(summary, "regionId"), pathKey,
+                        path.region, path.pathKey,
                         mapping.siteId(), mapping.occurrence());
                 return;
             }
-            JsonArray prefix = new JsonArray();
-            for (int index = 0; index < conditionIndex; index++) {
-                prefix.add(conditions.get(index).deepCopy());
-            }
             boolean desired = replay.requiredTakenOutcome();
-            String region = string(summary, "regionId");
-            String site = replay.source().siteId();
-            int occurrence = replay.source().occurrence();
-            AlphaNormalizer alpha = new AlphaNormalizer(summary);
-            String key = stableFlipKey(region, scope.identity, site,
-                    occurrence, desired, alphaCanonical(prefix, alpha),
-                    stableRuntimeBindings(summary, alpha));
+            String key = path.flipKey(mapping, desired);
 
             JsonObject previous = records.get(key);
             if (previous != null && terminal(previous)) {
@@ -490,15 +509,15 @@ public final class RegionPathWorklist {
             task.addProperty("schemaVersion", 3);
             task.addProperty("kind", "REGION_PATH_FLIP");
             task.addProperty("queryKey", key);
-            task.addProperty("regionId", region);
+            task.addProperty("regionId", path.region);
             task.addProperty("goalId", string(summary, "goalId"));
-            scope.goalKind.writeToTask(task);
+            path.scope.goalKind.writeToTask(task);
             task.addProperty("sourceSummaryId", string(summary, "summaryId"));
-            task.addProperty("sourcePathKey", pathKey);
+            task.addProperty("sourcePathKey", path.pathKey);
             task.addProperty("sourceTaskId", string(summary, "taskId"));
-            if (scope.contract != null) {
+            if (path.scope.contract != null) {
                 task.add(OutputClosureContract.FIELD,
-                        scope.contract.toJson());
+                        path.scope.contract.toJson());
             }
             replay.addTo(task);
             task.add("dynamicFieldBindings", array(summary,
@@ -506,46 +525,32 @@ public final class RegionPathWorklist {
             tasks.add(task);
         }
 
-        /**
-         * Indexes only predicates whose immutable witness is an exact member
-         * of an admitted summary path condition.  This is later used to
-         * distinguish a genuine missing symbolic frontier from a VM-attested
-         * concrete occurrence of an already modeled static branch position.
-         */
-        private void indexWitnessedBranchPositions() {
-            for (JsonObject summary : summaries) {
-                if (!bool(summary, "relationallyComplete", false)) {
+        /** Indexes exact witnessed positions and already explored frontiers. */
+        private void indexObservedCoverage() {
+            for (SummaryPath path : paths) {
+                if (!bool(path.summary, "relationallyComplete", false)) {
                     continue;
                 }
-                JsonObject task = taskById.get(string(summary,
-                        "taskId"));
-                ExplorationScope scope = ExplorationScope.from(summary,
-                        task);
-                List<SummaryBranchMapping> mappings =
-                        branchMappings.get(summary);
-                if (mappings == null) continue;
-                for (SummaryBranchMapping mapping : mappings) {
+                for (SummaryBranchMapping mapping : path.mappings) {
                     if (!mapping.isWitnessed() || !mapping.isExplore()) {
                         continue;
                     }
                     witnessedBranchPositions.add(branchPosition(
-                            scope, mapping));
+                            path.scope, mapping));
+                    if (!path.region.isEmpty()
+                            && path.scope.branchSites.contains(
+                            mapping.siteId())) {
+                        observedFlipKeys.add(path.flipKey(mapping,
+                                mapping.sourceTakenOutcome()));
+                    }
                 }
             }
         }
 
-        /**
-         * A concrete VM branch has no solver predicate and therefore is not
-         * itself flippable.  It is safe to omit from the worklist only when
-         * the same dynamic branch position has an immutable witnessed
-         * predicate on another admitted path. A witness from another loop
-         * occurrence is not interchangeable: the data reaching the same
-         * static instruction may differ between iterations.
-         */
         private boolean coveredConcreteObservation(
                 ExplorationScope scope, SummaryBranchMapping mapping) {
-            if (!mapping.isConcreteObservation()) return false;
-            return witnessedBranchPositions.contains(branchPosition(
+            return mapping.isConcreteObservation()
+                    && witnessedBranchPositions.contains(branchPosition(
                     scope, mapping));
         }
 
@@ -553,52 +558,6 @@ public final class RegionPathWorklist {
                                       SummaryBranchMapping mapping) {
             return scope.identity + "\n" + mapping.siteId()
                     + "\n" + mapping.occurrence();
-        }
-
-        /**
-         * Indexes exact branch frontiers already represented by complete
-         * output-closure summaries.  This avoids replaying the reverse edge
-         * after both sides of a branch have already been observed, while the
-         * full stable flip identity prevents cross-prefix or cross-object
-         * guesses.
-         */
-        private void indexObservedFlipCoverage() {
-            for (JsonObject summary : summaries) {
-                if (!bool(summary, "relationallyComplete", false)) {
-                    continue;
-                }
-                String region = string(summary, "regionId");
-                if (region.isEmpty()) continue;
-                JsonObject task = taskById.get(string(summary,
-                        "taskId"));
-                ExplorationScope scope = ExplorationScope.from(summary,
-                        task);
-
-                JsonArray conditions = array(summary, "pathCondition");
-                List<SummaryBranchMapping> mappings =
-                        branchMappings.get(summary);
-                if (mappings == null) continue;
-                AlphaNormalizer alpha = new AlphaNormalizer(summary);
-                for (SummaryBranchMapping mapping : mappings) {
-                    if (!mapping.isWitnessed()
-                            || !mapping.isExplore()) continue;
-                    String site = mapping.siteId();
-                    if (!scope.branchSites.contains(site)) {
-                        continue;
-                    }
-                    int occurrence = mapping.occurrence();
-                    int conditionIndex = mapping.summaryPcIndex();
-                    JsonArray prefix = new JsonArray();
-                    for (int index = 0; index < conditionIndex; index++) {
-                        prefix.add(conditions.get(index).deepCopy());
-                    }
-                    observedFlipKeys.add(stableFlipKey(region,
-                            scope.identity, site, occurrence,
-                            mapping.sourceTakenOutcome(),
-                            alphaCanonical(prefix, alpha),
-                            stableRuntimeBindings(summary, alpha)));
-                }
-            }
         }
 
         private JsonObject manifest(boolean hasObservedPath,
@@ -666,9 +625,8 @@ public final class RegionPathWorklist {
             if (!observedRegions.isEmpty()) return "";
 
             Set<String> inputRegions = new TreeSet<>();
-            for (JsonObject summary : summaries) {
-                String region = string(summary, "regionId");
-                if (!region.isEmpty()) inputRegions.add(region);
+            for (SummaryPath path : paths) {
+                if (!path.region.isEmpty()) inputRegions.add(path.region);
             }
             for (JsonObject task : taskById.values()) {
                 String region = string(task, "regionId");
@@ -767,31 +725,18 @@ public final class RegionPathWorklist {
 
         private static ExplorationScope from(JsonObject summary,
                                              JsonObject executionTask) {
-            ClosureGoalKind summaryGoal = summary == null ? null
-                    : ClosureGoalKind.fromTask(summary);
-            ClosureGoalKind taskGoal = executionTask == null ? null
-                    : ClosureGoalKind.fromTask(executionTask);
-            String summaryGoalId = summary == null ? ""
-                    : string(summary, "goalId");
-            String taskGoalId = executionTask == null ? ""
-                    : string(executionTask, "goalId");
-            if (summaryGoal != null && taskGoal != null
-                    && (summaryGoal != taskGoal
-                    || !summaryGoalId.equals(taskGoalId))) {
-                throw new IllegalArgumentException(
-                        "summary and execution task goals conflict");
-            }
-            ClosureGoalKind goalKind = summaryGoal != null
-                    ? summaryGoal : taskGoal;
-            String goalId = !summaryGoalId.isEmpty()
-                    ? summaryGoalId : taskGoalId;
-            if (goalKind == null || goalId.isEmpty()) {
+            JsonObject canonical = summary != null ? summary : executionTask;
+            if (canonical == null) {
                 throw new IllegalArgumentException(
                         "closure goal is required");
             }
+            ClosureGoalKind goalKind = ClosureGoalKind.fromTask(canonical);
+            String goalId = string(canonical, "goalId");
+            if (goalId.isEmpty()) throw new IllegalArgumentException(
+                    "closure goal is required");
             if (goalKind.capturesTargetReach()) {
                 JsonObject source = executionTask != null
-                        ? executionTask : summary;
+                        ? executionTask : canonical;
                 Set<String> sites = new LinkedHashSet<>();
                 String targetMethod = string(source, "targetMethod");
                 for (JsonElement element : array(source, "branches")) {
@@ -808,32 +753,17 @@ public final class RegionPathWorklist {
                     }
                 }
                 String region = firstNonBlank(string(source, "regionId"),
-                        string(summary, "regionId"));
+                        string(canonical, "regionId"));
                 String instance = firstNonBlank(string(source,
-                        "regionInstanceId"), string(summary,
+                        "regionInstanceId"), string(canonical,
                         "regionInstanceId"));
                 return new ExplorationScope(goalKind, goalId, null, sites,
                         "TARGET_REACH_CLOSURE_V1\n" + goalId + "\n"
                                 + region + "\n" + instance + "\n"
                                 + targetMethod);
             }
-            OutputClosureContract summaryContract = decode(summary);
-            OutputClosureContract taskContract =
-                    decode(executionTask);
-            if (summaryContract != null && taskContract != null
-                    && (!summaryContract.demandKey().equals(
-                    taskContract.demandKey())
-                    || !summaryContract.closureFingerprint().equals(
-                    taskContract.closureFingerprint()))) {
-                throw new IllegalArgumentException(
-                        "summary and execution task outputClosure conflict");
-            }
-            OutputClosureContract contract = summaryContract != null
-                    ? summaryContract : taskContract;
-            if (contract == null) {
-                throw new IllegalArgumentException(
-                        "canonical outputClosure is required");
-            }
+            OutputClosureContract contract = OutputClosureCodec.decode(
+                    canonical);
             Set<String> sites = new LinkedHashSet<>(
                     contract.executionScope().branchSites());
             String demand = contract.demandKey();
@@ -841,11 +771,6 @@ public final class RegionPathWorklist {
             return new ExplorationScope(goalKind, goalId, contract, sites,
                     "OUTPUT_RELATION_CLOSURE_V1\n" + goalId + "\n"
                             + demand + "\n" + fingerprint);
-        }
-
-        private static OutputClosureContract decode(JsonObject value) {
-            if (value == null) return null;
-            return OutputClosureCodec.decode(value);
         }
     }
 
@@ -911,20 +836,17 @@ public final class RegionPathWorklist {
                 "engineArrayInputBindings")) {
             ordered.add(element);
         }
-        Collections.sort(ordered, new Comparator<JsonElement>() {
-            @Override
-            public int compare(JsonElement left, JsonElement right) {
-                if (!left.isJsonObject() || !right.isJsonObject()) {
-                    return CanonicalJson.render(left).compareTo(
-                            CanonicalJson.render(right));
-                }
-                JsonObject l = left.getAsJsonObject();
-                JsonObject r = right.getAsJsonObject();
-                int port = string(l, "inputPort").compareTo(
-                        string(r, "inputPort"));
-                return port != 0 ? port : string(l, "inputCell").compareTo(
-                        string(r, "inputCell"));
+        Collections.sort(ordered, (left, right) -> {
+            if (!left.isJsonObject() || !right.isJsonObject()) {
+                return CanonicalJson.render(left).compareTo(
+                        CanonicalJson.render(right));
             }
+            JsonObject l = left.getAsJsonObject();
+            JsonObject r = right.getAsJsonObject();
+            int port = string(l, "inputPort").compareTo(
+                    string(r, "inputPort"));
+            return port != 0 ? port : string(l, "inputCell").compareTo(
+                    string(r, "inputCell"));
         });
         for (JsonElement element : ordered) {
             if (!element.isJsonObject()) {

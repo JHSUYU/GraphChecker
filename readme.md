@@ -2141,7 +2141,16 @@ signature；Runtime Planner 对强制的 frozen static graph 采用唯一严格 
 Importer 只信任 canonical `InputActionCatalog` 和 versioned output closure，不再重复读取
 static region input schema，也不再保留缺 `captureBindingId`/`captureKind` 的旧 fallback。
 坏静态图现在在读取边界给出明确异常，而不会继续产生貌似可执行的 activation。当前手写
-生产 Java 为 68,654 行；快速回归为 68 项并全部通过。
+生产 Java 为 68,654 行。
+
+容器字段执行 contract 随后一次性切到 schema V2 `CONTAINER_SNAPSHOT`：Runtime 在首次
+container observation 按 exact index/identity、declared owner/type、occurrence 与
+activation-local object token 原子 materialize，删除已无 writer 的 V1
+`FIELD_ACCESS_HOOK` 二次 selector；后续 owner-wide hook 只复用 binding 或作为 readback
+忽略，region-exit coverage gate 仍保留。InstrumentationPlan 直接持有 canonical capture
+list，不再建立第二个 wrapper/index；Worklist 为每个 summary 一次构造 `SummaryPath`，
+供 path key、branch mapping、coverage、flip task 和 CLOSED relation 共同消费。当前手写
+生产 Java 为 68,304 行；快速回归为 69 项并全部通过。
 
 ### 明确不能删除
 

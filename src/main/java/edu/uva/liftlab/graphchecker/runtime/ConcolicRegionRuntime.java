@@ -963,16 +963,12 @@ public final class ConcolicRegionRuntime {
                 continue;
             }
             ContainerFieldResolution containerResolution =
-                    active.dynamicContainerFieldBinding(action, owner,
-                            leafOwner, leafFieldSignature);
+                    active.dynamicContainerFieldBinding(action, leafOwner,
+                            leafFieldSignature);
             if (containerResolution.declared) {
                 if (containerResolution.ignored) {
-                    // FIELD_ACCESS hooks are owner-wide.  A read of the same
-                    // declared field on an object outside the activation's
-                    // exact container is not this input family.  Required
-                    // exact selectors are checked once more at region exit,
-                    // so ignoring the unrelated owner cannot hide a missing
-                    // selected element.
+                    // Schema V2 already materialized the exact leaf from its
+                    // container snapshot. Coverage is checked at region exit.
                     continue;
                 } else if (!containerResolution.resolved()) {
                     active.addUnresolvedOnce(action.symbol
@@ -4687,18 +4683,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static final class ContainerElementMatch {
-        private final ContainerElementFieldBindingSpec spec;
-        private final int resolvedElementIndex;
-
-        private ContainerElementMatch(
-                ContainerElementFieldBindingSpec spec,
-                int resolvedElementIndex) {
-            this.spec = spec;
-            this.resolvedElementIndex = resolvedElementIndex;
-        }
-    }
-
     private static final class DeclaredArrayInputType {
         private final String javaType;
         private final String authority;
@@ -6658,9 +6642,6 @@ public final class ConcolicRegionRuntime {
             for (ContainerElementFieldBindingSpec spec
                     : activation.containerBindingsForInput(
                     containerAction.symbol)) {
-                if (!spec.materializeFromContainerSnapshot()) {
-                    continue;
-                }
                 String attempt = spec.bindingId + "\n"
                         + container.objectToken;
                 if (!materializedContainerSnapshots.add(attempt)) {
@@ -6791,7 +6772,7 @@ public final class ConcolicRegionRuntime {
         }
 
         private ContainerFieldResolution dynamicContainerFieldBinding(
-                SymbolizeAction action, Object accessOwner, Object leafOwner,
+                SymbolizeAction action, Object leafOwner,
                 String fieldSignature) {
             List<ContainerElementFieldBindingSpec> declared = activation
                     .containerBindingsForBase(action.symbol);
@@ -6810,91 +6791,10 @@ public final class ConcolicRegionRuntime {
                             new DynamicFieldSelection(existing, false));
                 }
             }
-
-            List<ContainerElementMatch> matches =
-                    new ArrayList<>();
-            List<String> fatalProblems = new ArrayList<>();
-            for (ContainerElementFieldBindingSpec spec : declared) {
-                if (spec.materializeFromContainerSnapshot()) {
-                    // This declaration is consumed eagerly when its exact
-                    // container input is observed.  A later owner-wide field
-                    // hook is an alias/readback, not a second selector.
-                    continue;
-                }
-                String structural = spec.structuralValidationError(
-                        activation, action, leafOwner, fieldSignature);
-                if (!structural.isEmpty()) {
-                    fatalProblems.add(spec.bindingId + "=" + structural);
-                    continue;
-                }
-                ContainerInputObservation container = containerInputs.get(
-                        spec.containerInputPort);
-                if (container == null) {
-                    fatalProblems.add(spec.bindingId
-                            + "=container input has not been observed");
-                    continue;
-                }
-                if (container.ambiguous) {
-                    fatalProblems.add(spec.bindingId
-                            + "=container input instance is ambiguous");
-                    continue;
-                }
-                int resolvedIndex = spec.resolveElementIndex(
-                        container.container, accessOwner);
-                if (resolvedIndex < 0) {
-                    String resolution = spec.elementResolutionError(
-                            container.container, accessOwner);
-                    if (!spec.unrelatedOwner(container.container,
-                            accessOwner)) {
-                        fatalProblems.add(spec.bindingId + "="
-                                + resolution);
-                    }
-                    continue;
-                }
-                matches.add(new ContainerElementMatch(spec,
-                        resolvedIndex));
-            }
-            if (!fatalProblems.isEmpty()) {
-                return ContainerFieldResolution.unresolved(
-                        "container selector validation failed ["
-                                + String.join("; ", fatalProblems) + "]");
-            }
-            if (matches.isEmpty()) {
-                // The field hook is intentionally owner-wide.  Exact
-                // declaration coverage is checked at region exit, so an
-                // unrelated same-field owner can be ignored here without
-                // allowing the selected array element to disappear.
-                return ContainerFieldResolution.ignored();
-            }
-            if (matches.size() != 1) {
-                return ContainerFieldResolution.unresolved(
-                        "multiple explicit selectors matched the same owner");
-            }
-            ContainerElementMatch match = matches.get(0);
-            ContainerElementFieldBindingSpec spec = match.spec;
-            String effectiveSite = spec.fieldMaterializationSiteId;
-            int effectiveOccurrence = nextFieldMaterializationOccurrence(
-                    action.symbol, effectiveSite);
-            String selectorProblem = spec.effectiveSelectorError(
-                    effectiveSite, effectiveOccurrence);
-            if (!selectorProblem.isEmpty()) {
-                return ContainerFieldResolution.unresolved(spec.bindingId
-                        + "=" + selectorProblem);
-            }
-            ContainerInputObservation container = containerInputs.get(
-                    spec.containerInputPort);
-            if (byField == null) {
-                byField = new LinkedHashMap<>();
-                dynamicFieldsByOwner.put(leafOwner, byField);
-            }
-            DynamicFieldBinding binding = new DynamicFieldBinding(this,
-                    action, accessOwner, leafOwner, fieldSignature,
-                    effectiveSite, effectiveOccurrence, spec, container,
-                    match.resolvedElementIndex);
-            byField.put(fieldKey, binding);
-            dynamicFieldBindings.put(binding.dynamicBindingId, binding);
-            return ContainerFieldResolution.resolved(
-                    new DynamicFieldSelection(binding, true));
+            // Canonical schema V2 bindings are materialized atomically from
+            // the first container snapshot. A later owner-wide field hook is
+            // only an alias/readback, never a second selector.
+            return ContainerFieldResolution.ignored();
         }
 
         private long nextRuntimeEventSequence() {
@@ -8331,8 +8231,6 @@ public final class ConcolicRegionRuntime {
         private static final String DISCOVER_UNIQUE_IDENTITY_INDEX =
                 "DISCOVER_UNIQUE_IDENTITY_INDEX";
 
-        private final int schemaVersion;
-        private final String kind;
         private final String bindingId;
         private final String baseInputSymbol;
         private final String containerInputPort;
@@ -8340,7 +8238,6 @@ public final class ConcolicRegionRuntime {
         private final String selectorAuthority;
         private final int elementIndex;
         private final int elementOccurrence;
-        private final String materializationMode;
         private final String fieldMaterializationSiteId;
         private final List<String> fieldPath = new ArrayList<>();
         private final String declaredFieldSignature;
@@ -8348,8 +8245,13 @@ public final class ConcolicRegionRuntime {
         private final String declaredFieldType;
 
         private ContainerElementFieldBindingSpec(JsonObject json) {
-            this.schemaVersion = integer(json, "schemaVersion", 1);
-            this.kind = string(json, "kind");
+            if (integer(json, "schemaVersion", -1) != 2
+                    || !KIND.equals(string(json, "kind"))
+                    || !"CONTAINER_SNAPSHOT".equals(string(json,
+                    "materializationMode"))) {
+                throw new IllegalArgumentException(
+                        "unsupported container element binding contract");
+            }
             this.bindingId = string(json, "bindingId");
             this.baseInputSymbol = string(json, "baseInputSymbol");
             this.containerInputPort = string(json, "containerInputPort");
@@ -8360,9 +8262,6 @@ public final class ConcolicRegionRuntime {
                     this.elementIndex >= 0 ? EXACT_ARRAY_INDEX : "");
             this.elementOccurrence = integer(json, "elementOccurrence",
                     integer(json, "occurrence", -1));
-            this.materializationMode = firstNonBlank(string(json,
-                    "materializationMode"), this.schemaVersion == 1
-                    ? "FIELD_ACCESS_HOOK" : "");
             this.fieldMaterializationSiteId = string(json,
                     "fieldMaterializationSiteId");
             for (JsonElement element : array(json, "fieldPath")) {
@@ -8382,13 +8281,6 @@ public final class ConcolicRegionRuntime {
                                                  SymbolizeAction action,
                                                  Object leafOwner,
                                                  String fieldSignature) {
-            boolean supported = schemaVersion == 1
-                    && "FIELD_ACCESS_HOOK".equals(materializationMode)
-                    || schemaVersion == 2
-                    && "CONTAINER_SNAPSHOT".equals(materializationMode);
-            if (!supported || !KIND.equals(kind)) {
-                return "unsupported generic binding schema/kind";
-            }
             if (bindingId.isEmpty() || baseInputSymbol.isEmpty()
                     || containerInputPort.isEmpty()
                     || containerInputCell.isEmpty()) {
@@ -8414,9 +8306,8 @@ public final class ConcolicRegionRuntime {
             } else {
                 return "unsupported or missing selector authority";
             }
-            int baseActionCount = materializeFromContainerSnapshot()
-                    ? activation.declaredActionCount(baseInputSymbol)
-                    : activation.actionCount(baseInputSymbol);
+            int baseActionCount = activation.declaredActionCount(
+                    baseInputSymbol);
             if (baseActionCount != 1
                     || activation.actionCount(containerInputPort) != 1) {
                 return "base or container action is not unique";
@@ -8456,11 +8347,6 @@ public final class ConcolicRegionRuntime {
             return "";
         }
 
-        private boolean materializeFromContainerSnapshot() {
-            return schemaVersion == 2
-                    && "CONTAINER_SNAPSHOT".equals(materializationMode);
-        }
-
         private boolean exactIndex() {
             return EXACT_ARRAY_INDEX.equals(selectorAuthority);
         }
@@ -8480,86 +8366,10 @@ public final class ConcolicRegionRuntime {
         }
 
         private boolean requiresExactCoverage() {
-            return (schemaVersion == 1
-                    && "FIELD_ACCESS_HOOK".equals(materializationMode)
-                    || materializeFromContainerSnapshot())
-                    && KIND.equals(kind)
-                    && EXACT_ARRAY_INDEX.equals(selectorAuthority)
+            return EXACT_ARRAY_INDEX.equals(selectorAuthority)
                     && !bindingId.isEmpty() && !baseInputSymbol.isEmpty()
                     && elementIndex >= 0 && elementOccurrence > 0
                     && !fieldMaterializationSiteId.isEmpty();
-        }
-
-        private int resolveElementIndex(Object container,
-                                        Object leafOwner) {
-            if (container == null || !container.getClass().isArray()) {
-                return -1;
-            }
-            int length = Array.getLength(container);
-            if (EXACT_ARRAY_INDEX.equals(selectorAuthority)) {
-                if (elementIndex < 0 || elementIndex >= length) return -1;
-                return Array.get(container, elementIndex) == leafOwner
-                        ? elementIndex : -1;
-            }
-            if (!DISCOVER_UNIQUE_IDENTITY_INDEX.equals(
-                    selectorAuthority)) {
-                return -1;
-            }
-            int selected = -1;
-            for (int index = 0; index < length; index++) {
-                if (Array.get(container, index) != leafOwner) continue;
-                if (selected >= 0) return -1;
-                selected = index;
-            }
-            return selected;
-        }
-
-        private String elementResolutionError(Object container,
-                                              Object leafOwner) {
-            if (container == null || !container.getClass().isArray()) {
-                return "container is not an observed array";
-            }
-            int length = Array.getLength(container);
-            if (EXACT_ARRAY_INDEX.equals(selectorAuthority)) {
-                if (elementIndex < 0 || elementIndex >= length) {
-                    return "element index is outside the observed array";
-                }
-                return "array element identity does not equal field owner";
-            }
-            int identities = 0;
-            for (int index = 0; index < length; index++) {
-                if (Array.get(container, index) == leafOwner) identities++;
-            }
-            return identities == 0
-                    ? "field owner is absent from the observed array"
-                    : "field owner occurs more than once in the observed "
-                    + "array; identity index is ambiguous";
-        }
-
-        /**
-         * True only for an ordinary owner-wide hook which cannot be this
-         * declaration.  Invalid containers, out-of-range exact selectors,
-         * and repeated discovery identities remain fatal rather than being
-         * mistaken for unrelated reads.
-         */
-        private boolean unrelatedOwner(Object container, Object leafOwner) {
-            if (container == null || !container.getClass().isArray()) {
-                return false;
-            }
-            int length = Array.getLength(container);
-            if (EXACT_ARRAY_INDEX.equals(selectorAuthority)) {
-                return elementIndex >= 0 && elementIndex < length
-                        && Array.get(container, elementIndex) != leafOwner;
-            }
-            if (!DISCOVER_UNIQUE_IDENTITY_INDEX.equals(selectorAuthority)) {
-                return false;
-            }
-            for (int index = 0; index < length; index++) {
-                if (Array.get(container, index) == leafOwner) {
-                    return false;
-                }
-            }
-            return true;
         }
     }
 
@@ -9704,19 +9514,18 @@ public final class ConcolicRegionRuntime {
             this.outputCaptures = new ArrayList<>();
             InputActionCatalog inputActions = replayable
                     ? InputActionCatalog.decode(json) : null;
-            JsonArray materializations = inputActions == null
-                    ? new JsonArray() : inputActions.symbolic();
             JsonArray declaredActions = inputActions == null
                     ? new JsonArray() : inputActions.all();
             for (JsonElement element : declaredActions) {
                 if (element.isJsonObject()) {
-                    this.declaredSymbolize.add(new SymbolizeAction(
-                            element.getAsJsonObject()));
+                    JsonObject encoded = element.getAsJsonObject();
+                    SymbolizeAction action = new SymbolizeAction(encoded);
+                    this.declaredSymbolize.add(action);
+                    if (InputActionCatalog.Mode.SYMBOLIC.name().equals(
+                            string(encoded, "mode"))) {
+                        this.symbolize.add(action);
+                    }
                 }
-            }
-            for (JsonElement element : materializations) {
-                this.symbolize.add(new SymbolizeAction(
-                        element.getAsJsonObject()));
             }
             JsonArray branches = array(json, "branches");
             for (JsonElement element : branches) {

@@ -648,6 +648,81 @@ public class ConcolicRegionRuntimeTest {
         }
     }
 
+    @Test
+    public void materializesSchemaV2ContainerSnapshotAtExactIndexAndIgnoresUnrelatedOwner()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.ContainerSnapshot: void run()>";
+        String base = "REGION.ARRAY.in.element.id";
+        String container = "REGION.ARRAY.in.elements";
+        String bindingId = "BIND.ARRAY.ELEMENT.ID";
+        String site = root + "#u6";
+        int selectedIndex = 1;
+        int occurrence = 1;
+        String dynamic = ConcolicRegionRuntime.dynamicFieldSymbolForTests(
+                base, site, occurrence);
+
+        JsonObject activation = symbolicTask(
+                "ACT.CONTAINER.SNAPSHOT.V2", root, 1);
+        activation.addProperty("test", "mock-symbolic-test");
+        JsonArray actions = genericArrayActions(base, container, root);
+        JsonArray catalog = new JsonArray();
+        JsonObject containerAction = actions.get(0).getAsJsonObject();
+        containerAction.addProperty("mode", "SYMBOLIC");
+        containerAction.addProperty("bindingMode",
+                "CONTAINER_INPUT_OBSERVATION");
+        containerAction.addProperty("arrayFieldObservationOnly", true);
+        containerAction.addProperty("containerObservationAuthority",
+                "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1");
+        catalog.add(containerAction);
+        JsonObject leafAction = actions.get(1).getAsJsonObject();
+        leafAction.addProperty("mode", "DECLARATION_ONLY");
+        catalog.add(leafAction);
+        activation.add("inputActions", catalog);
+        activation.add("containerElementFieldBindings", singleton(
+                genericArrayBinding(bindingId, base, container,
+                        "EXACT_ARRAY_INDEX", selectedIndex, occurrence, site)));
+        activation.add("modelAssignments", singleton(genericArrayAssignment(
+                bindingId, base, container, dynamic, site, occurrence,
+                selectedIndex, "41")));
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results, "mock-symbolic-test");
+        try {
+            DelayedExpressionEngine.reset();
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    DelayedExpressionEngine.class);
+            GenericArrayEnvelope envelope = new GenericArrayEnvelope(3);
+            Current selected = envelope.elements[selectedIndex];
+            Current unrelated = new Current();
+            runGenericArrayActivation(root, envelope,
+                    java.util.Arrays.asList(selected, unrelated));
+
+            assertEquals(41, selected.id);
+            assertEquals(7, unrelated.id);
+            JsonObject row = resultRows(results).get(0);
+            assertEquals(0, row.getAsJsonArray("unresolvedInputs").size());
+            JsonArray bindings = row.getAsJsonArray("dynamicFieldBindings");
+            assertEquals(1, bindings.size());
+            JsonObject selector = bindings.get(0).getAsJsonObject()
+                    .getAsJsonObject("containerSelector");
+            assertEquals(selectedIndex,
+                    selector.get("elementIndex").getAsInt());
+            assertEquals(occurrence,
+                    selector.get("elementOccurrence").getAsInt());
+            assertTrue(selector.get("complete").getAsBoolean());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            DelayedExpressionEngine.reset();
+            folder.delete();
+        }
+    }
+
 
 
 
@@ -1511,8 +1586,9 @@ public class ConcolicRegionRuntimeTest {
             String selectorAuthority, int elementIndex,
             int elementOccurrence, String fieldMaterializationSiteId) {
         JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 1);
+        binding.addProperty("schemaVersion", 2);
         binding.addProperty("kind", "ARRAY_ELEMENT_FIELD");
+        binding.addProperty("materializationMode", "CONTAINER_SNAPSHOT");
         binding.addProperty("bindingId", bindingId);
         binding.addProperty("baseInputSymbol", baseSymbol);
         binding.addProperty("containerInputPort", containerSymbol);

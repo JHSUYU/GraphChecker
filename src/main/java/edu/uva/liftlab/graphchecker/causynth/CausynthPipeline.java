@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.AccessorCallTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicBranchSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
-import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicOutputCaptureSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.OutputCaptureTarget;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
@@ -218,7 +217,7 @@ public final class CausynthPipeline {
                 .instrumentationPlanFromEnvironment();
         ConcolicMaterializationSelection materializationSelection =
                 plan.materializations();
-        ConcolicOutputCaptureSelection outputCaptureSelection =
+        List<OutputCaptureTarget> outputCaptureSelection =
                 plan.outputCaptures();
         Set<String> roots = plan.roots();
         Set<String> backedViewMethods = concolicBackedViewMethods(result);
@@ -226,7 +225,9 @@ public final class CausynthPipeline {
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
         taggedMethods.addAll(materializationSelection.localMethods());
         taggedMethods.addAll(materializationSelection.accessorCallerMethods());
-        taggedMethods.addAll(outputCaptureSelection.methods());
+        for (OutputCaptureTarget target : outputCaptureSelection) {
+            taggedMethods.add(target.instrumentedMethod());
+        }
         taggedMethods.addAll(backedViewMethods);
         for (String methodSignature : taggedMethods) {
             try {
@@ -745,9 +746,9 @@ public final class CausynthPipeline {
 
     /** Captures the VM expression at an exact activation-authorized endpoint. */
     private void instrumentConcolicOutputCaptures(
-            ConcolicOutputCaptureSelection selection,
+            Collection<OutputCaptureTarget> selection,
             HookCatalog refs) {
-        for (OutputCaptureTarget target : selection.targets()) {
+        for (OutputCaptureTarget target : selection) {
             SootMethod method;
             try {
                 method = Scene.v().getMethod(target.instrumentedMethod());
@@ -765,7 +766,7 @@ public final class CausynthPipeline {
                 throw outputCaptureInstrumentationFailure(target,
                         "UNIT_NOT_FOUND", null);
             }
-            if (target.isFieldAssignmentRhs()) {
+            if (OutputCaptureTarget.FIELD_ASSIGNMENT_RHS.equals(target.captureKind)) {
                 instrumentFieldAssignmentOutputCapture(body, unit,
                         target, refs);
                 continue;

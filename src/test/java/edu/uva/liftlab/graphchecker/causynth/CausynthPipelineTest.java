@@ -29,6 +29,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -204,13 +205,13 @@ public class CausynthPipelineTest {
                     captures, "I", "I");
             writePlanRow(plan, activation);
 
-            ConcolicInstrumentationSelections
-                    .ConcolicOutputCaptureSelection selection =
+            List<ConcolicInstrumentationSelections.OutputCaptureTarget>
+                    selection =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
                             plan, "TASK.JOINT.CAPTURE")
                             .outputCaptures();
-            assertEquals(2, selection.targets().size());
+            assertEquals(2, selection.size());
 
             Files.write(plan, Arrays.asList(activation.toString(),
                     activation.toString()), StandardCharsets.UTF_8);
@@ -352,12 +353,12 @@ public class CausynthPipelineTest {
             System.setProperty("causynth.concolic.task.id",
                     "TASK.CAPTURE");
 
-            ConcolicInstrumentationSelections
-                    .ConcolicOutputCaptureSelection selection =
+            List<ConcolicInstrumentationSelections.OutputCaptureTarget>
+                    selection =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
                             plan, "TASK.CAPTURE").outputCaptures();
-            assertEquals(1, selection.targets().size());
+            assertEquals(1, selection.size());
             Class<?> refsClass = Class.forName(
                     CausynthPipeline.class.getName() + "$HookCatalog");
             Method create = refsClass.getDeclaredMethod("concolic");
@@ -365,8 +366,7 @@ public class CausynthPipelineTest {
             Object refs = create.invoke(null);
             Method instrument = CausynthPipeline.class.getDeclaredMethod(
                     "instrumentConcolicOutputCaptures",
-                    ConcolicInstrumentationSelections
-                            .ConcolicOutputCaptureSelection.class,
+                    Collection.class,
                     refsClass);
             instrument.setAccessible(true);
             instrument.invoke(new CausynthPipeline(null), selection, refs);
@@ -458,8 +458,8 @@ public class CausynthPipelineTest {
             Files.write(plan, (activation + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
-            ConcolicInstrumentationSelections
-                    .ConcolicOutputCaptureSelection selection =
+            List<ConcolicInstrumentationSelections.OutputCaptureTarget>
+                    selection =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
                             plan, "TASK.FIELD.CAPTURE")
@@ -472,8 +472,7 @@ public class CausynthPipelineTest {
             Object refs = create.invoke(null);
             Method instrument = CausynthPipeline.class.getDeclaredMethod(
                     "instrumentConcolicOutputCaptures",
-                    ConcolicInstrumentationSelections
-                            .ConcolicOutputCaptureSelection.class,
+                    Collection.class,
                     refsClass);
             instrument.setAccessible(true);
             instrument.invoke(new CausynthPipeline(null), selection, refs);
