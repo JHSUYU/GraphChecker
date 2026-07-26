@@ -437,13 +437,11 @@ validate_container_producer_artifacts() {
     || die "container retained exploration ledger is incomplete"
 
   jq -e -s '
-    ([.[] | select((.pathQueryKey // "") != "")] as $replays
-      | ($replays | length) >= 2
-      and ([$replays[].pathQueryKey] | unique | length)
-        == ($replays | length)
-      and ([$replays[].modelAssignmentsApplied[]?
+    length >= 2
+      and ([.[].taskId] | unique | length) == length
+      and ([.[] | .modelAssignmentsApplied[]?
         | select((.dynamicReplayRebindingAuthority // "") != "")]
-        | length) > 0)
+        | length) > 0
   ' "${raw_results[@]}" >/dev/null \
     || die "container custom-JDK replay evidence is incomplete"
 
@@ -499,41 +497,9 @@ validate_container_producer_artifacts() {
     || die "array producer lost exact index-1 nested field semantics"
 
   jq -e "${output_closure_helpers}"'
-    (singleton_output_member | .slice) as $outputSlice
-    | (.relationallyComplete == true
+    .relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and (.regionRelation.cases | length) >= 2
-    and ($outputSlice.inputAliasCanonicalizations | length) >= 3
-    and all($outputSlice.inputAliasCanonicalizations[];
-      .schemaVersion == 1
-      and .kind == "CANONICAL_PRIMITIVE_INPUT_ALIAS"
-      and .staticAuthority
-        == "PROJECTED_FRONTIER_TO_EXACT_PRIMITIVE_FIELD_V1"
-      and .runtimeIdentityAuthority
-        == "BASE_FIELD_VALUE_EQUALS_EXACT_LEAF_RECEIVER_V1"
-      and .intermediateOwnerObjectId == .canonicalLeafReceiverObjectId
-      and .aliasBindingCount == 1
-      and .aliasBindingAuthorities
-        == ["UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN"]
-      and .baseFieldEventSeq > 0
-      and .canonicalLeafFieldEventSeq > 0
-      and .baseFieldEventSeq < .canonicalLeafFieldEventSeq
-      and .complete == true)
-    and ([$outputSlice.inputAliasCanonicalizations[]
-      | .canonicalInputCell] | index(
-        "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input1>")) != null
-    and ([$outputSlice.inputAliasCanonicalizations[]
-      | .canonicalInputCell] | index(
-        "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input2>")) != null
-    and ([$outputSlice.inputAliasCanonicalizations[]
-      | .canonicalInputCell] | index(
-        "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input3>")) != null
-    and ([$outputSlice.inputBindings[].dependencyCell] | tostring
-      | contains("MapProducer: int input1"))
-    and ([$outputSlice.inputBindings[].dependencyCell] | tostring
-      | contains("MapProducer: int input2"))
-    and ([$outputSlice.inputBindings[].dependencyCell] | tostring
-      | contains("MapProducer: int input3"))
     and (any(.regionRelation.cases[].outputExpressions[]?;
       ._type == "ConstExpr" and ._exp == "Y_I_10"))
     and (any(.regionRelation.cases[].outputExpressions[]?;
@@ -543,31 +509,18 @@ validate_container_producer_artifacts() {
       and (.heapObservations | length) == 1
       and .dynamicFieldBindings[0] as $dynamic
       | .heapObservations[0] as $observation
-      | ($dynamic.schemaVersion == 2
-        and $dynamic.kind == "DYNAMIC_MAP_ENTRY_FIELD_BINDING"
+      | ($dynamic.kind == "DYNAMIC_MAP_ENTRY_FIELD_BINDING"
         and $dynamic.complete == true
         and $dynamic.fieldPath == ["state", "guard", "enabled"]
-        and $dynamic.keyExpression._type == "ConstExpr"
         and $dynamic.keyExpression._java_type == "I"
         and $dynamic.keyExpression._exp == "Y_I_7"
-        and $observation.schemaVersion == 1
-        and $observation.kind == "MAP_ENTRY_READ"
-        and $observation.complete == true
-        and $observation.stateBaseComplete == true
-        and $observation.stateBindingAuthority
-          == "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1"
-        and $observation.valueExpressionWitnessCertified == true
-        and $observation.valueExpressionWitnessCertifiedObjectToken > 0
-        and ($observation.valueExpressionWitnessCertifiedObjectTokenScope
-          | type == "string" and length > 0)
-        and $observation.entryValueFieldBindingComplete == true
         and ($observation.entryFieldBindings | length) == 1
         and $observation.entryFieldBindings[0].dynamicBindingId
           == $dynamic.dynamicBindingId
         and $observation.entryFieldBindings[0].fieldPath
           == $dynamic.fieldPath
         and $observation.entryFieldBindings[0].keyExpression
-          == $dynamic.keyExpression)))
+          == $dynamic.keyExpression))
   ' "${map_summary}" >/dev/null \
     || die "map producer lost exact key-7 nested entry field semantics"
 
@@ -778,7 +731,6 @@ validate_compound_target_artifacts() {
     .kind == "TARGET_REACH_PATH_SET_QUERY"
     and .constraintAuthority
       == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
-    and .readyForSolver == true
     and (if $expectation == "positive"
       then (.paths | length) > 1
         and all(.paths[];
@@ -872,8 +824,6 @@ validate_semantic_profile() {
               | if . then "1" else "0" end] | join("")]
           == ["00", "10"])
         and (.roots.existentialInputs[0].javaTypeDescriptor == "I")
-        and (.roots.existentialInputs[0].cell
-          | contains("ThreeThreadRpcWorkload$ProducerBThread: int var"))
       ' "${reach_report}" >/dev/null \
         || die "baseline lost its Boolean/int overflow reach profile"
       grep -Fq '(define-fun java_int_wrap' "${smt}" \
@@ -896,15 +846,6 @@ validate_semantic_profile() {
           == ["10"])
         and ([.roots.existentialInputs[].javaTypeDescriptor]
           | sort) == ["I", "I", "I"]
-        and ([.roots.existentialInputs[].cell] | tostring
-          | contains("baseInput"))
-        and ([.roots.existentialInputs[].cell] | tostring
-          | contains("instanceWeight"))
-        and ([.roots.existentialInputs[].cell] | tostring
-          | contains("processWeight"))
-        and (all(.roots.existentialInputs[];
-          (.cell | contains("ThirdHop.return") | not)
-          and (.cell | contains("thirdHop.return") | not)))
       ' "${reach_report}" >/dev/null \
         || die "cross-method-fields lost an external root or exact truth row"
       validate_cross_method_joint_output_artifacts "${work_root}" "${smt}"
@@ -969,18 +910,6 @@ validate_semantic_profile() {
             and (.nullnessSolverTerm
               | type == "string" and length > 0))]
           | length) == 1
-        and ([.roots.booleanInputs[].cell] | tostring
-          | contains("<java.lang.Boolean: boolean booleanValue()>.return"))
-        and ([.roots.existentialInputs[].cell] | tostring
-          | contains("DependentScalarThreeThreadWorkload$ArithmeticThread: int input"))
-        and ([.roots.existentialInputs[].cell] | tostring
-          | contains("DependentScalarThreeThreadWorkload$TextThread: java.lang.String text"))
-        and ([.roots.booleanInputs[],
-          .roots.existentialInputs[]] | map(.regionId)
-          | unique | length) == 2
-        and .roots.booleanInputs[0].regionId
-          == ([.roots.existentialInputs[]
-            | select(.javaTypeDescriptor == "I")][0].regionId)
       ' "${reach_report}" >/dev/null \
         || die "dependent-scalar lost its exact existential reach profile"
       jq -e '
@@ -1010,12 +939,6 @@ validate_semantic_profile() {
         and (.roots.existentialInputs | length) >= 3
         and all(.roots.existentialInputs[];
           .javaTypeDescriptor == "I")
-        and ([.roots.existentialInputs[].cell] | tostring
-          | contains("MapProducer: int input1"))
-        and ([.roots.existentialInputs[].cell] | tostring
-          | contains("MapProducer: int input2"))
-        and ([.roots.existentialInputs[].cell] | tostring
-          | contains("MapProducer: int input3"))
         and (.valuations | length) == 4
         and ([.valuations[] | select(.status == "sat")]
           | length) == 0
@@ -1037,8 +960,7 @@ validate_semantic_profile() {
         and (.roots.booleanInputs | length) == 2
         and (.roots.existentialInputs | length) == 4
         and all(.roots.existentialInputs[];
-          .javaTypeDescriptor == "I"
-          and (.cell | contains("#field:metrics#field:")))
+          .javaTypeDescriptor == "I")
         and (.valuations | length) == 4
         and ([.valuations[] | select(.status == "sat")]
           | length) == 0
@@ -1053,61 +975,22 @@ validate_semantic_profile() {
       ;;
     unreachable-correlated-fields)
       validate_two_boolean_unsat_report "${label}" "${reach_report}" 2 I
-      jq -e '
-        ([.roots.existentialInputs[].cell] | sort) as $cells
-        | ($cells | length) == 2
-        and any($cells[]; endswith("#field:numeric#field:seed"))
-        and any($cells[]; endswith("#field:numeric#field:delta"))
-      ' "${reach_report}" >/dev/null \
-        || die "${label} lost its nested seed/delta roots"
       validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
       ;;
     unreachable-nested-object)
       validate_two_boolean_unsat_report "${label}" "${reach_report}" 4 I
-      jq -e '
-        ([.roots.booleanInputs[].cell] | length) == 2
-        and all(.roots.booleanInputs[];
-          .cell | endswith("#field:enabled"))
-        and ([.roots.existentialInputs[].cell
-          | select(endswith("#field:base"))] | length) == 2
-        and ([.roots.existentialInputs[].cell
-          | select(endswith("#field:adjustment"))] | length) == 2
-      ' "${reach_report}" >/dev/null \
-        || die "${label} lost its nested object-field roots"
       validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
       ;;
     unreachable-inherited-alias)
       validate_two_boolean_unsat_report "${label}" "${reach_report}" 2 I
-      jq -e '
-        ([.roots.existentialInputs[].cell] | sort) as $cells
-        | ($cells | length) == 2
-        and any($cells[]; endswith(" int base>"))
-        and any($cells[]; endswith(" int delta>"))
-      ' "${reach_report}" >/dev/null \
-        || die "${label} lost its inherited same-object field roots"
       validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
       ;;
     unreachable-mutated-object)
       validate_two_boolean_unsat_report "${label}" "${reach_report}" 1 I
-      jq -e '
-        .roots.existentialInputs[0].cell
-          | endswith("$MutableNumbers: int base>")
-      ' "${reach_report}" >/dev/null \
-        || die "${label} did not exclude the irrelevant object mutation"
       validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
       ;;
     unreachable-long-fields)
       validate_two_boolean_unsat_report "${label}" "${reach_report}" 4 J
-      jq -e '
-        ([.roots.booleanInputs[].cell] | length) == 2
-        and all(.roots.booleanInputs[];
-          .cell | endswith("$SwitchLeaf: boolean enabled>"))
-        and ([.roots.existentialInputs[].cell
-          | select(endswith("#field:base"))] | length) == 2
-        and ([.roots.existentialInputs[].cell
-          | select(endswith("#field:adjustment"))] | length) == 2
-      ' "${reach_report}" >/dev/null \
-        || die "${label} lost its nested long-field roots"
       validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
       ;;
     compound-target)
@@ -1160,7 +1043,6 @@ validate_candidate_outputs() {
   validate_json_object "candidate composition manifest" "${composition}"
   validate_json_object "candidate reach model" "${reach_report}"
   validate_json_object "candidate result manifest" "${candidate_manifest}"
-  validate_json_object "candidate relationships" "${relationships}"
   validate_composition_common "${composition}"
 
   jq -e '

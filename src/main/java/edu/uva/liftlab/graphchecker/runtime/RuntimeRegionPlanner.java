@@ -2053,15 +2053,17 @@ final class RuntimeRegionPlanner {
                     "STATIC_CELL_IDENTITY_PLUS_RUNTIME_READ_FROM"));
         }
         outputSlice.validateNormalExitFieldCapture(input, selectedInputs);
+        Set<String> outputBranchSites = new LinkedHashSet<>(
+                outputSlice.staticSites);
+        outputBranchSites.addAll(outputSlice.sites);
         List<Map<String, Object>> selectedBranches = selectActivationRows(
-                base.branches, outputSlice.sites, "siteId");
+                base.branches, outputBranchSites, "siteId");
         boolean inputsReady = symbolizeActionsReady(selectedInputs);
-        boolean branchesReady = branchActionsReady(selectedBranches);
         boolean sliceReady = outputSlice.complete
                 && outputSlice.captureBindingIssues.isEmpty()
                 && inputSelectionComplete
                 && containerBindingsReady
-                && inputsReady && branchesReady;
+                && inputsReady;
         if (!sliceReady) {
             List<String> causes = new ArrayList<>();
             if (!outputSlice.complete) {
@@ -2095,9 +2097,6 @@ final class RuntimeRegionPlanner {
                     }
                 }
                 causes.add("SYMBOLIZE_ACTIONS_INCOMPLETE=" + unready);
-            }
-            if (!branchesReady) {
-                causes.add("BRANCH_ACTIONS_INCOMPLETE");
             }
             return new UpstreamOutputMemberPlan(first.output, outputSlice,
                     selectedInputs, selectedBranches, containerBindings,

@@ -84,8 +84,6 @@ final class SymbolicRegionPlanner {
             "^\\([^)]*\\)\\s*([$]?[A-Za-z_][A-Za-z0-9_]*)$");
     private static final Pattern GLOBAL_FIELD_LEAF_PATTERN = Pattern.compile(
             "^<[^:]+:\\s+[^()<>]+\\s+([^\\s()>]+)>$");
-    private static final Pattern EMBEDDED_FIELD_PATTERN = Pattern.compile(
-            ".*\\.<([^:]+):\\s+[^()<>]+\\s+([^\\s()>]+)>.*");
     private static final Pattern SEMANTIC_GLOBAL_FIELD_PATTERN =
             Pattern.compile("^<([^:]+):\\s+[^()<>]+\\s+([^\\s()>]+)>"
                     + "(.*)$");

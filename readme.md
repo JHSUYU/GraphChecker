@@ -2357,6 +2357,41 @@ debug 根目录是 `target/generated-regression/current/case-XX/work`。优先�
 字节形状，也不恢复已退休字段。修 bug 时应修 canonical producer，而不是在每个 reader
 追加 fallback；这正是“不过度校验、不过度设计，同时保障正确性”的执行门槛。
 
+### 最终重构与语义验收（2026-07-26）
+
+大规模删除在 fixture 调试前完成并以 `c78a226b` 推送；生成式回归的第一轮修复以
+`8667f21b` 推送。最终手写生产 Java 为 59,039 行，相对 81,581 行冻结基线净减
+22,542 行（27.6%）。该数字只统计 `src/main/java/**/*.java`，不靠删除 fixture、压缩
+格式或把实现搬到测试目录。
+
+生成式语义回归连续完成十轮，每轮十三个新的 disposable workload，共 130/130 通过。
+每轮普通 JVM oracle 都是 6 个 `REACHABLE`、7 个 `UNREACHABLE`，随后真实 custom-JDK
+path closure 与 Z3 得到相同结论。第一轮最终日志是
+`target/generated-regression/logs/round-1/20260726T062305Z.4075342`；第 2–10 轮由同一
+批处理顺序生成、每轮内部 13-way 并行执行。
+
+维护的十三个真实 shared-field RPC workload 也全部通过：当前源码语义为 5 个
+`REACHABLE/sat`、8 个 `UNREACHABLE/unsat`。container workload 的两个 producer
+worklist 均为 `CLOSED`、`gaps=[]`，Map producer 的 88 个 guarded case 保留 key=7 的
+dynamic entry-field binding；最终四个 Boolean valuation 全部 `unsat`。compound-target
+的四条 reached path 与 unreachable-compound-target 的空 path set 均由
+`CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1` 产生。最终统一并行门禁为
+`completed=13 failures=0`，日志根目录是
+`target/robustness-matrix-logs/20260726T072614Z.2098697`。
+
+真实回归暴露并修复的共同 bug 是：runtime-refined output closure 保存了完整
+`staticSites`，但 output execution goal 过去只携带 seed path 已观察到的 branch。
+短路或早期 branch flip 后首次到达的新 branch 因而有 symbolic PC、却没有 branch
+mapping，Importer 只能报 `OUTPUT_REPLAY_REQUIRES_COMPLETE_NORMAL_EXIT`。现在一个
+RegionInstance 的 output goal 在第一次 replay 前就携带完整静态 closure 内的 branch
+policy；是否被 seed 观察到不再是 output relation 的准入条件。Importer 的完整 normal
+exit、exact region-exit capture 和 `relationallyComplete` gate 没有放宽。
+
+同时删除了 robustness shell 中对已退休 `relationships`、root `.cell/.regionId`、
+`readyForSolver`、`pathQueryKey` 和 alias-certificate 镜像的逐字段锁定。回归仍检查完整
+truth table、SAT/UNSAT、closed worklist、read-from binding、guarded output relation、
+dynamic Map/array field binding 和 artifact SHA；不再把诊断 JSON 形状当成第二套语义。
+
 ## TODO：用自然 replay 将候选升级为可信结果
 
 当前停止点是准确、结构完整且由 Z3 检查过的候选 SMT。后续工作应把选中的 producer 输入

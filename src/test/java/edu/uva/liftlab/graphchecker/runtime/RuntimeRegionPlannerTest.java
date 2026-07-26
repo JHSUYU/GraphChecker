@@ -673,6 +673,8 @@ public class RuntimeRegionPlannerTest {
                     constructor + "#u1"));
             assertFalse(String.valueOf(slice.get("sites")).contains(
                     unobservedBranch));
+            assertTrue(String.valueOf(output.get("branches")).contains(
+                    unobservedBranch));
             assertEquals(Collections.singletonList("DF.U"),
                     slice.get("causalEdgeIds"));
             assertTrue(((java.util.List<?>) slice.get("heapInitializers"))

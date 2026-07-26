@@ -6,7 +6,6 @@ import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
 import edu.uva.liftlab.graphchecker.contract.DynamicBindingSpec;
 import edu.uva.liftlab.graphchecker.contract.DynamicBindingSpec.SelectorSpec;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
