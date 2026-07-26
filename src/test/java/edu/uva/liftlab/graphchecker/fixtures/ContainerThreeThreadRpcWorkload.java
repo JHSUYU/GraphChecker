@@ -83,6 +83,7 @@ public final class ContainerThreeThreadRpcWorkload {
         int input1;
         int input2;
         int input3;
+        int input4;
 
         MapProducer(Boolean enabled) {
             values = new LinkedHashMap<>();
@@ -105,8 +106,17 @@ public final class ContainerThreeThreadRpcWorkload {
             if(input3>0){
                 input3 =- input3;
             }
-            if (enabled || ((input1-input3)>10)) {
-                return 0+input1+input2-input3;
+
+            if(input4 >0){
+                input4 =- input4;
+            }
+            if (enabled || ((input1-input3-input4)>10)) {
+                if(input1>100) input1=100;
+                if(input2>100) input2=100;
+//                if(-input3>100) input3=-100;
+//                if(-input4>100) input4=-100;
+
+                return 0+input1+input2;
             }
             return 10;
         }
@@ -258,6 +268,7 @@ public final class ContainerThreeThreadRpcWorkload {
         volatile int receivedMap;
         volatile boolean received;
 
+
         ConsumerThread(RpcBus bus, CountDownLatch start) {
             super(CONSUMER_THREAD, start);
             this.bus = bus;
@@ -270,10 +281,11 @@ public final class ContainerThreeThreadRpcWorkload {
             receivedArray = arrayValue;
             receivedMap = mapValue;
             received = true;
-            if (arrayValue > mapValue) {
+            if ((arrayValue > mapValue)) {
                 throw new @CausynthExceptionTarget("containers")
                         ContainerBugReachedException(arrayValue, mapValue);
             }
+            int a=Integer.MAX_VALUE+1;
         }
     }
 
