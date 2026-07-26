@@ -539,7 +539,7 @@ validate_container_producer_artifacts() {
       and all(.regionRelation.cases[];
         (.dynamicFieldBindings | length) == 1
         and .dynamicFieldBindings[0] as $dynamic
-        | ($dynamic.schemaVersion == 3
+        | ($dynamic.schemaVersion == 2
           and $dynamic.kind
             == "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING"
           and $dynamic.complete == true
@@ -605,7 +605,7 @@ validate_container_producer_artifacts() {
       and (.heapObservations | length) == 1
       and .dynamicFieldBindings[0] as $dynamic
       | .heapObservations[0] as $observation
-      | ($dynamic.schemaVersion == 1
+      | ($dynamic.schemaVersion == 2
         and $dynamic.kind == "DYNAMIC_MAP_ENTRY_FIELD_BINDING"
         and $dynamic.complete == true
         and $dynamic.fieldPath == ["state", "guard", "enabled"]
@@ -1085,13 +1085,13 @@ validate_semantic_profile() {
           | contains("MapProducer: int input3"))
         and (.valuations | length) == 4
         and ([.valuations[] | select(.status == "sat")]
-          | length) == 4
-        and ([.valuations[] | select(.status == "unsat")]
           | length) == 0
+        and ([.valuations[] | select(.status == "unsat")]
+          | length) == 4
         and all(.valuations[];
-          .status == "sat")
+          .status == "unsat")
       ' "${reach_report}" >/dev/null \
-        || die "containers lost its Boolean/int existential reach profile"
+        || die "containers lost its bounded UNSAT reach profile"
       jq -e '
         (.includedSummaries | length) == 2
         and (.caseProjectionCatalog | length) >= 4

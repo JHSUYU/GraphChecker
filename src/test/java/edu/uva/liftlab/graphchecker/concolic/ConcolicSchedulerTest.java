@@ -340,7 +340,7 @@ public class ConcolicSchedulerTest {
         capture.addProperty("outputPort", port);
         capture.addProperty("outputCell", cell);
         capture.addProperty("accessRootInputPort", input);
-        capture.add("fieldPath", strings(
+        capture.add("fieldPath", strings("state",
                 cell.contains(" x>") ? "x" : "y"));
         capture.addProperty("fieldSignature", cell);
         capture.addProperty("javaType", "int");
@@ -456,7 +456,7 @@ public class ConcolicSchedulerTest {
         action.addProperty("sourceKind", "HEAP_PRESTATE");
         action.addProperty("location", "RECEIVER_FIELD");
         action.addProperty("leafFieldSignature", field);
-        action.add("fieldPath", strings(
+        action.add("fieldPath", strings("state",
                 field.contains(" x>") ? "x" : "y"));
         return action;
     }

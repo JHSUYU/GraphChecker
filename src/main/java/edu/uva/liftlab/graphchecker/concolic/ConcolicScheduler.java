@@ -344,7 +344,6 @@ public final class ConcolicScheduler {
         DeclaredField field = FieldPathSpec.declaredField(string(capture,
                 "fieldSignature"));
         if (root.isEmpty() || path.isEmpty()
-                || !path.equals(fieldPath(member.cell()))
                 || field == null
                 || !path.get(path.size() - 1).equals(field.name())
                 || !string(capture, "javaType").equals(field.type())) {

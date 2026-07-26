@@ -2688,7 +2688,6 @@ public class ConcolicSummaryImporterTest {
         initializer.addProperty("allocationEdgeId", "EDGE.ALLOC.0");
         initializer.addProperty("allocationMethod",
                 "<example.Store: void update()>");
-        initializer.addProperty("allocationSiteId", "SITE.ALLOC.0");
         initializer.addProperty("constructor",
                 "<java.util.HashMap: void <init>()>");
         initializer.addProperty("outputPort", "REGION.P.out.0");
@@ -2830,7 +2829,7 @@ public class ConcolicSummaryImporterTest {
             input.addProperty("sourceKind", "HEAP_PRESTATE");
             input.addProperty("location", "RECEIVER_FIELD");
             input.addProperty("leafFieldSignature", field);
-            input.add("fieldPath", singletonString("value" + index));
+            input.add("fieldPath", strings("state", "value" + index));
             inputs.add(input);
         }
         activation.add("symbolize", inputs);
@@ -2897,7 +2896,7 @@ public class ConcolicSummaryImporterTest {
         capture.addProperty("outputCell", cell);
         capture.addProperty("accessRootInputPort",
                 regionId + ".in." + index);
-        capture.add("fieldPath", singletonString("value" + index));
+        capture.add("fieldPath", strings("state", "value" + index));
         capture.addProperty("fieldSignature", cell);
         capture.addProperty("javaType", "int");
 
@@ -2954,7 +2953,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     private static JsonObject importJointFieldOutputCaptureFixture(
-            Path root, boolean invalidateSecondTransformer)
+            Path root, boolean invalidateSecondCapture)
             throws Exception {
         Path firstRoot = root.resolve("first");
         Path secondRoot = root.resolve("second");
@@ -2971,18 +2970,16 @@ public class ConcolicSummaryImporterTest {
                 readObject(secondRoot.resolve("activation.jsonl")), 1), 1);
         makeCodecLegacyReady(firstActivation);
         makeCodecLegacyReady(secondActivation);
+        // A scalar field relation is the captured normal-exit expression.
+        // Legacy write-site transformer metadata must not gate it.
+        secondActivation.getAsJsonObject(OutputClosureContract.FIELD)
+                .getAsJsonArray("members").get(0).getAsJsonObject()
+                .getAsJsonObject("slice").addProperty(
+                "requestedStateTransformerContractComplete", false);
         for (JsonElement action : secondActivation.getAsJsonArray(
                 "inputActions")) {
             firstActivation.getAsJsonArray("inputActions").add(
                     action.deepCopy());
-        }
-        if (invalidateSecondTransformer) {
-            secondActivation.getAsJsonObject(OutputClosureContract.FIELD)
-                    .getAsJsonArray("members").get(0).getAsJsonObject()
-                    .getAsJsonObject("slice")
-                    .addProperty(
-                            "requestedStateTransformerContractComplete",
-                            false);
         }
         OutputClosureContract contract = OutputClosureCodec.merge(
                 Arrays.asList(OutputClosureCodec.decode(firstActivation),
@@ -2992,6 +2989,11 @@ public class ConcolicSummaryImporterTest {
         JsonObject raw = readObject(firstRoot.resolve("results.jsonl"));
         JsonObject secondRaw = renamedOutputPort(renamedInputPort(readObject(
                 secondRoot.resolve("results.jsonl")), 1), 1);
+        if (invalidateSecondCapture) {
+            secondRaw.getAsJsonArray("outputCaptures").get(0)
+                    .getAsJsonObject().addProperty("captureAuthority",
+                    "INVALID");
+        }
         JsonArray captures = raw.getAsJsonArray("outputCaptures");
         captures.add(secondRaw.getAsJsonArray("outputCaptures")
                 .get(0).deepCopy());

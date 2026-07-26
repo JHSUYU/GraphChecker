@@ -2272,11 +2272,30 @@ RegionInstancePlan
 7. 重要框架里程碑独立 commit/push；用户修改的 container fixture 已经明确授权并作为
    `db5a5033` 独立提交，不再作为工作树例外。
 
-当前 framework cutover 已闭合上述 canonical 链：生产 Java 为 65,409 行，Maven
+当前 framework cutover 已闭合上述 canonical 链：生产 Java 为 65,367 行，Maven
 回归 69/69 通过。它已经删除独立 upstream activation、assignment-site/seed-occurrence
 字段捕获、Runtime/Importer 私有 task decoder、`captureBindingsRequired` 镜像以及多处
-重复扫描；尚未把这一结果声明为 fixture 语义基线，必须继续通过下面十三个真实
-custom-JDK/Z3 workload。
+重复扫描。
+
+正常退出字段捕获的真实 fixture 调试又删除了三条旧假设。第一，完整 root-to-leaf
+`fieldPath` 不再与仅含 leaf declaration 的 output cell 路径作错误相等比较；唯一 join 是
+同一 execution task 中的 `HEAP_PRESTATE` action、完整 field path 与 exact leaf signature。
+第二，跨类 private field 不再由 region root 注入非法 `getfield`，而是在字段声明类生成一个
+极小 public static read bridge；primitive 在该 bridge 内装箱，因此 custom VM symbolic
+shadow 不会在跨方法返回后丢失。共享父类 root 只有在 activation token 非零时才按
+`rootSelector.receiverClass` cast 和读取，未选中的兄弟线程不会执行 output probe。第三，
+Importer 对已完整捕获的 scalar/reference `REGION_EXIT_FIELD` 直接使用 normal-exit
+expression，不再要求或伪造预选 assignment/write-site coverage；Map/array/container
+transformer proof 仍保留原 gate。
+
+提交前真实门禁日志为
+`target/robustness-matrix-logs/20260726T022332Z.3255431`：
+`completed=13 failures=0`。当前已提交的 container workload 相比历史权威基线增加了
+`input4`、将负项移出结果表达式，并把两个正输入夹到 `[10,100]`；因此
+`arrayValue ∈ {-1,1}`、`mapValue ∈ {10} ∪ [20,200]`，目标
+`arrayValue > mapValue` 正确为 UNSAT。当前矩阵相应为 5 SAT/REACHABLE、8
+UNSAT/UNREACHABLE；历史 clean commit 的 6/7 记录保留为当时 fixture 语义，不再作为当前
+源码的预期。
 
 当上述 canonical 链端到端闭合后，进入语义调试阶段。此后一次性并行运行全部十三个真实
 custom-JDK/Z3 fixture，根据 artifact、path observation、relation summary 和 composition
@@ -2288,8 +2307,8 @@ GRAPH_CHECKER_MATRIX_JOBS=13 \
   experiments/generic/three-thread-rpc/run_robustness_matrix_parallel.sh all
 ```
 
-预期仍为六个 `sat/reachable`、七个 `unsat/unreachable`、零 failure。fixture 的 shared-field
-RPC 模式、一次写/一次读和确定交互顺序不得为了缩短测试而改变。
+当前预期为五个 `sat/reachable`、八个 `unsat/unreachable`、零 failure。fixture 的
+shared-field RPC 模式、一次写/一次读和确定交互顺序不得为了缩短测试而改变。
 
 ## TODO：用自然 replay 将候选升级为可信结果
 

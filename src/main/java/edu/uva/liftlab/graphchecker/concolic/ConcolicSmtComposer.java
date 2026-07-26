@@ -447,15 +447,11 @@ public final class ConcolicSmtComposer {
 
         while (!result.pending.isEmpty()) {
             ProducerKey consumer = result.pending.removeFirst();
-            RelationSummary consumerSummary = result.selectedSummaries.get(
-                    consumer);
-            if (consumerSummary == null) continue;
             RelationSummary consumerSelection =
                     result.selectedRegionSummaries.get(consumer.regionId);
             if (consumerSelection == null
                     || !consumer.instanceId.equals(
-                    consumerSelection.regionInstanceId())
-                    || !consumerSummary.same(consumerSelection)) {
+                    consumerSelection.regionInstanceId())) {
                 continue;
             }
             Set<String> demandedInputs =
@@ -650,7 +646,8 @@ public final class ConcolicSmtComposer {
         ProducerKey key = selectExactProducer(graph, summaries,
                 sourceRegion, sourceInstance, output, true);
         if (key == null) return;
-        RelationSummary selected = graph.selectedSummaries.get(key);
+        RelationSummary selected = graph.selectedRegionSummaries.get(
+                key.regionId);
         JsonObject exact = matchingBinding(selected, key, targetRegion,
                 targetInstance, input, binding);
         if (exact.size() == 0) {
@@ -670,6 +667,7 @@ public final class ConcolicSmtComposer {
                 requestedInstance, output);
         RelationSummary regionSelection =
                 graph.selectedRegionSummaries.get(region);
+        boolean newlySelected = regionSelection == null;
         if (regionSelection != null && !requestedInstance.isEmpty()
                 && !requestedInstance.equals(
                 regionSelection.regionInstanceId())) {
@@ -734,24 +732,11 @@ public final class ConcolicSmtComposer {
         ProducerKey key = new ProducerKey(region, instance, output);
         if (!graph.admitRegionSummary(key, selected,
                 demandedOutputs)) return null;
-        RelationSummary previous = graph.selectedSummaries.get(key);
-        if (previous != null && !previous.same(selected)) {
-            graph.gaps.add("ConflictingProducerSummarySelection:" + key);
-            return null;
-        }
-        if (previous == null) {
+        if (newlySelected) {
             ProducerKey expansionKey = key;
             for (String demanded : demandedOutputs) {
                 ProducerKey demandedKey = new ProducerKey(region, instance,
                         demanded);
-                RelationSummary prior = graph.selectedSummaries.put(
-                        demandedKey, selected);
-                if (prior != null && !prior.same(selected)) {
-                    graph.gaps.add(
-                            "ConflictingProducerSummarySelection:"
-                                    + demandedKey);
-                    return null;
-                }
                 if (demanded.compareTo(expansionKey.outputPort) < 0) {
                     expansionKey = demandedKey;
                 }
@@ -1072,8 +1057,6 @@ public final class ConcolicSmtComposer {
         private final String fatalInstance;
         private final Set<String> boundedRegions;
         private final ProducerDemandIndex demands;
-        private final Map<ProducerKey, RelationSummary> selectedSummaries =
-                new LinkedHashMap<>();
         private final Map<String, RelationSummary>
                 selectedRegionSummaries = new LinkedHashMap<>();
         private final List<ResolvedEdge> selectedEdges = new ArrayList<>();
@@ -1147,8 +1130,15 @@ public final class ConcolicSmtComposer {
                                                JsonObject expectedRelation,
                                                JsonObject expectedBinding,
                                                String expectedRelationKind) {
-            RelationSummary summary = selectedSummaries.get(source);
-            if (summary == null) return;
+            RelationSummary summary = selectedRegionSummaries.get(
+                    source.regionId);
+            if (summary == null
+                    || !source.instanceId.equals(
+                    summary.regionInstanceId())
+                    || !summary.outputClosure().outputPorts().contains(
+                    source.outputPort)) {
+                return;
+            }
             List<JsonObject> matches = matchingBindings(summary, source,
                     targetRegion, targetInstance, targetInput,
                     expectedRelation, expectedBinding, expectedRelationKind);

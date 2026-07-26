@@ -2584,15 +2584,9 @@ final class SymbolicRegionPlanner {
                         "callerMethod", string(edge.get("method")),
                         "siteId", string(edge.get("siteId")),
                         "unitIndex", integer(edge.get("unitIndex"), -1),
-                        "unit", string(edge.get("unit")),
                         "calleeMethod", callee,
                         "argumentIndex", argumentIndex,
                         "argumentCell", string(edge.get("fromCell")),
-                        "causalEdgeId", string(edge.get("id")),
-                        "transferKind", "IDENTITY_BINDING",
-                        "bindingKind", "call_argument",
-                        "bindingAuthority",
-                        "STATIC_EXACT_ORIGINAL_CALL_ARGUMENT",
                         "occurrence", 0));
             }
             if (candidates.isEmpty()) {
@@ -3814,19 +3808,10 @@ final class SymbolicRegionPlanner {
                                 string(allocation.get("allocationType")),
                                 string(allocation.get("fromCell"))
                                         .substring("new ".length())),
-                        "allocationCell", string(allocation.get("fromCell")),
-                        "allocationValueCell", allocatedValue,
                         "allocationEdgeId", string(allocation.get("id")),
                         "allocationMethod", string(allocation.get("method")),
-                        "allocationSiteId", string(allocation.get("siteId")),
-                        "allocationUnitIndex", integer(
-                                allocation.get("unitIndex"), -1),
                         "constructor", string(allocation.get(
                                 "allocationConstructor")),
-                        "constructorSiteId", string(allocation.get(
-                                "allocationConstructorSiteId")),
-                        "constructorUnitIndex", integer(allocation.get(
-                                "allocationConstructorUnitIndex"), -1),
                         "outputPort", outputPort,
                         "outputCell", outputCell,
                         "proofEdgeIds", proofEdges,

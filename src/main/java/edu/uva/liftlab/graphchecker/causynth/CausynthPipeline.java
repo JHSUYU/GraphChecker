@@ -88,6 +88,8 @@ public final class CausynthPipeline {
     private static final String CONCOLIC_REGION_RUNTIME_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
     private final GraphCheckerOptions options;
+    private final Map<SootField, SootMethod> exitFieldReaders =
+            new IdentityHashMap<>();
 
     public CausynthPipeline(GraphCheckerOptions options) {
         this.options = options;
@@ -220,6 +222,7 @@ public final class CausynthPipeline {
                 plan.materializations();
         List<OutputCaptureSpec> outputCaptureSelection =
                 plan.outputCaptures();
+        String outputCaptureReceiverClass = plan.receiverClass();
         Set<String> roots = plan.roots();
         Set<String> backedViewMethods = concolicBackedViewMethods(result);
         backedViewMethods.addAll(roots);
@@ -370,14 +373,16 @@ public final class CausynthPipeline {
                     Stmt stmt = (Stmt) unit;
                     if (stmt instanceof ReturnStmt) {
                         instrumentRegionExitFieldCaptures(body, stmt,
-                                receiver, outputCaptureSelection, refs);
+                                token, receiver, outputCaptureReceiverClass,
+                                outputCaptureSelection, refs);
                         insertRegionExit(body, stmt, ((ReturnStmt) stmt).getOp(),
                                 signature, refs.ref(Hook.EXIT_REGION_FRAME),
                                 refs.ref(Hook.PAUSE_OBSERVATION),
                                 refs.ref(Hook.RESUME_OBSERVATION));
                     } else if (stmt instanceof ReturnVoidStmt) {
                         instrumentRegionExitFieldCaptures(body, stmt,
-                                receiver, outputCaptureSelection, refs);
+                                token, receiver, outputCaptureReceiverClass,
+                                outputCaptureSelection, refs);
                         insertRegionExit(body, stmt, NullConstant.v(),
                                 signature, refs.ref(Hook.EXIT_REGION_FRAME),
                                 refs.ref(Hook.PAUSE_OBSERVATION),
@@ -393,9 +398,9 @@ public final class CausynthPipeline {
                         refs.ref(Hook.RESUME_OBSERVATION));
                 instrumented++;
             } catch (RuntimeException exception) {
-                skipped++;
-                LOG.debug("Skipping concolic region root instrumentation for {}",
-                signature, exception);
+                throw new IllegalStateException(
+                        "Could not instrument selected concolic region root "
+                                + signature, exception);
             }
         }
         instrumentConcolicAccessorCallContexts(materializationSelection, refs);
@@ -823,7 +828,8 @@ public final class CausynthPipeline {
     }
 
     private void instrumentRegionExitFieldCaptures(
-            Body body, Unit exit, Value rootReceiver,
+            Body body, Unit exit, Local token, Value rootReceiver,
+            String receiverClass,
             Collection<OutputCaptureSpec> selection, HookCatalog refs) {
         for (OutputCaptureSpec target : selection) {
             if (target.kind() != OutputCaptureSpec.Kind.REGION_EXIT_FIELD) {
@@ -835,7 +841,22 @@ public final class CausynthPipeline {
                         "EXIT_FIELD_ACCESS_ROOT_UNAVAILABLE", null);
             }
             List<Unit> before = new ArrayList<>();
+            Unit inactive = Jimple.v().newNopStmt();
+            before.add(Jimple.v().newIfStmt(
+                    Jimple.v().newEqExpr(token, LongConstant.v(0L)),
+                    inactive));
             Local current = (Local) rootReceiver;
+            if (receiverClass != null && !receiverClass.isEmpty()
+                    && current.getType() instanceof RefType
+                    && !receiverClass.equals(
+                    ((RefType) current.getType()).getClassName())) {
+                RefType selectedType = RefType.v(receiverClass);
+                Local selectedReceiver = newTraceLocal(body, selectedType,
+                        "$causynthExitReceiver");
+                before.add(Jimple.v().newAssignStmt(selectedReceiver,
+                        Jimple.v().newCastExpr(current, selectedType)));
+                current = selectedReceiver;
+            }
             Local fieldOwner = null;
             Local fieldValue = null;
             for (int index = 0; index < target.fieldPath().size(); index++) {
@@ -847,11 +868,15 @@ public final class CausynthPipeline {
                     throw outputCaptureInstrumentationFailure(target,
                             "EXIT_FIELD_PATH_NOT_EXACT", null);
                 }
-                Local next = newTraceLocal(body, field.getType(),
+                boolean leaf = index + 1 == target.fieldPath().size();
+                Type readType = leaf && PrimitiveWrapper.forType(
+                        field.getType()) != null
+                        ? RefType.v("java.lang.Object") : field.getType();
+                Local next = newTraceLocal(body, readType,
                         "$causynthExitField");
                 before.add(Jimple.v().newAssignStmt(next,
-                        Jimple.v().newInstanceFieldRef(current,
-                                field.makeRef())));
+                        Jimple.v().newStaticInvokeExpr(
+                                exitFieldReader(field).makeRef(), current)));
                 fieldOwner = current;
                 fieldValue = next;
                 if (index + 1 < target.fieldPath().size()) {
@@ -867,8 +892,6 @@ public final class CausynthPipeline {
             before.add(Jimple.v().newInvokeStmt(
                     Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.PAUSE_OBSERVATION))));
-            Value primitive = primitiveValueString(body, fieldValue,
-                    before);
             before.add(Jimple.v().newInvokeStmt(
                     Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.RECORD_REGION_EXIT_FIELD_OUTPUT),
@@ -876,10 +899,11 @@ public final class CausynthPipeline {
                             StringConstant.v(target.outputPort()),
                             StringConstant.v(target.outputCell()),
                             StringConstant.v(target.fieldSignature()),
-                            owner, value, primitive)));
+                            owner, value)));
             before.add(Jimple.v().newInvokeStmt(
                     Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.RESUME_OBSERVATION))));
+            before.add(inactive);
             insertBeforeSequence(body, exit, before);
         }
     }
@@ -902,6 +926,49 @@ public final class CausynthPipeline {
             owner = owner.hasSuperclass() ? owner.getSuperclass() : null;
         }
         return match;
+    }
+
+    /**
+     * Reads an exit field from code owned by the declaring class.  A raw
+     * getfield injected into the region root is illegal when the requested
+     * output is private to another class; the tiny bridge preserves the real
+     * JVM field read (and therefore its symbolic shadow) without changing the
+     * program field's visibility.
+     */
+    private SootMethod exitFieldReader(SootField field) {
+        SootMethod existing = exitFieldReaders.get(field);
+        if (existing != null) return existing;
+
+        SootClass owner = field.getDeclaringClass();
+        String name = "$causynth$exitRead$" + field.getName() + "$"
+                + Integer.toHexString(field.getSignature().hashCode());
+        boolean primitive = PrimitiveWrapper.forType(field.getType()) != null;
+        Type returnType = primitive ? RefType.v("java.lang.Object")
+                : field.getType();
+        SootMethod reader = new SootMethod(name,
+                Collections.<Type>singletonList(owner.getType()),
+                returnType, Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(reader);
+
+        Body bridge = Jimple.v().newBody(reader);
+        reader.setActiveBody(bridge);
+        Local receiver = Jimple.v().newLocal("$owner", owner.getType());
+        Local value = Jimple.v().newLocal("$value", field.getType());
+        bridge.getLocals().add(receiver);
+        bridge.getLocals().add(value);
+        bridge.getUnits().add(Jimple.v().newIdentityStmt(receiver,
+                Jimple.v().newParameterRef(owner.getType(), 0)));
+        bridge.getUnits().add(Jimple.v().newAssignStmt(value,
+                Jimple.v().newInstanceFieldRef(receiver, field.makeRef())));
+        List<Unit> boxing = new ArrayList<>();
+        Value result = primitive
+                ? boxedCaptureValue(bridge, value, field.getType(), boxing)
+                : value;
+        bridge.getUnits().addAll(boxing);
+        bridge.getUnits().add(Jimple.v().newReturnStmt(result));
+
+        exitFieldReaders.put(field, reader);
+        return reader;
     }
 
     private static IllegalStateException outputCaptureInstrumentationFailure(
@@ -2260,8 +2327,7 @@ public final class CausynthPipeline {
                             string, string, IntType.v(), object, string)
                     .add(Hook.RECORD_REGION_EXIT_FIELD_OUTPUT, runtime,
                             "recordRegionExitFieldOutput", VoidType.v(),
-                            string, string, string, string, object, object,
-                            string)
+                            string, string, string, string, object, object)
                     .add(Hook.PAUSE_OBSERVATION, runtime, "pauseObservation",
                             VoidType.v())
                     .add(Hook.RESUME_OBSERVATION, runtime, "resumeObservation",

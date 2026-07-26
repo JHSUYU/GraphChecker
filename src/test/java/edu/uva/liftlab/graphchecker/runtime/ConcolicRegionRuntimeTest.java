@@ -599,7 +599,7 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.recordRegionExitFieldOutput(
                     "REGION.TEST.out.field.exit-field",
                     "REGION.TEST.out.field", field, field,
-                    owner, owner.assigned, "");
+                    owner, owner.assigned);
             ConcolicRegionRuntime.exitRegion(token, null, "");
 
             JsonObject row = resultRows(results).get(0);

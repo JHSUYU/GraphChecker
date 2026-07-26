@@ -7,7 +7,6 @@ import edu.uva.liftlab.graphchecker.contract.DynamicBindingSpec;
 import edu.uva.liftlab.graphchecker.contract.DynamicBindingSpec.SelectorSpec;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
@@ -658,7 +657,6 @@ public final class ConcolicSummaryImporter {
         private final JsonArray symbolicActions;
         private final JsonArray symbolicInputPorts = new JsonArray();
         private final JsonArray enginePathCondition;
-        private final JsonArray outputCaptures;
         private final JsonArray heapObservations;
         private final JsonArray fieldObservations;
         private final List<AdmittedDynamicBinding> dynamicBindings =
@@ -705,7 +703,6 @@ public final class ConcolicSummaryImporter {
             }
             this.enginePathCondition = array(object(raw, "engineSummary"),
                     "pathCondition");
-            this.outputCaptures = array(raw, "outputCaptures");
             this.heapObservations = array(raw, "runtimeHeapObservations");
             this.fieldObservations = array(raw, "fieldObservations");
             this.branchMappings = array(raw, "branchMappings");
@@ -715,7 +712,8 @@ public final class ConcolicSummaryImporter {
             this.engineArrayInputBindings = raw.get(
                     "engineArrayInputBindings");
             this.symbolizedInputs = primitiveStrings(rawSymbolizedInputs);
-            index(outputCaptures, "captureBindingId", capturesByBinding);
+            index(array(raw, "outputCaptures"), "captureBindingId",
+                    capturesByBinding);
             if (inputActions != null) {
                 index(inputActions.all(), "symbol", actionsBySymbol);
             }
@@ -1073,7 +1071,6 @@ public final class ConcolicSummaryImporter {
             inputAdmissions.add(inputs);
         }
 
-        outputIssues.addAll(observedCaptureBijectionIssues(execution));
         OutputExpressionExtraction output =
                 new OutputExpressionExtraction(expressions,
                         outputIssues, "JOINT_EXACT_OUTPUT_CAPTURES");
@@ -1081,42 +1078,6 @@ public final class ConcolicSummaryImporter {
                 observations, snapshots, bindings, heapIssues,
                 heapComplete, output, mergeInputAdmissions(inputAdmissions),
                 execution.replayAdmission);
-    }
-
-    private static List<String> observedCaptureBijectionIssues(
-            ImportedExecution execution) {
-        List<String> issues = new ArrayList<>();
-        boolean normal = "NORMAL".equals(string(execution.raw, "exitKind"))
-                && string(execution.raw, "exceptionType").isEmpty();
-        List<OutputCaptureSpec> requests = new ArrayList<>();
-        if (normal) {
-            for (OutputMemberAnalysis analysis : execution.outputs) {
-                requests.addAll(analysis.captures);
-            }
-        }
-        JsonArray observed = execution.evidence.outputCaptures;
-        if (observed.size() != requests.size()) {
-            issues.add("OUTPUT_CAPTURE_CARDINALITY_MISMATCH:"
-                    + observed.size() + ":" + requests.size());
-        }
-        for (int index = 0; index < observed.size(); index++) {
-            JsonElement observedElement = observed.get(index);
-            int matches = 0;
-            if (observedElement.isJsonObject()) {
-                for (OutputCaptureSpec request : requests) {
-                    if (exactOutputCaptureMatch(
-                            request,
-                            observedElement.getAsJsonObject())) {
-                        matches++;
-                    }
-                }
-            }
-            if (matches != 1) {
-                issues.add("OBSERVED_CAPTURE_NOT_BIJECTIVE:"
-                        + index + ":" + matches);
-            }
-        }
-        return issues;
     }
 
     private static void appendUnique(JsonArray target, JsonArray source) {
@@ -1231,23 +1192,13 @@ public final class ConcolicSummaryImporter {
         EvidenceIndex evidence = execution.evidence;
         JsonObject expressions = new JsonObject();
         List<String> issues = new ArrayList<>();
-        if (requestedPort.isEmpty()) {
-            issues.add("MISSING_REQUESTED_OUTPUT_PORT");
-            return new OutputExpressionExtraction(expressions, issues,
-                    "EXACT_REGION_EXIT_FIELD");
-        }
         if (!"NORMAL".equals(string(raw, "exitKind"))
                 || !string(raw, "exceptionType").isEmpty()) {
             issues.add("OUTPUT_RELATION_REQUIRES_NORMAL_EXIT");
             return new OutputExpressionExtraction(expressions, issues,
                     "EXACT_REGION_EXIT_FIELD");
         }
-        List<OutputCaptureSpec> requests = new ArrayList<>();
-        for (OutputCaptureSpec capture : analysis.captures) {
-            if (requestedPort.equals(capture.outputPort())) {
-                requests.add(capture);
-            }
-        }
+        List<OutputCaptureSpec> requests = analysis.captures;
         if (!analysis.captureComplete) {
             issues.add("REQUESTED_OUTPUT_CAPTURE_PLAN_INCOMPLETE");
         }
@@ -1258,8 +1209,8 @@ public final class ConcolicSummaryImporter {
                     + requests.size());
         }
         if (requests.size() == 1) {
-            validateRegionExitFieldRequest(requests.get(0), analysis,
-                    requestedPort, issues);
+            validateRegionExitFieldAccessRoot(requests.get(0), analysis,
+                    issues);
         }
 
         List<JsonObject> matches = new ArrayList<>();
@@ -1326,35 +1277,19 @@ public final class ConcolicSummaryImporter {
                 "EXACT_REGION_EXIT_FIELD");
     }
 
-    private static void validateRegionExitFieldRequest(
+    private static void validateRegionExitFieldAccessRoot(
             OutputCaptureSpec request, OutputMemberAnalysis analysis,
-            String outputPort, List<String> issues) {
+            List<String> issues) {
         JsonObject output = analysis.output;
         String outputCell = string(output, "cell");
         String inputPort = request.accessRootInputPort();
         String fieldSignature = request.fieldSignature();
         List<String> fieldPath = request.fieldPath();
-        DeclaredField field = FieldPathSpec.declaredField(fieldSignature);
-        String descriptor = javaTypeDescriptor(request.javaType());
         if (request.kind() != OutputCaptureSpec.Kind.REGION_EXIT_FIELD
-                || request.captureBindingId().isEmpty()
-                || !outputPort.equals(request.outputPort())
-                || !outputCell.equals(request.outputCell())
-                || inputPort.isEmpty()
                 || countString(analysis.slice.get("inputPorts"),
-                inputPort) != 1
-                || field == null || fieldPath.isEmpty()
-                || !field.name().equals(
-                fieldPath.get(fieldPath.size() - 1))
-                || !field.type().equals(request.javaType())
-                || !descriptor.equals(string(output,
-                "javaTypeDescriptor"))) {
-            issues.add("INVALID_REGION_EXIT_FIELD_CAPTURE_REQUEST");
+                inputPort) != 1) {
+            issues.add("REGION_EXIT_FIELD_ACCESS_ROOT_NOT_EXACT");
             return;
-        }
-        List<String> outputPath = FieldPathSpec.path(outputCell);
-        if (!outputPath.equals(fieldPath)) {
-            issues.add("REGION_EXIT_FIELD_PATH_MISMATCH");
         }
         int roots = 0;
         for (JsonObject action
@@ -1381,7 +1316,6 @@ public final class ConcolicSummaryImporter {
                 string(capture, "captureAuthority"))
                 || longInteger(capture,
                 "fieldOwnerObjectToken", 0L) <= 0L
-                || executionTask.taskId().isEmpty()
                 || !executionTask.taskId().equals(
                 string(capture, "objectTokenScope"))) {
             issues.add("INVALID_REGION_EXIT_FIELD_CAPTURE");
@@ -6159,6 +6093,18 @@ public final class ConcolicSummaryImporter {
                 || !nestedOutputSliceContractComplete(slice)) {
             return StaticHeapTransformerCoverage.notApplicable();
         }
+        if (regionExitCapture != null
+                && regionExitCapture.issues.isEmpty()
+                && analysis.captures.size() == 1) {
+            OutputCaptureSpec capture = analysis.captures.get(0);
+            String descriptor = javaTypeDescriptor(capture.javaType());
+            if (capture.kind()
+                    == OutputCaptureSpec.Kind.REGION_EXIT_FIELD
+                    && !descriptor.startsWith("[")
+                    && !supportedMapStateField(capture.fieldSignature())) {
+                return StaticHeapTransformerCoverage.notApplicable();
+            }
+        }
 
         String requestedPort = string(requestedOutput, "portId");
         String requestedCell = string(requestedOutput, "cell");
@@ -6366,12 +6312,6 @@ public final class ConcolicSummaryImporter {
             containerWriteSites.add(site);
             containerEffectIndices.add(effectIndex);
             exactCoveredWriteSites.add(site);
-        }
-        if (regionExitCapture != null
-                && regionExitCapture.issues.isEmpty()) {
-            for (Set<String> sites : writeSitesByMethod.values()) {
-                exactCoveredWriteSites.addAll(sites);
-            }
         }
         Map<String, RuntimeGuardExclusion> guardExcludedWriteSites =
                 new LinkedHashMap<>();
@@ -9226,14 +9166,10 @@ public final class ConcolicSummaryImporter {
                     string(evidence, "outputPort"));
             result.addProperty("allocatedType",
                     string(evidence, "allocatedType"));
-            result.addProperty("staticInitializerId",
-                    string(evidence, "initializerId"));
             result.addProperty("allocationEdgeId",
                     string(evidence, "allocationEdgeId"));
             result.addProperty("allocationMethod",
                     string(evidence, "allocationMethod"));
-            result.addProperty("allocationSiteId",
-                    string(evidence, "allocationSiteId"));
             result.addProperty("constructor",
                     string(evidence, "constructor"));
             result.add("proofEdgeIds", copy(evidence.get("proofEdgeIds"),

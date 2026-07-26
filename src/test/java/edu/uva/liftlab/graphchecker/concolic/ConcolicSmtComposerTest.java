@@ -899,8 +899,6 @@ public class ConcolicSmtComposerTest {
         initializer.addProperty("stateId", "MAP_STATE.REGION.P.0.0");
         initializer.addProperty("requestedOutputPort", "REGION.P.out.0");
         initializer.addProperty("allocatedType", "java.util.HashMap");
-        initializer.addProperty("staticInitializerId",
-                "STATIC_INIT.REGION.P.0");
         initializer.addProperty("allocationEdgeId", "EDGE.ALLOC.0");
         JsonArray proof = new JsonArray();
         proof.add("EDGE.ALLOC.0");

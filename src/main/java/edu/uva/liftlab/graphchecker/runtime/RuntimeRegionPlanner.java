@@ -5711,26 +5711,13 @@ final class RuntimeRegionPlanner {
                         || !caller.equals(event.method)
                         || !site.equals(event.siteId)
                         || argument != event.argumentIndex
-                        || !callee.isEmpty()
-                        && !callee.equals(event.declaredCallee)
-                        || unit >= 0 && !site.endsWith("#u" + unit)) {
+                        || !callee.equals(event.declaredCallee)
+                        || !site.endsWith("#u" + unit)) {
                     continue;
                 }
                 result.add(event);
             }
             return result;
-        }
-
-        private int callArgumentOccurrence(Map<String, Object> binding,
-                                           RuntimeEvent target) {
-            int occurrence = 0;
-            for (RuntimeEvent event : matchingCallArguments(binding)) {
-                occurrence++;
-                if (event == target || event.seq == target.seq) {
-                    return occurrence;
-                }
-            }
-            return 0;
         }
 
         private long lastSeq() {
@@ -7140,11 +7127,9 @@ final class RuntimeRegionPlanner {
                     mutationCaptureDischargeReady(refined, evidence,
                             observed, heapEffectCaptureInput);
             if (heapEffectCaptureDischarged) {
-                // An in-place container mutation has no assignment RHS to
-                // capture.  The exact same-cell pre-state port plus the
-                // importer-validated, path-ordered heap effects is the
-                // relational output.  Do not manufacture a second Map
-                // reference expression or treat put/remove as putfield.
+                // In-place containers use the exact same-cell pre-state plus
+                // importer-validated, path-ordered heap effects. They do not
+                // need a separate scalar output capture.
                 refined.captureBindings.clear();
                 refined.captureBindingsComplete = true;
                 refined.captureBindingIssues.clear();
@@ -7160,8 +7145,7 @@ final class RuntimeRegionPlanner {
                 int matchedCaptureCount = 0;
                 boolean exitFieldRequested = false;
                 for (Map<String, Object> binding : captureBindings) {
-                    String captureKind = firstNonBlank(string(binding.get(
-                            "captureKind")), "CALL_ARGUMENT");
+                    String captureKind = string(binding.get("captureKind"));
                     if ("REGION_EXIT_FIELD".equals(captureKind)) {
                         exitFieldRequested = true;
                         refined.captureBindings.add(
@@ -7183,11 +7167,10 @@ final class RuntimeRegionPlanner {
                     }
                     List<RuntimeEvent> matches = evidence
                             .matchingCallArguments(binding);
-                    for (RuntimeEvent match : matches) {
+                    for (int index = 0; index < matches.size(); index++) {
                         Map<String, Object> exact =
                                 new LinkedHashMap<>(binding);
-                        exact.put("occurrence", evidence
-                                .callArgumentOccurrence(binding, match));
+                        exact.put("occurrence", index + 1);
                         refined.captureBindings.add(exact);
                         matchedCaptureCount++;
                     }
@@ -7204,8 +7187,6 @@ final class RuntimeRegionPlanner {
                     }
                     refined.captureBindingIssues.add(failure);
                 }
-            } else {
-                refined.captureBindings.addAll(copyRows(captureBindings));
             }
         }
 
@@ -7221,9 +7202,8 @@ final class RuntimeRegionPlanner {
                 return;
             }
             for (Map<String, Object> capture : captureBindings) {
-                if (!"REGION_EXIT_FIELD".equals(firstNonBlank(
-                        string(capture.get("captureKind")),
-                        "CALL_ARGUMENT"))) {
+                if (!"REGION_EXIT_FIELD".equals(
+                        string(capture.get("captureKind")))) {
                     return;
                 }
             }
@@ -7311,8 +7291,7 @@ final class RuntimeRegionPlanner {
             // to methods excluded as static alternatives are irrelevant to
             // this concrete runtime path.
             for (Map<String, Object> binding : captureBindings) {
-                String method = firstNonBlank(string(binding.get("method")),
-                        string(binding.get("callerMethod")));
+                String method = string(binding.get("callerMethod"));
                 if (method.isEmpty() || observed.contains(method)) {
                     return false;
                 }
@@ -7443,7 +7422,6 @@ final class RuntimeRegionPlanner {
                     "heapInitializers", heapInitializers,
                     "captureBindings", captureBindings,
                     "captureBindingsComplete", captureBindingsComplete,
-                    "captureBindingIssues", captureBindingIssues,
                     "captureDischargedByHeapEffectTransformer",
                     captureDischargedByHeapEffectTransformer,
                     "captureDischargeInputPort",

@@ -72,6 +72,7 @@ final class ConcolicInstrumentationSelections {
      */
     static final class InstrumentationPlan {
         private final Set<String> roots;
+        private final String receiverClass;
         private final ConcolicMaterializationSelection materializations;
         private final List<OutputCaptureSpec> outputCaptures;
         private final boolean boundedOutputClosureCoverageReady;
@@ -82,6 +83,9 @@ final class ConcolicInstrumentationSelections {
             this.roots = Collections.singleton(
                     jsonString(JsonFields.object(row, "rootSelector"),
                             "method"));
+            this.receiverClass = jsonString(
+                    JsonFields.object(row, "rootSelector"),
+                    "receiverClass");
             this.materializations =
                     ConcolicMaterializationSelection.fromRow(row);
             this.outputCaptures = outputCaptureSpecs(closure, row);
@@ -169,6 +173,10 @@ final class ConcolicInstrumentationSelections {
 
         Set<String> roots() {
             return roots;
+        }
+
+        String receiverClass() {
+            return receiverClass;
         }
 
         ConcolicMaterializationSelection materializations() {

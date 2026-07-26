@@ -2537,7 +2537,6 @@ public final class ConcolicRegionRuntime {
         row.addProperty("occurrence", occurrence);
         row.addProperty("captureAuthority",
                 "ACTIVE_TOKEN_EXACT_ORIGINAL_CALL_ARGUMENT");
-        row.addProperty("concretePrimitiveValue", safe(primitiveValue));
         EngineApi api = engine();
         boolean paused = false;
         try {
@@ -2554,11 +2553,9 @@ public final class ConcolicRegionRuntime {
             }
             row.add("expression", expression);
             captured.addEvidence(row);
-            row.addProperty("expressionCaptured", true);
             active.verifyMapProjectionOutput(outputPort, outputCell, value,
                     "ACTIVE_TOKEN_EXACT_ORIGINAL_CALL_ARGUMENT");
         } catch (Throwable throwable) {
-            row.addProperty("expressionCaptured", false);
             row.addProperty("expressionError", rootCause(throwable));
             active.unresolved.add(request.captureBindingId()
                     + ": output expression capture failed: "
@@ -2577,8 +2574,7 @@ public final class ConcolicRegionRuntime {
      */
     public static void recordRegionExitFieldOutput(
             String captureBindingId, String outputPort, String outputCell,
-            String fieldSignature, Object fieldOwner, Object fieldValue,
-            String primitiveValue) {
+            String fieldSignature, Object fieldOwner, Object fieldValue) {
         ActiveRegion active = activeRegion();
         if (active == null) return;
         OutputCaptureSpec request =

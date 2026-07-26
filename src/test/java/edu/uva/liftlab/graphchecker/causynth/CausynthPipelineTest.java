@@ -10,6 +10,7 @@ import org.junit.rules.TemporaryFolder;
 import soot.Body;
 import soot.G;
 import soot.Local;
+import soot.LongType;
 import soot.Modifier;
 import soot.RefType;
 import soot.Scene;
@@ -472,12 +473,15 @@ public class CausynthPipelineTest {
             Object refs = create.invoke(null);
             Method instrument = CausynthPipeline.class.getDeclaredMethod(
                     "instrumentRegionExitFieldCaptures",
-                    Body.class, Unit.class, soot.Value.class,
+                    Body.class, Unit.class, Local.class, soot.Value.class,
+                    String.class,
                     Collection.class,
                     refsClass);
             instrument.setAccessible(true);
+            Local token = Jimple.v().newLocal("$token", LongType.v());
+            body.getLocals().add(token);
             instrument.invoke(new CausynthPipeline(null), body, exit,
-                    receiver, selection, refs);
+                    token, receiver, owner.getName(), selection, refs);
 
             List<Unit> units = new ArrayList<>();
             for (Unit unit : body.getUnits()) units.add(unit);
