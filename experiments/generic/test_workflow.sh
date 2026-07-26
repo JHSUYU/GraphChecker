@@ -48,8 +48,7 @@ for file in \
   artifacts/schedule/merged_region_summaries.jsonl \
   artifacts/schedule/branch_queries.jsonl \
   artifacts/schedule/composed_fatal.smt2 \
-  artifacts/schedule/composed_smt_manifest.json \
-  artifacts/schedule/symbolic_relationship_candidates.json; do
+  artifacts/schedule/composed_smt_manifest.json; do
   : > "${fixture_root}/${file}"
 done
 
@@ -75,7 +74,7 @@ printf '%s\n' \
   '{"regionId":"REGION.0","relationallyComplete":true,"outputClosure":{"schemaVersion":1,"kind":"OUTPUT_CLOSURE_CONTRACT","producer":{"regionId":"REGION.0","regionInstanceId":"REGION_INSTANCE.0","rootCallId":1},"members":[{"output":{"portId":"out.0","cell":"out-cell","kind":"RETURN","javaTypeDescriptor":"I","selectionAuthority":"TEST_FIXTURE"},"slice":{"inputPorts":[],"sites":[],"staticSites":[],"methods":["m"],"causalEdgeIds":[],"captureBindingsRequired":false,"captureBindingsComplete":true,"captureBindings":[]}}]},"regionRelation":{"kind":"GUARDED_PATH_MERGE","cases":[{"caseId":"CASE.0","guard":{"kind":"PATH_CONDITION","conditions":[{"op":"="}]},"outputExpressions":{"out.0":{"exp":"x"}},"heapEffects":[],"normalExit":true}]}}' \
   > "${fixture_root}/artifacts/schedule/merged_region_summaries.jsonl"
 printf '%s\n' \
-  '{"schemaVersion":2,"kind":"CONCOLIC_COMPOSED_SMT","state":"CANDIDATE_READY","trustState":"CANDIDATE_ONLY","fatalRegion":"REGION.0","fatalSite":"m#u0","gaps":[],"includedSummaries":[],"resolvedEdgeBindings":[],"caseProjectionCatalog":[],"composedSmtArtifact":{"path":"artifacts/schedule/composed_fatal.smt2","sha256":"test"}}' \
+  '{"schemaVersion":2,"kind":"CONCOLIC_COMPOSED_SMT","state":"CANDIDATE_READY","trustState":"CANDIDATE_ONLY","fatalRegion":"REGION.0","fatalSite":"m#u0","gaps":[],"resolvedEdgeBindings":[],"suppliedInputs":[],"composedSmtArtifact":{"path":"artifacts/schedule/composed_fatal.smt2","sha256":"test"}}' \
   > "${fixture_root}/artifacts/schedule/composed_smt_manifest.json"
 printf '%s\n' '(set-logic ALL)' '(assert true)' '(check-sat)' \
   > "${fixture_root}/artifacts/schedule/composed_fatal.smt2"
@@ -215,8 +214,6 @@ assert_contains "${reached}" \
   "--manifest ${fixture_root}/artifacts/schedule/composed_smt_manifest.json"
 assert_contains "${reached}" \
   "--regions ${fixture_root}/artifacts/symbolic_regions.jsonl"
-assert_contains "${reached}" \
-  "--relationships ${fixture_root}/artifacts/schedule/symbolic_relationship_candidates.json"
 assert_contains "${reached}" \
   "--output ${fixture_root}/artifacts/reports/reach-condition.json"
 assert_contains "${reached}" "--z3 ${fixture_root}/bin/z3"

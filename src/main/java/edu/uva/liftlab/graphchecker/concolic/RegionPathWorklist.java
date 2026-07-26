@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
@@ -19,7 +18,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -50,14 +48,8 @@ public final class RegionPathWorklist {
                               List<JsonObject> executionTasks,
                               List<JsonObject> explorationRecords,
                               Bounds bounds) {
-        Bounds effective = bounds == null ? Bounds.defaults() : bounds;
         return new Planner(summaries, executionTasks, explorationRecords,
-                effective).run();
-    }
-
-    /** Content identity independent of execution task ids. */
-    public static String stablePathKey(JsonObject summary) {
-        return PathObservation.stablePathKey(summary);
+                bounds).run();
     }
 
     private static final class Planner {
@@ -84,15 +76,15 @@ public final class RegionPathWorklist {
                         List<JsonObject> explorationRecords,
                         Bounds bounds) {
             this.bounds = bounds;
-            for (JsonObject task : safe(executionTasks)) {
+            for (JsonObject task : executionTasks) {
                 String id = string(task, "taskId");
                 if (!id.isEmpty()) this.taskById.put(id, task);
             }
-            for (JsonObject record : safe(explorationRecords)) {
+            for (JsonObject record : explorationRecords) {
                 String key = string(record, "queryKey");
                 if (!key.isEmpty()) this.records.put(key, record);
             }
-            for (JsonObject summary : safe(summaries)) {
+            for (JsonObject summary : summaries) {
                 paths.add(PathObservation.decode(summary, taskById.get(
                         string(summary, "taskId"))));
             }
@@ -118,7 +110,7 @@ public final class RegionPathWorklist {
                 if (!seenPaths.add(region + "\n" + pathKey)) continue;
                 observedRegions.add(region);
                 observedScopes.put(path.scope().identity(), path.scope());
-                increment(pathCountByRegion, region);
+                pathCountByRegion.merge(region, 1, Integer::sum);
                 if (!path.branchMappingIssue().isEmpty()) {
                     gap("INVALID_BRANCH_MAPPING_SCHEMA",
                             path.branchMappingIssue(), region, pathKey, "", -1);
@@ -156,8 +148,8 @@ public final class RegionPathWorklist {
                 relations.addAll(closedRelations(observedScopes));
                 if (!gaps.isEmpty()) {
                     relations.clear();
-                    manifest = manifest(!seenPaths.isEmpty(),
-                            observedRegions, observedScopes);
+                    manifest.addProperty("state", State.GAPPED.name());
+                    manifest.add("gaps", GSON.toJsonTree(gaps));
                 }
             }
             return new Result(tasks, manifest, relations);
@@ -182,10 +174,9 @@ public final class RegionPathWorklist {
 
             String region = scope.outputClosure().producer().regionId();
             String outputIdentity = scope.outputClosureIdentity();
-            Map<String, String> payloadByPath = new LinkedHashMap<>();
             Map<String, PathObservation> caseByPath =
                     new LinkedHashMap<>();
-            Map<String, JsonObject> bindingsByKey = new LinkedHashMap<>();
+            List<JsonObject> bindings = new ArrayList<>();
             for (PathObservation path : paths) {
                 if (!path.scope().goalKind().capturesOutputRelation()) {
                     continue;
@@ -201,16 +192,17 @@ public final class RegionPathWorklist {
                 }
 
                 String pathKey = path.pathKey();
-                String payload = path.stableCasePayload();
-                String previous = payloadByPath.putIfAbsent(pathKey, payload);
+                PathObservation previous = caseByPath.get(pathKey);
                 if (previous != null) {
-                    if (!previous.equals(payload)) {
+                    if (!previous.stableCaseFingerprint().equals(
+                            path.stableCaseFingerprint())) {
                         gap("CONFLICTING_DUPLICATE_PATH_PAYLOAD",
                                 "PATH_CERTIFICATES_DISAGREE",
                                 region, pathKey, "", -1);
                     }
                 } else if (contract.members().size() > 1
-                        && !path.hasExactOutputSet(contract.outputPorts())) {
+                        && !path.hasExactOutputSet(
+                        contract.outputPorts())) {
                     gap("JOINT_OUTPUT_EXPRESSION_SET_MISMATCH",
                             "OUTPUT_EXPRESSION_SET_DOES_NOT_MATCH_DEMAND",
                             region, pathKey, "", -1);
@@ -219,9 +211,7 @@ public final class RegionPathWorklist {
                 }
                 for (JsonElement element : path.edgeBindings()) {
                     if (!element.isJsonObject()) continue;
-                    JsonObject binding = element.getAsJsonObject();
-                    bindingsByKey.put(CanonicalJson.render(binding),
-                            binding);
+                    bindings.add(element.getAsJsonObject());
                 }
             }
             if (!gaps.isEmpty()) {
@@ -235,8 +225,8 @@ public final class RegionPathWorklist {
             }
 
             RelationSummary merged = RelationSummary.guardedPathMerge(
-                    scope.goalId(), scope.outputClosure(),
-                    caseByPath.values(), bindingsByKey.values());
+                    scope.outputClosure(),
+                    caseByPath.values(), bindings);
             return Collections.singletonList(merged.toJson());
         }
 
@@ -331,8 +321,6 @@ public final class RegionPathWorklist {
             task.addProperty("regionId", path.regionId());
             task.addProperty("goalId", path.scope().goalId());
             path.scope().goalKind().writeToTask(task);
-            task.addProperty("sourceSummaryId", path.summaryId());
-            task.addProperty("sourcePathKey", path.pathKey());
             task.addProperty("sourceTaskId", path.sourceTaskId());
             if (path.scope().outputClosure() != null) {
                 task.add(OutputClosureContract.FIELD,
@@ -417,16 +405,19 @@ public final class RegionPathWorklist {
             JsonObject result = new JsonObject();
             result.addProperty("schemaVersion", 1);
             result.addProperty("kind", "REGION_PATH_WORKLIST");
-            result.addProperty("regionId", regionId);
             result.addProperty("state", state.name());
-            result.add("bounds", bounds.toJson());
+            if (scopes.size() != 1 || scopes.values().iterator().next()
+                    .outputClosure() == null) {
+                result.addProperty("regionId", regionId);
+            }
             if (scopes.size() == 1) {
                 PathObservation.Scope scope = scopes.values().iterator().next();
-                result.addProperty("goalId", scope.goalId());
-                scope.goalKind().writeToTask(result);
                 if (scope.outputClosure() != null) {
                     result.add(OutputClosureContract.FIELD,
                             scope.outputClosure().toJson());
+                } else {
+                    result.addProperty("goalId", scope.goalId());
+                    scope.goalKind().writeToTask(result);
                 }
             }
             result.add("gaps", GSON.toJsonTree(gaps));
@@ -502,13 +493,6 @@ public final class RegionPathWorklist {
             return new Bounds(64, 32, 256);
         }
 
-        private JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("maxPathsPerRegion", maxPathsPerRegion);
-            result.addProperty("maxFlipsPerPath", maxFlipsPerPath);
-            result.addProperty("maxTasks", maxTasks);
-            return result;
-        }
     }
 
     public static final class Result {
@@ -529,15 +513,6 @@ public final class RegionPathWorklist {
         return "UNSAT".equals(status)
                 || "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY".equals(status)
                 || "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY".equals(status);
-    }
-
-    private static void increment(Map<String, Integer> values, String key) {
-        Integer previous = values.get(key);
-        values.put(key, previous == null ? 1 : previous + 1);
-    }
-
-    private static List<JsonObject> safe(List<JsonObject> values) {
-        return values == null ? Collections.<JsonObject>emptyList() : values;
     }
 
 }

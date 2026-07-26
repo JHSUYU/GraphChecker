@@ -968,25 +968,22 @@ run_path_task() {
   import_plan "${task_dir}/execution_task_plan.jsonl" "${raw}" \
     "${imported}" "${task_dir}"
   jq -e -c -s \
-    --slurpfile task "${task_dir}/replay_validation_plan.json" \
     --slurpfile executionTask "${task_dir}/execution_task_plan.jsonl" \
     --slurpfile raw "${raw}" '
     if length == 1
-      and ($task | length) == 1
       and ($executionTask | length) == 1
       and ($raw | length) == 1
       and .[0].relationallyComplete == true
       and .[0].taskId == $executionTask[0].taskId
       and .[0].regionInstanceId == $executionTask[0].regionInstanceId
       and .[0].goalId == $executionTask[0].goalId
-      and .[0].regionId == $task[0].regionId
+      and .[0].regionId == $executionTask[0].regionId
       and $raw[0].regionInstanceId == $executionTask[0].regionInstanceId
       and $raw[0].taskId == $executionTask[0].taskId
       and $raw[0].goalId == $executionTask[0].goalId
-      and $raw[0].regionId == $task[0].regionId
-      and $raw[0].pathQueryKey == $task[0].queryKey
-      and $executionTask[0].pathQueryKey == $task[0].queryKey
-      and ($task[0].goalKind != "OUTPUT_RELATION_CLOSURE"
+      and $raw[0].regionId == $executionTask[0].regionId
+      and $raw[0].pathQueryKey == $executionTask[0].pathQueryKey
+      and ($executionTask[0].goalKind != "OUTPUT_RELATION_CLOSURE"
         or (.[0].normalExit == true
           and (.[0].outputExpressions | keys | sort)
             == (.[0].outputClosure.members
@@ -994,12 +991,12 @@ run_path_task() {
     then {
       schemaVersion: 1,
       kind: "PATH_EXPLORATION_RECORD",
-      queryKey: $task[0].queryKey,
-      regionId: $task[0].regionId,
+      queryKey: $executionTask[0].pathQueryKey,
+      regionId: $executionTask[0].regionId,
       taskId: $executionTask[0].taskId,
       regionInstanceId: $executionTask[0].regionInstanceId,
       goalId: $executionTask[0].goalId,
-      status: (if $task[0].goalKind == "OUTPUT_RELATION_CLOSURE"
+      status: (if $executionTask[0].goalKind == "OUTPUT_RELATION_CLOSURE"
         then "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
         else "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY"
         end)
@@ -1007,7 +1004,7 @@ run_path_task() {
     else error("imported replay did not satisfy the canonical admission")
     end
   ' "${imported}" >"${task_dir}/exploration_record.jsonl" \
-    || die "path replay admission failed; inspect ${task_dir}/replay_validation_plan.json, ${raw}, ${imported}, and ${task_dir}/concolic_import_diagnostics.jsonl"
+    || die "path replay admission failed; inspect ${task_dir}/execution_task_plan.jsonl, ${raw}, ${imported}, and ${task_dir}/concolic_import_diagnostics.jsonl"
 }
 
 wait_for_path_wave() {
@@ -1290,8 +1287,8 @@ do_explore_target() {
   jq -e -s '
     length == 1
     and .[0].kind == "TARGET_REACH_PATH_SET_QUERY"
-    and .[0].readyForSolver == true
-    and .[0].pathClosureState == "CLOSED"
+    and .[0].constraintAuthority
+      == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
   ' "${target_schedule}/branch_queries.jsonl" >/dev/null \
     || die "closed target reach query is incomplete"
   discard_successful_iteration "${campaign}"
@@ -1402,7 +1399,6 @@ do_candidate_compose() {
     CAUSYNTH_COMPOSE_SUMMARIES="${compose_summaries}" \
     CAUSYNTH_COMPOSED_SMT="${candidate_root}/candidate.smt2" \
     CAUSYNTH_COMPOSITION_MANIFEST="${candidate_root}/candidate_composition_manifest.json" \
-    CAUSYNTH_RELATIONSHIP_CANDIDATES="${candidate_root}/symbolic_relationship_candidates.json" \
     CAUSYNTH_FATAL_REGION="${target_region}" \
     CAUSYNTH_FATAL_REGION_INSTANCE_ID="${target_instance}" \
     "${runner}" --config "${config}" compose "${bounded_args[@]}")
@@ -1414,27 +1410,15 @@ do_candidate_compose() {
     and (.gaps | type == "array" and length == 0)
   ' "${candidate_root}/candidate_composition_manifest.json" >/dev/null \
     || die "composition is not a structurally complete candidate model"
-  jq -e '
-    .schemaVersion == 2
-    and .kind == "SYMBOLIC_RELATIONSHIP_CANDIDATES"
-    and .trustState == "CANDIDATE_ONLY"
-    and (.relationships | type == "array")
-    and (keys | sort) == (["kind", "relationships", "schemaVersion",
-      "trustState"] | sort)
-  ' "${candidate_root}/symbolic_relationship_candidates.json" >/dev/null \
-    || die "candidate relationship catalog claims final eligibility"
 }
 
 do_candidate_solve() {
   require_file "candidate SMT" "${candidate_root}/candidate.smt2"
   require_file "candidate composition manifest" \
     "${candidate_root}/candidate_composition_manifest.json"
-  require_file "candidate relationship candidates" \
-    "${candidate_root}/symbolic_relationship_candidates.json"
   (cd "${graphchecker_dir}" && \
     CAUSYNTH_COMPOSED_SMT="${candidate_root}/candidate.smt2" \
     CAUSYNTH_COMPOSITION_MANIFEST="${candidate_root}/candidate_composition_manifest.json" \
-    CAUSYNTH_RELATIONSHIP_CANDIDATES="${candidate_root}/symbolic_relationship_candidates.json" \
     CAUSYNTH_REACH_REPORT="${candidate_root}/candidate_boolean_model.json" \
     "${runner}" --config "${config}" reach)
   if jq -e '
@@ -1548,13 +1532,11 @@ write_candidate_manifest() {
   local smt="${candidate_root}/candidate.smt2"
   local composition="${candidate_root}/candidate_composition_manifest.json"
   local reach="${candidate_root}/candidate_boolean_model.json"
-  local relationships="${candidate_root}/symbolic_relationship_candidates.json"
   local output="${candidate_root}/candidate_result_manifest.json"
   local status
   require_file "candidate SMT" "${smt}"
   require_file "candidate composition manifest" "${composition}"
   require_file "candidate reach model" "${reach}"
-  require_file "candidate relationships" "${relationships}"
   status=$(jq -er '.reachCondition.reachability
     | select(. == "REACHABLE" or . == "UNREACHABLE")' "${reach}") \
     || die "candidate reach model has no exact reachability status"
@@ -1565,9 +1547,7 @@ write_candidate_manifest() {
     --arg composition "$(realpath -m -- "${composition}")" \
     --arg composition_hash "$(sha256_file "${composition}")" \
     --arg reach "$(realpath -m -- "${reach}")" \
-    --arg reach_hash "$(sha256_file "${reach}")" \
-    --arg relationships "$(realpath -m -- "${relationships}")" \
-    --arg relationships_hash "$(sha256_file "${relationships}")" '
+    --arg reach_hash "$(sha256_file "${reach}")" '
       {
         schemaVersion: 2,
         kind: "CONCOLIC_CANDIDATE_RESULT",
@@ -1577,9 +1557,7 @@ write_candidate_manifest() {
         candidateSmtArtifact: {path: $smt, sha256: $smt_hash},
         compositionManifestArtifact: {path: $composition,
           sha256: $composition_hash},
-        candidateReachModelArtifact: {path: $reach, sha256: $reach_hash},
-        relationshipCandidatesArtifact: {path: $relationships,
-          sha256: $relationships_hash}
+        candidateReachModelArtifact: {path: $reach, sha256: $reach_hash}
       }
     ' >"${output}"
   jq -e '

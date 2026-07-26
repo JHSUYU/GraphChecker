@@ -200,7 +200,6 @@ public class RegionPathWorklistTest {
             JsonObject capture = new JsonObject();
             capture.addProperty("captureBindingId",
                     "CAPTURE.JOINT.EXIT." + index);
-            capture.addProperty("captureKind", "REGION_EXIT_FIELD");
             capture.addProperty("outputPort", port);
             capture.addProperty("outputCell", cell);
             capture.addProperty("accessRootInputPort", "REGION.3.in.0");
@@ -551,7 +550,7 @@ public class RegionPathWorklistTest {
         slice.add("methods", new JsonArray());
         slice.add("causalEdgeIds", new JsonArray());
         slice.add("captureBindings", new JsonArray());
-        slice.addProperty("captureBindingsComplete", true);
+        slice.add("captureBindingIssues", new JsonArray());
         slice.addProperty("proofTag", proofTag);
 
         JsonObject member = new JsonObject();

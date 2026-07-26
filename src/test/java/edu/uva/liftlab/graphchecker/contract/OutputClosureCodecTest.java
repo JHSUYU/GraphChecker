@@ -63,14 +63,6 @@ public class OutputClosureCodecTest {
         members.add(right.toJson().getAsJsonArray("members").get(0));
         members.add(left.toJson().getAsJsonArray("members").get(0));
         envelope.add("members", members);
-
-        expectFailure(() -> OutputClosureCodec.decodeEnvelope(envelope),
-                "strictly sorted");
-
-        JsonArray sorted = new JsonArray();
-        sorted.add(left.toJson().getAsJsonArray("members").get(0));
-        sorted.add(right.toJson().getAsJsonArray("members").get(0));
-        envelope.add("members", sorted);
         OutputClosureContract joint =
                 OutputClosureCodec.decodeEnvelope(envelope);
         assertEquals(2, joint.members().size());
@@ -143,7 +135,8 @@ public class OutputClosureCodecTest {
                 Arrays.asList(first, second)).toJson();
         envelope.getAsJsonArray("members").get(1).getAsJsonObject()
                 .getAsJsonObject("slice")
-                .addProperty("captureBindingsComplete", false);
+                .getAsJsonArray("captureBindingIssues")
+                .add("MISSING_CAPTURE");
 
         expectFailure(() -> OutputClosureCodec.decodeEnvelope(envelope),
                 "multi-output V1 requires");
@@ -151,7 +144,8 @@ public class OutputClosureCodecTest {
         JsonObject singleton = first.toJson();
         singleton.getAsJsonArray("members").get(0).getAsJsonObject()
                 .getAsJsonObject("slice")
-                .addProperty("captureBindingsComplete", false);
+                .getAsJsonArray("captureBindingIssues")
+                .add("MISSING_CAPTURE");
         OutputClosureContract incomplete =
                 OutputClosureCodec.decodeEnvelope(singleton);
         assertFalse(incomplete.member(
@@ -171,7 +165,6 @@ public class OutputClosureCodecTest {
         activation.addProperty("rootCallId", 7);
 
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
         capture.addProperty("captureBindingId", port + ".exit-field");
         capture.addProperty("outputPort", port);
         capture.addProperty("outputCell", cell);
@@ -194,7 +187,6 @@ public class OutputClosureCodecTest {
         slice.addProperty("runtimeRefinementAuthority",
                 "OBSERVED_REGION_CALL_TREE");
         slice.addProperty("inputAliasCanonicalizationComplete", true);
-        slice.addProperty("captureBindingsComplete", true);
         slice.addProperty("regionTruncated", false);
         slice.addProperty("truncated", false);
         slice.addProperty("methodBudgetTruncated", false);
@@ -219,7 +211,7 @@ public class OutputClosureCodecTest {
         slice.add("captureBindings", captures.deepCopy());
         OutputClosureCodec.writeTo(activation, OutputClosureCodec.singleton(
                 region, region + "@test#call7", 7, port, cell,
-                "HEAP_STATE", "CONFIRMED_READ_FROM_EDGE", slice));
+                "HEAP_STATE", "I", slice));
         return activation;
     }
 

@@ -5,42 +5,37 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.List;
-import java.util.Map;
 
 /** Writes the stable JSON/JSONL artifact set for one static analysis run. */
 final class CausynthArtifactWriter {
-    private final Path outputDir;
-    private final StaticProgram program;
-
-    CausynthArtifactWriter(Path outputDir, StaticProgram program) {
-        this.outputDir = outputDir;
-        this.program = program;
+    private CausynthArtifactWriter() {
     }
 
-    void writeAll() throws IOException {
+    static void write(Path outputDir, StaticProgram program)
+            throws IOException {
         Files.createDirectories(outputDir);
-        writeJson("target_resolved.json", program.targetResolved);
-        writeJsonl("static_dataflow_edges.jsonl", program.edges);
-        writeJsonl("symbolic_regions.jsonl", program.regions);
-        writeJsonl("symbolic_region_edges.jsonl", program.regionEdges);
+        writeJson(outputDir.resolve("target_resolved.json"),
+                program.targetResolved);
+        writeJsonl(outputDir.resolve("static_dataflow_edges.jsonl"),
+                program.edges);
+        writeJsonl(outputDir.resolve("symbolic_regions.jsonl"),
+                program.regions);
+        writeJsonl(outputDir.resolve("symbolic_region_edges.jsonl"),
+                program.regionEdges);
     }
 
-    private void writeJson(String fileName, Object value) throws IOException {
-        Files.write(outputDir.resolve(fileName),
+    private static void writeJson(Path output, Object value)
+            throws IOException {
+        Files.write(output,
                 CausynthJson.write(value).getBytes(StandardCharsets.UTF_8));
     }
 
-    private void writeJsonl(String fileName,
-                            List<Map<String, Object>> values)
+    private static void writeJsonl(Path output,
+                                   List<?> values)
             throws IOException {
-        Path output = outputDir.resolve(fileName);
         try (BufferedWriter writer = Files.newBufferedWriter(output,
-                StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE)) {
+                StandardCharsets.UTF_8)) {
             for (Object value : values) {
                 writer.write(CausynthJson.write(value));
                 // Keep artifact hashes stable across host platforms.

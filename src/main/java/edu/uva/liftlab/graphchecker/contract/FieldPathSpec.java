@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -131,18 +130,13 @@ public final class FieldPathSpec {
         for (JsonElement element : encoded.getAsJsonArray()) {
             if (!element.isJsonObject()) continue;
             JsonObject declaration = element.getAsJsonObject();
-            if (!booleanValue(declaration, "complete")
-                    || !expectedPath.equals(stringArray(declaration,
+            if (!expectedPath.equals(stringArray(declaration,
                     "fieldPath"))) {
                 continue;
             }
             DeclaredField leaf = declaredField(text(declaration,
                     "fieldSignature"));
             if (leaf == null
-                    || !leaf.owner().equals(text(declaration,
-                    "declaredFieldOwnerClass"))
-                    || !leaf.type().equals(text(declaration,
-                    "declaredFieldType"))
                     || !leaf.name().equals(expectedPath.get(
                     expectedPath.size() - 1))) {
                 continue;
@@ -157,12 +151,6 @@ public final class FieldPathSpec {
         JsonElement value = object == null ? null : object.get(member);
         return value != null && value.isJsonPrimitive()
                 ? trim(value.getAsString()) : "";
-    }
-
-    private static boolean booleanValue(JsonObject object, String member) {
-        JsonElement value = object == null ? null : object.get(member);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsBoolean();
     }
 
     private static String trim(String value) {

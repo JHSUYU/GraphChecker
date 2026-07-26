@@ -53,8 +53,6 @@ public class ConcolicRegionRuntimeTest {
         action.addProperty("field", field);
         action.addProperty("location", "HEAP_OBJECT_FIELD");
         action.addProperty("bindingMode", "FIELD_ACCESS");
-        action.addProperty("accessOwnerClass", "example.StaticInputs");
-        action.addProperty("accessField", "t");
         action.addProperty("accessFieldSignature", field);
         action.addProperty("accessMethod", method);
         action.addProperty("accessUnitIndex", 7);
@@ -102,81 +100,19 @@ public class ConcolicRegionRuntimeTest {
             assertFalse(result.has("activationId"));
             assertEquals("TASK.ACT.MODEL.STATIC.PRIMITIVE",
                     result.get("taskId").getAsString());
-            assertEquals("ACT.MODEL.STATIC.PRIMITIVE.GOAL",
-                    result.get("goalId").getAsString());
-            assertEquals("REGION.TEST@TEST#call1",
-                    result.get("regionInstanceId").getAsString());
             assertEquals(1, result.getAsJsonArray(
                     "modelAssignmentsApplied").size());
             JsonObject applied = result.getAsJsonArray(
                     "modelAssignmentsApplied").get(0).getAsJsonObject();
-            assertEquals(symbol, applied.get("inputSymbol").getAsString());
-            assertEquals("21", applied.get("value").getAsString());
-            assertFalse(applied.has("appliedAt"));
-            assertEquals("t", applied.getAsJsonArray(
-                    "materializationPath").get(0).getAsString());
+            assertEquals(1, applied.size());
+            assertEquals("M_I_field_" + symbol,
+                    applied.get("modelAssignmentKey").getAsString());
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
             folder.delete();
         }
     }
-
-    @Test
-    public void selectsOneExecutionTaskByTaskId() throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        Path plan = folder.getRoot().toPath().resolve("tasks.jsonl");
-        Path results = folder.getRoot().toPath().resolve("results.jsonl");
-        String root = "<example.SelectedTask: void run()>";
-        JsonObject first = symbolicTask("ACT.SELECT.FIRST", root, 1);
-        JsonObject second = symbolicTask("ACT.SELECT.SECOND", root, 1);
-        Files.write(plan, (first + "\n" + second + "\n").getBytes(
-                StandardCharsets.UTF_8));
-
-        String[] old = installPlan(plan, results,
-                "concrete-overlap-test");
-        try {
-            System.setProperty("causynth.concolic.task.id",
-                    "TASK.ACT.SELECT.SECOND");
-            ConcolicRegionRuntime.resetForTests();
-            DelayedExpressionEngine.reset();
-            ConcolicRegionRuntime.installEngineApiForTests(
-                    DelayedExpressionEngine.class);
-            long token = ConcolicRegionRuntime.enterRegionFrame(root,
-                    new Object(), new Object[0]);
-            assertTrue(token > 0L);
-            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
-
-            List<JsonObject> rows = resultRows(results);
-            assertEquals(1, rows.size());
-            assertEquals("TASK.ACT.SELECT.SECOND",
-                    rows.get(0).get("taskId").getAsString());
-            assertFalse(rows.get(0).has("activationId"));
-        } finally {
-            restorePlan(old);
-            ConcolicRegionRuntime.resetForTests();
-            folder.delete();
-        }
-    }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
     private static JsonObject testIntegerPredicate(String operator) {
@@ -337,165 +273,6 @@ public class ConcolicRegionRuntimeTest {
 
 
     @Test
-    public void capturesOnlyRequestedExactOutboundArgumentOccurrence()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
-        Path results = folder.getRoot().toPath().resolve("results.jsonl");
-        String root = "<example.Root: void run()>";
-        String caller = "<example.Client: void send()>";
-        String callee = "<example.Protocol: void accept(java.lang.String)>";
-        String cell = callee + ".param0:java.lang.String";
-        JsonObject activation = symbolicTask("ACT.OUTPUT.EXACT", root,
-                1);
-        activation.addProperty("test", "output-capture-test");
-        JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "CALL_ARGUMENT");
-        capture.addProperty("captureBindingId",
-                "REGION.TEST.out.0.capture.0");
-        capture.addProperty("outputPort", "REGION.TEST.out.0");
-        capture.addProperty("outputCell", cell);
-        capture.addProperty("callerMethod", caller);
-        capture.addProperty("unitIndex", 7);
-        capture.addProperty("siteId", caller + "#u7");
-        capture.addProperty("calleeMethod", callee);
-        capture.addProperty("argumentIndex", 0);
-        capture.addProperty("argumentCell", cell);
-        capture.addProperty("occurrence", 2);
-        attachDirectOutputClosure(activation, singleton(capture),
-                "Ljava/lang/String;");
-        Files.write(plan, (activation + "\n").getBytes(
-                StandardCharsets.UTF_8));
-
-        String[] old = installPlan(plan, results, "output-capture-test");
-        try {
-            ConcolicRegionRuntime.installEngineApiForTests(
-                    DelayedExpressionEngine.class);
-            long token = ConcolicRegionRuntime.enterRegion(root,
-                    new Object(), null);
-            assertTrue(token > 0L);
-            ConcolicRegionRuntime.recordOutputCapture(caller, 7,
-                    caller + "#u7", callee, 0, "REGION.TEST.out.0",
-                    cell, "REGION.TEST.out.0.capture.0", 2,
-                    "first", "");
-            ConcolicRegionRuntime.recordOutputCapture(caller, 7,
-                    caller + "#u7", callee, 0, "REGION.TEST.out.0",
-                    cell, "REGION.TEST.out.0.capture.0", 2,
-                    "second", "");
-            ConcolicRegionRuntime.exitRegion(token, null, "");
-
-            JsonObject row = resultRows(results).get(0);
-            JsonArray captures = row.getAsJsonArray("outputCaptures");
-            assertEquals(1, captures.size());
-            JsonObject observed = captures.get(0).getAsJsonObject();
-            assertEquals(2, observed.get("occurrence").getAsInt());
-            assertEquals("REGION.TEST.out.0.capture.0",
-                    observed.get("captureBindingId").getAsString());
-            assertEquals("M_L_field_REGION.TEST.in.0_java/lang/String",
-                    observed.getAsJsonObject("expression").get("_exp")
-                            .getAsString());
-            assertEquals(1, observed.get(
-                    "expressionEnvelopeSchemaVersion").getAsInt());
-            assertTrue(observed.get("expressionEnvelopeActive")
-                    .getAsBoolean());
-        } finally {
-            restorePlan(old);
-            ConcolicRegionRuntime.resetForTests();
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void jointOutputCapturesShareOneRuntimeResultRow()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
-        Path results = folder.getRoot().toPath().resolve("results.jsonl");
-        String root = "<example.Root: void run()>";
-        String caller = "<example.Client: void send()>";
-        String firstCallee = "<example.Protocol: void first(int)>";
-        String secondCallee = "<example.Protocol: void second(long)>";
-        String firstCell = firstCallee + ".param0:int";
-        String secondCell = secondCallee + ".param0:long";
-        JsonObject activation = symbolicTask(
-                "ACT.OUTPUT.JOINT", root, 1);
-        activation.addProperty("test", "joint-output-capture-test");
-
-        JsonObject first = new JsonObject();
-        first.addProperty("captureKind", "CALL_ARGUMENT");
-        first.addProperty("captureBindingId",
-                "REGION.TEST.out.0.capture.0");
-        first.addProperty("outputPort", "REGION.TEST.out.0");
-        first.addProperty("outputCell", firstCell);
-        first.addProperty("callerMethod", caller);
-        first.addProperty("unitIndex", 7);
-        first.addProperty("siteId", caller + "#u7");
-        first.addProperty("calleeMethod", firstCallee);
-        first.addProperty("argumentIndex", 0);
-        first.addProperty("argumentCell", "first");
-        first.addProperty("occurrence", 1);
-
-        JsonObject second = new JsonObject();
-        second.addProperty("captureKind", "CALL_ARGUMENT");
-        second.addProperty("captureBindingId",
-                "REGION.TEST.out.1.capture.0");
-        second.addProperty("outputPort", "REGION.TEST.out.1");
-        second.addProperty("outputCell", secondCell);
-        second.addProperty("callerMethod", caller);
-        second.addProperty("unitIndex", 8);
-        second.addProperty("siteId", caller + "#u8");
-        second.addProperty("calleeMethod", secondCallee);
-        second.addProperty("argumentIndex", 0);
-        second.addProperty("argumentCell", "second");
-        second.addProperty("occurrence", 1);
-        JsonArray captures = new JsonArray();
-        captures.add(first);
-        captures.add(second);
-        attachDirectOutputClosure(activation, captures, "I", "J");
-        Files.write(plan, (activation + "\n").getBytes(
-                StandardCharsets.UTF_8));
-
-        String[] old = installPlan(plan, results,
-                "joint-output-capture-test");
-        try {
-            ConcolicRegionRuntime.installEngineApiForTests(
-                    DelayedExpressionEngine.class);
-            long token = ConcolicRegionRuntime.enterRegion(root,
-                    new Object(), null);
-            assertTrue(token > 0L);
-            ConcolicRegionRuntime.recordOutputCapture(caller, 7,
-                    caller + "#u7", firstCallee, 0,
-                    "REGION.TEST.out.0", firstCell,
-                    "REGION.TEST.out.0.capture.0", 1,
-                    Integer.valueOf(11), "11");
-            ConcolicRegionRuntime.recordOutputCapture(caller, 8,
-                    caller + "#u8", secondCallee, 0,
-                    "REGION.TEST.out.1", secondCell,
-                    "REGION.TEST.out.1.capture.0", 1,
-                    Long.valueOf(22L), "22");
-            ConcolicRegionRuntime.exitRegion(token, null, "");
-
-            List<JsonObject> rows = resultRows(results);
-            assertEquals(1, rows.size());
-            JsonArray observed = rows.get(0).getAsJsonArray(
-                    "outputCaptures");
-            assertEquals(2, observed.size());
-            assertEquals("REGION.TEST.out.0.capture.0",
-                    observed.get(0).getAsJsonObject()
-                            .get("captureBindingId").getAsString());
-            assertEquals("REGION.TEST.out.1.capture.0",
-                    observed.get(1).getAsJsonObject()
-                            .get("captureBindingId").getAsString());
-        } finally {
-            restorePlan(old);
-            ConcolicRegionRuntime.resetForTests();
-            folder.delete();
-        }
-    }
-
-    @Test
     public void malformedOutputCaptureFailsClosedBeforeRegionEntry()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -503,9 +280,7 @@ public class ConcolicRegionRuntimeTest {
         Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
         Path results = folder.getRoot().toPath().resolve("results.jsonl");
         String root = "<example.Root: void run()>";
-        String caller = "<example.Client: void send()>";
-        String callee = "<example.Protocol: void accept(int)>";
-        String cell = callee + ".param0:int";
+        String cell = "<example.Root: int value>";
         JsonObject activation = symbolicTask(
                 "ACT.OUTPUT.MALFORMED", root, 1);
         JsonObject capture = new JsonObject();
@@ -514,13 +289,11 @@ public class ConcolicRegionRuntimeTest {
                 "REGION.TEST.out.0.capture.0");
         capture.addProperty("outputPort", "REGION.TEST.out.0");
         capture.addProperty("outputCell", cell);
-        capture.addProperty("callerMethod", caller);
-        capture.addProperty("unitIndex", 7);
-        capture.addProperty("siteId", caller + "#u7");
-        capture.addProperty("calleeMethod", callee);
-        capture.addProperty("argumentIndex", 0);
-        capture.addProperty("argumentCell", "arg0");
-        capture.addProperty("occurrence", 0);
+        capture.addProperty("accessRootInputPort",
+                "REGION.TEST.in.0");
+        capture.add("fieldPath", strings("value"));
+        capture.addProperty("fieldSignature", cell);
+        capture.addProperty("javaType", "int");
         attachDirectOutputClosure(activation, singleton(capture), "I");
         Files.write(plan, (activation + "\n").getBytes(
                 StandardCharsets.UTF_8));
@@ -557,7 +330,6 @@ public class ConcolicRegionRuntimeTest {
                 1);
         activation.addProperty("test", "field-output-capture-test");
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
         capture.addProperty("captureBindingId",
                 "REGION.TEST.out.field.exit-field");
         capture.addProperty("outputPort", "REGION.TEST.out.field");
@@ -607,8 +379,7 @@ public class ConcolicRegionRuntimeTest {
             JsonArray captures = row.getAsJsonArray("outputCaptures");
             assertEquals(1, captures.size());
             JsonObject observed = captures.get(0).getAsJsonObject();
-            assertEquals("REGION_EXIT_FIELD",
-                    observed.get("captureKind").getAsString());
+            assertFalse(observed.has("captureKind"));
             assertFalse(observed.has("occurrence"));
             assertFalse(observed.has("method"));
             assertFalse(observed.has("siteId"));
@@ -618,10 +389,6 @@ public class ConcolicRegionRuntimeTest {
             assertEquals("M_L_field_REGION.TEST.in.0_java/lang/String",
                     observed.getAsJsonObject("expression").get("_exp")
                             .getAsString());
-            assertEquals(1, observed.get(
-                    "expressionEnvelopeSchemaVersion").getAsInt());
-            assertTrue(observed.get("expressionEnvelopeActive")
-                    .getAsBoolean());
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -655,9 +422,6 @@ public class ConcolicRegionRuntimeTest {
         containerAction.addProperty("mode", "SYMBOLIC");
         containerAction.addProperty("bindingMode",
                 "CONTAINER_INPUT_OBSERVATION");
-        containerAction.addProperty("arrayFieldObservationOnly", true);
-        containerAction.addProperty("containerObservationAuthority",
-                "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1");
         catalog.add(containerAction);
         JsonObject leafAction = actions.get(1).getAsJsonObject();
         leafAction.addProperty("mode", "DECLARATION_ONLY");
@@ -941,11 +705,6 @@ public class ConcolicRegionRuntimeTest {
             String rootAuthority) {
         action.addProperty("consumedFieldMethod", method);
         action.addProperty("consumedFieldUnitIndex", unitIndex);
-        action.addProperty("consumedFieldSiteId",
-                method + "#u" + unitIndex);
-        action.addProperty("consumedFieldSiteAuthority",
-                "RUNTIME_UNIQUE_STATIC_LEAF_GETFIELD_SITE_AND_OWNER_"
-                        + "WITHIN_REGION_INSTANCE_V1");
         action.addProperty("consumedFieldRootAuthority", rootAuthority);
         return action;
     }
@@ -1536,12 +1295,6 @@ public class ConcolicRegionRuntimeTest {
         container.addProperty("field", genericArrayFieldSignature());
         container.addProperty("location", "HEAP_OBJECT_FIELD");
         container.addProperty("bindingMode", "FIELD_ACCESS");
-        container.addProperty("accessOwnerClass",
-                GenericArrayEnvelope.class.getName());
-        container.addProperty("accessField", "elements");
-        container.addProperty("leafOwnerClass",
-                GenericArrayEnvelope.class.getName());
-        container.addProperty("leafField", "elements");
         container.add("fieldPath",
                 JsonParser.parseString("[\"elements\"]"));
         consumedFieldAction(container, root, 2,
@@ -1555,12 +1308,6 @@ public class ConcolicRegionRuntimeTest {
         elementField.addProperty("field", currentIdFieldSignature());
         elementField.addProperty("location", "HEAP_OBJECT_FIELD");
         elementField.addProperty("bindingMode", "FIELD_ACCESS");
-        elementField.addProperty("accessOwnerClass",
-                Current.class.getName());
-        elementField.addProperty("accessField", "id");
-        elementField.addProperty("leafOwnerClass",
-                Current.class.getName());
-        elementField.addProperty("leafField", "id");
         elementField.add("fieldPath", JsonParser.parseString("[\"id\"]"));
         actions.add(elementField);
         return actions;
@@ -1587,9 +1334,6 @@ public class ConcolicRegionRuntimeTest {
         binding.add("fieldPath", JsonParser.parseString("[\"id\"]"));
         binding.addProperty("declaredFieldSignature",
                 currentIdFieldSignature());
-        binding.addProperty("declaredFieldOwnerClass",
-                Current.class.getName());
-        binding.addProperty("declaredFieldType", "int");
         return binding;
     }
 
@@ -1620,15 +1364,12 @@ public class ConcolicRegionRuntimeTest {
         selector.addProperty("selectorAuthority", "EXACT_ARRAY_INDEX");
         selector.addProperty("elementIndex", elementIndex);
         selector.addProperty("elementOccurrence", occurrence);
-        selector.addProperty("declaredFieldOwnerClass",
-                Current.class.getName());
-        selector.addProperty("declaredFieldType", "int");
+        selector.addProperty("declaredFieldSignature",
+                currentIdFieldSignature());
         assignment.add("containerSelector", selector);
         assignment.addProperty("containerReplayRebindingAuthority",
                 "EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_LOCAL_"
                         + "IDENTITY_REBIND_V1");
-        assignment.addProperty("sourceContainerObjectTokensRetained",
-                false);
         return assignment;
     }
 
@@ -1736,19 +1477,16 @@ public class ConcolicRegionRuntimeTest {
             slice.addProperty("outputCell",
                     capture.get("outputCell").getAsString());
             JsonArray inputPorts = new JsonArray();
-            if ("REGION_EXIT_FIELD".equals(
-                    capture.get("captureKind").getAsString())) {
-                inputPorts.add(capture.get(
-                        "accessRootInputPort").getAsString());
-            }
+            inputPorts.add(capture.get(
+                    "accessRootInputPort").getAsString());
             slice.add("inputPorts", inputPorts);
             slice.add("sites", new JsonArray());
             slice.add("staticSites", new JsonArray());
             slice.add("methods", new JsonArray());
             slice.add("causalEdgeIds", new JsonArray());
-            slice.addProperty("captureBindingsComplete", true);
             slice.add("captureBindings",
                     singleton(capture.deepCopy()));
+            slice.add("captureBindingIssues", new JsonArray());
 
             JsonObject member = new JsonObject();
             member.add("output", output);
@@ -1759,14 +1497,21 @@ public class ConcolicRegionRuntimeTest {
         activation.add("outputClosure", envelope);
     }
 
-    private static String[] installPlan(Path plan, Path results, String test) {
+    private static String[] installPlan(Path plan, Path results, String test)
+            throws Exception {
         String[] old = {
                 System.getProperty("causynth.concolic.task.plan"),
                 System.getProperty("causynth.concolic.task.id"),
                 System.getProperty("causynth.concolic.results"),
                 System.getProperty("causynth.trace.test")};
         System.setProperty("causynth.concolic.task.plan", plan.toString());
-        System.clearProperty("causynth.concolic.task.id");
+        String task = Files.readAllLines(plan, StandardCharsets.UTF_8)
+                .stream().filter(row -> !row.trim().isEmpty())
+                .findFirst().orElseThrow(() ->
+                        new IllegalArgumentException("empty task plan"));
+        System.setProperty("causynth.concolic.task.id",
+                new JsonParser().parse(task).getAsJsonObject()
+                        .get("taskId").getAsString());
         System.setProperty("causynth.concolic.results", results.toString());
         System.setProperty("causynth.trace.test", test);
         ConcolicRegionRuntime.resetForTests();

@@ -54,7 +54,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|static_regions|static_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_region_instance_id|schedule_target_site|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|relationship_candidates|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|static_regions|static_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_region_instance_id|schedule_target_site|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -104,7 +104,6 @@ reset_config() {
   compose_summary_inputs=""
   composed_smt=""
   composition_manifest=""
-  relationship_candidates=""
   reach_report=""
   fatal_region=""
   fatal_region_instance_id=""
@@ -187,7 +186,6 @@ apply_environment_overrides() {
   apply_env_override compose_summary_inputs CAUSYNTH_COMPOSE_SUMMARIES
   apply_env_override composed_smt CAUSYNTH_COMPOSED_SMT
   apply_env_override composition_manifest CAUSYNTH_COMPOSITION_MANIFEST
-  apply_env_override relationship_candidates CAUSYNTH_RELATIONSHIP_CANDIDATES
   apply_env_override reach_report CAUSYNTH_REACH_REPORT
   apply_env_override fatal_region CAUSYNTH_FATAL_REGION
   apply_env_override fatal_region_instance_id \
@@ -344,7 +342,6 @@ initialize_config() {
   compose_summary_inputs=${compose_summary_inputs:-${merged_summaries}}
   composed_smt=${composed_smt:-${schedule_output_dir}/composed_fatal.smt2}
   composition_manifest=${composition_manifest:-${schedule_output_dir}/composed_smt_manifest.json}
-  relationship_candidates=${relationship_candidates:-${schedule_output_dir}/symbolic_relationship_candidates.json}
   reach_report=${reach_report:-${schedule_output_dir}/boolean_reach_condition.json}
 
   static_regions=$(resolve_path "${static_regions}")
@@ -361,7 +358,6 @@ initialize_config() {
   compose_summary_inputs=$(resolve_path_list "${compose_summary_inputs}")
   composed_smt=$(resolve_path "${composed_smt}")
   composition_manifest=$(resolve_path "${composition_manifest}")
-  relationship_candidates=$(resolve_path "${relationship_candidates}")
   reach_report=$(resolve_path "${reach_report}")
   if [[ -n "${schedule_summaries}" ]]; then
     schedule_summaries=$(resolve_path "${schedule_summaries}")
@@ -412,7 +408,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command trace_test static_regions static_graph runtime_region_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_task_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest relationship_candidates reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command trace_test static_regions static_graph runtime_region_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_task_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -557,7 +553,6 @@ do_compose() {
     --regions "${static_regions}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
-    --relationships "${relationship_candidates}" \
     "${selection[@]}" "$@"
 }
 
@@ -565,13 +560,11 @@ do_reach() {
   require_file "composed SMT" "${composed_smt}"
   require_file "composition manifest" "${composition_manifest}"
   require_file "symbolic regions" "${static_regions}"
-  require_file "relationship candidates" "${relationship_candidates}"
   ensure_output_directory "$(dirname "${reach_report}")"
   run_java_main edu.uva.liftlab.graphchecker.concolic.BooleanReachConditionExtractor \
     --smt "${composed_smt}" \
     --manifest "${composition_manifest}" \
     --regions "${static_regions}" \
-    --relationships "${relationship_candidates}" \
     --output "${reach_report}" \
     --z3 "${z3_bin}" \
     --timeout-ms "${solver_timeout_ms}" \
@@ -764,9 +757,8 @@ debug_compose_artifacts() {
     {schemaVersion, kind, state, trustState, fatalRegion, fatalSite,
      gapCount: ((.gaps // []) | length),
      gaps: ((.gaps // [])[:$max]),
-     summaryCount: ((.includedSummaries // []) | length),
      resolvedEdgeBindingCount: ((.resolvedEdgeBindings // []) | length),
-     caseProjectionCount: ((.caseProjectionCatalog // []) | length),
+     suppliedInputCount: ((.suppliedInputs // []) | length),
      composedSmtArtifact}'
   local path=${composed_smt}
   local bytes lines truncated=false rendered

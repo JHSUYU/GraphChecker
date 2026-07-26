@@ -1,14 +1,16 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.concolic.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
-import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import soot.SootClass;
 import soot.SootFieldRef;
@@ -44,12 +46,10 @@ final class ConcolicInstrumentationSelections {
     }
 
     static InstrumentationPlan instrumentationPlanFromEnvironment() {
-        String planValue = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.task.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_TASK_PLAN")));
-        String selectedTask = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.task.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_TASK_ID")));
+        String planValue = stringValue(System.getProperty(
+                "causynth.concolic.task.plan"));
+        String selectedTask = stringValue(System.getProperty(
+                "causynth.concolic.task.id"));
         if (planValue.isEmpty() || selectedTask.isEmpty()) {
             throw new IllegalStateException(
                     "Concolic instrumentation requires a task plan "
@@ -71,26 +71,41 @@ final class ConcolicInstrumentationSelections {
      * from it instead of reparsing the JSONL for each hook family.
      */
     static final class InstrumentationPlan {
-        private final Set<String> roots;
+        private final String rootMethod;
         private final String receiverClass;
+        private final ConcolicBranchSelection branches;
         private final ConcolicMaterializationSelection materializations;
         private final List<OutputCaptureSpec> outputCaptures;
+        private final Set<String> instrumentationMethods;
         private final boolean boundedOutputClosureCoverageReady;
 
-        private InstrumentationPlan(
-                JsonObject row, OutputClosureContract closure)
-                throws IOException {
-            this.roots = Collections.singleton(
-                    jsonString(JsonFields.object(row, "rootSelector"),
-                            "method"));
-            this.receiverClass = jsonString(
-                    JsonFields.object(row, "rootSelector"),
-                    "receiverClass");
-            this.materializations =
-                    ConcolicMaterializationSelection.fromRow(row);
-            this.outputCaptures = outputCaptureSpecs(closure, row);
-            this.boundedOutputClosureCoverageReady = closure != null
-                    && boundedOutputClosureRowReady(row, closure);
+        private InstrumentationPlan(ExecutionTask task) throws IOException {
+            if (!task.executable()) {
+                throw new IOException("Execution task " + task.taskId()
+                        + " is not executable");
+            }
+            rootMethod = task.rootMethod();
+            if (rootMethod.isEmpty()) {
+                throw new IOException("Execution task " + task.taskId()
+                        + " has no root method");
+            }
+            receiverClass = jsonString(task.rootSelector(), "receiverClass");
+            InputActionCatalog inputActions = task.inputActions();
+            JsonArray symbolic = inputActions.symbolic();
+            branches = ConcolicBranchSelection.from(task.branches());
+            materializations = ConcolicMaterializationSelection.from(symbolic);
+            outputCaptures = task.outputCaptures();
+
+            LinkedHashSet<String> methods = new LinkedHashSet<>();
+            methods.add(rootMethod);
+            OutputClosureContract closure = task.outputClosure();
+            if (closure != null) {
+                methods.addAll(closure.executionScope().methods());
+            } else {
+                methods.addAll(branches.methods());
+            }
+            instrumentationMethods = Collections.unmodifiableSet(methods);
+            boundedOutputClosureCoverageReady = closure != null;
         }
 
         static InstrumentationPlan from(Path taskPlan, String selectedTask)
@@ -103,80 +118,57 @@ final class ConcolicInstrumentationSelections {
             if (selected.isEmpty()) {
                 throw new IOException("Selected task id is required");
             }
-            JsonObject selectedRow = null;
+            String encoded = null;
             try (BufferedReader reader = Files.newBufferedReader(normalized,
                     StandardCharsets.UTF_8)) {
                 String line;
-                int lineNumber = 0;
                 while ((line = reader.readLine()) != null) {
-                    lineNumber++;
                     if (line.trim().isEmpty()) {
                         continue;
                     }
-                    final JsonElement parsed;
-                    try {
-                        parsed = JsonParser.parseString(line);
-                    } catch (RuntimeException malformed) {
-                        throw new IOException("Malformed task plan row "
-                                + lineNumber + " in " + normalized, malformed);
-                    }
-                    if (!parsed.isJsonObject()) {
-                        throw new IOException("Task plan row "
-                                + lineNumber + " is not a JSON object in "
+                    if (encoded != null) {
+                        throw new IOException("Concolic instrumentation "
+                                + "requires a singleton execution task plan: "
                                 + normalized);
                     }
-                    JsonObject row = parsed.getAsJsonObject();
-                    String taskId = jsonString(row, "taskId");
-                    if (!selected.equals(taskId)) {
-                        continue;
-                    }
-                    if (selectedRow != null) {
-                        throw new IOException("Duplicate execution task "
-                                + selected + " in "
-                                + normalized);
-                    }
-                    selectedRow = row;
+                    encoded = line;
                 }
             }
-            if (selectedRow == null) {
-                throw new IOException("Execution task " + selected
-                        + " not found in " + normalized);
+            if (encoded == null) {
+                throw new IOException("Execution task plan is empty: "
+                        + normalized);
             }
-            if (!admissionExecutable(selectedRow)) {
-                throw new IOException("Execution task " + selected
-                        + " is not executable");
-            }
-            String root = jsonString(JsonFields.object(selectedRow,
-                    "rootSelector"), "method");
-            if (root.isEmpty()) {
-                throw new IOException("Execution task " + selected
-                        + " has no root method");
-            }
-            OutputClosureContract closure = null;
-            if (selectedRow.has(OutputClosureContract.FIELD)) {
-                try {
-                    closure = OutputClosureCodec.decode(selectedRow);
-                } catch (RuntimeException malformed) {
-                    throw new IOException("Malformed output closure for task "
-                            + selected, malformed);
+            try {
+                JsonElement parsed = JsonParser.parseString(encoded);
+                if (!parsed.isJsonObject()) {
+                    throw new IllegalArgumentException(
+                            "execution task row must be an object");
                 }
-            } else if (selectedRow.has("requestedOutput")
-                    || selectedRow.has("requestedOutputSlice")
-                    || selectedRow.has("requestedOutputCapture")
-                    || selectedRow.has("requestedOutputCaptureRequired")
-                    || selectedRow.has("requestedOutputCaptureComplete")) {
-                throw new IOException("Execution task " + selected
-                        + " uses retired singular output fields");
+                ExecutionTask task = ExecutionTask.decode(
+                        parsed.getAsJsonObject());
+                if (!selected.equals(task.taskId())) {
+                    throw new IllegalArgumentException(
+                            "selected task id " + selected
+                                    + " does not match singleton task "
+                                    + task.taskId());
+                }
+                return new InstrumentationPlan(task);
+            } catch (RuntimeException malformed) {
+                throw new IOException("Malformed execution task "
+                        + selected, malformed);
             }
-            return new InstrumentationPlan(selectedRow, closure);
         }
 
-        Set<String> roots() {
-            return roots;
+        String rootMethod() {
+            return rootMethod;
         }
 
         String receiverClass() {
             return receiverClass;
+        }
+
+        ConcolicBranchSelection branches() {
+            return branches;
         }
 
         ConcolicMaterializationSelection materializations() {
@@ -187,97 +179,31 @@ final class ConcolicInstrumentationSelections {
             return outputCaptures;
         }
 
+        Set<String> instrumentationMethods() {
+            return instrumentationMethods;
+        }
+
         boolean boundedOutputClosureCoverageReady() {
             return boundedOutputClosureCoverageReady;
         }
-    }
-
-    private static boolean boundedOutputClosureRowReady(
-            JsonObject row, OutputClosureContract closure) {
-        if (!ClosureGoalKind.OUTPUT_RELATION_CLOSURE.name().equals(
-                jsonString(row, ClosureGoalKind.TASK_FIELD))) {
-            return false;
-        }
-
-        for (OutputClosureContract.Member member : closure.members()) {
-            if (!boundedOutputMemberReady(row, member)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean boundedOutputMemberReady(
-            JsonObject row, OutputClosureContract.Member member) {
-        JsonObject slice = member.slice();
-        if (!jsonBoolean(slice, "complete", false)
-                || !member.captureComplete()) {
-            return false;
-        }
-        if (!member.captureRequired()
-                && !heapEffectCaptureDischargeReady(row, slice,
-                member.portId(), member.cell())) {
-            return false;
-        }
-        return true;
-    }
-
-    private static boolean heapEffectCaptureDischargeReady(
-            JsonObject row, JsonObject slice, String outputPort,
-            String outputCell) {
-        String inputPort = jsonString(slice, "captureDischargeInputPort");
-        if (!jsonBoolean(slice,
-                "captureDischargedByHeapEffectTransformer", false)
-                || !"HEAP_EFFECT_STATE_TRANSFORMER".equals(jsonString(slice,
-                "captureDischargeAuthority"))
-                || inputPort.isEmpty()
-                || !jsonBoolean(slice,
-                "requestedStateTransformerContractComplete", false)) {
-            return false;
-        }
-
-        JsonElement bindings = row.get("heapStateBindings");
-        int matchingBindings = 0;
-        if (bindings == null || !bindings.isJsonArray()) {
-            return false;
-        }
-        for (JsonElement element : bindings.getAsJsonArray()) {
-            if (element.isJsonObject()
-                    && inputPort.equals(jsonString(element.getAsJsonObject(),
-                    "inputPort"))
-                    && outputPort.equals(jsonString(element.getAsJsonObject(),
-                    "outputPort"))
-                    && outputCell.equals(jsonString(element.getAsJsonObject(),
-                    "cell"))) {
-                matchingBindings++;
-            }
-        }
-        return matchingBindings == 1;
     }
 
     static final class ConcolicBranchSelection {
         private final Map<String, Set<Integer>> unitsByMethod =
                 new LinkedHashMap<>();
 
-        static ConcolicBranchSelection from(
-                List<Map<String, Object>> regions) {
+        static ConcolicBranchSelection from(JsonArray branches) {
             ConcolicBranchSelection result = new ConcolicBranchSelection();
-            for (Map<String, Object> region : regions) {
-                Object value = region.get("branchPolicies");
-                if (!(value instanceof Collection)) {
+            for (JsonElement element : branches) {
+                if (!element.isJsonObject()) {
                     continue;
                 }
-                for (Object item : (Collection<?>) value) {
-                    if (!(item instanceof Map)) {
-                        continue;
-                    }
-                    Map<?, ?> policy = (Map<?, ?>) item;
-                    String method = stringValue(policy.get("method"));
-                    int unit = intValue(policy.get("unitIndex"), -1);
-                    if (!method.isEmpty() && unit >= 0) {
-                        result.unitsByMethod.computeIfAbsent(method,
-                                ignored -> new LinkedHashSet<>()).add(unit);
-                    }
+                JsonObject branch = element.getAsJsonObject();
+                String method = jsonString(branch, "method");
+                int unit = JsonFields.integer(branch, "unitIndex", -1);
+                if (!method.isEmpty() && unit >= 0) {
+                    result.unitsByMethod.computeIfAbsent(method,
+                            ignored -> new LinkedHashSet<>()).add(unit);
                 }
             }
             return result;
@@ -293,48 +219,11 @@ final class ConcolicInstrumentationSelections {
         }
     }
 
-    /**
-     * Resolves the concrete field selected for a heap materialization hook.
-     * Runtime field evidence is authoritative when available.  A cell such as
-     * {@code <Owner: T method()>.return#field:x} names a projection from a
-     * method result; {@code Owner} does not declare {@code x} and must not be
-     * reused as the Soot field owner.
-     */
-    static String[] resolveConcolicFieldTarget(JsonObject action) {
-        String cell = jsonString(action, "cell");
-        String owner = jsonString(action, "accessOwnerClass");
-        String name = jsonString(action, "accessField");
-        JsonElement path = action.get("fieldPath");
-        if (name.isEmpty() && path != null && path.isJsonArray()
-                && path.getAsJsonArray().size() > 0) {
-            name = path.getAsJsonArray().get(0).getAsString();
-        }
-
-        Matcher observed = ConcolicMaterializationSelection.FIELD.matcher(
-                jsonString(action, "field"));
-        if (observed.matches() && !isMethodMember(observed.group(3))) {
-            owner = firstNonBlank(owner, observed.group(1));
-            name = firstNonBlank(name, observed.group(3));
-        }
-
-        Matcher declared = ConcolicMaterializationSelection.FIELD.matcher(cell);
-        if (declared.matches() && !isMethodMember(declared.group(3))) {
-            owner = firstNonBlank(owner, declared.group(1));
-            name = firstNonBlank(name, declared.group(3));
-        } else {
-            name = firstNonBlank(name,
-                    ConcolicMaterializationSelection.projectedField(cell),
-                    ConcolicMaterializationSelection.projectedField(
-                            jsonString(action, "field")));
-        }
-        String normalizedOwner = firstNonBlank(owner);
-        String normalizedName = firstNonBlank(name);
-        return new String[]{normalizedOwner == null ? "" : normalizedOwner,
-                normalizedName == null ? "" : normalizedName};
-    }
-
-    private static boolean isMethodMember(String member) {
-        return member != null && member.indexOf('(') >= 0;
+    private static FieldTarget concolicFieldTarget(JsonObject action) {
+        DeclaredField field = FieldPathSpec.declaredField(
+                jsonString(action, "accessFieldSignature"));
+        return field == null ? null
+                : new FieldTarget(field.owner(), field.name());
     }
 
     /**
@@ -346,13 +235,6 @@ final class ConcolicInstrumentationSelections {
     static final class ConcolicMaterializationSelection {
         private static final Pattern LOCAL = Pattern.compile(
                 "^(<.+>)::([^#]+)(?:#.*)?$");
-        static final Pattern FIELD = Pattern.compile(
-                "^<([^:]+):\\s+(.+)\\s+([^\\s>]+)>(?:#field:([^#]+))?.*$");
-        static final String CONSUMED_SITE_AUTHORITY =
-                "RUNTIME_UNIQUE_STATIC_LEAF_GETFIELD_SITE_AND_"
-                        + "OWNER_WITHIN_REGION_INSTANCE_V1";
-        static final String CONSUMED_OCCURRENCE_AUTHORITY =
-                "UNIQUE_CONTAINED_RUNTIME_FIELD_READ_V1";
         static final String DIRECT_ROOT_AUTHORITY =
                 "DIRECT_EXACT_LEAF_GETFIELD_BASE_IS_INPUT_OWNER_V1";
         static final String ARGUMENT_ROOT_AUTHORITY =
@@ -364,54 +246,28 @@ final class ConcolicInstrumentationSelections {
         static final String LOCAL_ROOT_AUTHORITY =
                 "LOCAL_DEFINITION_IDENTITY_AT_EXACT_DEFINITION_SITE_AND_"
                         + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
-        static final String ACCESSOR_CALLSITE_AUTHORITY =
-                "STATIC_UNIQUE_EXACT_DECLARED_FIELD_ACCESSOR_CALLSITE_V1";
-        static final String ACCESSOR_IMPLEMENTATION_AUTHORITY =
-                "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY";
-        static final Set<String> EXACT_ACCESS_FIELD_AUTHORITIES =
-                Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
-                        "RUNTIME_FIELD_ACCESS_DECLARATION",
-                        "STATIC_CANONICAL_DECLARED_FIELD",
-                        "STATIC_EXACT_CONTAINER_ELEMENT_FIELD_DECLARATION",
-                        "STATIC_EXACT_CONTAINER_INPUT_FIELD_DECLARATION")));
         static final String CONTAINER_INPUT_OBSERVATION_MODE =
                 "CONTAINER_INPUT_OBSERVATION";
         static final String MAP_STATE_INPUT_OBSERVATION_MODE =
                 "MAP_STATE_INPUT_OBSERVATION";
-        static final String FIRST_CONTAINER_OBSERVATION_AUTHORITY =
-                "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1";
 
         private final Map<String, Map<String, Set<Integer>>> localsByMethod =
                 new LinkedHashMap<>();
         private final List<FieldTarget> fields = new ArrayList<>();
         private final Map<String, AccessorCallTarget> accessorCallsBySite =
                 new LinkedHashMap<>();
-        private boolean unsupported;
 
-        private static ConcolicMaterializationSelection fromRow(
-                JsonObject row) throws IOException {
+        private static ConcolicMaterializationSelection from(
+                JsonArray actions) throws IOException {
             ConcolicMaterializationSelection result =
                     new ConcolicMaterializationSelection();
-            String taskId = jsonString(row, "taskId");
-            InputActionCatalog catalog;
-            try {
-                catalog = InputActionCatalog.decode(row);
-            } catch (IllegalArgumentException malformed) {
-                throw new IOException("Replayable execution task "
-                        + taskId + " has invalid input actions: "
-                        + malformed.getMessage(), malformed);
-            }
-            for (JsonElement element : catalog.symbolic()) {
+            for (JsonElement element : actions) {
                 result.add(element.getAsJsonObject());
-            }
-            if (result.unsupported) {
-                throw new IOException(
-                        "Unsupported concolic materialization");
             }
             return result;
         }
 
-        void add(JsonObject action) {
+        void add(JsonObject action) throws IOException {
             addAccessorCallTarget(action);
             String mode = jsonString(action, "bindingMode");
             String cell = jsonString(action, "cell");
@@ -451,43 +307,26 @@ final class ConcolicInstrumentationSelections {
             }
             String location = jsonString(action, "location");
             if (MAP_STATE_INPUT_OBSERVATION_MODE.equals(mode)) {
-                if (!jsonBoolean(action, "mapStateObservationOnly", false)
-                        || jsonBoolean(action, "modelControllable", true)
-                        || !FIRST_CONTAINER_OBSERVATION_AUTHORITY.equals(
-                        jsonString(action,
-                                "containerObservationAuthority"))
-                        || !declaresMapValue(action)
-                        || !jsonString(action, "cell").equals(jsonString(
-                        action, "mapStateInputCell"))
-                        || !jsonString(action, "cell").equals(jsonString(
-                        action, "mapStateRequestedOutputCell"))) {
-                    unsupported = true;
-                    return;
+                if (!declaresMapValue(action)) {
+                    throw unsupported(action);
                 }
-                String[] target = resolveConcolicFieldTarget(action);
-                if (target[0].isEmpty() || target[1].isEmpty()) {
-                    unsupported = true;
-                    return;
+                FieldTarget target = concolicFieldTarget(action);
+                if (target == null) {
+                    throw unsupported(action);
                 }
                 // Keep the ordinary getfield split.  Runtime consumes the
                 // exact field value as an identity/snapshot observation and
                 // deliberately does not invoke VM reference symbolization.
-                fields.add(new FieldTarget(target[0], target[1]));
+                fields.add(target);
                 return;
             }
             if (CONTAINER_INPUT_OBSERVATION_MODE.equals(mode)) {
-                if (!jsonBoolean(action, "arrayFieldObservationOnly", false)
-                        || !FIRST_CONTAINER_OBSERVATION_AUTHORITY.equals(
-                        jsonString(action,
-                                "containerObservationAuthority"))
-                        || !declaresArrayValue(action)) {
-                    unsupported = true;
-                    return;
+                if (!declaresArrayValue(action)) {
+                    throw unsupported(action);
                 }
-                String[] target = resolveConcolicFieldTarget(action);
-                if (target[0].isEmpty() || target[1].isEmpty()) {
-                    unsupported = true;
-                    return;
+                FieldTarget target = concolicFieldTarget(action);
+                if (target == null) {
+                    throw unsupported(action);
                 }
                 // Observation-only arrays deliberately use the declaration
                 // as a field family.  Every concrete read is joined to its
@@ -495,7 +334,7 @@ final class ConcolicInstrumentationSelections {
                 // runtime's explicit first-instance authority selects the
                 // bounded container and treats later reads as aliases or
                 // ignored outer-loop instances.
-                fields.add(new FieldTarget(target[0], target[1]));
+                fields.add(target);
                 return;
             }
             if (declaresArrayValue(action)) {
@@ -505,7 +344,6 @@ final class ConcolicInstrumentationSelections {
                         || "FIELD".equals(location)
                         || "HEAP_OBJECT_FIELD".equals(location)
                         || "RECEIVER_FIELD".equals(location)
-                        || "ARGUMENT_FIELD".equals(location)
                         || "ARGUMENT_FIELD_PATH".equals(location);
                 if (fieldBacked) {
                     addExactArrayLeafTarget(action);
@@ -521,172 +359,84 @@ final class ConcolicInstrumentationSelections {
                     && !"HEAP_OBJECT_FIELD".equals(location)) {
                 return;
             }
-            String[] target = resolveConcolicFieldTarget(action);
-            if (!target[1].isEmpty()) {
-                fields.add(new FieldTarget(target[0], target[1]));
+            FieldTarget target = concolicFieldTarget(action);
+            if (target != null) {
+                fields.add(target);
             }
         }
 
-        void addAccessorCallTarget(JsonObject action) {
+        void addAccessorCallTarget(JsonObject action) throws IOException {
             String caller = jsonString(action, "accessorCallerMethod");
-            String site = jsonString(action, "accessorCallSiteId");
             int unitIndex = intJson(action, "accessorCallUnitIndex", -1);
             String callee = jsonString(action, "accessorDeclaredCallee");
-            String authority = jsonString(action,
-                    "accessorCallSiteAuthority");
             String implementation = jsonString(action,
                     "accessorImplementationMethod");
-            String implementationAuthority = jsonString(action,
-                    "accessorImplementationAuthority");
-            boolean constrained = !caller.isEmpty() || !site.isEmpty()
-                    || unitIndex >= 0 || !callee.isEmpty()
-                    || !authority.isEmpty() || !implementation.isEmpty()
-                    || !implementationAuthority.isEmpty();
+            boolean constrained = !caller.isEmpty() || unitIndex >= 0
+                    || !callee.isEmpty() || !implementation.isEmpty();
             if (!constrained) return;
             if (caller.isEmpty() || unitIndex < 0 || callee.isEmpty()
-                    || !site.equals(caller + "#u" + unitIndex)
-                    || !ACCESSOR_CALLSITE_AUTHORITY.equals(authority)
-                    || implementation.isEmpty()
-                    || !ACCESSOR_IMPLEMENTATION_AUTHORITY.equals(
-                    implementationAuthority)) {
-                unsupported = true;
-                return;
+                    || implementation.isEmpty()) {
+                throw unsupported(action);
             }
+            String site = caller + "#u" + unitIndex;
 
             String fieldSignature = jsonString(action,
                     "accessFieldSignature");
-            String fieldOwner = jsonString(action, "accessOwnerClass");
-            String fieldName = jsonString(action, "accessField");
-            String fieldType = jsonString(action, "accessFieldType");
-            String fieldAuthority = jsonString(action,
-                    "accessFieldAuthority");
-            Matcher declaredField = FIELD.matcher(fieldSignature);
-            if (!declaredField.matches()
-                    || isMethodMember(declaredField.group(3))
-                    || fieldOwner.isEmpty()
-                    || !fieldOwner.equals(declaredField.group(1))
-                    || fieldName.isEmpty()
-                    || !fieldName.equals(declaredField.group(3))
-                    || !fieldType.isEmpty()
-                    && !fieldType.equals(declaredField.group(2))
-                    || !EXACT_ACCESS_FIELD_AUTHORITIES.contains(
-                    fieldAuthority)) {
-                unsupported = true;
-                return;
+            DeclaredField declaredField =
+                    FieldPathSpec.declaredField(fieldSignature);
+            if (declaredField == null) {
+                throw unsupported(action);
             }
             AccessorCallTarget target = new AccessorCallTarget(caller,
                     unitIndex, site, callee, implementation, fieldSignature,
-                    fieldName);
+                    declaredField.name());
             AccessorCallTarget previous = accessorCallsBySite.get(
                     target.callSiteId);
             if (previous != null && !previous.sameMaterialization(target)) {
-                unsupported = true;
-                return;
+                throw unsupported(action);
             }
             if (previous == null) {
                 accessorCallsBySite.put(target.callSiteId, target);
             }
         }
 
-        void addExactArrayLeafTarget(JsonObject action) {
+        void addExactArrayLeafTarget(JsonObject action) throws IOException {
             FieldTarget leaf = exactArrayLeafTarget(action);
             if (leaf == null) {
-                unsupported = true;
+                throw unsupported(action);
             } else {
                 fields.add(leaf);
             }
         }
 
+        private static IOException unsupported(JsonObject action) {
+            return new IOException("Unsupported concolic materialization "
+                    + jsonString(action, "symbol"));
+        }
+
         static boolean declaresArrayValue(JsonObject action) {
-            if (looksLikeArrayType(firstNonBlank(
-                    jsonString(action, "javaType"),
-                    jsonString(action, "inputJavaType")))) {
-                return true;
-            }
-            for (String field : Arrays.asList(
-                    jsonString(action, "leafFieldSignature"),
-                    jsonString(action, "field"),
-                    jsonString(action, "cell"))) {
-                Matcher matcher = FIELD.matcher(field);
-                if (matcher.matches() && looksLikeArrayType(matcher.group(2))) {
-                    return true;
-                }
-            }
-            JsonElement declarations = action.get(
-                    "fieldPathLeafDeclarations");
-            if (declarations != null && declarations.isJsonArray()) {
-                for (JsonElement element : declarations.getAsJsonArray()) {
-                    if (!element.isJsonObject()) continue;
-                    Matcher matcher = FIELD.matcher(jsonString(
-                            element.getAsJsonObject(), "fieldSignature"));
-                    if (matcher.matches()
-                            && looksLikeArrayType(matcher.group(2))) {
-                        return true;
-                    }
-                }
-            }
-            return false;
+            return looksLikeArrayType(jsonString(action, "javaType"))
+                    || looksLikeArrayType(canonicalFieldType(action));
         }
 
         static boolean declaresMapValue(JsonObject action) {
-            for (String type : Arrays.asList(
-                    jsonString(action, "javaType"),
-                    jsonString(action, "inputJavaType"),
-                    jsonString(action, "accessFieldType"))) {
-                if (looksLikeMapType(type)) {
-                    return true;
-                }
-            }
-            for (String field : Arrays.asList(
-                    jsonString(action, "leafFieldSignature"),
-                    jsonString(action, "accessFieldSignature"),
-                    jsonString(action, "field"),
-                    jsonString(action, "cell"))) {
-                Matcher matcher = FIELD.matcher(field);
-                if (matcher.matches() && looksLikeMapType(matcher.group(2))) {
-                    return true;
-                }
-            }
-            return false;
+            return JavaContainerTypes.isMap(jsonString(action, "javaType"))
+                    || JavaContainerTypes.isMap(canonicalFieldType(action));
         }
 
-        static boolean looksLikeMapType(String type) {
-            String candidate = stringValue(firstNonBlank(type)).trim();
-            if (candidate.startsWith("L") && candidate.endsWith(";")) {
-                candidate = candidate.substring(1, candidate.length() - 1)
-                        .replace('/', '.');
-            }
-            if (candidate.isEmpty() || candidate.startsWith("[")
-                    || candidate.endsWith("[]")) {
-                return false;
-            }
-            try {
-                ClassLoader loader = Thread.currentThread()
-                        .getContextClassLoader();
-                Class<?> declared = Class.forName(candidate, false,
-                        loader == null ? ConcolicInstrumentationSelections.class
-                                .getClassLoader() : loader);
-                return Map.class.isAssignableFrom(declared);
-            } catch (Throwable ignored) {
-                return "java.util.Map".equals(candidate);
-            }
+        private static String canonicalFieldType(JsonObject action) {
+            DeclaredField field = FieldPathSpec.declaredField(firstNonBlank(
+                    jsonString(action, "leafFieldSignature"),
+                    jsonString(action, "accessFieldSignature")));
+            return field == null ? "" : field.type();
         }
 
         static FieldTarget exactArrayLeafTarget(JsonObject action) {
             String consumedMethod = jsonString(action,
                     "consumedFieldMethod");
             int consumedUnit = intJson(action, "consumedFieldUnitIndex", -1);
-            String consumedSite = jsonString(action, "consumedFieldSiteId");
-            String consumedAuthority = jsonString(action,
-                    "consumedFieldSiteAuthority");
             if (!jsonBoolean(action, "consumedFieldBindingComplete", false)
-                    || intJson(action, "consumedFieldOccurrence", -1) != 1
-                    || !CONSUMED_OCCURRENCE_AUTHORITY.equals(jsonString(
-                    action, "consumedFieldOccurrenceAuthority"))
-                    || consumedMethod.isEmpty() || consumedUnit < 0
-                    || !consumedSite.equals(consumedMethod + "#u"
-                    + consumedUnit)
-                    || !CONSUMED_SITE_AUTHORITY.equals(consumedAuthority)) {
+                    || consumedMethod.isEmpty() || consumedUnit < 0) {
                 return null;
             }
             List<String> exactPath = exactArrayFieldPath(action);
@@ -694,8 +444,7 @@ final class ConcolicInstrumentationSelections {
                     "consumedFieldRootAuthority");
             String location = jsonString(action, "location");
             String bindingMode = jsonString(action, "bindingMode");
-            boolean argumentRoot = "ARGUMENT_FIELD".equals(location)
-                    || "ARGUMENT_FIELD_PATH".equals(location);
+            boolean argumentRoot = "ARGUMENT_FIELD_PATH".equals(location);
             boolean receiverRoot = "RECEIVER_FIELD".equals(location);
             boolean localRoot = "LOCAL_DEFINITION".equals(bindingMode);
             boolean fieldAccessRoot = !argumentRoot && !receiverRoot
@@ -725,48 +474,13 @@ final class ConcolicInstrumentationSelections {
                     || !rootBindingComplete) {
                 return null;
             }
-            String expectedLeaf = jsonString(action, "leafField");
-            if (!exactPath.isEmpty()) {
-                expectedLeaf = exactPath.get(exactPath.size() - 1);
-            }
-
-            Set<String> signatures = new LinkedHashSet<>();
-            signatures.add(jsonString(action, "leafFieldSignature"));
-            signatures.add(jsonString(action, "field"));
-            signatures.add(jsonString(action, "cell"));
-            signatures.add(jsonString(action, "accessFieldSignature"));
-            JsonElement declarations = action.get("fieldPathLeafDeclarations");
-            if (declarations != null && declarations.isJsonArray()) {
-                for (JsonElement element : declarations.getAsJsonArray()) {
-                    if (element.isJsonObject()) {
-                        signatures.add(jsonString(element.getAsJsonObject(),
-                                "fieldSignature"));
-                    }
-                }
-            }
-
-            FieldTarget selected = null;
-            for (String signature : signatures) {
-                Matcher matcher = FIELD.matcher(stringValue(
-                        firstNonBlank(signature)));
-                if (!matcher.matches() || isMethodMember(matcher.group(3))
-                        || !looksLikeArrayType(matcher.group(2))
-                        || !expectedLeaf.isEmpty()
-                        && !expectedLeaf.equals(matcher.group(3))) {
-                    continue;
-                }
-                FieldTarget candidate = new FieldTarget(matcher.group(1),
-                        matcher.group(3), consumedMethod, consumedUnit, true);
-                if (selected != null
-                        && (!selected.owner.equals(candidate.owner)
-                        || !selected.name.equals(candidate.name)
-                        || !selected.method.equals(candidate.method)
-                        || selected.unitIndex != candidate.unitIndex)) {
-                    return null;
-                }
-                selected = candidate;
-            }
-            return selected;
+            DeclaredField leaf = FieldPathSpec.declaredField(
+                    jsonString(action, "leafFieldSignature"));
+            String expectedLeaf = exactPath.get(exactPath.size() - 1);
+            return leaf == null || !looksLikeArrayType(leaf.type())
+                    || !expectedLeaf.equals(leaf.name())
+                    ? null : new FieldTarget(leaf.owner(), leaf.name(),
+                    consumedMethod, consumedUnit, true);
         }
 
         static boolean hasOneExactLocalDefinition(JsonObject action) {
@@ -787,35 +501,13 @@ final class ConcolicInstrumentationSelections {
         }
 
         static List<String> exactArrayFieldPath(JsonObject action) {
-            JsonElement direct = action.get("fieldPath");
-            if (direct != null && (!direct.isJsonArray()
-                    || direct.getAsJsonArray().size() > 0)) {
-                return FieldPathSpec.stringArray(action, "fieldPath");
-            }
-            List<List<String>> paths = FieldPathSpec.paths(action,
-                    "fieldPaths");
-            return paths.size() == 1 ? paths.get(0)
-                    : Collections.emptyList();
+            return FieldPathSpec.stringArray(action, "fieldPath");
         }
 
         static boolean looksLikeArrayType(String javaType) {
             String normalized = firstNonBlank(javaType);
             return normalized != null && (normalized.startsWith("[")
                     || normalized.endsWith("[]"));
-        }
-
-        static String projectedField(String value) {
-            if (value == null || value.isEmpty()) {
-                return "";
-            }
-            int projection = value.indexOf("#field:");
-            if (projection >= 0) {
-                int end = value.indexOf('#', projection + 7);
-                return value.substring(projection + 7,
-                        end < 0 ? value.length() : end).trim();
-            }
-            Matcher matcher = FIELD.matcher(value);
-            return matcher.matches() ? matcher.group(3) : "";
         }
 
         boolean isEmpty() {
@@ -874,42 +566,6 @@ final class ConcolicInstrumentationSelections {
             }
             return false;
         }
-    }
-
-    private static List<OutputCaptureSpec> outputCaptureSpecs(
-            OutputClosureContract closure, JsonObject task)
-            throws IOException {
-        if (closure == null) {
-            return Collections.emptyList();
-        }
-        List<OutputCaptureSpec> result =
-                OutputClosureCodec.captureSpecs(closure);
-        for (OutputCaptureSpec capture : result) {
-            if (capture.kind() == OutputCaptureSpec.Kind.CALL_ARGUMENT
-                    && capture.occurrence() <= 0) {
-                throw new IOException("Output capture occurrence must "
-                        + "be positive: " + capture.captureBindingId());
-            }
-            if (capture.kind() == OutputCaptureSpec.Kind.REGION_EXIT_FIELD
-                    && !"RECEIVER_FIELD".equals(jsonString(inputAction(task,
-                    capture.accessRootInputPort()), "location"))) {
-                throw new IOException("Region-exit field capture root must "
-                        + "be a receiver field: "
-                        + capture.captureBindingId());
-            }
-        }
-        return result;
-    }
-
-    private static JsonObject inputAction(JsonObject task, String symbol) {
-        for (JsonElement element : JsonFields.array(task,
-                InputActionCatalog.FIELD)) {
-            if (element.isJsonObject() && symbol.equals(jsonString(
-                    element.getAsJsonObject(), "symbol"))) {
-                return element.getAsJsonObject();
-            }
-        }
-        return new JsonObject();
     }
 
     static final class AccessorCallTarget {
@@ -973,11 +629,6 @@ final class ConcolicInstrumentationSelections {
 
     private static String jsonString(JsonObject object, String field) {
         return JsonFields.string(object, field);
-    }
-
-    private static boolean admissionExecutable(JsonObject row) {
-        return "EXECUTABLE".equals(jsonString(
-                JsonFields.object(row, "admission"), "state"));
     }
 
     private static boolean jsonBoolean(JsonObject object, String field,

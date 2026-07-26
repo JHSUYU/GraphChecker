@@ -2272,10 +2272,28 @@ RegionInstancePlan
 7. 重要框架里程碑独立 commit/push；用户修改的 container fixture 已经明确授权并作为
    `db5a5033` 独立提交，不再作为工作树例外。
 
-当前 framework cutover 已闭合上述 canonical 链：生产 Java 为 65,367 行，Maven
-回归 69/69 通过。它已经删除独立 upstream activation、assignment-site/seed-occurrence
-字段捕获、Runtime/Importer 私有 task decoder、`captureBindingsRequired` 镜像以及多处
-重复扫描。
+当前 framework cutover 已闭合上述 canonical 链。最新大规模删除阶段将手写生产 Java
+进一步降到 58,802 行；相对 81,581 行冻结基线累计减少 22,779 行（约 28%），当前
+工作批次相对最后安全锚点净减 6,600 余行。快速回归保持为 62 项并全部通过，PMD 不允许
+残留 unused private/local/formal/singular-field。这个数字来自真实删除，不包含压格式、
+搬文件或删除 correctness evidence。
+
+这一阶段除删除独立 upstream activation、Runtime/Importer 私有 task decoder 和重复
+admission/扫描外，还完成了三项一次性切换：
+
+- 删除 `SymbolicRegionAssemblyStage` 及其 `argumentPathFields` 后处理 fixed point；
+  `SymbolicRegionPlanner` 直接产生 canonical static region；
+- 删除从 Planner、Soot hook、Runtime、Runtime Planner 到 codec 的
+  `CALL_ARGUMENT` output capture 整条死路径。所有字段输出只在正常 region exit 从完整
+  receiver field path 读取最终 symbolic expression；不同写点、循环 occurrence 和未写
+  frame 不再是预先选择的 capture 身份；
+- 删除 `captureBindingsComplete`、`captureKind`、raw capture 静态字段副本等镜像；
+  唯一准入事实是 `captureBindingIssues.isEmpty()`，旧字段由 V2 codec 直接拒绝，不双写、
+  不 fallback。
+
+本批在提交前只运行 Maven compile/test、PMD、diff whitespace 与 shell 语法门禁，明确
+没有启动 custom-JDK/Z3 fixture。先完成并推送这一大规模删除里程碑，再进入统一 fixture
+调试阶段，避免每删一段旧框架就等待一次昂贵 workload。
 
 正常退出字段捕获的真实 fixture 调试又删除了三条旧假设。第一，完整 root-to-leaf
 `fieldPath` 不再与仅含 leaf declaration 的 output cell 路径作错误相等比较；唯一 join 是

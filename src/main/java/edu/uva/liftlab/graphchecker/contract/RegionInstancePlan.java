@@ -24,22 +24,11 @@ public final class RegionInstancePlan {
     }
 
     private final JsonObject encoded;
-    private final String regionId;
-    private final String regionInstanceId;
-    private final long rootCallId;
-    private final boolean hasRootCallId;
-    private final int rootOrdinal;
     private final List<Goal> goals;
 
     private RegionInstancePlan(JsonObject encoded) {
         this.encoded = encoded;
-        regionId = string(encoded, "regionId");
-        regionInstanceId = string(encoded, "regionInstanceId");
-        hasRootCallId = encoded.has("rootCallId");
-        rootCallId = longInteger(encoded, "rootCallId", 0L);
-        JsonObject root = object(encoded, "rootSelector");
-        rootOrdinal = integer(root, "ordinal", Integer.MAX_VALUE);
-        if (regionId.isEmpty() || regionInstanceId.isEmpty()) {
+        if (regionId().isEmpty() || regionInstanceId().isEmpty()) {
             throw new IllegalArgumentException(
                     "region plan requires regionId and regionInstanceId");
         }
@@ -49,13 +38,13 @@ public final class RegionInstancePlan {
             if (!element.isJsonObject()) {
                 throw new IllegalArgumentException(
                         "closureGoals must contain objects for "
-                                + regionInstanceId);
+                                + regionInstanceId());
             }
             Goal goal = new Goal(this, element.getAsJsonObject());
             if (!ids.add(goal.goalId())) {
                 throw new IllegalArgumentException(
                         "closure goal ids must be nonempty and unique for "
-                                + regionInstanceId);
+                                + regionInstanceId());
             }
             decoded.add(goal);
         }
@@ -70,15 +59,16 @@ public final class RegionInstancePlan {
     }
 
     public String regionId() {
-        return regionId;
+        return string(encoded, "regionId");
     }
 
     public String regionInstanceId() {
-        return regionInstanceId;
+        return string(encoded, "regionInstanceId");
     }
 
     public int rootOrdinal() {
-        return rootOrdinal;
+        return integer(object(encoded, "rootSelector"), "ordinal",
+                Integer.MAX_VALUE);
     }
 
     public List<Goal> goals() {
@@ -86,32 +76,31 @@ public final class RegionInstancePlan {
     }
 
     void writeTaskIdentityTo(JsonObject target) {
-        target.addProperty("regionId", regionId);
-        target.addProperty("regionInstanceId", regionInstanceId);
+        target.addProperty("regionId", regionId());
+        target.addProperty("regionInstanceId", regionInstanceId());
         copyIfPresent(encoded, target, "test");
         copyIfPresent(encoded, target, "rootSelector");
         copyIfPresent(encoded, target, "targetMethod");
-        if (hasRootCallId) {
-            target.addProperty("rootCallId", rootCallId);
+        if (encoded.has("rootCallId")) {
+            target.addProperty("rootCallId",
+                    longInteger(encoded, "rootCallId", 0L));
         }
     }
 
     public static final class Goal {
         private final RegionInstancePlan plan;
         private final JsonObject encoded;
-        private final String goalId;
-        private final String admissionState;
         private final GoalKind kind;
-        private OutputClosureContract outputClosure;
+        private final Set<String> runtimeDefinitionMethods;
+        private final OutputClosureContract outputClosure;
 
         private Goal(RegionInstancePlan plan, JsonObject encoded) {
             this.plan = plan;
             this.encoded = encoded;
-            goalId = string(encoded, "goalId");
-            if (goalId.isEmpty()) {
+            if (goalId().isEmpty()) {
                 throw new IllegalArgumentException(
                         "closure goal ids must be nonempty and unique for "
-                                + plan.regionInstanceId);
+                                + plan.regionInstanceId());
             }
             try {
                 kind = GoalKind.valueOf(string(encoded, "kind"));
@@ -120,7 +109,9 @@ public final class RegionInstancePlan {
                         "goal kind must be OUTPUT_RELATION_CLOSURE or "
                                 + "TARGET_REACH_CLOSURE");
             }
-            admissionState = string(object(encoded, "admission"), "state");
+            runtimeDefinitionMethods = decodeRuntimeDefinitionMethods();
+            outputClosure = encoded.has(OutputClosureContract.FIELD)
+                    ? decodeOutputClosure() : null;
         }
 
         public RegionInstancePlan plan() {
@@ -128,7 +119,7 @@ public final class RegionInstancePlan {
         }
 
         public String goalId() {
-            return goalId;
+            return string(encoded, "goalId");
         }
 
         public GoalKind kind() {
@@ -136,18 +127,24 @@ public final class RegionInstancePlan {
         }
 
         public boolean replayable() {
+            String admissionState = string(object(encoded, "admission"),
+                    "state");
             return "READY".equals(admissionState)
                     || "DISCOVERED".equals(admissionState)
                     || "EXECUTABLE".equals(admissionState);
         }
 
         public Set<String> runtimeDefinitionMethods() {
+            return runtimeDefinitionMethods;
+        }
+
+        private Set<String> decodeRuntimeDefinitionMethods() {
             JsonElement definitions = encoded.get(
                     "runtimeDefinitionMethods");
             if (definitions == null || !definitions.isJsonArray()) {
                 throw new IllegalArgumentException(
                         "closure goal requires runtimeDefinitionMethods array: "
-                                + plan.regionInstanceId);
+                                + plan.regionInstanceId());
             }
             Set<String> methods = new LinkedHashSet<>();
             for (JsonElement method : definitions.getAsJsonArray()) {
@@ -156,31 +153,31 @@ public final class RegionInstancePlan {
                         || method.getAsString().trim().isEmpty()) {
                     throw new IllegalArgumentException(
                             "runtimeDefinitionMethods must contain nonempty "
-                                    + "strings: " + plan.regionInstanceId);
+                                    + "strings: "
+                                    + plan.regionInstanceId());
                 }
                 methods.add(method.getAsString().trim());
             }
-            return methods;
+            return Collections.unmodifiableSet(methods);
         }
 
-        public OutputClosureContract outputClosure() {
-            if (!encoded.has(OutputClosureContract.FIELD)) {
-                return null;
-            }
-            if (outputClosure != null) {
-                return outputClosure;
-            }
-            outputClosure = OutputClosureCodec.decode(encoded);
-            OutputClosureContract.Producer producer =
-                    outputClosure.producer();
-            if (!plan.regionId.equals(producer.regionId())
-                    || !plan.regionInstanceId.equals(
+        private OutputClosureContract decodeOutputClosure() {
+            OutputClosureContract contract =
+                    OutputClosureCodec.decode(encoded);
+            OutputClosureContract.Producer producer = contract.producer();
+            if (!plan.regionId().equals(producer.regionId())
+                    || !plan.regionInstanceId().equals(
                     producer.regionInstanceId())
-                    || plan.hasRootCallId
-                    && plan.rootCallId != producer.rootCallId()) {
+                    || plan.encoded.has("rootCallId")
+                    && longInteger(plan.encoded, "rootCallId", 0L)
+                    != producer.rootCallId()) {
                 throw new IllegalArgumentException(
                         "outputClosure producer conflicts with artifact scope");
             }
+            return contract;
+        }
+
+        public OutputClosureContract outputClosure() {
             return outputClosure;
         }
 
@@ -208,13 +205,13 @@ public final class RegionInstancePlan {
         }
 
         void writeTaskPayloadTo(JsonObject target) {
-            target.addProperty("goalId", goalId);
+            target.addProperty("goalId", goalId());
             copyIfPresent(encoded, target,
                     "containerElementFieldBindings");
             copyIfPresent(encoded, target, "heapStateBindings");
             copyIfPresent(encoded, target,
                     "mapValueElementFieldProjections");
-            if (kind == GoalKind.OUTPUT_RELATION_CLOSURE) {
+            if (kind() == GoalKind.OUTPUT_RELATION_CLOSURE) {
                 OutputClosureContract contract = outputClosure();
                 if (contract != null) {
                     target.add(OutputClosureContract.FIELD,

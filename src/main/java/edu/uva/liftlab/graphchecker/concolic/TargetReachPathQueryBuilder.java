@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -33,9 +35,10 @@ public final class TargetReachPathQueryBuilder {
     public static void main(String[] argv) throws Exception {
         Arguments arguments = Arguments.parse(argv);
         JsonObject result = build(arguments);
+        String encoded = JSON.toJson(result);
         ArtifactIO.replace(arguments.output,
-                JSON.toJson(result) + System.lineSeparator());
-        System.out.println(JSON.toJson(result));
+                encoded + System.lineSeparator());
+        System.out.println(encoded);
     }
 
     static JsonObject build(Arguments arguments) throws IOException {
@@ -87,11 +90,11 @@ public final class TargetReachPathQueryBuilder {
             // Parsing is the schema/admission boundary for branch-owned
             // predicates. The importer already normalized the PC; this check
             // prevents a malformed mapping row from entering the path set.
-            try {
-                SummaryBranchMapping.fromSummary(summary);
-            } catch (IllegalArgumentException malformed) {
+            PathObservation observation = PathObservation.decode(
+                    summary, null);
+            if (!observation.branchMappingIssue().isEmpty()) {
                 throw new IOException("Malformed target branch mapping: "
-                        + malformed.getMessage(), malformed);
+                        + observation.branchMappingIssue());
             }
             if (bool(summary, "normalExit", true)
                     || !arguments.exceptionType.equals(string(summary,
@@ -100,7 +103,7 @@ public final class TargetReachPathQueryBuilder {
             }
 
             JsonObject path = new JsonObject();
-            String pathKey = RegionPathWorklist.stablePathKey(summary);
+            String pathKey = observation.pathKey();
             path.add("constraints",
                     array(summary, "pathCondition").deepCopy());
             path.add("engineArrayInputBindings",
@@ -135,15 +138,11 @@ public final class TargetReachPathQueryBuilder {
         result.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
         result.addProperty("regionId", region);
         result.addProperty("regionInstanceId", instance);
-        result.addProperty("goalId", goalId);
-        result.addProperty("exceptionType", arguments.exceptionType);
-        result.addProperty("pathClosureState", "CLOSED");
         result.add("paths", encodedPaths);
         result.add("seedReplayContract",
                 object(seed, "replayContract").deepCopy());
         result.add("symbolicContext",
                 object(seed, "symbolicContext").deepCopy());
-        result.addProperty("readyForSolver", true);
         result.addProperty("constraintAuthority",
                 "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1");
         return result;

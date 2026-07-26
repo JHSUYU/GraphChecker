@@ -87,6 +87,14 @@ public final class CausynthPipeline {
             "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder";
     private static final String CONCOLIC_REGION_RUNTIME_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
+    private static final Pattern TRACE_FIELD_SIGNATURE = Pattern.compile(
+            "<[^:]+:\\s+[^()<>]+\\s+[^\\s()>]+>");
+    private static final Pattern FIELD_PATH_NAME =
+            Pattern.compile("#field:([^#@]+)");
+    private static final Pattern FIELD_NAME = Pattern.compile(
+            "<[^:]+:\\s+.+\\s+([^\\s>]+)>");
+    private static final Pattern METHOD_SIGNATURE = Pattern.compile(
+            "<[^:]+:\\s+.+\\s+[^\\s(]+\\((.*)\\)>");
     private final GraphCheckerOptions options;
     private final Map<SootField, SootMethod> exitFieldReaders =
             new IdentityHashMap<>();
@@ -106,15 +114,16 @@ public final class CausynthPipeline {
                 exceptionTarget.stableIdentity());
         StaticProgram result =
                 new SeedBackwardStaticAnalyzer(target).analyze();
-        SymbolicRegionAssemblyStage.assemble(result);
-        instrumentRuntimeTrace(result);
+        SymbolicRegionPlanner.plan(result);
+        boolean concolicEnabled = concolicInstrumentationEnabled();
+        instrumentRuntimeTrace(result, concolicEnabled);
         boolean boundedOutputClosureCoverageReady =
-                instrumentConcolicRegions(result);
-        if (!concolicInstrumentationEnabled()) {
-            new CausynthArtifactWriter(target.outputDir, result).writeAll();
+                concolicEnabled && instrumentConcolicRegions();
+        if (!concolicEnabled) {
+            CausynthArtifactWriter.write(target.outputDir, result);
         }
         enforceSymbolicCoverage(result, boundedOutputClosureCoverageReady);
-        if (concolicInstrumentationEnabled()) {
+        if (concolicEnabled) {
             LOG.info("Seed backward analysis completed for concolic "
                     + "instrumentation without duplicating static artifacts");
         } else {
@@ -144,7 +153,8 @@ public final class CausynthPipeline {
         }
     }
 
-    private void instrumentRuntimeTrace(StaticProgram result) {
+    private void instrumentRuntimeTrace(StaticProgram result,
+                                        boolean concolicEnabled) {
         if (!Boolean.parseBoolean(firstNonBlank(
                 System.getProperty("causynth.instrument.trace"),
                 System.getenv("CAUSYNTH_INSTRUMENT_TRACE"),
@@ -155,10 +165,8 @@ public final class CausynthPipeline {
         SootMethodRef recordFieldRef = traceRecorderFieldMethodRef();
         HookCatalog richRefs = HookCatalog.trace();
         HookCatalog observationIsolation =
-                concolicInstrumentationEnabled()
-                        ? HookCatalog.concolic() : null;
-        TraceFieldSelection traceFields = traceFieldSelection(result);
-        TraceSiteSelection traceSites = traceSiteSelection(result);
+                concolicEnabled ? HookCatalog.concolic() : null;
+        TraceSelection traceSelection = traceSelection(result);
         for (String signature : result.traceMethods) {
             try {
                 SootMethod method = Scene.v().getMethod(signature);
@@ -179,9 +187,10 @@ public final class CausynthPipeline {
                     } catch (RuntimeException ignored) {
                     }
                 }
-                if (traceSites.relevantMethods.contains(signature)) {
+                if (traceSelection.relevantMethods.contains(signature)) {
                     instrumentRichMethod(body, method,
-                            originalUnits, insertionPoint, receiver, traceSites,
+                            originalUnits, insertionPoint, receiver,
+                            traceSelection,
                             richRefs, observationIsolation);
                 } else {
                     Stmt traceCall = Jimple.v().newInvokeStmt(
@@ -196,7 +205,7 @@ public final class CausynthPipeline {
                     insertBeforeOrAppend(body, insertionPoint, traceUnits);
                 }
                 instrumentFieldTrace(body, method, recordFieldRef,
-                        traceFields, originalUnits, observationIsolation);
+                        traceSelection, originalUnits, observationIsolation);
             } catch (RuntimeException exception) {
                 LOG.debug("Skipping trace instrumentation for {}", signature, exception);
             }
@@ -208,32 +217,22 @@ public final class CausynthPipeline {
      * Inserts region hooks at the roots selected by the runtime activation
      * plan. Concolic instrumentation without that plan is not executable.
      */
-    private boolean instrumentConcolicRegions(
-            StaticProgram result) {
-        if (!concolicInstrumentationEnabled()) {
-            return false;
-        }
+    private boolean instrumentConcolicRegions() {
         HookCatalog refs = HookCatalog.concolic();
-        ConcolicBranchSelection branchSelection =
-                ConcolicBranchSelection.from(result.regions);
         InstrumentationPlan plan = ConcolicInstrumentationSelections
                 .instrumentationPlanFromEnvironment();
+        ConcolicBranchSelection branchSelection = plan.branches();
         ConcolicMaterializationSelection materializationSelection =
                 plan.materializations();
         List<OutputCaptureSpec> outputCaptureSelection =
                 plan.outputCaptures();
         String outputCaptureReceiverClass = plan.receiverClass();
-        Set<String> roots = plan.roots();
-        Set<String> backedViewMethods = concolicBackedViewMethods(result);
-        backedViewMethods.addAll(roots);
+        String signature = plan.rootMethod();
+        Set<String> backedViewMethods =
+                new LinkedHashSet<>(plan.instrumentationMethods());
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
         taggedMethods.addAll(materializationSelection.localMethods());
         taggedMethods.addAll(materializationSelection.accessorCallerMethods());
-        for (OutputCaptureSpec target : outputCaptureSelection) {
-            if (target.kind() == OutputCaptureSpec.Kind.CALL_ARGUMENT) {
-                taggedMethods.add(target.callerMethod());
-            }
-        }
         taggedMethods.addAll(backedViewMethods);
         for (String methodSignature : taggedMethods) {
             try {
@@ -244,174 +243,155 @@ public final class CausynthPipeline {
             } catch (RuntimeException ignored) {
             }
         }
-        int instrumented = 0;
-        int skipped = 0;
-        for (String signature : roots) {
-            try {
-                SootMethod method = Scene.v().getMethod(signature);
-                if (method == null || !method.isConcrete() || method.isConstructor()) {
-                    skipped++;
+        try {
+            SootMethod method = Scene.v().getMethod(signature);
+            if (method == null || !method.isConcrete()
+                    || method.isConstructor()) {
+                throw new IllegalStateException(
+                        "Selected concolic root is not a concrete method: "
+                                + signature);
+            }
+            Body body = method.retrieveActiveBody();
+            List<Unit> originalUnits = snapshotUnits(body);
+            tagOriginalUnits(originalUnits);
+            Unit insertionPoint = firstNonIdentity(body);
+            Value receiver = NullConstant.v();
+            if (!method.isStatic()) {
+                try {
+                    receiver = body.getThisLocal();
+                } catch (RuntimeException ignored) {
+                }
+            }
+            Local token = newTraceLocal(body, LongType.v(),
+                    "$causynthRegionToken");
+            List<Unit> entry = new ArrayList<>();
+            Unit tokenInitialization = Jimple.v().newAssignStmt(token,
+                    LongConstant.v(0L));
+            entry.add(tokenInitialization);
+            ArrayType objectArrayType = ArrayType.v(
+                    RefType.v("java.lang.Object"), 1);
+            Local rootArguments = newTraceLocal(body, objectArrayType,
+                    "$causynthRootArguments");
+            entry.add(Jimple.v().newAssignStmt(rootArguments,
+                    Jimple.v().newNewArrayExpr(
+                            RefType.v("java.lang.Object"),
+                            IntConstant.v(method.getParameterCount()))));
+            for (int index = 0; index < method.getParameterCount(); index++) {
+                Type parameterType = method.getParameterType(index);
+                if (!(parameterType instanceof RefType)
+                        && !(parameterType instanceof ArrayType)) {
                     continue;
                 }
-                Body body = method.retrieveActiveBody();
-                List<Unit> originalUnits = snapshotUnits(body);
-                tagOriginalUnits(originalUnits);
-                Unit insertionPoint = firstNonIdentity(body);
-                Value receiver = NullConstant.v();
-                if (!method.isStatic()) {
-                    try {
-                        receiver = body.getThisLocal();
-                    } catch (RuntimeException ignored) {
-                    }
+                Value parameter;
+                try {
+                    parameter = body.getParameterLocal(index);
+                } catch (RuntimeException ignored) {
+                    continue;
                 }
-                Local token = newTraceLocal(body, LongType.v(),
-                        "$causynthRegionToken");
-                List<Unit> entry = new ArrayList<>();
-                Unit tokenInitialization = Jimple.v().newAssignStmt(token,
-                        LongConstant.v(0L));
-                entry.add(tokenInitialization);
-                ArrayType objectArrayType = ArrayType.v(
-                        RefType.v("java.lang.Object"), 1);
-                Local rootArguments = newTraceLocal(body, objectArrayType,
-                        "$causynthRootArguments");
-                entry.add(Jimple.v().newAssignStmt(rootArguments,
-                        Jimple.v().newNewArrayExpr(
-                                RefType.v("java.lang.Object"),
-                                IntConstant.v(method.getParameterCount()))));
-                for (int index = 0; index < method.getParameterCount(); index++) {
-                    Type parameterType = method.getParameterType(index);
-                    if (!(parameterType instanceof RefType)
-                            && !(parameterType instanceof ArrayType)) {
-                        // Primitive slots remain null by construction.  They
-                        // are intentionally not root-selection predicates.
-                        continue;
-                    }
-                    Value parameter;
-                    try {
-                        parameter = body.getParameterLocal(index);
-                    } catch (RuntimeException ignored) {
-                        continue;
-                    }
-                    entry.add(Jimple.v().newAssignStmt(
-                            Jimple.v().newArrayRef(rootArguments,
-                                    IntConstant.v(index)),
-                            objectArg(body, parameter, entry)));
-                }
-                Unit enterRegion = Jimple.v().newAssignStmt(token,
-                        Jimple.v().newStaticInvokeExpr(refs.ref(Hook.ENTER_REGION_FRAME),
-                                StringConstant.v(signature), receiver,
-                                rootArguments));
-                entry.add(enterRegion);
-                // The wrapper pushes a zero placeholder before frame entry.
-                // Include the call itself so either this catch-all or an
-                // existing handler closes that exact frame if entry fails.
-                // The cleanup handler reads no incoming entry local, so this
-                // is also verifier-safe at the call's exceptional edge.
-                Unit regionStart = enterRegion;
-                for (int index = 0; index < method.getParameterCount(); index++) {
-                    Value parameter;
-                    try {
-                        parameter = body.getParameterLocal(index);
-                    } catch (RuntimeException ignored) {
-                        continue;
-                    }
-                    Value primitiveValue = primitiveValueString(body,
-                            parameter, entry);
-                    if (PrimitiveWrapper.forType(parameter.getType()) != null) {
-                        addPrimitiveArgumentMaterialization(body, parameter,
-                                token, index, primitiveValue, entry,
-                                refs.ref(Hook.MATERIALIZE_ARGUMENT),
-                                refs.ref(Hook.PAUSE_OBSERVATION),
-                                refs.ref(Hook.RESUME_OBSERVATION));
-                    } else {
-                        Value objectValue = objectArg(body, parameter, entry);
-                        Local modeled = newTraceLocal(body,
-                                RefType.v("java.lang.Object"),
-                                "$causynthArgumentModel");
-                        entry.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.PAUSE_OBSERVATION))));
-                        entry.add(Jimple.v().newAssignStmt(modeled,
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.MATERIALIZE_ARGUMENT), token,
-                                        IntConstant.v(index), objectValue,
-                                        primitiveValue)));
-                        entry.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.RESUME_OBSERVATION))));
-                        Value converted = parameter.getType() instanceof RefType
-                                && "java.lang.Object".equals(((RefType)
-                                parameter.getType()).getClassName())
-                                ? modeled : Jimple.v().newCastExpr(modeled,
-                                parameter.getType());
-                        entry.add(Jimple.v().newAssignStmt(parameter,
-                                converted));
-                        entry.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.PAUSE_OBSERVATION))));
-                        entry.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.SYMBOLIZE_ARGUMENT), token,
-                                        IntConstant.v(index), parameter,
-                                        primitiveValue)));
-                        entry.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.RESUME_OBSERVATION))));
-                    }
-                }
-                // A region root is a method invocation boundary, not an
-                // arbitrary control-flow visit to its first statement.  In
-                // particular, service-loop backedges must keep targeting the
-                // original loop head; redirecting them through this probe
-                // creates one false activation/frame per iteration.
-                insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
-
-                for (Unit unit : originalUnits) {
-                    if (!(unit instanceof Stmt)) {
-                        continue;
-                    }
-                    Stmt stmt = (Stmt) unit;
-                    if (stmt instanceof ReturnStmt) {
-                        instrumentRegionExitFieldCaptures(body, stmt,
-                                token, receiver, outputCaptureReceiverClass,
-                                outputCaptureSelection, refs);
-                        insertRegionExit(body, stmt, ((ReturnStmt) stmt).getOp(),
-                                signature, refs.ref(Hook.EXIT_REGION_FRAME),
-                                refs.ref(Hook.PAUSE_OBSERVATION),
-                                refs.ref(Hook.RESUME_OBSERVATION));
-                    } else if (stmt instanceof ReturnVoidStmt) {
-                        instrumentRegionExitFieldCaptures(body, stmt,
-                                token, receiver, outputCaptureReceiverClass,
-                                outputCaptureSelection, refs);
-                        insertRegionExit(body, stmt, NullConstant.v(),
-                                signature, refs.ref(Hook.EXIT_REGION_FRAME),
-                                refs.ref(Hook.PAUSE_OBSERVATION),
-                                refs.ref(Hook.RESUME_OBSERVATION));
-                    }
-                }
-                // Cleanup resolves the exact dynamic invocation frame from
-                // the root signature constant.  The catch handler therefore
-                // reads no entry local from its incoming StackMapFrame.
-                addRegionThrowHandler(body, regionStart, signature,
-                        refs.ref(Hook.THROW_REGION_FRAME),
-                        refs.ref(Hook.PAUSE_OBSERVATION),
-                        refs.ref(Hook.RESUME_OBSERVATION));
-                instrumented++;
-            } catch (RuntimeException exception) {
-                throw new IllegalStateException(
-                        "Could not instrument selected concolic region root "
-                                + signature, exception);
+                entry.add(Jimple.v().newAssignStmt(
+                        Jimple.v().newArrayRef(rootArguments,
+                                IntConstant.v(index)),
+                        objectArg(body, parameter, entry)));
             }
+            Unit enterRegion = Jimple.v().newAssignStmt(token,
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.ENTER_REGION_FRAME),
+                            StringConstant.v(signature), receiver,
+                            rootArguments));
+            entry.add(enterRegion);
+            Unit regionStart = enterRegion;
+            for (int index = 0; index < method.getParameterCount(); index++) {
+                Value parameter;
+                try {
+                    parameter = body.getParameterLocal(index);
+                } catch (RuntimeException ignored) {
+                    continue;
+                }
+                Value primitiveValue = primitiveValueString(body,
+                        parameter, entry);
+                if (PrimitiveWrapper.forType(parameter.getType()) != null) {
+                    addPrimitiveArgumentMaterialization(body, parameter,
+                            token, index, primitiveValue, entry,
+                            refs.ref(Hook.MATERIALIZE_ARGUMENT),
+                            refs.ref(Hook.PAUSE_OBSERVATION),
+                            refs.ref(Hook.RESUME_OBSERVATION));
+                } else {
+                    Value objectValue = objectArg(body, parameter, entry);
+                    Local modeled = newTraceLocal(body,
+                            RefType.v("java.lang.Object"),
+                            "$causynthArgumentModel");
+                    entry.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.PAUSE_OBSERVATION))));
+                    entry.add(Jimple.v().newAssignStmt(modeled,
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.MATERIALIZE_ARGUMENT), token,
+                                    IntConstant.v(index), objectValue,
+                                    primitiveValue)));
+                    entry.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.RESUME_OBSERVATION))));
+                    Value converted = parameter.getType() instanceof RefType
+                            && "java.lang.Object".equals(((RefType)
+                            parameter.getType()).getClassName())
+                            ? modeled : Jimple.v().newCastExpr(modeled,
+                            parameter.getType());
+                    entry.add(Jimple.v().newAssignStmt(parameter,
+                            converted));
+                    entry.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.PAUSE_OBSERVATION))));
+                    entry.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.SYMBOLIZE_ARGUMENT), token,
+                                    IntConstant.v(index), parameter,
+                                    primitiveValue)));
+                    entry.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.RESUME_OBSERVATION))));
+                }
+            }
+            insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+
+            for (Unit unit : originalUnits) {
+                if (!(unit instanceof Stmt)) {
+                    continue;
+                }
+                Stmt stmt = (Stmt) unit;
+                if (stmt instanceof ReturnStmt) {
+                    instrumentRegionExitFieldCaptures(body, stmt,
+                            token, receiver, outputCaptureReceiverClass,
+                            outputCaptureSelection, refs);
+                    insertRegionExit(body, stmt, ((ReturnStmt) stmt).getOp(),
+                            signature, refs.ref(Hook.EXIT_REGION_FRAME),
+                            refs.ref(Hook.PAUSE_OBSERVATION),
+                            refs.ref(Hook.RESUME_OBSERVATION));
+                } else if (stmt instanceof ReturnVoidStmt) {
+                    instrumentRegionExitFieldCaptures(body, stmt,
+                            token, receiver, outputCaptureReceiverClass,
+                            outputCaptureSelection, refs);
+                    insertRegionExit(body, stmt, NullConstant.v(),
+                            signature, refs.ref(Hook.EXIT_REGION_FRAME),
+                            refs.ref(Hook.PAUSE_OBSERVATION),
+                            refs.ref(Hook.RESUME_OBSERVATION));
+                }
+            }
+            addRegionThrowHandler(body, regionStart, signature,
+                    refs.ref(Hook.THROW_REGION_FRAME),
+                    refs.ref(Hook.PAUSE_OBSERVATION),
+                    refs.ref(Hook.RESUME_OBSERVATION));
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException(
+                    "Could not instrument selected concolic region root "
+                            + signature, exception);
         }
         instrumentConcolicAccessorCallContexts(materializationSelection, refs);
         instrumentConcolicMaterializations(materializationSelection, refs);
-        instrumentConcolicOutputCaptures(outputCaptureSelection, refs);
         instrumentConcolicMapEntryObservations(backedViewMethods, refs);
         instrumentConcolicBranches(branchSelection, refs);
-        LOG.info("Instrumented {} symbolic-region roots for concolic replay ({} skipped)",
-                instrumented, skipped);
-        return plan.boundedOutputClosureCoverageReady()
-                && instrumented == 1 && skipped == 0;
+        LOG.info("Instrumented symbolic-region root {} for concolic replay",
+                signature);
+        return plan.boundedOutputClosureCoverageReady();
     }
 
     /**
@@ -756,85 +736,11 @@ public final class CausynthPipeline {
         insertBeforeSequence(body, stmt, sequence);
     }
 
-    /** Captures the VM expression at an exact activation-authorized endpoint. */
-    private void instrumentConcolicOutputCaptures(
-            Collection<OutputCaptureSpec> selection,
-            HookCatalog refs) {
-        for (OutputCaptureSpec target : selection) {
-            if (target.kind() == OutputCaptureSpec.Kind.REGION_EXIT_FIELD) {
-                continue;
-            }
-            SootMethod method;
-            try {
-                method = Scene.v().getMethod(target.callerMethod());
-            } catch (RuntimeException unavailable) {
-                throw outputCaptureInstrumentationFailure(target,
-                        "METHOD_UNAVAILABLE", unavailable);
-            }
-            if (method == null || !method.isConcrete()) {
-                throw outputCaptureInstrumentationFailure(target,
-                        "METHOD_NOT_CONCRETE", null);
-            }
-            Body body = method.retrieveActiveBody();
-            Unit unit = originalUnit(body, target.unitIndex());
-            if (unit == null) {
-                throw outputCaptureInstrumentationFailure(target,
-                        "UNIT_NOT_FOUND", null);
-            }
-            if (!(unit instanceof Stmt)
-                    || !((Stmt) unit).containsInvokeExpr()) {
-                throw outputCaptureInstrumentationFailure(target,
-                        "INVOKE_NOT_FOUND", null);
-            }
-            Stmt stmt = (Stmt) unit;
-            InvokeExpr invoke = stmt.getInvokeExpr();
-            if (!target.calleeMethod().equals(
-                    invoke.getMethodRef().getSignature())
-                    || target.argumentIndex() < 0
-                    || target.argumentIndex() >= invoke.getArgCount()) {
-                throw outputCaptureInstrumentationFailure(target,
-                        "CALL_ARGUMENT_ENDPOINT_MISMATCH", null);
-            }
-            Value argument = invoke.getArg(target.argumentIndex());
-            List<Unit> before = new ArrayList<>();
-            // Box while symbolic propagation is still enabled.  Capture
-            // boxes are always fresh: Wrapper.valueOf may return a JVM
-            // cache singleton, which cannot safely own an activation-local
-            // symbolic shadow.
-            Value objectValue = boxedCaptureValue(body, argument, before);
-            before.add(Jimple.v().newInvokeStmt(
-                    Jimple.v().newStaticInvokeExpr(
-                            refs.ref(Hook.PAUSE_OBSERVATION))));
-            Value primitiveValue = primitiveValueString(body, argument,
-                    before);
-            before.add(Jimple.v().newInvokeStmt(
-                    Jimple.v().newStaticInvokeExpr(
-                            refs.ref(Hook.RECORD_OUTPUT_CAPTURE),
-                            StringConstant.v(target.callerMethod()),
-                            IntConstant.v(target.unitIndex()),
-                            StringConstant.v(target.siteId()),
-                            StringConstant.v(target.calleeMethod()),
-                            IntConstant.v(target.argumentIndex()),
-                            StringConstant.v(target.outputPort()),
-                            StringConstant.v(target.outputCell()),
-                            StringConstant.v(target.captureBindingId()),
-                            IntConstant.v(target.occurrence()),
-                            objectValue, primitiveValue)));
-            before.add(Jimple.v().newInvokeStmt(
-                    Jimple.v().newStaticInvokeExpr(
-                            refs.ref(Hook.RESUME_OBSERVATION))));
-            insertBeforeSequence(body, stmt, before);
-        }
-    }
-
     private void instrumentRegionExitFieldCaptures(
             Body body, Unit exit, Local token, Value rootReceiver,
             String receiverClass,
             Collection<OutputCaptureSpec> selection, HookCatalog refs) {
         for (OutputCaptureSpec target : selection) {
-            if (target.kind() != OutputCaptureSpec.Kind.REGION_EXIT_FIELD) {
-                continue;
-            }
             if (!(rootReceiver instanceof Local)
                     || target.fieldPath().isEmpty()) {
                 throw outputCaptureInstrumentationFailure(target,
@@ -974,8 +880,7 @@ public final class CausynthPipeline {
     private static IllegalStateException outputCaptureInstrumentationFailure(
             OutputCaptureSpec target, String reason, Throwable cause) {
         String detail = "OUTPUT_CAPTURE_" + reason + ": "
-                + target.captureBindingId() + " at "
-                + target.callerMethod() + "#u" + target.unitIndex();
+                + target.captureBindingId();
         return cause == null ? new IllegalStateException(detail)
                 : new IllegalStateException(detail, cause);
     }
@@ -1068,24 +973,6 @@ public final class CausynthPipeline {
                         signature, exception);
             }
         }
-    }
-
-    private static Set<String> concolicBackedViewMethods(
-            StaticProgram result) {
-        Set<String> methods = new LinkedHashSet<>();
-        for (Map<String, Object> region : result.regions) {
-            Object values = region.get("methods");
-            if (!(values instanceof Collection)) {
-                continue;
-            }
-            for (Object value : (Collection<?>) values) {
-                String method = stringValue(value);
-                if (!method.isEmpty()) {
-                    methods.add(method);
-                }
-            }
-        }
-        return methods;
     }
 
     private static boolean isBackedMapViewFactory(String name) {
@@ -1452,34 +1339,46 @@ public final class CausynthPipeline {
         }
     }
 
-    private static TraceSiteSelection traceSiteSelection(
+    private static TraceSelection traceSelection(
             StaticProgram result) {
-        TraceSiteSelection selection = new TraceSiteSelection();
+        TraceSelection selection = new TraceSelection();
         for (Map<String, Object> edge : result.edges) {
             String method = stringValue(edge.get("method"));
             int unitIndex = intValue(edge.get("unitIndex"), -1);
-            if (method.isEmpty()) {
-                continue;
+            if (!method.isEmpty()) {
+                selection.relevantMethods.add(method);
+                if (unitIndex >= 0) {
+                    String invoke = stringValue(edge.get("invoke"));
+                    String transfer = stringValue(edge.get("transferKind"));
+                    if (!invoke.isEmpty()) {
+                        selection.callUnits.computeIfAbsent(method,
+                                ignored -> new LinkedHashSet<>()).add(
+                                unitIndex);
+                    }
+                    if ("GUARD".equals(transfer)) {
+                        selection.branchUnits.computeIfAbsent(method,
+                                ignored -> new LinkedHashSet<>()).add(
+                                unitIndex);
+                    }
+                }
             }
-            selection.relevantMethods.add(method);
-            if (unitIndex < 0) continue;
-            String invoke = stringValue(edge.get("invoke"));
-            String transfer = stringValue(edge.get("transferKind"));
-            if (!invoke.isEmpty()) {
-                selection.callUnits.computeIfAbsent(method,
-                        ignored -> new LinkedHashSet<>()).add(unitIndex);
-            }
-            if ("GUARD".equals(transfer)) {
-                selection.branchUnits.computeIfAbsent(method,
-                        ignored -> new LinkedHashSet<>()).add(unitIndex);
-            }
+            collectTraceFields(selection, String.valueOf(edge.get(
+                    "fromCell")));
+            collectTraceFields(selection, String.valueOf(edge.get(
+                    "toCell")));
+            collectTraceFields(selection, String.valueOf(edge.get(
+                    "objectFromCell")));
+            collectTraceFields(selection, String.valueOf(edge.get(
+                    "objectToCell")));
+            collectFieldPathNames(selection, String.valueOf(edge.get(
+                    "fieldPath")));
         }
         return selection;
     }
 
     private void instrumentRichMethod(
             Body body, SootMethod method, List<Unit> originalUnits,
-            Unit insertionPoint, Value receiver, TraceSiteSelection sites,
+            Unit insertionPoint, Value receiver, TraceSelection sites,
             HookCatalog refs, HookCatalog observationIsolation) {
         Local callId = newTraceLocal(body, LongType.v(), "$causynthCallId");
         List<Unit> entryUnits = new ArrayList<>();
@@ -1851,7 +1750,7 @@ public final class CausynthPipeline {
 
     private void instrumentFieldTrace(Body body, SootMethod method,
                                       SootMethodRef recordFieldRef,
-                                      TraceFieldSelection traceFields,
+                                      TraceSelection traceFields,
                                       List<Unit> units,
                                       HookCatalog observationIsolation) {
         Value methodReceiver = NullConstant.v();
@@ -1905,7 +1804,7 @@ public final class CausynthPipeline {
             String kind, String method, int unitIndex,
             FieldRef fieldRef, Value methodReceiverValue, Value value,
             boolean fieldValueIsReadValue,
-            TraceFieldSelection traceFields,
+            TraceSelection traceFields,
             HookCatalog observationIsolation) {
         String field = fieldRef.getFieldRef().getSignature();
         if (!shouldInstrumentField(field, traceFields)) {
@@ -1944,7 +1843,7 @@ public final class CausynthPipeline {
     }
 
     private static boolean shouldInstrumentField(String field,
-                                                 TraceFieldSelection traceFields) {
+                                                 TraceSelection traceFields) {
         if (field == null || traceFields == null || traceFields.isEmpty()) {
             return false;
         }
@@ -1955,25 +1854,12 @@ public final class CausynthPipeline {
         return !fieldName.isEmpty() && traceFields.names.contains(fieldName);
     }
 
-    private static TraceFieldSelection traceFieldSelection(
-            StaticProgram result) {
-        TraceFieldSelection selection = new TraceFieldSelection();
-        for (Map<String, Object> edge : result.edges) {
-            collectTraceFields(selection, String.valueOf(edge.get("fromCell")));
-            collectTraceFields(selection, String.valueOf(edge.get("toCell")));
-            collectTraceFields(selection, String.valueOf(edge.get("objectFromCell")));
-            collectTraceFields(selection, String.valueOf(edge.get("objectToCell")));
-            collectFieldPathNames(selection, String.valueOf(edge.get("fieldPath")));
-        }
-        return selection;
-    }
-
-    private static void collectTraceFields(TraceFieldSelection selection, String cell) {
+    private static void collectTraceFields(TraceSelection selection,
+                                           String cell) {
         if (cell == null || cell.isEmpty() || "null".equals(cell)) {
             return;
         }
-        Matcher field = Pattern.compile("<[^:]+:\\s+[^()<>]+\\s+[^\\s()>]+>")
-                .matcher(cell);
+        Matcher field = TRACE_FIELD_SIGNATURE.matcher(cell);
         while (field.find()) {
             String signature = field.group();
             if (methodSignature(signature)) {
@@ -1984,11 +1870,12 @@ public final class CausynthPipeline {
         collectFieldPathNames(selection, cell);
     }
 
-    private static void collectFieldPathNames(TraceFieldSelection selection, String text) {
+    private static void collectFieldPathNames(TraceSelection selection,
+                                              String text) {
         if (text == null || text.isEmpty() || "null".equals(text)) {
             return;
         }
-        Matcher matcher = Pattern.compile("#field:([^#@]+)").matcher(text);
+        Matcher matcher = FIELD_PATH_NAME.matcher(text);
         while (matcher.find()) {
             String name = matcher.group(1).trim();
             if (!name.isEmpty()) {
@@ -2001,8 +1888,7 @@ public final class CausynthPipeline {
         if (fieldSignature == null) {
             return "";
         }
-        Matcher matcher = Pattern.compile("<[^:]+:\\s+.+\\s+([^\\s>]+)>")
-                .matcher(fieldSignature);
+        Matcher matcher = FIELD_NAME.matcher(fieldSignature);
         return matcher.find() ? matcher.group(1) : "";
     }
 
@@ -2201,7 +2087,6 @@ public final class CausynthPipeline {
         REGISTER_MAP_VIEW,
         REGISTER_MAP_VIEW_ITERATOR,
         RECORD_MAP_ITERATOR_NEXT,
-        RECORD_OUTPUT_CAPTURE,
         RECORD_REGION_EXIT_FIELD_OUTPUT,
         PAUSE_OBSERVATION,
         RESUME_OBSERVATION,
@@ -2321,10 +2206,6 @@ public final class CausynthPipeline {
                     .add(Hook.RECORD_MAP_ITERATOR_NEXT, runtime,
                             "recordMapIteratorNext", VoidType.v(), string,
                             IntType.v(), object, object)
-                    .add(Hook.RECORD_OUTPUT_CAPTURE, runtime,
-                            "recordOutputCapture", VoidType.v(), string,
-                            IntType.v(), string, string, IntType.v(), string,
-                            string, string, IntType.v(), object, string)
                     .add(Hook.RECORD_REGION_EXIT_FIELD_OUTPUT, runtime,
                             "recordRegionExitFieldOutput", VoidType.v(),
                             string, string, string, string, object, object)
@@ -2418,21 +2299,18 @@ public final class CausynthPipeline {
         }
     }
 
-    private static final class TraceSiteSelection {
+    private static final class TraceSelection {
         private final Set<String> relevantMethods = new LinkedHashSet<>();
         private final Map<String, Set<Integer>> callUnits = new LinkedHashMap<>();
         private final Map<String, Set<Integer>> branchUnits = new LinkedHashMap<>();
+        private final Set<String> signatures = new LinkedHashSet<>();
+        private final Set<String> names = new LinkedHashSet<>();
 
         private Set<Integer> units(Map<String, Set<Integer>> sites,
                                    String method) {
             Set<Integer> values = sites.get(method);
             return values == null ? Collections.emptySet() : values;
         }
-    }
-
-    private static final class TraceFieldSelection {
-        private final Set<String> signatures = new LinkedHashSet<>();
-        private final Set<String> names = new LinkedHashSet<>();
 
         private boolean isEmpty() {
             return signatures.isEmpty() && names.isEmpty();
@@ -2442,9 +2320,7 @@ public final class CausynthPipeline {
 
     private static boolean methodSignature(String value) {
         return value != null && value.startsWith("<")
-                && Pattern.compile(
-                "<[^:]+:\\s+.+\\s+[^\\s(]+\\((.*)\\)>")
-                .matcher(value).find();
+                && METHOD_SIGNATURE.matcher(value).find();
     }
 
     private static boolean concolicInstrumentationEnabled() {

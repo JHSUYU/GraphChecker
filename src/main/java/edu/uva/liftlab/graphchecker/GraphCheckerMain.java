@@ -8,7 +8,6 @@ import edu.uva.liftlab.graphchecker.option.OptionParser;
 import edu.uva.liftlab.graphchecker.transformer.GraphCheckerTransformer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import soot.G;
 import soot.PackManager;
 import soot.PhaseOptions;
 import soot.Scene;
@@ -19,7 +18,7 @@ import soot.options.Options;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
-import java.nio.charset.StandardCharsets;
+import java.io.Reader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -27,7 +26,6 @@ import java.util.Date;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -41,27 +39,19 @@ public class GraphCheckerMain {
     private static final Logger LOG = LoggerFactory.getLogger(GraphCheckerMain.class);
 
     private final GraphCheckerOptions options;
-    private boolean initialized;
 
     public GraphCheckerMain(GraphCheckerOptions options) {
         this.options = options;
     }
 
-    public boolean initialize() {
+    public void initialize() {
         registerAnalyses();
         configureSoot();
         enableAnalyses();
         loadClasses();
-        initialized = true;
-        return true;
     }
 
     public boolean run() {
-        if (!initialized) {
-            System.err.println("GraphChecker is not initialized");
-            return false;
-        }
-
         if (!Options.v().parse(options.getArgs())) {
             System.err.println("Error in parsing Soot options");
             return false;
@@ -112,13 +102,9 @@ public class GraphCheckerMain {
         }
     }
 
-    public void reset() {
-        G.reset();
-        initialized = false;
-    }
-
     private void registerAnalyses() {
-        GraphCheckerTransformer transformer = new GraphCheckerTransformer();
+        GraphCheckerTransformer transformer =
+                new GraphCheckerTransformer(options);
         AnalysisManager.getInstance().registerAnalysis(transformer, GraphCheckerTransformer.PHASE_INFO);
     }
 
@@ -129,7 +115,7 @@ public class GraphCheckerMain {
         Options.v().set_soot_classpath(expandClassPath(appendClasspathEntries(
                 options.getClassPath(), processDirs)));
         Options.v().set_keep_line_number(options.keepDebug());
-        Options.v().set_whole_program(options.isWholeProgram());
+        Options.v().set_whole_program(true);
 
         if (options.getMainClass() != null) {
             Options.v().set_main_class(options.getMainClass());
@@ -156,14 +142,14 @@ public class GraphCheckerMain {
 
     private void enableAnalyses() {
         String[] analyses = options.getAnalyses();
-        if (analyses == null || analyses.length == 0) {
+        if (analyses.length == 0) {
             analyses = new String[] {GraphCheckerTransformer.PHASE_INFO.getFullName()};
         }
 
         boolean needCallGraph = false;
-        Set<String> enabledFromCommandLine = new HashSet<>();
         for (String analysis : analyses) {
             AnalysisManager.getInstance().enableAnalysis(analysis);
+            PhaseOptions.v().setPhaseOption(analysis, "enabled:true");
             PhaseInfo phaseInfo = AnalysisManager.getInstance().getPhaseInfo(analysis);
             if (phaseInfo != null && phaseInfo.needCallGraph()) {
                 needCallGraph = true;
@@ -171,24 +157,16 @@ public class GraphCheckerMain {
         }
 
         Map<String, List<String>> phaseOptions = options.getPhaseOptions();
-        if (phaseOptions != null) {
-            for (Map.Entry<String, List<String>> entry : phaseOptions.entrySet()) {
-                String phase = entry.getKey();
-                if (AnalysisManager.getInstance().isAnalysisEnabled(phase)) {
-                    enabledFromCommandLine.add(phase);
-                    PhaseOptions.v().setPhaseOption(phase, "enabled:true");
-                }
-                for (String option : entry.getValue()) {
-                    if (!PhaseOptions.v().setPhaseOption(phase, option)) {
-                        System.err.println("Failed to set Soot phase option: " + phase + " " + option);
-                    }
-                }
+        for (Map.Entry<String, List<String>> entry : phaseOptions.entrySet()) {
+            String phase = entry.getKey();
+            if (AnalysisManager.getInstance().isAnalysisEnabled(phase)) {
+                PhaseOptions.v().setPhaseOption(phase, "enabled:true");
             }
-        }
-
-        for (String analysis : analyses) {
-            if (!enabledFromCommandLine.contains(analysis)) {
-                PhaseOptions.v().setPhaseOption(analysis, "enabled:true");
+            for (String option : entry.getValue()) {
+                if (!PhaseOptions.v().setPhaseOption(phase, option)) {
+                    System.err.println("Failed to set Soot phase option: "
+                            + phase + " " + option);
+                }
             }
         }
 
@@ -199,11 +177,9 @@ public class GraphCheckerMain {
 
     private void loadClasses() {
         String[] classes = options.getClasses();
-        if (classes != null) {
-            for (String className : classes) {
-                LOG.info("Adding input class {}", className);
-                Options.v().classes().add(className);
-            }
+        for (String className : classes) {
+            LOG.info("Adding input class {}", className);
+            Options.v().classes().add(className);
         }
 
         Class<?>[] basicClasses = {PrintStream.class, System.class, Thread.class, Throwable.class};
@@ -248,18 +224,15 @@ public class GraphCheckerMain {
 
     private List<String> expandProcessDirs(List<String> inputDirs) {
         LinkedHashSet<String> dirs = new LinkedHashSet<>();
-        if (inputDirs != null) {
-            for (String inputDir : inputDirs) {
-                addExistingDirectory(dirs, inputDir);
-            }
+        for (String inputDir : inputDirs) {
+            dirs.add(new File(inputDir).getAbsolutePath());
         }
 
         Properties config = loadGraphCheckerConfig();
-        addConfiguredProcessDirs(dirs, firstNonBlank(
-                System.getProperty("causynth.process.dirs"),
-                config.getProperty("causynth_process_dirs")));
+        addConfiguredProcessDirs(dirs,
+                config.getProperty("causynth_process_dirs"));
 
-        if (dirs.size() > (inputDirs == null ? 0 : inputDirs.size())) {
+        if (dirs.size() > inputDirs.size()) {
             LOG.info("Expanded Soot process dirs to {}", dirs);
         }
         return new ArrayList<>(dirs);
@@ -269,9 +242,15 @@ public class GraphCheckerMain {
         if (configuredDirs == null || configuredDirs.trim().isEmpty()) {
             return;
         }
-        String normalized = configuredDirs.replace(';', File.pathSeparatorChar);
-        for (String dir : normalized.split(Pattern.quote(File.pathSeparator))) {
-            addExistingDirectory(dirs, dir);
+        for (String dir : configuredDirs.split(
+                Pattern.quote(File.pathSeparator))) {
+            File file = new File(dir.trim());
+            if (!file.isDirectory()) {
+                throw new IllegalStateException(
+                        "Configured Soot process directory not found: "
+                                + dir);
+            }
+            dirs.add(file.getAbsolutePath());
         }
     }
 
@@ -283,40 +262,18 @@ public class GraphCheckerMain {
         }
         Path path = Paths.get(configPath);
         if (!Files.isRegularFile(path)) {
-            return properties;
+            throw new IllegalStateException(
+                    "GraphChecker config file not found: " + path);
         }
         try {
-            for (String rawLine : Files.readAllLines(path, StandardCharsets.UTF_8)) {
-                String line = rawLine.trim();
-                if (line.isEmpty() || line.startsWith("#")) {
-                    continue;
-                }
-                int eq = line.indexOf('=');
-                if (eq <= 0) {
-                    continue;
-                }
-                String key = line.substring(0, eq).trim();
-                String value = line.substring(eq + 1).trim();
-                if ((value.startsWith("\"") && value.endsWith("\""))
-                        || (value.startsWith("'") && value.endsWith("'"))) {
-                    value = value.substring(1, value.length() - 1);
-                }
-                properties.setProperty(key, value);
+            try (Reader reader = Files.newBufferedReader(path)) {
+                properties.load(reader);
             }
         } catch (IOException exception) {
-            LOG.warn("Unable to read GraphChecker config {}", configPath, exception);
+            throw new IllegalStateException(
+                    "Unable to read GraphChecker config " + path, exception);
         }
         return properties;
-    }
-
-    private void addExistingDirectory(Set<String> dirs, String path) {
-        if (path == null || path.trim().isEmpty()) {
-            return;
-        }
-        File file = new File(path.trim());
-        if (file.isDirectory()) {
-            dirs.add(file.getAbsolutePath());
-        }
     }
 
     private static String appendClasspathEntries(String classPath, List<String> entries) {
@@ -324,10 +281,8 @@ public class GraphCheckerMain {
         if (classPath != null && !classPath.trim().isEmpty()) {
             builder.append(classPath);
         }
-        if (entries != null) {
-            for (String entry : entries) {
-                appendClasspathEntry(builder, entry);
-            }
+        for (String entry : entries) {
+            appendClasspathEntry(builder, entry);
         }
         return builder.toString();
     }
@@ -340,15 +295,6 @@ public class GraphCheckerMain {
             classPath.append(File.pathSeparator);
         }
         classPath.append(entry);
-    }
-
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) {
-                return value.trim();
-            }
-        }
-        return null;
     }
 
     public static void main(String[] args) {
@@ -377,14 +323,15 @@ public class GraphCheckerMain {
             parser.listAnalyses();
             System.exit(0);
         }
-        if (options.isInputListEmpty() && options.getClasses() == null) {
+        if (options.isInputListEmpty() && options.getClasses().length == 0) {
             System.out.println("Must set either an input jar/input directory or a list of classes.");
             parser.printHelp();
             System.exit(1);
         }
 
         GraphCheckerMain main = new GraphCheckerMain(options);
-        if (!main.initialize() || !main.run()) {
+        main.initialize();
+        if (!main.run()) {
             System.exit(1);
         }
     }

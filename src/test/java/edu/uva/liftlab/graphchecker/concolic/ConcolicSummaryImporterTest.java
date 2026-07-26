@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
+import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
@@ -121,6 +122,7 @@ public class ConcolicSummaryImporterTest {
                     + "\"activationId\":\"ACT.0\",\"regionId\":\"REGION.0\","
                     + "\"exitKind\":\"THROW\",\"exceptionType\":\"InvalidToken\","
                     + "\"unresolvedInputs\":[],"
+                    + "\"containerSelections\":{},"
                     + "\"rootOutputExpression\":{\"kind\":\"SYMBOLIC_OBJECT\"},"
                     + "\"engineSummary\":{\"active\":true,"
                     + "\"engine\":\"openjdk8-zero-concolic\","
@@ -573,6 +575,7 @@ public class ConcolicSummaryImporterTest {
 
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.add("containerSelections", new JsonObject());
         raw.addProperty("activationId", "ACT.TIME");
         raw.addProperty("regionId", "REGION.TIME");
         raw.addProperty("exitKind", "NORMAL");
@@ -1680,6 +1683,7 @@ public class ConcolicSummaryImporterTest {
 
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.add("containerSelections", new JsonObject());
         raw.addProperty("activationId", "ACT.P");
         raw.addProperty("regionId", "REGION.P");
         raw.addProperty("exitKind", "NORMAL");
@@ -1843,20 +1847,17 @@ public class ConcolicSummaryImporterTest {
         JsonObject mapObservation = observedEmptyMapState(
                 mapAction, method + "#u1", authority,
                 identityComplete, snapshotComplete);
-        JsonArray approximations = new JsonArray();
-        approximations.add(firstContainerEvidence("REGION.P.in.0",
-                mapCell, method + "#u1", authority, 2));
-        approximations.add(firstContainerEvidence("REGION.P.in.1",
-                containerCell, "<example.Batch: example.Value[] get()>#u1",
-                authority, 5));
+        JsonObject selections = new JsonObject();
+        selections.addProperty("REGION.P.in.0", 2);
+        selections.addProperty("REGION.P.in.1", 5);
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.add("containerSelections", selections);
         raw.addProperty("activationId", "ACT.P");
         raw.addProperty("regionId", "REGION.P");
         raw.addProperty("exitKind", "NORMAL");
         raw.add("symbolizedInputs", new JsonArray());
         raw.add("unresolvedInputs", new JsonArray());
-        raw.add("runtimeApproximations", approximations);
         raw.add("runtimeHeapObservations",
                 singletonObject(mapObservation));
         raw.add("finalFieldObservations", singletonObject(
@@ -1932,24 +1933,6 @@ public class ConcolicSummaryImporterTest {
         action.addProperty("modelControllable", false);
         action.addProperty("containerObservationAuthority", authority);
         return action;
-    }
-
-    private static JsonObject firstContainerEvidence(
-            String symbol, String cell, String site, String authority,
-            long token) {
-        JsonObject evidence = new JsonObject();
-        evidence.addProperty("schemaVersion", 1);
-        evidence.addProperty("kind",
-                "BOUNDED_CONTAINER_INPUT_OBSERVATION");
-        evidence.addProperty("authority", authority);
-        evidence.addProperty("inputSymbol", symbol);
-        evidence.addProperty("inputCell", cell);
-        evidence.addProperty("siteId", site);
-        evidence.addProperty("outcome",
-                "FIRST_MATCHING_CONTAINER_SELECTED");
-        evidence.addProperty("selectedObjectToken", token);
-        evidence.addProperty("complete", true);
-        return evidence;
     }
 
     private static JsonObject observedEmptyMapState(
@@ -2116,7 +2099,6 @@ public class ConcolicSummaryImporterTest {
         metadata.addProperty("captureDischargeAuthority",
                 "HEAP_EFFECT_STATE_TRANSFORMER");
         metadata.add("captureBindings", new JsonArray());
-        metadata.addProperty("captureBindingsComplete", true);
         metadata.add("captureBindingIssues", new JsonArray());
     }
 
@@ -2235,10 +2217,6 @@ public class ConcolicSummaryImporterTest {
             declaration.add("fieldPath",
                     JsonParser.parseString("[\"id\"]"));
             declaration.addProperty("declaredFieldSignature", field);
-            declaration.addProperty("declaredFieldOwnerClass",
-                    "example.Value");
-            declaration.addProperty("declaredFieldType", "long");
-            declaration.addProperty("declaredFieldName", "id");
             declaration.addProperty("method", method);
             declaration.addProperty("fieldMaterializationSiteId",
                     fieldSite);
@@ -2267,13 +2245,9 @@ public class ConcolicSummaryImporterTest {
                     "EXACT_ARRAY_INDEX");
             selector.addProperty("elementIndex", selectorIndex);
             selector.addProperty("elementOccurrence", 1);
-            selector.addProperty("declaredFieldOwnerClass",
-                    "example.Value");
-            selector.addProperty("declaredFieldType", "long");
+            selector.addProperty("declaredFieldSignature", field);
             selector.addProperty("containerObjectToken", arrayToken);
             selector.addProperty("elementObjectToken", 601L + ordinal);
-            selector.addProperty("objectTokenAuthority",
-                    "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             selector.addProperty("objectTokenScope", "ACT.P");
             selector.addProperty("containerObservationLocation",
                     "FIELD_ACCESS");
@@ -2297,8 +2271,6 @@ public class ConcolicSummaryImporterTest {
             binding.add("fieldPath",
                     JsonParser.parseString("[\"id\"]"));
             binding.addProperty("leafOwnerObjectToken", 601L + ordinal);
-            binding.addProperty("objectTokenAuthority",
-                    "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             binding.addProperty("objectTokenScope", "ACT.P");
             binding.add("containerSelector", selector.deepCopy());
             binding.addProperty("authority",
@@ -2316,8 +2288,6 @@ public class ConcolicSummaryImporterTest {
             observation.addProperty("leafOwnerObjectToken",
                     601L + ordinal);
             observation.addProperty("leafOwnerObjectTokenKnown", true);
-            observation.addProperty("objectTokenAuthority",
-                    "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             observation.addProperty("objectTokenScope", "ACT.P");
             observation.addProperty("baseInputSymbol", base);
             observation.addProperty("dynamicBindingId",
@@ -2769,6 +2739,7 @@ public class ConcolicSummaryImporterTest {
 
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.add("containerSelections", new JsonObject());
         raw.addProperty("activationId", "ACT.OUT");
         raw.addProperty("regionId", "REGION.OUT");
         raw.addProperty("exitKind", "NORMAL");
@@ -2848,6 +2819,7 @@ public class ConcolicSummaryImporterTest {
 
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.add("containerSelections", new JsonObject());
         raw.addProperty("activationId", activationId);
         raw.addProperty("regionId", regionId);
         raw.addProperty("exitKind", "NORMAL");
@@ -2858,11 +2830,13 @@ public class ConcolicSummaryImporterTest {
         raw.add("symbolizedInputs", symbolized);
         raw.add("rootOutputExpression", constant("Y_I_0", "I"));
         JsonArray captures = new JsonArray();
-        JsonArray requests = OutputClosureCodec.captures(contract);
+        java.util.List<OutputCaptureSpec> requests =
+                OutputClosureCodec.captureSpecs(contract);
         for (int index = 0; index < requests.size(); index++) {
             if (omitSecondCapture && index == 1) continue;
-            JsonObject observed = requests.get(index)
-                    .getAsJsonObject().deepCopy();
+            JsonObject observed = new JsonObject();
+            observed.addProperty("captureBindingId",
+                    requests.get(index).captureBindingId());
             observed.addProperty("fieldOwnerObjectToken", 10 + index);
             observed.addProperty("objectTokenScope", activationId);
             observed.addProperty("captureAuthority",
@@ -2890,7 +2864,6 @@ public class ConcolicSummaryImporterTest {
         String cell = "<example.Client: int value" + index + ">";
         String site = rootMethod + "#u7";
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
         capture.addProperty("captureBindingId", port + ".capture.0");
         capture.addProperty("outputPort", port);
         capture.addProperty("outputCell", cell);
@@ -2911,8 +2884,8 @@ public class ConcolicSummaryImporterTest {
         slice.add("methods", singletonString(rootMethod));
         slice.add("causalEdgeIds",
                 singletonString("DF.JOINT." + index));
-        slice.addProperty("captureBindingsComplete", true);
         slice.add("captureBindings", singletonObject(capture));
+        slice.add("captureBindingIssues", new JsonArray());
 
         JsonObject activation = new JsonObject();
         activation.addProperty("activationId", activationId);
@@ -2944,11 +2917,11 @@ public class ConcolicSummaryImporterTest {
         action.addProperty("location", "RETURN_OR_HEAP_EFFECT");
         action.addProperty("javaTypeDescriptor", "I");
         activation.add("outputs", singletonObject(action));
+        removeLegacyOutputMirrorsForTest(activation);
         OutputClosureCodec.writeTo(activation,
                 OutputClosureCodec.singleton(
                         regionId, regionId + "@fixture#call1", 1,
-                        port, cell, "SINK_STATE",
-                        "CONFIRMED_READ_FROM_EDGE", slice));
+                        port, cell, "SINK_STATE", "I", slice));
         return activation;
     }
 
@@ -3037,11 +3010,17 @@ public class ConcolicSummaryImporterTest {
                 raw.deepCopy(), 1).getAsJsonArray(
                 "outputCaptures").deepCopy());
         JsonObject callRequest = null;
-        for (JsonElement element : OutputClosureCodec.captures(contract)) {
-            JsonObject request = element.getAsJsonObject();
+        for (OutputCaptureSpec capture
+                : OutputClosureCodec.captureSpecs(contract)) {
             if ("REGION.FIELD.out.0".equals(
-                    request.get("outputPort").getAsString())) {
-                callRequest = request.deepCopy();
+                    capture.outputPort())) {
+                callRequest = new JsonObject();
+                callRequest.addProperty("captureBindingId",
+                        capture.captureBindingId());
+                callRequest.addProperty("captureAuthority",
+                        "ACTIVE_TOKEN_EXACT_REGION_EXIT_FIELD");
+                callRequest.addProperty("fieldOwnerObjectToken", 10);
+                callRequest.addProperty("objectTokenScope", "ACT.FIELD");
             }
         }
         callRequest.add("expression", symbol(
@@ -3088,16 +3067,17 @@ public class ConcolicSummaryImporterTest {
         action.addProperty("cell", requested.get("cell").getAsString());
         action.addProperty("kind", requested.get("kind").getAsString());
         action.addProperty("javaTypeDescriptor", "I");
+        String port = requested.get("portId").getAsString();
+        String cell = requested.get("cell").getAsString();
+        String kind = requested.get("kind").getAsString();
+        removeLegacyOutputMirrorsForTest(activation);
         OutputClosureCodec.writeTo(activation,
                 OutputClosureCodec.singleton(
                         activation.get("regionId").getAsString(),
                         activation.get("regionInstanceId").getAsString(),
                         activation.get("rootCallId").getAsLong(),
-                        requested.get("portId").getAsString(),
-                        requested.get("cell").getAsString(),
-                        requested.get("kind").getAsString(),
-                        requested.get("selectionAuthority").getAsString(),
-                        slice));
+                        port, cell, kind,
+                        "I", slice));
     }
 
     private static JsonObject renamedOutputPort(
@@ -3187,7 +3167,6 @@ public class ConcolicSummaryImporterTest {
                 : expression;
 
         JsonObject capture = new JsonObject();
-        capture.addProperty("captureKind", "REGION_EXIT_FIELD");
         capture.addProperty("captureBindingId",
                 "REGION.FIELD.out.0.capture.0");
         capture.addProperty("outputPort", "REGION.FIELD.out.0");
@@ -3259,7 +3238,6 @@ public class ConcolicSummaryImporterTest {
         slice.add("causalEdgeIds", causalEdgeIds);
         slice.addProperty("causalEdgeCount", causalEdges.size());
         slice.add("captureBindings", singletonObject(capture));
-        slice.addProperty("captureBindingsComplete", true);
         slice.add("captureBindingIssues", new JsonArray());
         slice.addProperty("complete", true);
         slice.addProperty("structuralComplete", true);
@@ -3326,13 +3304,8 @@ public class ConcolicSummaryImporterTest {
         write(regions, region + "\n");
 
         JsonObject observed = new JsonObject();
-        observed.addProperty("captureKind", "REGION_EXIT_FIELD");
         observed.addProperty("captureBindingId",
                 "REGION.FIELD.out.0.capture.0");
-        observed.addProperty("outputPort", "REGION.FIELD.out.0");
-        observed.addProperty("outputCell", field);
-        observed.addProperty("fieldSignature", field);
-        observed.add("fieldPath", singletonString(fieldName));
         observed.addProperty("captureAuthority",
                 "ACTIVE_TOKEN_EXACT_REGION_EXIT_FIELD");
         observed.addProperty("fieldOwnerObjectToken",
@@ -3342,6 +3315,7 @@ public class ConcolicSummaryImporterTest {
 
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.add("containerSelections", new JsonObject());
         raw.addProperty("activationId", "ACT.FIELD");
         raw.addProperty("regionId", "REGION.FIELD");
         raw.addProperty("exitKind", exitKind);
@@ -3532,6 +3506,7 @@ public class ConcolicSummaryImporterTest {
 
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.add("containerSelections", new JsonObject());
         raw.addProperty("activationId", "ACT.ARRAY");
         raw.addProperty("regionId", "REGION.ARRAY");
         raw.addProperty("exitKind", "NORMAL");
@@ -3827,6 +3802,7 @@ public class ConcolicSummaryImporterTest {
         engine.add("pathCondition", new JsonArray());
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.add("containerSelections", new JsonObject());
         raw.addProperty("activationId", "ACT.MAP");
         raw.addProperty("regionId", "REGION.MAP");
         raw.addProperty("exitKind", "NORMAL");
@@ -4189,8 +4165,11 @@ public class ConcolicSummaryImporterTest {
 
     private static void canonicalizeOutputClosureForTest(
             JsonObject activation) {
-        if (activation.has(OutputClosureContract.FIELD)
-                || !"OUTPUT_RELATION_CLOSURE".equals(
+        if (activation.has(OutputClosureContract.FIELD)) {
+            removeLegacyOutputMirrorsForTest(activation);
+            return;
+        }
+        if (!"OUTPUT_RELATION_CLOSURE".equals(
                 textForTest(activation, "goalKind"))) {
             return;
         }
@@ -4224,6 +4203,12 @@ public class ConcolicSummaryImporterTest {
                 "FAILURE_PREDICATE".equals(kind)
                         ? rootMethod + ".failure"
                         : rootMethod + ".return");
+        String javaType = firstNonBlankForTest(
+                textForTest(requested, "javaTypeDescriptor"),
+                textForTest(outputAction, "javaTypeDescriptor"),
+                textForTest(outputAction, "javaType"),
+                firstCaptureJavaTypeForTest(activation),
+                "FAILURE_PREDICATE".equals(kind) ? "Z" : "I");
 
         JsonObject slice = activation.has("requestedOutputSlice")
                 ? activation.getAsJsonObject("requestedOutputSlice")
@@ -4256,10 +4241,13 @@ public class ConcolicSummaryImporterTest {
                 ? activation.getAsJsonArray("requestedOutputCapture")
                 .deepCopy() : new JsonArray();
         slice.add("captureBindings", captures);
-        slice.addProperty("captureBindingsComplete",
-                !activation.has("requestedOutputCaptureComplete")
-                        || activation.get(
-                        "requestedOutputCaptureComplete").getAsBoolean());
+        JsonArray captureIssues = new JsonArray();
+        if (activation.has("requestedOutputCaptureComplete")
+                && !activation.get(
+                "requestedOutputCaptureComplete").getAsBoolean()) {
+            captureIssues.add("MISSING_CAPTURE");
+        }
+        slice.add("captureBindingIssues", captureIssues);
 
         String regionId = textForTest(activation, "regionId");
         if (!activation.has("rootCallId")) {
@@ -4270,17 +4258,39 @@ public class ConcolicSummaryImporterTest {
             activation.addProperty("regionInstanceId",
                     regionId + "@test#call" + rootCallId);
         }
+        removeLegacyOutputMirrorsForTest(activation);
         OutputClosureCodec.writeTo(activation,
                 OutputClosureCodec.singleton(
                         regionId,
                         textForTest(activation, "regionInstanceId"),
                         rootCallId, port, cell, kind,
-                        "TEST_FIXTURE_DECLARATION", slice));
+                        javaType, slice));
+    }
+
+    private static void removeLegacyOutputMirrorsForTest(
+            JsonObject activation) {
+        String[] retired = {
+                "requestedOutput", "requestedOutputSlice",
+                "requestedOutputCapture", "requestedOutputCaptureRequired",
+                "requestedOutputCaptureComplete", "requestedOutputMethods",
+                "outputs"
+        };
+        for (String field : retired) activation.remove(field);
     }
 
     private static void ensureStringArray(
             JsonObject target, String field, JsonArray fallback) {
         if (!target.has(field)) target.add(field, fallback);
+    }
+
+    private static String firstCaptureJavaTypeForTest(
+            JsonObject activation) {
+        JsonArray captures = activation.has("requestedOutputCapture")
+                ? activation.getAsJsonArray("requestedOutputCapture")
+                : new JsonArray();
+        return captures.size() > 0 && captures.get(0).isJsonObject()
+                ? textForTest(captures.get(0).getAsJsonObject(), "javaType")
+                : "";
     }
 
     private static String textForTest(JsonObject value, String field) {

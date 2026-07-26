@@ -108,13 +108,6 @@ public final class OutputClosureContract {
                     || member.captureBindings().size() != 1) {
                 return false;
             }
-            String kind = text(member.captureBindings().get(0)
-                            .getAsJsonObject(),
-                    "captureKind");
-            if (!"CALL_ARGUMENT".equals(kind)
-                    && !"REGION_EXIT_FIELD".equals(kind)) {
-                return false;
-            }
         }
         return true;
     }
@@ -221,7 +214,7 @@ public final class OutputClosureContract {
         }
 
         public boolean captureComplete() {
-            return slice.get("captureBindingsComplete").getAsBoolean();
+            return slice.getAsJsonArray("captureBindingIssues").size() == 0;
         }
 
         public JsonObject output() { return output.deepCopy(); }

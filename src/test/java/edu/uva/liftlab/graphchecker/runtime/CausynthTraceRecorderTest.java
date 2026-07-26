@@ -76,7 +76,6 @@ public class CausynthTraceRecorderTest {
                     "streaming_trace_manifest.json")),
                     StandardCharsets.UTF_8);
             assertTrue(manifest.contains("\"status\":\"CLOSED\""));
-            assertTrue(manifest.contains("\"complete\":true"));
             assertTrue(trace.contains("\"event\":\"METHOD_ENTER\""));
             assertTrue(trace.contains("\"event\":\"CALL_SITE_ENTER\""));
             assertTrue(trace.contains("\"event\":\"CALL_ARGUMENT\""));
@@ -126,12 +125,10 @@ public class CausynthTraceRecorderTest {
         }
         String previousOutput = System.getProperty("causynth.trace.output.dir");
         String previousTest = System.getProperty("causynth.trace.test");
-        String previousMaxEvents = System.getProperty("causynth.trace.max.events");
         try {
             resetRecorder();
             System.setProperty("causynth.trace.output.dir", output.toString());
             System.setProperty("causynth.trace.test", "concurrent-init-test");
-            System.setProperty("causynth.trace.max.events", "10000");
 
             int threadCount = 128;
             CountDownLatch ready = new CountDownLatch(threadCount);
@@ -185,34 +182,21 @@ public class CausynthTraceRecorderTest {
             resetRecorder();
             restoreProperty("causynth.trace.output.dir", previousOutput);
             restoreProperty("causynth.trace.test", previousTest);
-            restoreProperty("causynth.trace.max.events", previousMaxEvents);
             folder.delete();
         }
     }
 
     private static void aggregateExistingTrace(Path output, Path graph)
             throws Exception {
-        String previousGraph = System.getProperty("causynth.static.graph");
-        String previousRegions = System.getProperty(
-                "causynth.symbolic.regions");
-        String previousRegionEdges = System.getProperty(
-                "causynth.symbolic.region.edges");
-        try {
-            System.setProperty("causynth.symbolic.regions",
-                    output.resolve("symbolic_regions.jsonl").toString());
-            System.setProperty("causynth.symbolic.region.edges",
-                    output.resolve("symbolic_region_edges.jsonl").toString());
-            Method aggregate = CausynthTraceRecorder.class.getDeclaredMethod(
-                    "aggregateExistingTrace", java.io.File.class,
-                    java.io.File.class, String.class);
-            aggregate.setAccessible(true);
-            aggregate.invoke(null, output.toFile(), graph.toFile(), "test");
-        } finally {
-            restoreProperty("causynth.static.graph", previousGraph);
-            restoreProperty("causynth.symbolic.regions", previousRegions);
-            restoreProperty("causynth.symbolic.region.edges",
-                    previousRegionEdges);
-        }
+        Method aggregate = CausynthTraceRecorder.class.getDeclaredMethod(
+                "aggregateExistingTrace", java.io.File.class,
+                java.io.File.class, java.io.File.class,
+                java.io.File.class, String.class);
+        aggregate.setAccessible(true);
+        aggregate.invoke(null, output.toFile(), graph.toFile(),
+                output.resolve("symbolic_regions.jsonl").toFile(),
+                output.resolve("symbolic_region_edges.jsonl").toFile(),
+                "test");
     }
 
     private static final class ExplodingMap

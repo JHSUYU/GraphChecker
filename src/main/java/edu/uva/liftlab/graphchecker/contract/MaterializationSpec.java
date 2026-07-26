@@ -28,7 +28,6 @@ public final class MaterializationSpec {
     private final List<String> path;
     private final List<String> proofEdgeIds;
     private final String method;
-    private final String siteId;
     private final int unitIndex;
     private final String declaredCallee;
     private final String implementationMethod;
@@ -36,7 +35,7 @@ public final class MaterializationSpec {
     private MaterializationSpec(
             Kind kind, String javaType, String rootField, String leafField,
             List<String> path, List<String> proofEdgeIds, String method,
-            String siteId, int unitIndex, String declaredCallee,
+            int unitIndex, String declaredCallee,
             String implementationMethod) {
         this.kind = kind == null ? Kind.NONE : kind;
         this.javaType = trim(javaType);
@@ -45,7 +44,6 @@ public final class MaterializationSpec {
         this.path = immutable(path);
         this.proofEdgeIds = immutable(proofEdgeIds);
         this.method = trim(method);
-        this.siteId = trim(siteId);
         this.unitIndex = unitIndex;
         this.declaredCallee = trim(declaredCallee);
         this.implementationMethod = trim(implementationMethod);
@@ -54,25 +52,25 @@ public final class MaterializationSpec {
     public static MaterializationSpec none() {
         return new MaterializationSpec(Kind.NONE, "", "", "",
                 Collections.<String>emptyList(),
-                Collections.<String>emptyList(), "", "", -1, "", "");
+                Collections.<String>emptyList(), "", -1, "", "");
     }
 
     public static MaterializationSpec fieldRead(
             String javaType, String rootField, String leafField,
             List<String> path, List<String> proofEdgeIds, String method,
-            String siteId, int unitIndex) {
+            int unitIndex) {
         return new MaterializationSpec(Kind.FIELD_READ, javaType,
-                rootField, leafField, path, proofEdgeIds, method, siteId,
+                rootField, leafField, path, proofEdgeIds, method,
                 unitIndex, "", "");
     }
 
     public static MaterializationSpec accessorReturn(
             String javaType, String field, List<String> path,
-            String callerMethod, String siteId, int unitIndex,
+            String callerMethod, int unitIndex,
             String declaredCallee, String implementationMethod) {
         return new MaterializationSpec(Kind.ACCESSOR_RETURN, javaType,
                 field, field, path, Collections.<String>emptyList(),
-                callerMethod, siteId, unitIndex, declaredCallee,
+                callerMethod, unitIndex, declaredCallee,
                 implementationMethod);
     }
 
@@ -96,8 +94,7 @@ public final class MaterializationSpec {
                 text(json, "rootField"), text(json, "leafField"),
                 FieldPathSpec.stringArray(json, "path"),
                 FieldPathSpec.stringArray(json, "proofEdgeIds"),
-                text(json, "method"), text(json, "siteId"),
-                integer(json, "unitIndex", -1),
+                text(json, "method"), integer(json, "unitIndex", -1),
                 text(json, "declaredCallee"),
                 text(json, "implementationMethod"));
     }
@@ -134,7 +131,8 @@ public final class MaterializationSpec {
     }
 
     public String siteId() {
-        return siteId;
+        return method.isEmpty() || unitIndex < 0 ? ""
+                : method + "#u" + unitIndex;
     }
 
     public int unitIndex() {
@@ -166,7 +164,6 @@ public final class MaterializationSpec {
             result.put("proofEdgeIds", new ArrayList<>(proofEdgeIds));
         }
         result.put("method", method);
-        result.put("siteId", siteId);
         result.put("unitIndex", unitIndex);
         if (kind == Kind.ACCESSOR_RETURN) {
             result.put("declaredCallee", declaredCallee);
@@ -179,45 +176,24 @@ public final class MaterializationSpec {
     public Map<String, Object> actionFields() {
         Map<String, Object> result = new LinkedHashMap<>();
         if (kind == Kind.NONE) return result;
-        FieldPathSpec.DeclaredField root =
-                FieldPathSpec.declaredField(rootField);
-        FieldPathSpec.DeclaredField leaf =
-                FieldPathSpec.declaredField(leafField);
         result.put("bindingMode", "FIELD_ACCESS");
         result.put("javaType", javaType);
         result.put("accessFieldSignature", rootField);
         result.put("leafFieldSignature", leafField);
         result.put("fieldPath", new ArrayList<>(path));
-        if (root != null) {
-            result.put("accessOwnerClass", root.owner());
-            result.put("accessFieldType", root.type());
-            result.put("accessField", root.name());
-        }
-        if (leaf != null) {
-            result.put("leafOwnerClass", leaf.owner());
-            result.put("leafField", leaf.name());
-        }
         if (kind == Kind.FIELD_READ) {
             result.put("accessMethod", method);
-            result.put("accessSiteId", siteId);
             result.put("accessUnitIndex", unitIndex);
-            result.put("accessSiteAuthority",
-                    "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
             if (directFieldPath()) {
                 result.put("fieldPathAuthority",
                         "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
             }
         } else {
             result.put("accessorCallerMethod", method);
-            result.put("accessorCallSiteId", siteId);
             result.put("accessorCallUnitIndex", unitIndex);
             result.put("accessorDeclaredCallee", declaredCallee);
             result.put("accessorImplementationMethod",
                     implementationMethod);
-            result.put("accessorCallSiteAuthority",
-                    "STATIC_UNIQUE_EXACT_DECLARED_FIELD_ACCESSOR_CALLSITE_V1");
-            result.put("accessorImplementationAuthority",
-                    "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY");
         }
         return result;
     }

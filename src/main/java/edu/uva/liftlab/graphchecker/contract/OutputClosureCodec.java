@@ -56,6 +56,14 @@ public final class OutputClosureCodec {
             throw new IllegalArgumentException(
                     "outputClosure must be an object");
         }
+        rejectLegacyMirrors(artifact);
+        OutputClosureContract contract =
+                decodeEnvelope(encoded.getAsJsonObject());
+        validateOuterScope(artifact, contract.producer());
+        return contract;
+    }
+
+    private static void rejectLegacyMirrors(JsonObject artifact) {
         for (String field : SINGULAR_FIELDS) {
             if (artifact.has(field)) {
                 throw new IllegalArgumentException(
@@ -63,10 +71,6 @@ public final class OutputClosureCodec {
                                 + field);
             }
         }
-        OutputClosureContract contract =
-                decodeEnvelope(encoded.getAsJsonObject());
-        validateOuterScope(artifact, contract.producer());
-        return contract;
     }
 
     public static OutputClosureContract decodeEnvelope(JsonObject envelope) {
@@ -86,7 +90,6 @@ public final class OutputClosureCodec {
                     "outputClosure.members must not be empty");
         }
         List<OutputClosureContract.Member> members = new ArrayList<>();
-        String previous = "";
         for (int i = 0; i < rows.size(); i++) {
             if (!rows.get(i).isJsonObject()) {
                 throw new IllegalArgumentException(
@@ -94,14 +97,7 @@ public final class OutputClosureCodec {
             }
             OutputClosureContract.Member member = decodeMember(
                     rows.get(i).getAsJsonObject(), i);
-            if (!previous.isEmpty()
-                    && previous.compareTo(member.portId()) >= 0) {
-                throw new IllegalArgumentException(
-                        "outputClosure.members must be strictly sorted by "
-                                + "portId");
-            }
             producer.requireOutputPort(member.portId());
-            previous = member.portId();
             members.add(member);
         }
         OutputClosureContract result =
@@ -164,40 +160,29 @@ public final class OutputClosureCodec {
     public static OutputClosureContract singleton(
             String regionId, String regionInstanceId, long rootCallId,
             String portId, String cell, String kind,
-            String selectionAuthority, JsonObject slice) {
+            String javaType, JsonObject slice) {
         JsonObject normalizedSlice = slice == null
                 ? null : slice.deepCopy();
-        JsonArray bindings = requireArray(normalizedSlice,
-                "captureBindings");
-        String descriptor = inferDescriptor(cell, kind, bindings);
-        if (descriptor.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "requested output Java type is unknown");
-        }
+        requireArray(normalizedSlice, "captureBindings");
+        String descriptor = javaTypeDescriptor(javaType);
+        requireFieldDescriptor(descriptor, "requested output");
 
         JsonObject output = new JsonObject();
         output.addProperty("portId", portId);
         output.addProperty("cell", cell);
         output.addProperty("kind", kind);
         output.addProperty("javaTypeDescriptor", descriptor);
-        output.addProperty("selectionAuthority", selectionAuthority);
         JsonObject member = new JsonObject();
         member.add("output", output);
         member.add("slice", normalizedSlice);
 
-        JsonObject producer = new JsonObject();
-        producer.addProperty("regionId", regionId);
-        producer.addProperty("regionInstanceId", regionInstanceId);
-        producer.addProperty("rootCallId", rootCallId);
-        JsonArray members = new JsonArray();
-        members.add(member);
-        JsonObject envelope = new JsonObject();
-        envelope.addProperty("schemaVersion",
-                OutputClosureContract.SCHEMA_VERSION);
-        envelope.addProperty("kind", OutputClosureContract.KIND);
-        envelope.add("producer", producer);
-        envelope.add("members", members);
-        return decodeEnvelope(envelope);
+        OutputClosureContract.Producer producer =
+                new OutputClosureContract.Producer(regionId,
+                        regionInstanceId, rootCallId);
+        OutputClosureContract.Member decoded = decodeMember(member, 0);
+        producer.requireOutputPort(decoded.portId());
+        return new OutputClosureContract(producer,
+                Collections.singletonList(decoded));
     }
 
     public static void writeTo(JsonObject activation,
@@ -207,26 +192,18 @@ public final class OutputClosureCodec {
                     "activation and output closure are required");
         }
         validateOuterScope(activation, contract.producer());
-        for (String field : SINGULAR_FIELDS) activation.remove(field);
+        rejectLegacyMirrors(activation);
         activation.add(OutputClosureContract.FIELD, contract.toJson());
-    }
-
-    public static JsonArray captures(OutputClosureContract contract) {
-        JsonArray result = new JsonArray();
-        for (OutputClosureContract.Member member : contract.members()) {
-            for (JsonElement capture : member.captures()) {
-                result.add(capture.deepCopy());
-            }
-        }
-        return result;
     }
 
     public static List<OutputCaptureSpec> captureSpecs(
             OutputClosureContract contract) {
         List<OutputCaptureSpec> result = new ArrayList<>();
-        for (JsonElement capture : captures(contract)) {
-            result.add(OutputCaptureSpec.decodeValidated(
-                    capture.getAsJsonObject()));
+        for (OutputClosureContract.Member member : contract.members()) {
+            for (JsonElement capture : member.captures()) {
+                result.add(OutputCaptureSpec.decodeValidated(
+                        capture.getAsJsonObject()));
+            }
         }
         return Collections.unmodifiableList(result);
     }
@@ -244,7 +221,6 @@ public final class OutputClosureCodec {
         }
         String descriptor = requireText(output, "javaTypeDescriptor");
         requireFieldDescriptor(descriptor, path);
-        requireText(output, "selectionAuthority");
 
         JsonObject slice = requireObject(encoded, "slice");
         validateSliceShape(slice, port, cell, path + ".slice");
@@ -263,7 +239,11 @@ public final class OutputClosureCodec {
         }
         for (String name : SCOPE_ARRAYS) stringSet(slice, name);
         requireArray(slice, "captureBindings");
-        requireBoolean(slice, "captureBindingsComplete");
+        requireArray(slice, "captureBindingIssues");
+        if (slice.has("captureBindingsComplete")) {
+            throw new IllegalArgumentException(
+                    path + " contains retired captureBindingsComplete");
+        }
         if (slice.has("captureBindingsRequired")) {
             throw new IllegalArgumentException(
                     path + " contains retired captureBindingsRequired");
@@ -287,32 +267,23 @@ public final class OutputClosureCodec {
                 throw new IllegalArgumentException(
                         path + " capture identity is inconsistent");
             }
-            String captureKind = requireText(binding, "captureKind");
-            if ("REGION_EXIT_FIELD".equals(captureKind)) {
-                validateExitFieldEndpoint(binding, cell, path, descriptor);
-            } else if ("CALL_ARGUMENT".equals(captureKind)) {
-                validateCallEndpoint(binding, cell, descriptor, path);
-            } else {
+            if (binding.has("captureKind")) {
                 throw new IllegalArgumentException(
-                        path + " capture kind is unsupported: "
-                                + captureKind);
+                        path + " contains retired captureKind");
             }
+            validateExitFieldEndpoint(binding, cell, path, descriptor);
         }
     }
 
     private static void validateExitFieldEndpoint(
             JsonObject binding, String cell, String path,
             String descriptor) {
-        Set<String> fields = set("captureKind", "captureBindingId",
-                "outputPort", "outputCell", "accessRootInputPort",
-                "fieldPath", "fieldSignature", "javaType");
         DeclaredField field = FieldPathSpec.declaredField(
                 requireText(binding, "fieldSignature"));
         List<String> fieldPath = FieldPathSpec.stringArray(binding,
                 "fieldPath");
         String javaType = requireText(binding, "javaType");
-        if (!binding.keySet().equals(fields)
-                || field == null || !cell.equals(
+        if (field == null || !cell.equals(
                 requireText(binding, "fieldSignature"))
                 || fieldPath.isEmpty()
                 || !field.name().equals(fieldPath.get(fieldPath.size() - 1))
@@ -322,99 +293,6 @@ public final class OutputClosureCodec {
                     path + " region-exit field capture is inconsistent");
         }
         requireText(binding, "accessRootInputPort");
-    }
-
-    private static void validateCallEndpoint(
-            JsonObject binding, String cell, String descriptor, String path) {
-        Set<String> fields = set("captureKind", "captureBindingId",
-                "outputPort", "outputCell", "callerMethod", "unitIndex",
-                "siteId", "calleeMethod", "argumentIndex", "argumentCell",
-                "occurrence");
-        String caller = requireText(binding, "callerMethod");
-        int unit = requireNonNegativeInt(binding, "unitIndex");
-        String callee = requireText(binding, "calleeMethod");
-        int argument = requireNonNegativeInt(binding, "argumentIndex");
-        String formalPrefix = callee + ".param" + argument + ":";
-        String formalType = cell.startsWith(formalPrefix)
-                ? cell.substring(formalPrefix.length()).trim() : "";
-        String parameterType = methodParameterType(callee, argument);
-        String endpointDescriptor = javaTypeDescriptor(formalType);
-        if (!binding.keySet().equals(fields)
-                || !requireText(binding, "siteId").equals(
-                caller + "#u" + unit)
-                || formalType.isEmpty()
-                || !formalType.equals(parameterType)
-                || !descriptor.equals(endpointDescriptor)
-                || requireNonNegativeInt(binding, "occurrence") < 1) {
-            throw new IllegalArgumentException(
-                    path + " call capture endpoint is inconsistent");
-        }
-        requireText(binding, "argumentCell");
-    }
-
-    private static String inferDescriptor(
-            String cell, String kind, JsonArray bindings) {
-        if ("FAILURE_PREDICATE".equals(kind)) return "Z";
-        String type = typeFromCell(cell);
-        if (type.isEmpty() && bindings.size() == 1) {
-            JsonObject binding = bindings.get(0).getAsJsonObject();
-            type = "CALL_ARGUMENT".equals(text(binding, "captureKind"))
-                    ? methodParameterType(text(binding, "calleeMethod"),
-                    requireNonNegativeInt(binding, "argumentIndex"))
-                    : typeFromCell(text(binding, "fieldSignature"));
-        }
-        return javaTypeDescriptor(type);
-    }
-
-    private static String typeFromCell(String cell) {
-        String value = OutputClosureContract.trim(cell);
-        int projection = value.indexOf("#field:");
-        if (projection >= 0) value = value.substring(0, projection);
-        if (value.endsWith(".return")) {
-            return methodReturnType(value.substring(
-                    0, value.length() - ".return".length()));
-        }
-        int parameter = value.lastIndexOf(".param");
-        int colon = parameter < 0 ? -1 : value.indexOf(':', parameter);
-        if (colon >= 0) {
-            int end = value.indexOf('#', colon + 1);
-            return value.substring(colon + 1,
-                    end < 0 ? value.length() : end).trim();
-        }
-        if (value.startsWith("<") && value.endsWith(">")) {
-            int colonIndex = value.indexOf(':');
-            int name = value.lastIndexOf(' ');
-            if (colonIndex >= 0 && name > colonIndex
-                    && value.indexOf('(', name) < 0) {
-                return value.substring(colonIndex + 1, name).trim();
-            }
-        }
-        return "";
-    }
-
-    private static String methodReturnType(String method) {
-        int colon = method.indexOf(':');
-        int start = colon + 1;
-        while (start < method.length()
-                && Character.isWhitespace(method.charAt(start))) start++;
-        int space = method.indexOf(' ', start);
-        return method.startsWith("<") && method.endsWith(">")
-                && colon >= 0 && space > start
-                ? method.substring(start, space).trim() : "";
-    }
-
-    private static String methodParameterType(String method, int index) {
-        if (index < 0) return "";
-        int open = method.indexOf('(');
-        int close = method.lastIndexOf(')');
-        if (!method.startsWith("<") || !method.endsWith(">")
-                || open < 0 || close <= open) {
-            return "";
-        }
-        String content = method.substring(open + 1, close).trim();
-        if (content.isEmpty()) return "";
-        String[] parameters = content.split(",", -1);
-        return index < parameters.length ? parameters[index].trim() : "";
     }
 
     private static void requireFieldDescriptor(String value, String path) {
@@ -493,15 +371,6 @@ public final class OutputClosureCodec {
         }
     }
 
-    private static boolean requireBoolean(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        if (value == null || !value.isJsonPrimitive()
-                || !value.getAsJsonPrimitive().isBoolean()) {
-            throw new IllegalArgumentException(name + " must be a boolean");
-        }
-        return value.getAsBoolean();
-    }
-
     private static void requireInt(
             JsonObject object, String name, int expected) {
         long value = requireLong(object, name);
@@ -509,16 +378,6 @@ public final class OutputClosureCodec {
             throw new IllegalArgumentException(
                     name + " must be " + expected + ", got " + value);
         }
-    }
-
-    private static int requireNonNegativeInt(
-            JsonObject object, String name) {
-        long value = requireLong(object, name);
-        if (value < 0 || value > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException(
-                    name + " must be a non-negative integer");
-        }
-        return (int) value;
     }
 
     private static long requireLong(JsonObject object, String name) {

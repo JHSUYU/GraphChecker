@@ -30,6 +30,8 @@ import java.util.regex.Pattern;
  * orchestration class from also becoming the representation layer.</p>
  */
 final class CausynthStaticFacts {
+    private static final Pattern FIELD_OWNER = Pattern.compile("<([^:]+):");
+
     private CausynthStaticFacts() {
     }
 
@@ -240,8 +242,7 @@ final class CausynthStaticFacts {
         if (fieldSignature == null) {
             return "";
         }
-        Matcher matcher = Pattern.compile("<([^:]+):")
-                .matcher(fieldSignature);
+        Matcher matcher = FIELD_OWNER.matcher(fieldSignature);
         return matcher.find() ? matcher.group(1) : "";
     }
 

@@ -10,16 +10,11 @@ import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 import edu.uva.liftlab.graphchecker.concolic.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
 
-import java.math.BigInteger;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -27,7 +22,6 @@ import java.util.TreeSet;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -54,34 +48,21 @@ public final class PathObservation {
 
     private final JsonObject raw;
     private final Scope scope;
-    private final String regionId, summaryId, sourceTaskId;
-    private final boolean relationallyComplete;
-    private final JsonArray pathCondition;
-    private final JsonObject outputExpressions;
-    private final JsonArray edgeBindings;
     private final List<SummaryBranchMapping> branchMappings;
     private final String branchMappingIssue;
     private final AlphaNormalizer alpha;
     private final String runtimeBindingIdentity;
     private final String pathKey;
-    private final String stableCasePayload;
+    private final String stableCaseFingerprint;
 
     private PathObservation(JsonObject summary, JsonObject task) {
         this.raw = summary.deepCopy();
         this.scope = Scope.decode(raw, task);
-        this.regionId = string(raw, "regionId");
-        this.summaryId = string(raw, "summaryId");
-        this.sourceTaskId = string(raw, "taskId");
-        this.relationallyComplete = bool(raw, "relationallyComplete", false);
-        this.pathCondition = array(raw, "pathCondition").deepCopy();
-        this.outputExpressions = object(raw,
-                "outputExpressions").deepCopy();
-        this.edgeBindings = array(raw, "edgeBindings").deepCopy();
         JsonObject stableCase = new JsonObject();
         for (String field : STABLE_CASE_FIELDS) {
             stableCase.add(field, array(raw, field).deepCopy());
         }
-        this.stableCasePayload = CanonicalJson.render(stableCase);
+        this.stableCaseFingerprint = CanonicalJson.sha256(stableCase);
         List<SummaryBranchMapping> decoded = Collections.emptyList();
         String issue = "";
         try {
@@ -108,21 +89,29 @@ public final class PathObservation {
         return decode(summary, null).pathKey;
     }
 
-    public String regionId() { return regionId; }
-    public String summaryId() { return summaryId; }
-    public String sourceTaskId() { return sourceTaskId; }
-    public boolean relationallyComplete() { return relationallyComplete; }
+    public String regionId() {
+        return scope.outputClosure == null ? string(raw, "regionId")
+                : scope.outputClosure.producer().regionId();
+    }
+    public String sourceTaskId() { return string(raw, "taskId"); }
+    public boolean relationallyComplete() {
+        return bool(raw, "relationallyComplete", false);
+    }
     public Scope scope() { return scope; }
     public String pathKey() { return pathKey; }
     public List<SummaryBranchMapping> branchMappings() {
         return branchMappings;
     }
     public String branchMappingIssue() { return branchMappingIssue; }
-    public JsonArray pathCondition() { return pathCondition.deepCopy(); }
-    public JsonObject outputExpressions() {
-        return outputExpressions.deepCopy();
+    public JsonArray pathCondition() {
+        return array(raw, "pathCondition").deepCopy();
     }
-    public JsonArray edgeBindings() { return edgeBindings.deepCopy(); }
+    public JsonObject outputExpressions() {
+        return object(raw, "outputExpressions").deepCopy();
+    }
+    public JsonArray edgeBindings() {
+        return array(raw, "edgeBindings").deepCopy();
+    }
 
     void copyRelationEvidenceTo(JsonObject target) {
         for (String field : RELATION_EVIDENCE_FIELDS) {
@@ -130,17 +119,20 @@ public final class PathObservation {
         }
     }
 
-    public String stableCasePayload() { return stableCasePayload; }
+    public String stableCaseFingerprint() {
+        return stableCaseFingerprint;
+    }
 
     public boolean hasExactOutputSet(Set<String> outputPorts) {
-        return new TreeSet<>(outputExpressions.keySet())
+        return new TreeSet<>(object(raw, "outputExpressions").keySet())
                 .equals(new TreeSet<>(outputPorts));
     }
 
     public JsonArray prefixBefore(int conditionIndex) {
         JsonArray prefix = new JsonArray();
+        JsonArray conditions = array(raw, "pathCondition");
         for (int index = 0; index < conditionIndex; index++) {
-            prefix.add(pathCondition.get(index).deepCopy());
+            prefix.add(conditions.get(index).deepCopy());
         }
         return prefix;
     }
@@ -148,7 +140,7 @@ public final class PathObservation {
     public String flipKey(SummaryBranchMapping mapping,
                           boolean desiredOutcome) {
         StringBuilder value = new StringBuilder();
-        component(value, regionId);
+        component(value, regionId());
         component(value, scope.identity);
         component(value, alphaCanonical(
                 prefixBefore(mapping.summaryPcIndex()), alpha));
@@ -156,7 +148,7 @@ public final class PathObservation {
         component(value, String.valueOf(mapping.occurrence()));
         component(value, String.valueOf(desiredOutcome));
         component(value, runtimeBindingIdentity);
-        return sha256(value.toString());
+        return CanonicalJson.sha256(value.toString());
     }
 
     public JsonObject replayPayload() { return raw.deepCopy(); }
@@ -170,7 +162,6 @@ public final class PathObservation {
         private final OutputClosureContract outputClosure;
         private final Set<String> branchSites;
         private final String identity;
-        private final String outputClosureIdentity;
 
         private Scope(ClosureGoalKind goalKind, String goalId,
                       OutputClosureContract outputClosure,
@@ -180,8 +171,6 @@ public final class PathObservation {
             this.outputClosure = outputClosure;
             this.branchSites = Collections.unmodifiableSet(branchSites);
             this.identity = identity;
-            this.outputClosureIdentity = outputClosure == null ? ""
-                    : CanonicalJson.render(outputClosure.toJson());
         }
 
         public static Scope decode(JsonObject summary, JsonObject task) {
@@ -238,7 +227,8 @@ public final class PathObservation {
         public Set<String> branchSites() { return branchSites; }
         public String identity() { return identity; }
         public String outputClosureIdentity() {
-            return outputClosureIdentity;
+            return outputClosure == null ? ""
+                    : outputClosure.closureFingerprint();
         }
     }
 
@@ -246,7 +236,9 @@ public final class PathObservation {
             JsonObject summary, Scope scope, AlphaNormalizer alpha,
             String runtimeBindings) {
         StringBuilder value = new StringBuilder();
-        component(value, string(summary, "regionId"));
+        component(value, scope.outputClosure == null
+                ? string(summary, "regionId")
+                : scope.outputClosure.producer().regionId());
         component(value, scope.identity);
         component(value, alphaCanonical(summary.get("pathCondition"), alpha));
         component(value, alphaCanonical(summary.get("outputExpressions"),
@@ -255,37 +247,14 @@ public final class PathObservation {
         component(value, runtimeBindings);
         component(value, string(summary, "normalExit"));
         component(value, string(summary, "exceptionType"));
-        return sha256(value.toString());
+        return CanonicalJson.sha256(value.toString());
     }
 
     private static String stableDynamicBindings(
             JsonObject summary, AlphaNormalizer alpha) {
         List<String> bindings = new ArrayList<>();
         for (JsonElement element : array(summary, "dynamicFieldBindings")) {
-            if (!element.isJsonObject()) {
-                bindings.add(alphaCanonical(element, alpha));
-                continue;
-            }
-            JsonObject source = element.getAsJsonObject();
-            JsonObject stable = new JsonObject();
-            stable.addProperty("kind", string(source, "kind"));
-            stable.addProperty("baseInputSymbol", string(source,
-                    "baseInputSymbol"));
-            stable.addProperty("dynamicFieldSymbol", string(source,
-                    "dynamicFieldSymbol"));
-            stable.addProperty("materializationSiteId", string(source,
-                    "materializationSiteId"));
-            stable.addProperty("materializationOccurrence", integer(source,
-                    "materializationOccurrence", -1));
-            for (String field : new String[]{"fieldSignature", "fieldPath",
-                    "keyExpression", "keyExpressionAuthority",
-                    "mapProjectionSelector", "runtimeSymbolizationAuthority",
-                    "projectionEvidenceAuthority", "outputValidationMode"}) {
-                JsonElement value = source.get(field);
-                if (value != null) stable.add(field, value.deepCopy());
-            }
-            stable.addProperty("complete", bool(source, "complete", false));
-            bindings.add(alphaCanonical(stripVolatileIdentity(stable),
+            bindings.add(alphaCanonical(stripVolatileIdentity(element),
                     alpha));
         }
         Collections.sort(bindings);
@@ -300,36 +269,16 @@ public final class PathObservation {
 
     private static String stableEngineArrayBindings(
             JsonObject summary, AlphaNormalizer alpha) {
-        List<JsonElement> ordered = new ArrayList<>();
+        List<String> bindings = new ArrayList<>();
         for (JsonElement element : array(summary,
                 "engineArrayInputBindings")) {
-            ordered.add(element);
-        }
-        Collections.sort(ordered, (left, right) -> {
-            if (!left.isJsonObject() || !right.isJsonObject()) {
-                return CanonicalJson.render(left).compareTo(
-                        CanonicalJson.render(right));
-            }
-            JsonObject l = left.getAsJsonObject();
-            JsonObject r = right.getAsJsonObject();
-            int port = string(l, "inputPort").compareTo(
-                    string(r, "inputPort"));
-            return port != 0 ? port : string(l, "inputCell").compareTo(
-                    string(r, "inputCell"));
-        });
-        List<String> bindings = new ArrayList<>();
-        for (JsonElement element : ordered) {
             if (!element.isJsonObject()) {
                 bindings.add(alphaCanonical(element, alpha));
                 continue;
             }
             JsonObject source = element.getAsJsonObject();
             JsonObject stable = new JsonObject();
-            stable.addProperty("schemaVersion", integer(source,
-                    "schemaVersion", -1));
-            stable.addProperty("kind", string(source, "kind"));
             stable.addProperty("inputPort", string(source, "inputPort"));
-            stable.addProperty("inputCell", string(source, "inputCell"));
             stable.addProperty("inputJavaTypeDescriptor", string(source,
                     "inputJavaTypeDescriptor"));
             stable.addProperty("engineArrayId", alpha.arrayId(string(source,
@@ -356,7 +305,11 @@ public final class PathObservation {
                 : value.getAsJsonObject().entrySet()) {
             String key = entry.getKey().toLowerCase();
             if (key.contains("objecttoken")
-                    || "entryreadobservationid".equals(key)) continue;
+                    || "entryreadobservationid".equals(key)
+                    || "sourcetaskid".equals(key)
+                    || "sourceactivationid".equals(key)
+                    || "activationid".equals(key)
+                    || "taskid".equals(key)) continue;
             result.add(entry.getKey(), stripVolatileIdentity(
                     entry.getValue()));
         }
@@ -532,14 +485,4 @@ public final class PathObservation {
         output.append(safe.length()).append(':').append(safe).append('|');
     }
 
-    static String sha256(String value) {
-        try {
-            byte[] hash = MessageDigest.getInstance("SHA-256").digest(
-                    value.getBytes(StandardCharsets.UTF_8));
-            return String.format(Locale.ROOT, "%064x",
-                    new BigInteger(1, hash));
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
-    }
 }
