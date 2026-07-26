@@ -34,6 +34,96 @@ import static org.junit.Assert.assertTrue;
 
 public class ConcolicRegionRuntimeTest {
     @Test
+    public void rematerializesOneCallReturnAtEveryDefinitionAndOccurrence()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String method = "<example.Producer: boolean compute()>";
+        String symbol = "REGION.TEST.in.boolean";
+        JsonObject task = symbolicTask("ACT.MODEL.REPEATED.LOCAL",
+                method, 1);
+        JsonArray actions = new JsonArray();
+        actions.add(localCallReturnAction(symbol, method, "$z0", 2));
+        actions.add(localCallReturnAction(symbol, method, "$z1", 11));
+        String randomSymbol = "REGION.TEST.in.random";
+        JsonObject random = localCallReturnAction(
+                randomSymbol, method, "$i0", 17);
+        random.addProperty("cell",
+                "<example.Random: int nextInt()>.return");
+        random.addProperty("javaType", "int");
+        actions.add(random);
+        task.add("inputActions", actions);
+
+        JsonObject assignment = new JsonObject();
+        assignment.addProperty("engineSymbol", "M_Z_field_" + symbol);
+        assignment.addProperty("solverSymbol", "sym_boolean");
+        assignment.addProperty("inputSymbol", symbol);
+        assignment.addProperty("valueType", "BOOL");
+        assignment.addProperty("value", "true");
+        assignment.addProperty("authority", "Z3_PATH_FLIP_MODEL");
+        assignment.addProperty("materializeAtRealDefinition", true);
+        assignment.add("target", actions.get(0).deepCopy());
+        task.add("modelAssignments", singleton(assignment));
+        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "concrete-model-test");
+        try {
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    DelayedExpressionEngine.class);
+            long token = ConcolicRegionRuntime.enterRegionFrame(method,
+                    new Object(), new Object[0]);
+            assertTrue(token > 0L);
+            assertEquals(Boolean.TRUE, ConcolicRegionRuntime
+                    .materializePrimitive(method, "$z0", Boolean.FALSE));
+            assertEquals(Boolean.TRUE, ConcolicRegionRuntime
+                    .materializePrimitive(method, "$z1", Boolean.FALSE));
+            assertEquals(Boolean.TRUE, ConcolicRegionRuntime
+                    .materializePrimitive(method, "$z1", Boolean.FALSE));
+            Integer concreteRandom = Integer.valueOf(13);
+            assertNotSame(concreteRandom, ConcolicRegionRuntime
+                    .materializePrimitive(method, "$i0", concreteRandom));
+            assertSame(concreteRandom, ConcolicRegionRuntime
+                    .materializePrimitive(method, "$i0", concreteRandom));
+            assertEquals(4,
+                    DelayedExpressionEngine.SYMBOLIC_FIELD_OWNERS.size());
+            ConcolicRegionRuntime.exitRegionFrame(method, null, "");
+
+            JsonObject result = resultRows(results).get(0);
+            assertEquals(4, result.getAsJsonArray(
+                    "symbolizedInputs").size());
+            assertEquals(1, result.getAsJsonArray(
+                    "modelAssignmentsApplied").size());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    private static JsonObject localCallReturnAction(
+            String symbol, String method, String local, int unitIndex) {
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", symbol);
+        action.addProperty("cell",
+                "<java.lang.Boolean: boolean booleanValue()>.return");
+        action.addProperty("location", "CALL_RETURN");
+        action.addProperty("bindingMode", "LOCAL_DEFINITION");
+        action.addProperty("method", method);
+        action.addProperty("local", local);
+        action.addProperty("javaType", "boolean");
+        action.addProperty("mode", "SYMBOLIC");
+        JsonObject site = new JsonObject();
+        site.addProperty("method", method);
+        site.addProperty("local", local);
+        site.addProperty("unitIndex", unitIndex);
+        action.add("definitionSites", singleton(site));
+        return action;
+    }
+
+    @Test
     public void materializesExactStaticPrimitiveReadFromSolverModel()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();

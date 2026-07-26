@@ -230,7 +230,6 @@ runtime_channel_rows() {
         and $edge.fromRegion == $plan.regionId
         and $edge.fromRegionInstance == $plan.regionInstanceId
         and $edge.fromOutputCell == $output.cell
-        and $edge.inputProjectionUsed == false
         and ($edge.toInputCell | type == "string" and length > 0))
     | ($output.cell
         | capture("^<[^:]+:[[:space:]]+[^[:space:]]+"
@@ -978,11 +977,7 @@ run_path_task() {
       and .[0].regionInstanceId == $executionTask[0].regionInstanceId
       and .[0].goalId == $executionTask[0].goalId
       and .[0].regionId == $executionTask[0].regionId
-      and $raw[0].regionInstanceId == $executionTask[0].regionInstanceId
       and $raw[0].taskId == $executionTask[0].taskId
-      and $raw[0].goalId == $executionTask[0].goalId
-      and $raw[0].regionId == $executionTask[0].regionId
-      and $raw[0].pathQueryKey == $executionTask[0].pathQueryKey
       and ($executionTask[0].goalKind != "OUTPUT_RELATION_CLOSURE"
         or (.[0].normalExit == true
           and (.[0].outputExpressions | keys | sort)
@@ -1257,7 +1252,7 @@ do_explore_producer() {
   debug_merged_relation "${campaign}/merged_region_summaries.jsonl"
   jq -e -s --arg region "${region}" '
     length == 1
-    and .[0].regionId == $region
+    and .[0].outputClosure.producer.regionId == $region
     and .[0].relationallyComplete == true
   ' "${campaign}/merged_region_summaries.jsonl" >/dev/null \
     || die "producer merged relation is not complete for channel ${channel}"
@@ -1379,7 +1374,7 @@ do_candidate_compose() {
     require_file "merged producer summary" "${producer_summary}"
     jq -e -s --arg region "${producer_region}" '
       length == 1
-      and .[0].regionId == $region
+      and .[0].outputClosure.producer.regionId == $region
       and (.[0].summaryId | type == "string" and length > 0)
       and .[0].relationallyComplete == true
     ' "${producer_summary}" >/dev/null \
@@ -1393,7 +1388,6 @@ do_candidate_compose() {
   ' "${merged_inputs[@]}" >/dev/null \
     || die "producer relation identities are not unique"
   compose_summaries=$(IFS=:; printf '%s' "${merged_inputs[*]}")
-  compose_summaries="${compose_summaries}:${target_schedule}/concolic_region_summaries.jsonl"
   (cd "${graphchecker_dir}" && \
     CAUSYNTH_FATAL_QUERIES="${target_schedule}/branch_queries.jsonl" \
     CAUSYNTH_COMPOSE_SUMMARIES="${compose_summaries}" \

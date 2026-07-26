@@ -17,6 +17,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 
 import java.io.BufferedReader;
@@ -636,7 +637,8 @@ public final class ConcolicRegionRuntime {
         }
         for (SymbolizeAction action : active.activation.symbolize) {
             if (!action.matchesLocal(method, local)
-                    || !active.materialized.add(action.symbol)) {
+                    || !action.repeatedPrimitiveAccessor()
+                    && !active.materialized.add(action.symbol)) {
                 continue;
             }
             return materializePrimitiveValue(active, action, boxedValue,
@@ -6407,8 +6409,9 @@ public final class ConcolicRegionRuntime {
             for (ModelAssignment assignment
                     : activation.modelAssignments) {
                 if (assignment.matches(action, path)
-                        && !appliedModelAssignments.contains(
-                        assignment.key)) {
+                        && (action.repeatedPrimitiveAccessor()
+                        || !appliedModelAssignments.contains(
+                        assignment.key))) {
                     if (selected != null) {
                         addUnresolvedOnce(action.symbol
                                 + ": ambiguous model assignments at exact "
@@ -6621,8 +6624,9 @@ public final class ConcolicRegionRuntime {
 
         private void recordModelAssignment(ModelAssignment assignment,
                                            JsonObject row) {
-            appliedModelAssignments.add(assignment.key);
-            modelAssignmentsApplied.add(row);
+            if (appliedModelAssignments.add(assignment.key)) {
+                modelAssignmentsApplied.add(row);
+            }
         }
     }
 
@@ -7225,6 +7229,13 @@ public final class ConcolicRegionRuntime {
             return "LOCAL_DEFINITION".equals(bindingMode)
                     && method.equals(safe(actualMethod))
                     && local.equals(safe(actualLocal));
+        }
+
+        private boolean repeatedPrimitiveAccessor() {
+            return "LOCAL_DEFINITION".equals(bindingMode)
+                    && "CALL_RETURN".equals(location)
+                    && MaterializationSpec
+                    .repeatedPrimitiveAccessorReturn(cell);
         }
 
         private boolean matchesStaticField(String actualMethod,

@@ -3906,13 +3906,20 @@ final class SymbolicRegionPlanner {
          */
         private Set<String> exactParallelFieldReadAliases(
                 String current, RegionDraft slice, String requiredPath) {
+            return exactParallelFieldReadAliases(current, slice.causalEdges,
+                    requiredPath);
+        }
+
+        private Set<String> exactParallelFieldReadAliases(
+                String current, Collection<Map<String, Object>> edges,
+                String requiredPath) {
             Set<String> result = new LinkedHashSet<>();
-            for (Map<String, Object> selected : slice.causalEdges) {
+            for (Map<String, Object> selected : edges) {
                 if (!current.equals(string(selected.get("fromCell")))
                         || !exactParallelFieldReadRow(selected)) {
                     continue;
                 }
-                for (Map<String, Object> parallel : slice.causalEdges) {
+                for (Map<String, Object> parallel : edges) {
                     if (selected == parallel
                             || !exactParallelFieldReadRow(parallel)
                             || !sameExactDefinitionSite(selected, parallel)
@@ -4521,6 +4528,9 @@ final class SymbolicRegionPlanner {
                         && !causalCandidate(candidate, draft)) {
                     continue;
                 }
+                if (freshAllocationBackedField(candidate, draft)) {
+                    continue;
+                }
                 String derivedReason = derivedReason(candidate, draft,
                         produced, boundary, mutableHeapPrestates.keySet());
                 if (!mandatorySeedGuardInput && !derivedReason.isEmpty()) {
@@ -4577,6 +4587,150 @@ final class SymbolicRegionPlanner {
             }
             collapseExactDeclaredFieldPathAliases(result, draft);
             return result;
+        }
+
+        private boolean freshAllocationBackedField(
+                String candidate, RegionDraft draft) {
+            String key = semanticFieldKey(candidate, draft.rootMethod);
+            if (key.isEmpty()) {
+                return false;
+            }
+            boolean read = false;
+            for (Map<String, Object> edge : analysisGraph(draft).edges()) {
+                String source = string(edge.get("fromCell"));
+                String kind = string(edge.get("kind"));
+                if (!"HEAP_READ".equals(string(edge.get("transferKind")))
+                        || !("field_read".equals(kind)
+                        || "projected_field_read".equals(kind))
+                        || !key.equals(semanticFieldKey(source,
+                        draft.rootMethod))) {
+                    continue;
+                }
+                read = true;
+                Set<String> receivers = freshReadReceivers(source);
+                if (receivers.isEmpty()) {
+                    return false;
+                }
+                for (String receiver : receivers) {
+                    if (!freshProjectedReceiver(receiver,
+                            new LinkedHashSet<>())) {
+                        return false;
+                    }
+                }
+            }
+            return read;
+        }
+
+        private Set<String> freshReadReceivers(
+                String source) {
+            Collection<Map<String, Object>> edges = graph.edges();
+            Set<String> result = exactParallelFieldReadAliases(source, edges,
+                    exactAliasPath(source));
+            for (Map<String, Object> declared : edges) {
+                if (!source.equals(string(declared.get("fromCell")))
+                        || !"projected_field_read".equals(string(
+                        declared.get("kind")))) {
+                    continue;
+                }
+                result.addAll(parallelProjectedReadReceivers(declared,
+                        edges));
+            }
+            result.remove("");
+            return result;
+        }
+
+        private Set<String> parallelProjectedReadReceivers(
+                Map<String, Object> declared,
+                Collection<Map<String, Object>> edges) {
+            Set<String> result = new LinkedHashSet<>();
+            DeclaredField root = declaredField(string(
+                    declared.get("objectFromCell")));
+            if (!exactProjectedAliasEdge(declared) || root == null) {
+                return result;
+            }
+            String receiverPath = "#field:" + root.name()
+                    + string(declared.get("fieldPath"));
+            for (Map<String, Object> receiver : edges) {
+                if ("projected_instance_field_read".equals(string(
+                        receiver.get("kind")))
+                        && exactProjectedAliasEdge(receiver)
+                        && sameExactDefinitionSite(declared, receiver)
+                        && receiverProjectionDeclares(receiver, root)
+                        && receiverPath.equals(string(receiver.get(
+                        "fieldPath")))) {
+                    result.add(string(receiver.get("fromCell")));
+                }
+            }
+            return result;
+        }
+
+        private boolean receiverProjectionDeclares(
+                Map<String, Object> projection, DeclaredField field) {
+            Map<String, Object> base = exactProjectionBase(projection,
+                    "instance_field_read",
+                    string(projection.get("objectFromCell"))
+                            + "#field:" + field.name(),
+                    string(projection.get("objectToCell")));
+            return base != null && declaredMetadataMatches(base, field);
+        }
+
+        private boolean freshProjectedReceiver(
+                String cell, Set<String> visiting) {
+            String base = projectedBase(cell);
+            if (freshObjectBase(base, new LinkedHashSet<>())) {
+                return true;
+            }
+            if (!visiting.add(cell)) {
+                return false;
+            }
+            boolean defined = false;
+            Collection<Map<String, Object>> edges = graph.edges();
+            for (Map<String, Object> edge : graph.incoming(cell)) {
+                if ("projected_field_read".equals(string(edge.get("kind")))
+                        && !parallelProjectedReadReceivers(edge, edges)
+                        .isEmpty()) {
+                    continue;
+                }
+                if (!exactProjectedAliasEdge(edge)) {
+                    continue;
+                }
+                defined = true;
+                if (!freshProjectedReceiver(string(edge.get("fromCell")),
+                        visiting)) {
+                    return false;
+                }
+            }
+            visiting.remove(cell);
+            return defined;
+        }
+
+        private boolean freshObjectBase(
+                String cell, Set<String> visiting) {
+            if (cell.isEmpty() || !visiting.add(cell)) {
+                return false;
+            }
+            boolean defined = false;
+            for (Map<String, Object> edge : graph.incoming(cell)) {
+                String source = string(edge.get("fromCell"));
+                if (source.startsWith("new ")) {
+                    visiting.remove(cell);
+                    return true;
+                }
+                String transfer = string(edge.get("transferKind"));
+                if (string(edge.get("kind")).startsWith("projected_")
+                        || !exactStaticValueFlow(edge)
+                        || !("IDENTITY_BINDING".equals(transfer)
+                        || "VALUE_PASS".equals(transfer)
+                        || "FUNCTION_RETURN".equals(transfer))) {
+                    continue;
+                }
+                defined = true;
+                if (!freshObjectBase(source, visiting)) {
+                    return false;
+                }
+            }
+            visiting.remove(cell);
+            return defined;
         }
 
         /**
@@ -5255,11 +5409,6 @@ final class SymbolicRegionPlanner {
             String fieldKey = semanticFieldKey(candidate, draft.rootMethod);
             boolean mutableHeapPrestate = !fieldKey.isEmpty()
                     && mutableHeapPrestateKeys.contains(fieldKey);
-            if (!mutableHeapPrestate && !fieldKey.isEmpty()
-                    && fieldDefinedInsideRegion(fieldKey,
-                    draft.methods, draft.rootMethod)) {
-                return "field is initialized by an object construction inside the region";
-            }
             // Root argument carriers are always materializable live-ins, but
             // their field projections need not be: an authoritative CFG
             // must-def may prove that a projection is overwritten before any
@@ -5451,37 +5600,6 @@ final class SymbolicRegionPlanner {
                     value == null ? "" : value.trim());
             return field.matches()
                     && field.group(1).matches("[A-Z][A-Z0-9_]*");
-        }
-
-        private boolean fieldDefinedInsideRegion(String fieldKey,
-                                                 Set<String> methods,
-                                                 String rootMethod) {
-            boolean defined = false;
-            for (Map<String, Object> edge : graph.forMethods(methods)) {
-                if ("HEAP_READ".equals(string(edge.get("transferKind")))
-                        && fieldKey.equals(semanticFieldKey(string(
-                        edge.get("fromCell")), rootMethod))) {
-                    return false;
-                }
-                String target = string(edge.get("toCell"));
-                String targetKey = semanticFieldKey(target, rootMethod);
-                if (targetKey.isEmpty()) {
-                    Matcher embedded = EMBEDDED_FIELD_PATTERN.matcher(target);
-                    if (embedded.matches()) {
-                        targetKey = embedded.group(1) + "#" + embedded.group(2);
-                    }
-                }
-                if (!fieldKey.equals(targetKey)) {
-                    continue;
-                }
-                String transfer = string(edge.get("transferKind"));
-                String unit = string(edge.get("unit"));
-                if ("HEAP_WRITE".equals(transfer)
-                        || unit.contains(".<") && unit.contains(" = ")) {
-                    defined = true;
-                }
-            }
-            return defined;
         }
 
         private Set<String> boundaryInputs(

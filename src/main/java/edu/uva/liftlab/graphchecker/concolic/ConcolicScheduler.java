@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
@@ -1024,6 +1025,8 @@ public final class ConcolicScheduler {
                 new LinkedHashMap<>();
         private final Map<String, List<JsonObject>> byCallReturn =
                 new LinkedHashMap<>();
+        private final Map<String, Set<String>> guardSitesByInputCell =
+                new LinkedHashMap<>();
         private static DefinitionIndex from(List<JsonObject> edges) {
             DefinitionIndex result = new DefinitionIndex();
             Set<String> seen = new LinkedHashSet<>();
@@ -1031,6 +1034,15 @@ public final class ConcolicScheduler {
             for (JsonObject edge : edges) {
                 String edgeId = string(edge, "id");
                 if (!edgeId.isEmpty()) result.edgeIds.add(edgeId);
+                String source = string(edge, "fromCell");
+                if ("GUARD".equals(string(edge, "transferKind"))) {
+                    String guardSite = string(edge, "siteId");
+                    if (!source.isEmpty() && !guardSite.isEmpty()) {
+                        result.guardSitesByInputCell.computeIfAbsent(source,
+                                ignored -> new LinkedHashSet<>())
+                                .add(guardSite);
+                    }
+                }
                 String cell = string(edge, "toCell");
                 Matcher localCell = LOCAL_CELL.matcher(cell);
                 if (!localCell.matches()) {
@@ -1056,7 +1068,6 @@ public final class ConcolicScheduler {
                             ignored -> new ArrayList<>()).add(site);
                 }
 
-                String source = string(edge, "fromCell");
                 if (source.contains(">.return")) {
                     String returnKey = source + "\n" + method + "#u"
                             + unitIndex + "\n" + localCell.group(2);
@@ -1084,7 +1095,8 @@ public final class ConcolicScheduler {
         private JsonArray sites(String cell,
                                 Set<String> allowedMethods,
                                 OutputClosureContract.ExecutionScope scope) {
-            return filteredSites(byCell.get(cell), allowedMethods, scope);
+            return filteredSites(byCell.get(cell), allowedMethods, scope,
+                    false);
         }
 
         private JsonArray returnSites(String callReturnCell,
@@ -1092,12 +1104,15 @@ public final class ConcolicScheduler {
                                       OutputClosureContract.ExecutionScope
                                               scope) {
             return filteredSites(byCallReturn.get(callReturnCell),
-                    allowedMethods, scope);
+                    allowedMethods, scope,
+                    MaterializationSpec.repeatedPrimitiveAccessorReturn(
+                            callReturnCell));
         }
 
         private JsonArray filteredSites(
                 List<JsonObject> sites, Set<String> allowedMethods,
-                OutputClosureContract.ExecutionScope scope) {
+                OutputClosureContract.ExecutionScope scope,
+                boolean includeGuardDefinitions) {
             JsonArray result = new JsonArray();
             if (sites == null) {
                 return result;
@@ -1112,7 +1127,12 @@ public final class ConcolicScheduler {
                 }
                 if (scope != null
                         && (!scope.branchSites().contains(siteId)
-                        || !scope.causalEdgeIds().contains(edgeId))) {
+                        || !scope.causalEdgeIds().contains(edgeId))
+                        && (!includeGuardDefinitions
+                        || Collections.disjoint(scope.branchSites(),
+                        guardSitesByInputCell.getOrDefault(
+                                method + "::" + string(site, "local"),
+                                Collections.<String>emptySet())))) {
                     continue;
                 }
                 result.add(site.deepCopy());

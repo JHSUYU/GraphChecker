@@ -470,6 +470,16 @@ do_analyze() {
   if [[ -n "${causynth_process_dirs}" ]]; then
     system_properties+=("-Dcausynth.process.dirs=${causynth_process_dirs}")
   fi
+  if [[ -n "${CAUSYNTH_CONCOLIC_TASK_PLAN:-}" ]]; then
+    system_properties+=(
+      "-Dcausynth.concolic.task.plan=${CAUSYNTH_CONCOLIC_TASK_PLAN}"
+    )
+  fi
+  if [[ -n "${CAUSYNTH_CONCOLIC_TASK_ID:-}" ]]; then
+    system_properties+=(
+      "-Dcausynth.concolic.task.id=${CAUSYNTH_CONCOLIC_TASK_ID}"
+    )
+  fi
   require_file "GraphChecker jar" "${graphchecker_jar}"
   run_in_directory "${graphchecker_work_dir}" "${java_bin}" \
     "${system_properties[@]}" \

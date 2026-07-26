@@ -942,6 +942,12 @@ final class RuntimeRegionPlanner {
                 } else {
                     action.put("javaType", exact.type);
                     action.put("accessFieldSignature", exact.signature());
+                    if (port.cell.equals(exact.signature())
+                            && stringList(action.get("fieldPath")).isEmpty()) {
+                        action.put("fieldPath", Collections.singletonList(
+                                exact.name));
+                        action.put("leafFieldSignature", exact.signature());
+                    }
                     restoreExactDirectFieldPathLeafMetadata(port, action,
                             exact);
                 }

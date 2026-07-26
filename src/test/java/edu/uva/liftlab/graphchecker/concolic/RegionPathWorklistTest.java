@@ -524,6 +524,132 @@ public class RegionPathWorklistTest {
         assertFalse(witnessed.manifest.has("deferredObservations"));
     }
 
+    @Test
+    public void concreteLoopGuardClosesOnlyWithStaticNoInputProof() {
+        JsonObject concreteLoop = summary("ACT.CONCRETE.LOOP",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject concreteTask = executionTask("ACT.CONCRETE.LOOP",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject concreteClosure = branchDependencyClosure(false,
+                "PROOF.CONCRETE.LOOP");
+        attachClosure(concreteLoop, concreteClosure);
+        attachClosure(concreteTask, concreteClosure);
+        addConcreteObservation(concreteLoop, "SITE.LOOP");
+        addConcreteObservation(concreteLoop, "SITE.RUNTIME.ONLY");
+
+        RegionPathWorklist.Result pending = RegionPathWorklist.plan(
+                Collections.singletonList(concreteLoop),
+                Collections.singletonList(concreteTask),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                pending.manifest.get("state").getAsString());
+        assertFalse(pending.manifest.has("deferredObservations"));
+
+        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
+                Collections.singletonList(concreteLoop),
+                Collections.singletonList(concreteTask),
+                terminalRecords(pending.tasks),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(closed.manifest.toString(),
+                RegionPathWorklist.State.CLOSED.name(),
+                closed.manifest.get("state").getAsString());
+        assertTrue(closed.manifest.getAsJsonArray("gaps").isEmpty());
+
+        JsonObject missingSymbolic = summary("ACT.MISSING.SYMBOLIC",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject missingSymbolicTask = executionTask(
+                "ACT.MISSING.SYMBOLIC",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject symbolicClosure = branchDependencyClosure(true,
+                "PROOF.MISSING.SYMBOLIC");
+        attachClosure(missingSymbolic, symbolicClosure);
+        attachClosure(missingSymbolicTask, symbolicClosure);
+        addConcreteObservation(missingSymbolic, "SITE.LOOP");
+        RegionPathWorklist.Result symbolicPending =
+                RegionPathWorklist.plan(
+                        Collections.singletonList(missingSymbolic),
+                        Collections.singletonList(missingSymbolicTask),
+                        Collections.<JsonObject>emptyList(),
+                        RegionPathWorklist.Bounds.defaults());
+        RegionPathWorklist.Result gapped = RegionPathWorklist.plan(
+                Collections.singletonList(missingSymbolic),
+                Collections.singletonList(missingSymbolicTask),
+                terminalRecords(symbolicPending.tasks),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                gapped.manifest.get("state").getAsString());
+        assertTrue(gapped.manifest.getAsJsonArray("gaps").toString()
+                .contains("SITE.LOOP"));
+    }
+
+    private static JsonObject branchDependencyClosure(
+            boolean symbolicGuard, String proof) {
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int result>", proof,
+                "SITE.0", "SITE.1", "SITE.LOOP");
+        JsonObject slice = closure.getAsJsonArray("members").get(0)
+                .getAsJsonObject().getAsJsonObject("slice");
+        slice.addProperty("complete", true);
+        JsonArray inputs = new JsonArray();
+        inputs.add("REGION.3.in.0");
+        slice.add("inputPorts", inputs);
+        JsonObject binding = new JsonObject();
+        binding.addProperty("inputPort", "REGION.3.in.0");
+        binding.addProperty("dependencyCell", "<P: int input>");
+        JsonArray bindings = new JsonArray();
+        bindings.add(binding);
+        slice.add("inputBindings", bindings);
+        slice.getAsJsonArray("sites").add("SITE.RUNTIME.ONLY");
+
+        JsonArray edges = new JsonArray();
+        JsonObject value = new JsonObject();
+        value.addProperty("edgeId", "DF.INPUT");
+        value.addProperty("transferKind", "VALUE_PASS");
+        value.addProperty("fromCell", "<P: int input>");
+        value.addProperty("toCell", "<P: int result>::symbolic");
+        edges.add(value);
+        JsonObject guard = new JsonObject();
+        guard.addProperty("edgeId", "DF.LOOP.GUARD");
+        guard.addProperty("transferKind", "GUARD");
+        guard.addProperty("siteId", "SITE.LOOP");
+        guard.addProperty("guardSiteId", "SITE.LOOP");
+        guard.addProperty("fromCell", symbolicGuard
+                ? "<P: int result>::symbolic"
+                : "<P: int result>::loopIndex");
+        guard.addProperty("toCell", "<P: int result>");
+        edges.add(guard);
+        slice.add("causalEdges", edges);
+        JsonArray edgeIds = new JsonArray();
+        edgeIds.add("DF.INPUT");
+        edgeIds.add("DF.LOOP.GUARD");
+        slice.add("causalEdgeIds", edgeIds);
+        return closure;
+    }
+
+    private static void addConcreteObservation(
+            JsonObject summary, String site) {
+        summary.getAsJsonArray("branchMappings").add(
+                SummaryBranchMapping.concrete(
+                        ExactConcreteBranchObservation.attested(
+                                site, "<test.Region: void run()>", 9,
+                                1, true),
+                        SummaryBranchMapping.Policy.EXPLORE).toJson());
+    }
+
+    private static List<JsonObject> terminalRecords(
+            List<JsonObject> tasks) {
+        List<JsonObject> result = new ArrayList<>();
+        for (JsonObject task : tasks) {
+            JsonObject record = new JsonObject();
+            record.addProperty("queryKey",
+                    task.get("queryKey").getAsString());
+            record.addProperty("status", "UNSAT");
+            result.add(record);
+        }
+        return result;
+    }
+
     private static JsonObject outputClosure(
             String port, String cell, String proofTag, String... sites) {
         JsonObject producer = new JsonObject();

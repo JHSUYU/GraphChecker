@@ -189,6 +189,8 @@ final class ConcolicInstrumentationSelections {
     }
 
     static final class ConcolicBranchSelection {
+        private static final Pattern SITE =
+                Pattern.compile("^(<.*>)#u([0-9]+)$");
         private final Map<String, Set<Integer>> unitsByMethod =
                 new LinkedHashMap<>();
 
@@ -201,6 +203,11 @@ final class ConcolicInstrumentationSelections {
                 JsonObject branch = element.getAsJsonObject();
                 String method = jsonString(branch, "method");
                 int unit = JsonFields.integer(branch, "unitIndex", -1);
+                Matcher site = SITE.matcher(jsonString(branch, "siteId"));
+                if (site.matches()) {
+                    method = site.group(1);
+                    unit = Integer.parseInt(site.group(2));
+                }
                 if (!method.isEmpty() && unit >= 0) {
                     result.unitsByMethod.computeIfAbsent(method,
                             ignored -> new LinkedHashSet<>()).add(unit);

@@ -2328,6 +2328,35 @@ GRAPH_CHECKER_MATRIX_JOBS=13 \
 当前预期为五个 `sat/reachable`、八个 `unsat/unreachable`、零 failure。fixture 的
 shared-field RPC 模式、一次写/一次读和确定交互顺序不得为了缩短测试而改变。
 
+### 十轮生成式语义回归
+
+大删剪里程碑提交以后，再运行一次性的十轮生成回归。每轮生成十三个 disposable
+workload，不修改 `src/test/.../fixtures` 中维护的 workload。每个生成 workload 都沿用同一
+RPC contract：两个 producer 各向自己的 primitive shared field 写一次，consumer 按固定
+顺序各读一次；producer 完成后才启动 consumer。producer/consumer 内允许固定上界
+`for`、组合短路条件、不同字段路径、nested object、array 和 Map，不允许无界循环或用
+测试脚本代替程序语义。
+
+生成器先在普通 JVM 上穷举两个 Boolean 输入，确认每轮恰好六个 `REACHABLE`、七个
+`UNREACHABLE`；随后才运行真实 custom-JDK、路径闭包、Composer 和 Z3。外层十三个 case
+并行，每个 case 的 concolic path worker 也可并行，但 Maven 只构建一次：多个进程不得同时
+覆盖共享 `target`。默认命令是：
+
+```bash
+GRAPH_CHECKER_GENERATED_JOBS=13 \
+CAUSYNTH_GENERATED_CONCOLIC_JOBS=10 \
+  experiments/generic/three-thread-rpc/run_generated_round.sh 1
+```
+
+轮次参数为 `1..10`。失败日志保存在
+`target/generated-regression/logs/round-N/<run-id>/case-XX.log`，对应 case 的 canonical
+debug 根目录是 `target/generated-regression/current/case-XX/work`。优先检查
+`region_path_manifest.json`、`region_path_worklist.jsonl`、
+`concolic_import_diagnostics.jsonl`、merged relation、composition manifest 和最终 SMT。
+回归只检查语义 contract、closure 完整性、read-from 顺序和 Z3 结论，不锁定整份 JSON
+字节形状，也不恢复已退休字段。修 bug 时应修 canonical producer，而不是在每个 reader
+追加 fallback；这正是“不过度校验、不过度设计，同时保障正确性”的执行门槛。
+
 ## TODO：用自然 replay 将候选升级为可信结果
 
 当前停止点是准确、结构完整且由 Z3 检查过的候选 SMT。后续工作应把选中的 producer 输入

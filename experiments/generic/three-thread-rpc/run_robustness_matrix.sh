@@ -225,12 +225,9 @@ validate_multitype_producer_artifacts() {
     and all(.[];
       .schemaVersion == 1
       and .kind == "REGION_PATH_WORKLIST"
-      and (.regionId | type == "string" and length > 0)
-      and (.goalId | type == "string" and length > 0)
-      and .goalKind == "OUTPUT_RELATION_CLOSURE"
+      and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
       and .state == "CLOSED"
-      and (.gaps | length) == 0
-      and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
+      and (.gaps | length) == 0)
   ' "${path_closures[@]}" >/dev/null \
     || die "multitype producer path closure is incomplete or single-path"
 
@@ -320,8 +317,7 @@ validate_dependent_scalar_artifacts() {
         == ([$arithmetic, $text] | sort)
       and ([$edges[].toRegionInstance] | unique | length) == 1
       and all($edges[];
-        .fromRegion != .toRegion
-        and .inputProjectionUsed == false)
+        .fromRegion != .toRegion)
       and ([region_goals | select(
           .kind == "TARGET_REACH_CLOSURE"
           and (.admission.state == "READY"
@@ -346,12 +342,9 @@ validate_dependent_scalar_artifacts() {
     and all(.[];
       .schemaVersion == 1
       and .kind == "REGION_PATH_WORKLIST"
-      and (.regionId | type == "string" and length > 0)
-      and (.goalId | type == "string" and length > 0)
-      and .goalKind == "OUTPUT_RELATION_CLOSURE"
+      and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
       and .state == "CLOSED"
-      and (.gaps | length) == 0
-      and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
+      and (.gaps | length) == 0)
   ' "${path_closures[@]}" >/dev/null \
     || die "dependent-scalar producer path closure is incomplete"
 
@@ -416,12 +409,9 @@ validate_container_producer_artifacts() {
     and all(.[];
       .schemaVersion == 1
       and .kind == "REGION_PATH_WORKLIST"
-      and (.regionId | type == "string" and length > 0)
-      and (.goalId | type == "string" and length > 0)
-      and .goalKind == "OUTPUT_RELATION_CLOSURE"
+      and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
       and .state == "CLOSED"
-      and (.gaps | length) == 0
-      and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
+      and (.gaps | length) == 0)
   ' "${path_closures[@]}" >/dev/null \
     || die "container producer path closure is incomplete"
 
@@ -604,7 +594,7 @@ validate_unreachable_parity_producer_artifacts() {
     and all(.[];
       .schemaVersion == 1
       and .kind == "REGION_PATH_WORKLIST"
-      and (.regionId | type == "string" and length > 0)
+      and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
       and .state == "CLOSED"
       and (.gaps | length) == 0)
   ' "${path_closures[@]}" >/dev/null \

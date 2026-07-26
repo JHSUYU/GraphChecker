@@ -8,6 +8,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Static field-input materialization selected by one exact analysis site.
@@ -17,6 +18,13 @@ import java.util.Map;
  * identity has been selected.</p>
  */
 public final class MaterializationSpec {
+    private static final Pattern REPEATED_PRIMITIVE_ACCESSOR =
+            Pattern.compile("^<java\\.lang\\.(?:Boolean: boolean booleanValue"
+                    + "|Byte: byte byteValue|Short: short shortValue"
+                    + "|Character: char charValue|Integer: int intValue"
+                    + "|Long: long longValue|Float: float floatValue"
+                    + "|Double: double doubleValue)\\(\\)>\\.return$");
+
     public enum Kind {
         NONE, FIELD_READ, ACCESSOR_RETURN
     }
@@ -104,6 +112,10 @@ public final class MaterializationSpec {
         MaterializationSpec materialization = decode(port);
         return materialization.javaType.isEmpty()
                 ? text(port, "javaType") : materialization.javaType;
+    }
+
+    public static boolean repeatedPrimitiveAccessorReturn(String cell) {
+        return REPEATED_PRIMITIVE_ACCESSOR.matcher(trim(cell)).matches();
     }
 
     public Kind kind() {

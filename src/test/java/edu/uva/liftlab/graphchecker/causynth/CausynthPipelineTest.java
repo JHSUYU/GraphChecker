@@ -204,14 +204,21 @@ public class CausynthPipelineTest {
             }
             attachDirectOutputClosure(activation, "REGION.JOINT", 0,
                     captures, "I", "I");
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", caller + "#u7");
+            activation.add("branches", singletonJsonArray(branch));
             writePlanRow(plan, activation);
 
-            List<OutputCaptureSpec> selection =
+            ConcolicInstrumentationSelections.InstrumentationPlan
+                    instrumentation =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
-                            plan, "TASK.JOINT.CAPTURE")
-                            .outputCaptures();
+                            plan, "TASK.JOINT.CAPTURE");
+            List<OutputCaptureSpec> selection =
+                    instrumentation.outputCaptures();
             assertEquals(2, selection.size());
+            assertEquals(Collections.singleton(7),
+                    instrumentation.branches().units(caller));
 
             Files.write(plan, Arrays.asList(activation.toString(),
                     activation.toString()), StandardCharsets.UTF_8);

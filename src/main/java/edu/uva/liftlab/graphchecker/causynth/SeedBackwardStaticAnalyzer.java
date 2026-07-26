@@ -746,6 +746,17 @@ final class SeedBackwardStaticAnalyzer {
             boolean useExactHit = exactIntersects(relevant, uses);
             boolean useProjectionHit = projectionIntersects(relevant, uses);
             boolean useHit = useExactHit || useProjectionHit;
+            if (defProjectionHit && uses.isEmpty()
+                    && fact.unit instanceof AssignStmt) {
+                String allocated = ((AssignStmt) fact.unit).getRightOp()
+                        .toString();
+                if (allocated.startsWith("new ")) {
+                    for (String def : defs) {
+                        addEdge("local_def_use", allocated, def, method, fact,
+                                "fresh allocation defines projected receiver");
+                    }
+                }
+            }
             if (defHit || useHit) {
                 for (String def : defs) {
                     for (String use : uses) {
@@ -3356,6 +3367,23 @@ final class SeedBackwardStaticAnalyzer {
             return false;
         }
         String owner = invoked.owner;
+        if (invoked.params.isEmpty()
+                && (("java.lang.Byte".equals(owner)
+                        && "byteValue".equals(invoked.name))
+                || ("java.lang.Short".equals(owner)
+                        && "shortValue".equals(invoked.name))
+                || ("java.lang.Integer".equals(owner)
+                        && "intValue".equals(invoked.name))
+                || ("java.lang.Long".equals(owner)
+                        && "longValue".equals(invoked.name))
+                || ("java.lang.Character".equals(owner)
+                        && "charValue".equals(invoked.name))
+                || ("java.lang.Float".equals(owner)
+                        && "floatValue".equals(invoked.name))
+                || ("java.lang.Double".equals(owner)
+                        && "doubleValue".equals(invoked.name)))) {
+            return true;
+        }
         if ("java.lang.String".equals(owner)) {
             return true;
         }

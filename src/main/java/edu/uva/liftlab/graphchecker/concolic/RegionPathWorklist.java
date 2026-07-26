@@ -18,18 +18,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/**
- * Builds bounded branch-flip work for path-sensitive summaries of region
- * outputs.
- *
- * <p>A graph work item answers "which upstream region defines this input?".
- * A path work item answers "which other feasible path through this one region
- * changes its requested output?".  Keeping these queues separate prevents an
- * alternative data-flow edge from being misreported as a concolic path.</p>
- */
+/** Builds bounded branch-flip work for one region closure. */
 public final class RegionPathWorklist {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().create();
@@ -243,6 +236,9 @@ public final class RegionPathWorklist {
                             path.scope(), mapping)) {
                         continue;
                     }
+                    if (!requiresSymbolicCondition(path.scope(), site)) {
+                        continue;
+                    }
                     deferObservation("UNMAPPED_BRANCH",
                             "NO_NORMALIZED_CONDITION",
                             path.regionId(), path.pathKey(), site,
@@ -301,13 +297,6 @@ public final class RegionPathWorklist {
                 return;
             }
             if (observedFlipKeys.contains(key)) {
-                // The task constrains only the retained prefix plus the
-                // selected edge (DROP_OLD_SUFFIX).  A complete admitted
-                // summary with the same canonical prefix, requested output,
-                // runtime bindings, site, occurrence, and desired outcome is
-                // therefore direct evidence that this exact flip frontier
-                // has already been executed.  Later suffix decisions remain
-                // independently enumerable from that observed summary.
                 return;
             }
             if (!emitted.add(key)) {
@@ -332,7 +321,6 @@ public final class RegionPathWorklist {
             tasks.add(task);
         }
 
-        /** Indexes exact witnessed positions and already explored frontiers. */
         private void indexObservedCoverage() {
             for (PathObservation path : paths) {
                 if (!path.relationallyComplete()) {
@@ -359,6 +347,58 @@ public final class RegionPathWorklist {
             return mapping.isConcreteObservation()
                     && witnessedBranchPositions.contains(branchPosition(
                     scope, mapping));
+        }
+
+        private boolean requiresSymbolicCondition(
+                PathObservation.Scope scope, String site) {
+            OutputClosureContract closure = scope.outputClosure();
+            if (closure == null) return true;
+            OutputClosureContract.ExecutionScope execution =
+                    closure.executionScope();
+            if (!execution.staticSites().contains(site)) return false;
+            Set<String> boundPorts = new LinkedHashSet<>();
+            Set<String> reachable = new LinkedHashSet<>();
+            List<JsonObject> edges = new ArrayList<>();
+            for (OutputClosureContract.Member member : closure.members()) {
+                JsonObject slice = member.slice();
+                for (JsonElement element : array(slice, "inputBindings")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    String port = string(binding, "inputPort");
+                    String cell = string(binding, "dependencyCell");
+                    if (execution.inputPorts().contains(port)
+                            && !cell.isEmpty()) {
+                        boundPorts.add(port);
+                        reachable.add(cell);
+                    }
+                }
+                for (JsonElement element : array(slice, "causalEdges")) {
+                    if (element.isJsonObject()) {
+                        edges.add(element.getAsJsonObject());
+                    }
+                }
+            }
+            if (!boundPorts.containsAll(execution.inputPorts())) return true;
+
+            boolean guardSeen = false;
+            int previousSize;
+            do {
+                previousSize = reachable.size();
+                for (JsonObject edge : edges) {
+                    String from = string(edge, "fromCell");
+                    if ("GUARD".equals(string(edge, "transferKind"))) {
+                        if (site.equals(string(edge, "siteId"))
+                                || site.equals(string(edge, "guardSiteId"))) {
+                            guardSeen = true;
+                            if (reachable.contains(from)) return true;
+                        }
+                    } else if (reachable.contains(from)) {
+                        String to = string(edge, "toCell");
+                        if (!to.isEmpty()) reachable.add(to);
+                    }
+                }
+            } while (reachable.size() != previousSize);
+            return !guardSeen;
         }
 
         private String branchPosition(PathObservation.Scope scope,

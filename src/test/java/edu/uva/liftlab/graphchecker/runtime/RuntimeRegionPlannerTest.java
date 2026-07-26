@@ -810,6 +810,14 @@ public class RuntimeRegionPlannerTest {
             assertEquals("HEAP_OBJECT_FIELD", actions.get(1).get("location"));
             assertEquals(fieldA, actions.get(0).get("cell"));
             assertEquals(fieldB, actions.get(1).get("cell"));
+            assertEquals(Collections.singletonList("a"),
+                    actions.get(0).get("fieldPath"));
+            assertEquals(Collections.singletonList("b"),
+                    actions.get(1).get("fieldPath"));
+            assertEquals(fieldA,
+                    actions.get(0).get("leafFieldSignature"));
+            assertEquals(fieldB,
+                    actions.get(1).get("leafFieldSignature"));
             assertFalse(String.valueOf(targetGoal.get(
                     "runtimeDefinitionMethods")).contains(other));
             assertEquals("READY", admissionState(targetGoal));
