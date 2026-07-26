@@ -2149,8 +2149,16 @@ activation-local object token 原子 materialize，删除已无 writer 的 V1
 `FIELD_ACCESS_HOOK` 二次 selector；后续 owner-wide hook 只复用 binding 或作为 readback
 忽略，region-exit coverage gate 仍保留。InstrumentationPlan 直接持有 canonical capture
 list，不再建立第二个 wrapper/index；Worklist 为每个 summary 一次构造 `SummaryPath`，
-供 path key、branch mapping、coverage、flip task 和 CLOSED relation 共同消费。当前手写
-生产 Java 为 68,304 行；快速回归为 69 项并全部通过。
+供 path key、branch mapping、coverage、flip task 和 CLOSED relation 共同消费。此时手写
+生产 Java 为 68,304 行。
+
+Map projection replay 不再把同一个 selector JSON 展开为 28 个字段镜像，而是在
+`ModelAssignment` 中保留一份 canonical selector 并按需验证全部 identity、index、
+occurrence、owner/type/signature、key、token 与 authority。Boolean reach extractor 与
+ConstraintSolver 共享唯一 Z3 process/result implementation；Boolean DNF 直接由 SAT
+assignment vectors 派生，删除无消费者的 `solverTerm`、`solverStatus` 与 solver-version
+诊断镜像，但保留 executable 和 composition manifest 的 SHA。当前手写生产 Java 为
+68,161 行；快速回归为 69 项并全部通过。
 
 ### 明确不能删除
 

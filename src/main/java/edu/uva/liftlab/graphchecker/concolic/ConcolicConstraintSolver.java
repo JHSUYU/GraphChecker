@@ -146,8 +146,7 @@ public final class ConcolicConstraintSolver {
             record.addProperty("reason", "SOLVER_TIMEOUT");
             return new Result(record, smt, new JsonArray());
         }
-        String status = firstLine(output.stdout);
-        record.addProperty("solverStatus", status);
+        String status = output.status();
         if ("unsat".equals(status)) {
             record.addProperty("status", "UNSAT");
             return new Result(record, smt, new JsonArray());
@@ -1852,8 +1851,8 @@ public final class ConcolicConstraintSolver {
         return result;
     }
 
-    private static SolverOutput run(Path executable, String input,
-                                    long timeoutMillis)
+    static SolverOutput run(Path executable, String input,
+                            long timeoutMillis)
             throws IOException, InterruptedException {
         ProcessBuilder builder = new ProcessBuilder(executable.toString(),
                 "-in", "-smt2");
@@ -1882,15 +1881,24 @@ public final class ConcolicConstraintSolver {
         return new String(output.toByteArray(), StandardCharsets.UTF_8);
     }
 
-    private static final class SolverOutput {
-        private final boolean timedOut;
-        private final String stdout;
-        private final String stderr;
+    static final class SolverOutput {
+        final boolean timedOut;
+        final String stdout;
+        final String stderr;
 
         private SolverOutput(boolean timedOut, String stdout, String stderr) {
             this.timedOut = timedOut;
             this.stdout = stdout;
             this.stderr = stderr;
+        }
+
+        String status() {
+            if (timedOut) return "timeout";
+            return firstLine(stdout);
+        }
+
+        String diagnostic() {
+            return timedOut ? "solver timeout" : firstNonBlank(stdout, stderr);
         }
     }
 

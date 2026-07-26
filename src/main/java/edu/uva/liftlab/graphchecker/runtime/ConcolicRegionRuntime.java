@@ -5353,10 +5353,12 @@ public final class ConcolicRegionRuntime {
                             + assignment.engineSymbol);
                     continue;
                 }
-                if (currentIndex != assignment.mapProjectionOutputIndex) {
+                int sourceIndex = assignment.mapProjectionInteger(
+                        "outputIndex", -1);
+                if (currentIndex != sourceIndex) {
                     fail("replay immutable map key resolved to current index "
                             + currentIndex + " but source output index was "
-                            + assignment.mapProjectionOutputIndex);
+                            + sourceIndex);
                     continue;
                 }
                 if (!assignment.validMapProjectionReplaySelector(selected,
@@ -5377,7 +5379,7 @@ public final class ConcolicRegionRuntime {
 
         private int uniqueIndexForExpectedKey(ModelAssignment assignment) {
             String expected = stableMapProjectionKeySelector(
-                    assignment.mapProjectionExpectedMapKey);
+                    assignment.mapProjectionExpectedMapKey());
             if (expected.isEmpty()) return -1;
             int selected = -1;
             for (int index = 0; index < entryKeySelectors.length; index++) {
@@ -8402,34 +8404,7 @@ public final class ConcolicRegionRuntime {
         private final int elementOccurrence;
         private final String declaredFieldOwnerClass;
         private final String declaredFieldType;
-        private final String mapProjectionBindingId;
-        private final String mapProjectionInputPort;
-        private final String mapProjectionInputCell;
-        private final String mapProjectionOutputPort;
-        private final String mapProjectionOutputCell;
-        private final String mapProjectionOperation;
-        private final int mapProjectionOutputIndex;
-        private final int mapProjectionElementOccurrence;
-        private final String mapProjectionSelectorKind;
-        private final String mapProjectionSelectorAuthority;
-        private final String mapProjectionObjectTokenAuthority;
-        private final String mapProjectionObjectTokenScope;
-        private final String mapProjectionCrossExecutionOrdinalAuthority;
-        private final String mapProjectionDeclaredFieldOwnerClass;
-        private final String mapProjectionDeclaredFieldType;
-        private final String mapProjectionDeclaredFieldSignature;
-        private final long mapProjectionMapObjectToken;
-        private final long mapProjectionElementObjectToken;
-        private final long mapProjectionOutputArrayObjectToken;
-        private final boolean mapProjectionOutputIdentityVerified;
-        private final String mapProjectionOutputVerificationAuthority;
-        private final JsonElement mapProjectionExpectedMapKey;
-        private final String mapProjectionExpectedMapKeyAuthority;
-        private final String mapProjectionSourceOutputIndexAuthority;
-        private final String mapProjectionReplaySelectionAuthority;
-        private final String mapProjectionSourceObjectTokenScope;
-        private final String mapProjectionReplayScopeRebindingAuthority;
-        private final boolean mapProjectionSelectorCompleteFlag;
+        private final JsonObject mapProjectionSelector;
         private final JsonElement expectedEntryKey;
         private final String expectedEntryKeyAuthority;
         private final String dynamicReplayRebindingAuthority;
@@ -8483,69 +8458,11 @@ public final class ConcolicRegionRuntime {
                     "declaredFieldOwnerClass");
             this.declaredFieldType = normalizeFieldType(string(selector,
                     "declaredFieldType"));
-            JsonElement mapSelectorElement = json.get(
-                    "mapProjectionSelector");
-            JsonObject mapSelector = mapSelectorElement != null
-                    && mapSelectorElement.isJsonObject()
-                    ? mapSelectorElement.getAsJsonObject()
+            JsonElement mapSelector = json.get("mapProjectionSelector");
+            this.mapProjectionSelector = mapSelector != null
+                    && mapSelector.isJsonObject()
+                    ? copyJsonTree(mapSelector.getAsJsonObject())
                     : new JsonObject();
-            this.mapProjectionBindingId = string(mapSelector,
-                    "bindingId");
-            this.mapProjectionInputPort = string(mapSelector,
-                    "mapInputPort");
-            this.mapProjectionInputCell = string(mapSelector,
-                    "mapInputCell");
-            this.mapProjectionOutputPort = string(mapSelector,
-                    "outputPort");
-            this.mapProjectionOutputCell = string(mapSelector,
-                    "outputCell");
-            this.mapProjectionOperation = string(mapSelector,
-                    "mapProjectionOperation");
-            this.mapProjectionOutputIndex = integer(mapSelector,
-                    "outputIndex", -1);
-            this.mapProjectionElementOccurrence = integer(mapSelector,
-                    "elementOccurrence", -1);
-            this.mapProjectionSelectorKind = string(mapSelector, "kind");
-            this.mapProjectionSelectorAuthority = string(mapSelector,
-                    "authority");
-            this.mapProjectionObjectTokenAuthority = string(mapSelector,
-                    "objectTokenAuthority");
-            this.mapProjectionObjectTokenScope = string(mapSelector,
-                    "objectTokenScope");
-            this.mapProjectionCrossExecutionOrdinalAuthority = string(
-                    mapSelector, "crossExecutionOrdinalAuthority");
-            this.mapProjectionDeclaredFieldOwnerClass = string(mapSelector,
-                    "declaredFieldOwnerClass");
-            this.mapProjectionDeclaredFieldType = normalizeFieldType(string(
-                    mapSelector, "declaredFieldType"));
-            this.mapProjectionDeclaredFieldSignature = string(mapSelector,
-                    "declaredFieldSignature");
-            this.mapProjectionMapObjectToken = longInteger(mapSelector,
-                    "mapObjectToken", 0L);
-            this.mapProjectionElementObjectToken = longInteger(mapSelector,
-                    "elementObjectToken", 0L);
-            this.mapProjectionOutputArrayObjectToken = longInteger(
-                    mapSelector, "outputArrayObjectToken", 0L);
-            this.mapProjectionOutputIdentityVerified = bool(mapSelector,
-                    "outputIdentityVerified", false);
-            this.mapProjectionOutputVerificationAuthority = string(
-                    mapSelector, "outputVerificationAuthority");
-            JsonElement mapExpectedKey = mapSelector.get("expectedMapKey");
-            this.mapProjectionExpectedMapKey = mapExpectedKey == null
-                    || mapExpectedKey.isJsonNull() ? null
-                    : copyJsonTree(mapExpectedKey);
-            this.mapProjectionExpectedMapKeyAuthority = string(mapSelector,
-                    "expectedMapKeyAuthority");
-            this.mapProjectionSourceOutputIndexAuthority = string(
-                    mapSelector, "sourceOutputIndexAuthority");
-            this.mapProjectionReplaySelectionAuthority = string(
-                    mapSelector, "replaySelectionAuthority");
-            this.mapProjectionSourceObjectTokenScope = string(mapSelector,
-                    "sourceObjectTokenScope");
-            this.mapProjectionReplayScopeRebindingAuthority = string(
-                    mapSelector, "replayScopeRebindingAuthority");
-            this.mapProjectionSelectorCompleteFlag = bool(mapSelector,
-                    "complete", false);
             JsonElement expectedKey = json.get("expectedEntryKey");
             this.expectedEntryKey = expectedKey == null
                     || expectedKey.isJsonNull() ? null
@@ -8645,6 +8562,7 @@ public final class ConcolicRegionRuntime {
 
         private boolean matchesMapProjection(
                 MapProjectionFieldBinding binding) {
+            JsonElement expectedMapKey = mapProjectionExpectedMapKey();
             return binding != null
                     && binding.snapshot.replayAuthorized(this,
                     binding.outputIndex)
@@ -8661,38 +8579,38 @@ public final class ConcolicRegionRuntime {
                     && fieldPathMatches(binding.fieldPath)
                     && engineSymbolMatches(binding.dynamicFieldSymbol)
                     && mapProjectionSelectorComplete()
-                    && mapProjectionBindingId.equals(
+                    && mapProjectionString("bindingId").equals(
                     binding.spec.bindingId)
-                    && mapProjectionInputPort.equals(
+                    && mapProjectionString("mapInputPort").equals(
                     binding.spec.mapInputPort)
-                    && mapProjectionInputCell.equals(
+                    && mapProjectionString("mapInputCell").equals(
                     binding.spec.mapInputCell)
-                    && mapProjectionOutputPort.equals(
+                    && mapProjectionString("outputPort").equals(
                     binding.spec.outputPort)
-                    && mapProjectionOutputCell.equals(
+                    && mapProjectionString("outputCell").equals(
                     binding.spec.outputCell)
-                    && mapProjectionOperation.equals(
+                    && mapProjectionString("mapProjectionOperation").equals(
                     binding.spec.mapProjectionOperation)
-                    && mapProjectionOutputIndex == binding.outputIndex
-                    && mapProjectionElementOccurrence
+                    && mapProjectionInteger("outputIndex", -1)
+                    == binding.outputIndex
+                    && mapProjectionInteger("elementOccurrence", -1)
                     == binding.materializationOccurrence
-                    && mapProjectionDeclaredFieldOwnerClass.equals(
+                    && mapProjectionString("declaredFieldOwnerClass").equals(
                     binding.spec.declaredFieldOwnerClass)
-                    && mapProjectionDeclaredFieldType.equals(
+                    && mapProjectionFieldType().equals(
                     binding.spec.declaredFieldType)
-                    && mapProjectionDeclaredFieldSignature.equals(
+                    && mapProjectionString("declaredFieldSignature").equals(
                     binding.spec.declaredFieldSignature)
-                    && mapProjectionExpectedMapKey != null
-                    && mapProjectionExpectedMapKey.equals(
-                    binding.expectedMapKey)
+                    && expectedMapKey != null
+                    && expectedMapKey.equals(binding.expectedMapKey)
                     && !stableMapProjectionKeySelector(
-                    mapProjectionExpectedMapKey).isEmpty()
+                    expectedMapKey).isEmpty()
                     // Object tokens are activation-local and therefore are
                     // deliberately not compared across executions.  Their
                     // producer activation scope and authority must still be
                     // exact so a downstream instance cannot authorize this
                     // producer-side field write.
-                    && mapProjectionObjectTokenScope.equals(
+                    && mapProjectionString("objectTokenScope").equals(
                     binding.objectTokenScope);
         }
 
@@ -8701,12 +8619,16 @@ public final class ConcolicRegionRuntime {
             return spec != null && hasMapProjectionSelectorMetadata()
                     && inputSymbol.equals(spec.mapInputPort)
                     && baseInputSymbol.equals(spec.mapInputPort)
-                    && mapProjectionBindingId.equals(spec.bindingId)
-                    && mapProjectionInputPort.equals(spec.mapInputPort)
-                    && mapProjectionInputCell.equals(spec.mapInputCell)
-                    && mapProjectionOutputPort.equals(spec.outputPort)
-                    && mapProjectionOutputCell.equals(spec.outputCell)
-                    && mapProjectionOperation.equals(
+                    && mapProjectionString("bindingId").equals(spec.bindingId)
+                    && mapProjectionString("mapInputPort").equals(
+                    spec.mapInputPort)
+                    && mapProjectionString("mapInputCell").equals(
+                    spec.mapInputCell)
+                    && mapProjectionString("outputPort").equals(
+                    spec.outputPort)
+                    && mapProjectionString("outputCell").equals(
+                    spec.outputCell)
+                    && mapProjectionString("mapProjectionOperation").equals(
                     spec.mapProjectionOperation);
         }
 
@@ -8717,30 +8639,34 @@ public final class ConcolicRegionRuntime {
                     || !mapProjectionSelectorComplete()
                     || currentIndex < 0
                     || currentIndex >= snapshot.elements.length
-                    || mapProjectionOutputIndex != currentIndex
-                    || mapProjectionElementOccurrence != currentIndex + 1
+                    || mapProjectionInteger("outputIndex", -1)
+                    != currentIndex
+                    || mapProjectionInteger("elementOccurrence", -1)
+                    != currentIndex + 1
                     || materializationOccurrence != currentIndex + 1
                     || !materializationSiteId.equals(
                     spec.materializationSiteId())
                     || !fieldPathMatches(spec.fieldPath)
-                    || !mapProjectionDeclaredFieldOwnerClass.equals(
+                    || !mapProjectionString("declaredFieldOwnerClass").equals(
                     spec.declaredFieldOwnerClass)
-                    || !mapProjectionDeclaredFieldType.equals(
+                    || !mapProjectionFieldType().equals(
                     spec.declaredFieldType)
-                    || !mapProjectionDeclaredFieldSignature.equals(
+                    || !mapProjectionString("declaredFieldSignature").equals(
                     spec.declaredFieldSignature)
-                    || !mapProjectionObjectTokenScope.equals(
+                    || !mapProjectionString("objectTokenScope").equals(
                     snapshot.objectTokenScope)
                     || !("ROOT_RETURN_PROJECTED_FIELD".equals(
                     spec.outputValidationMode)
                     && "ACTIVE_REGION_ROOT_RETURN_EXACT_PROJECTED_FIELD"
-                    .equals(mapProjectionOutputVerificationAuthority)
+                    .equals(mapProjectionString(
+                            "outputVerificationAuthority"))
                     || "EXACT_REQUESTED_OUTPUT_CAPTURE".equals(
                     spec.outputValidationMode)
                     && ("ACTIVE_TOKEN_EXACT_ORIGINAL_CALL_ARGUMENT".equals(
-                    mapProjectionOutputVerificationAuthority)
+                    mapProjectionString("outputVerificationAuthority"))
                     || "ACTIVE_TOKEN_EXACT_POST_INSTANCE_FIELD_ASSIGNMENT"
-                    .equals(mapProjectionOutputVerificationAuthority)))) {
+                    .equals(mapProjectionString(
+                            "outputVerificationAuthority"))))) {
                 return false;
             }
             String expectedDynamic = dynamicFieldSymbolForTests(
@@ -8750,92 +8676,103 @@ public final class ConcolicRegionRuntime {
                     && dynamicBindingId.equals(
                     "DYNAMIC_FIELD:" + expectedDynamic)
                     && engineSymbolMatches(expectedDynamic)
-                    && mapProjectionExpectedMapKey != null
-                    && mapProjectionExpectedMapKey.equals(
+                    && mapProjectionExpectedMapKey() != null
+                    && mapProjectionExpectedMapKey().equals(
                     snapshot.entryKeyExpressions[currentIndex]);
         }
 
         private boolean hasMapProjectionSelectorMetadata() {
-            return !mapProjectionBindingId.isEmpty()
-                    || !mapProjectionInputPort.isEmpty()
-                    || !mapProjectionInputCell.isEmpty()
-                    || !mapProjectionOutputPort.isEmpty()
-                    || !mapProjectionOutputCell.isEmpty()
-                    || !mapProjectionOperation.isEmpty()
-                    || mapProjectionOutputIndex >= 0
-                    || mapProjectionElementOccurrence > 0
-                    || !mapProjectionSelectorKind.isEmpty()
-                    || !mapProjectionSelectorAuthority.isEmpty()
-                    || !mapProjectionObjectTokenAuthority.isEmpty()
-                    || !mapProjectionObjectTokenScope.isEmpty()
-                    || !mapProjectionCrossExecutionOrdinalAuthority
-                    .isEmpty()
-                    || !mapProjectionDeclaredFieldOwnerClass.isEmpty()
-                    || !mapProjectionDeclaredFieldType.isEmpty()
-                    || !mapProjectionDeclaredFieldSignature.isEmpty()
-                    || mapProjectionMapObjectToken > 0L
-                    || mapProjectionElementObjectToken > 0L
-                    || mapProjectionOutputArrayObjectToken > 0L
-                    || mapProjectionExpectedMapKey != null
-                    || !mapProjectionExpectedMapKeyAuthority.isEmpty()
-                    || !mapProjectionSourceOutputIndexAuthority.isEmpty()
-                    || !mapProjectionReplaySelectionAuthority.isEmpty()
-                    || !mapProjectionSourceObjectTokenScope.isEmpty()
-                    || !mapProjectionReplayScopeRebindingAuthority.isEmpty()
-                    || mapProjectionOutputIdentityVerified
-                    || mapProjectionSelectorCompleteFlag;
+            return mapProjectionSelector.size() > 0;
         }
 
         private boolean mapProjectionSelectorComplete() {
-            return !mapProjectionBindingId.isEmpty()
-                    && !mapProjectionInputPort.isEmpty()
-                    && !mapProjectionInputCell.isEmpty()
-                    && !mapProjectionOutputPort.isEmpty()
-                    && !mapProjectionOutputCell.isEmpty()
-                    && "MAP_VALUES_VIEW".equals(mapProjectionOperation)
-                    && mapProjectionOutputIndex >= 0
-                    && mapProjectionElementOccurrence > 0
+            JsonElement expectedMapKey = mapProjectionExpectedMapKey();
+            long mapObjectToken = mapProjectionLong(
+                    "mapObjectToken", 0L);
+            long elementObjectToken = mapProjectionLong(
+                    "elementObjectToken", 0L);
+            long outputArrayObjectToken = mapProjectionLong(
+                    "outputArrayObjectToken", 0L);
+            return !mapProjectionString("bindingId").isEmpty()
+                    && !mapProjectionString("mapInputPort").isEmpty()
+                    && !mapProjectionString("mapInputCell").isEmpty()
+                    && !mapProjectionString("outputPort").isEmpty()
+                    && !mapProjectionString("outputCell").isEmpty()
+                    && "MAP_VALUES_VIEW".equals(mapProjectionString(
+                    "mapProjectionOperation"))
+                    && mapProjectionInteger("outputIndex", -1) >= 0
+                    && mapProjectionInteger("elementOccurrence", -1) > 0
                     && "MAP_OUTPUT_ARRAY_INDEX".equals(
-                    mapProjectionSelectorKind)
+                    mapProjectionString("kind"))
                     && MapProjectionFieldBinding.AUTHORITY.equals(
-                    mapProjectionSelectorAuthority)
+                    mapProjectionString("authority"))
                     && "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
-                    mapProjectionObjectTokenAuthority)
-                    && !mapProjectionObjectTokenScope.isEmpty()
+                    mapProjectionString("objectTokenAuthority"))
+                    && !mapProjectionString("objectTokenScope").isEmpty()
                     && "NONE".equals(
-                    mapProjectionCrossExecutionOrdinalAuthority)
-                    && !mapProjectionDeclaredFieldOwnerClass.isEmpty()
-                    && !mapProjectionDeclaredFieldType.isEmpty()
-                    && !mapProjectionDeclaredFieldSignature.isEmpty()
-                    && mapProjectionMapObjectToken > 0L
-                    && mapProjectionElementObjectToken > 0L
-                    && mapProjectionOutputArrayObjectToken > 0L
-                    && mapProjectionMapObjectToken
-                    != mapProjectionElementObjectToken
-                    && mapProjectionMapObjectToken
-                    != mapProjectionOutputArrayObjectToken
-                    && mapProjectionElementObjectToken
-                    != mapProjectionOutputArrayObjectToken
-                    && !mapProjectionOutputVerificationAuthority.isEmpty()
-                    && mapProjectionExpectedMapKey != null
+                    mapProjectionString("crossExecutionOrdinalAuthority"))
+                    && !mapProjectionString(
+                    "declaredFieldOwnerClass").isEmpty()
+                    && !mapProjectionFieldType().isEmpty()
+                    && !mapProjectionString(
+                    "declaredFieldSignature").isEmpty()
+                    && mapObjectToken > 0L
+                    && elementObjectToken > 0L
+                    && outputArrayObjectToken > 0L
+                    && mapObjectToken != elementObjectToken
+                    && mapObjectToken != outputArrayObjectToken
+                    && elementObjectToken != outputArrayObjectToken
+                    && !mapProjectionString(
+                    "outputVerificationAuthority").isEmpty()
+                    && expectedMapKey != null
                     && !stableMapProjectionKeySelector(
-                    mapProjectionExpectedMapKey).isEmpty()
+                    expectedMapKey).isEmpty()
                     && "CONCRETE_IMMUTABLE_MAP_ENTRY_KEY_AT_ENTRYSET_"
                     .concat("SNAPSHOT").equals(
-                    mapProjectionExpectedMapKeyAuthority)
+                    mapProjectionString("expectedMapKeyAuthority"))
                     && "ENTRYSET_AND_MAP_VIEW_TO_ARRAY_SAME_EXECUTION_"
                     .concat("POSITIONAL_REFERENCE_EQUALITY").equals(
-                    mapProjectionSourceOutputIndexAuthority)
+                    mapProjectionString("sourceOutputIndexAuthority"))
                     && "IMMUTABLE_MAP_KEY_LOOKUP_THEN_SAME_OUTPUT_INDEX_"
                     .concat("AND_EXACT_OUTPUT_IDENTITY").equals(
-                    mapProjectionReplaySelectionAuthority)
-                    && !mapProjectionSourceObjectTokenScope.isEmpty()
+                    mapProjectionString("replaySelectionAuthority"))
+                    && !mapProjectionString(
+                    "sourceObjectTokenScope").isEmpty()
                     && "SOURCE_CASE_SELECTOR_VALIDATED_THEN_REPLAY_"
                     .concat("ACTIVATION_SCOPE_REBOUND_TOKENS_NOT_"
                             + "COMPARED_ACROSS_EXECUTIONS").equals(
-                    mapProjectionReplayScopeRebindingAuthority)
-                    && mapProjectionOutputIdentityVerified
-                    && mapProjectionSelectorCompleteFlag;
+                    mapProjectionString("replayScopeRebindingAuthority"))
+                    && mapProjectionBoolean(
+                    "outputIdentityVerified", false)
+                    && mapProjectionBoolean("complete", false);
+        }
+
+        private String mapProjectionString(String field) {
+            return string(mapProjectionSelector, field);
+        }
+
+        private int mapProjectionInteger(String field, int fallback) {
+            return integer(mapProjectionSelector, field, fallback);
+        }
+
+        private long mapProjectionLong(String field, long fallback) {
+            return longInteger(mapProjectionSelector, field, fallback);
+        }
+
+        private boolean mapProjectionBoolean(String field, boolean fallback) {
+            return bool(mapProjectionSelector, field, fallback);
+        }
+
+        private String mapProjectionFieldType() {
+            return normalizeFieldType(mapProjectionString(
+                    "declaredFieldType"));
+        }
+
+        private JsonElement mapProjectionExpectedMapKey() {
+            JsonElement expectedMapKey = mapProjectionSelector.get(
+                    "expectedMapKey");
+            return expectedMapKey == null || expectedMapKey.isJsonNull()
+                    ? null : expectedMapKey;
         }
 
         private boolean matchesDynamic(SymbolizeAction action,
