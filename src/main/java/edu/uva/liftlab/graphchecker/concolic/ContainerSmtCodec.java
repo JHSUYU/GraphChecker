@@ -142,13 +142,48 @@ public final class ContainerSmtCodec {
         String position = string(binary, "_code_position");
         if (!"BinaryExpression".equals(string(binary, "_type"))
                 || !"==".equals(string(binary, "_op"))
-                || position.indexOf("java.lang.System.symbolizeField(") < 0) {
+                || position.indexOf("java.lang.System.symbolizeField(") < 0
+                && position.indexOf("java.lang.System.symbolize(") < 0) {
             return false;
         }
         return handlesField(binary.get("_left"))
                 && symbol(binary.get("_right"))
                 || handlesField(binary.get("_right"))
                 && symbol(binary.get("_left"));
+    }
+
+    /**
+     * VM array access contributes concrete bounds and symbolic read/size
+     * relations to the PC.  They constrain a source branch but are not
+     * branches themselves.
+     */
+    public static boolean handlesAccessConstraint(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return false;
+        JsonObject binary = expression.getAsJsonObject();
+        if (!"BinaryExpression".equals(string(binary, "_type"))
+                || !string(binary, "_code_position").endsWith(":-1")) {
+            return false;
+        }
+        JsonElement left = binary.get("_left");
+        JsonElement right = binary.get("_right");
+        return handles(left) || handles(right)
+                || constant(left) && constant(right);
+    }
+
+    private static boolean constant(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return false;
+        String type = string(expression.getAsJsonObject(), "_type");
+        return "ConstExpr".equals(type) || "ConSymbolExp".equals(type)
+                || "ConStringSymbolExp".equals(type);
+    }
+
+    public static String materializedStringEquality(
+            String left, String right, String symbolNullness) {
+        if (symbolNullness == null || symbolNullness.isEmpty()) return "";
+        String equality = "(= " + left + " " + right + ")";
+        return "false".equals(symbolNullness) ? equality
+                : "(and " + equality + " (not "
+                + symbolNullness + "))";
     }
 
     private static boolean symbol(JsonElement expression) {

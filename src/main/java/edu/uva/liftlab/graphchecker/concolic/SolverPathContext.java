@@ -157,7 +157,8 @@ public final class SolverPathContext {
         String type = primitiveString(object, "_type");
         if (!ContainerSmtCodec.EXPRESSION_TYPE.equals(type)
                 && !"MethodExpression".equals(type)
-                && !ContainerSmtCodec.handlesFieldBinding(expression)) {
+                && !ContainerSmtCodec.handlesFieldBinding(expression)
+                && !ContainerSmtCodec.handlesAccessConstraint(expression)) {
             throw new IllegalArgumentException(
                     "unwitnessed path predicate is not an admitted "
                             + "non-branch constraint: " + type);

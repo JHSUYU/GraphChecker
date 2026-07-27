@@ -104,6 +104,7 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   import CH               Strictly import that producer capture
   explore-producer CH     Close and merge one producer path worklist
   candidate-compose       Compose producer relations with the target seed
+  candidate-smt           Run the clean workflow through candidate SMT
   candidate-solve         Check the candidate SMT with Z3
   candidate-manifest      Refresh hashes for an existing solved candidate
   candidate               Run the clean workflow through candidate SMT + Z3
@@ -1236,7 +1237,7 @@ write_candidate_manifest() {
   ' "${output}" >/dev/null || die "candidate manifest is incomplete"
 }
 
-do_candidate() {
+do_candidate_smt() {
   require_clean_work_root
   do_prepare
   do_analyze
@@ -1247,6 +1248,10 @@ do_candidate() {
   do_explore_target
   run_producers_parallel
   do_candidate_compose
+}
+
+do_candidate() {
+  do_candidate_smt
   do_candidate_solve
   write_candidate_manifest
   echo "[three-thread-rpc] complete Z3-checked candidate workflow"
@@ -1274,6 +1279,7 @@ case "${command_name}" in
   import) [[ $# -eq 1 ]] || die "import needs one discovered channel"; do_import "$1" ;;
   explore-producer) [[ $# -eq 1 ]] || die "explore-producer needs one discovered channel"; do_explore_producer "$1" ;;
   candidate-compose) [[ $# -eq 0 ]] || die "candidate-compose takes no arguments"; do_candidate_compose ;;
+  candidate-smt) [[ $# -eq 0 ]] || die "candidate-smt takes no arguments"; do_candidate_smt ;;
   candidate-solve) [[ $# -eq 0 ]] || die "candidate-solve takes no arguments"; do_candidate_solve ;;
   candidate-manifest) [[ $# -eq 0 ]] || die "candidate-manifest takes no arguments"; write_candidate_manifest ;;
   candidate) [[ $# -eq 0 ]] || die "candidate takes no arguments"; do_candidate ;;

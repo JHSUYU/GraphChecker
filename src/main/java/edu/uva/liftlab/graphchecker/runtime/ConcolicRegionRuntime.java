@@ -508,6 +508,10 @@ public final class ConcolicRegionRuntime {
             if (assignment != null) {
                 Object modeled = assignment.referenceValue(value);
                 if (modeled == UnsupportedReplayValue.INSTANCE) {
+                    if (isPrimitiveBox(value)) {
+                        return materializePrimitiveValue(active, action,
+                                value, null);
+                    }
                     active.unresolved.add(action.symbol
                             + ": unsupported local reference model "
                             + assignment.valueType + "=" + assignment.value);

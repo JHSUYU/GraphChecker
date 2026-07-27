@@ -80,8 +80,13 @@ public final class ConcolicConstraintSolver {
                     replayContract);
         }
 
-        // Prefix inputs need real targets; environment terms remain unforced.
-        if (hasMaterializationGap(encoder.controlledSymbols, actions,
+        // Recursive object symbolization may name the same leaf twice.
+        // A PC-proven alias needs no second runtime write target.
+        Set<String> projectedControlledSymbols = new LinkedHashSet<>(
+                encoder.controlledSymbols);
+        projectedControlledSymbols.removeAll(
+                encoder.derivedFieldAliases(actions));
+        if (hasMaterializationGap(projectedControlledSymbols, actions,
                 false)) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
@@ -95,8 +100,6 @@ public final class ConcolicConstraintSolver {
         Set<String> targetControlledSymbols = new LinkedHashSet<>(
                 targetSymbols);
         targetControlledSymbols.retainAll(encoder.controlledSymbols);
-        Set<String> projectedControlledSymbols = new LinkedHashSet<>(
-                encoder.controlledSymbols);
 
         Path executable = z3 == null ? Paths.get("z3") : z3;
         SolverOutput output = run(executable, smt,
@@ -174,6 +177,8 @@ public final class ConcolicConstraintSolver {
         private final Map<String, SymbolNames> names =
                 new LinkedHashMap<>();
         private final Map<String, String> containerStates =
+                new LinkedHashMap<>();
+        private final Map<String, Set<String>> fieldSymbols =
                 new LinkedHashMap<>();
         private final List<String> assertions = new ArrayList<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
@@ -676,6 +681,7 @@ public final class ConcolicConstraintSolver {
         }
 
         private Term binary(JsonObject expression, String origin) {
+            recordFieldAlias(expression);
             String operator = string(expression, "_op");
             JsonElement leftExpression = expression.get("_left");
             if (leftExpression == null || leftExpression.isJsonNull()) {
@@ -755,6 +761,19 @@ public final class ConcolicConstraintSolver {
                     return stringNullComparison;
                 }
                 if (left.sort == Sort.STRING && right.sort == Sort.STRING) {
+                    if (ContainerSmtCodec.handlesFieldBinding(expression)) {
+                        Term symbol = ContainerSmtCodec.handlesField(
+                                expression.get("_left")) ? right : left;
+                        String materialization = ContainerSmtCodec
+                                .materializedStringEquality(left.text,
+                                right.text, symbol.stringNullnessText);
+                        if (materialization.isEmpty()) {
+                            unsupported.add(origin
+                                    + ":STRING_MATERIALIZATION_NULLNESS");
+                            return null;
+                        }
+                        return new Term(materialization, Sort.BOOL);
+                    }
                     if (!left.stringReferenceKey.isEmpty()
                             && left.stringReferenceKey.equals(
                             right.stringReferenceKey)) {
@@ -864,6 +883,42 @@ public final class ConcolicConstraintSolver {
             }
             unsupported.add(origin + ":BINARY_OPERATOR:" + operator);
             return null;
+        }
+
+        private void recordFieldAlias(JsonObject expression) {
+            if (!ContainerSmtCodec.handlesFieldBinding(expression)) return;
+            JsonElement left = expression.get("_left");
+            JsonObject field = ContainerSmtCodec.handlesField(left)
+                    ? left.getAsJsonObject()
+                    : expression.getAsJsonObject("_right");
+            JsonObject symbol = ContainerSmtCodec.handlesField(left)
+                    ? expression.getAsJsonObject("_right")
+                    : left.getAsJsonObject();
+            String raw = string(symbol, "_exp");
+            if (!regionInput(raw)) return;
+            fieldSymbols.computeIfAbsent(CanonicalJson.render(field),
+                    ignored -> new LinkedHashSet<>()).add(raw);
+        }
+
+        private Set<String> derivedFieldAliases(
+                List<JsonObject> actions) {
+            Set<String> result = new LinkedHashSet<>();
+            for (Set<String> aliases : fieldSymbols.values()) {
+                boolean hasTarget = false;
+                for (String alias : aliases) {
+                    if (materializationResolution(alias, actions) != null) {
+                        hasTarget = true;
+                        break;
+                    }
+                }
+                if (!hasTarget) continue;
+                for (String alias : aliases) {
+                    if (materializationResolution(alias, actions) == null) {
+                        result.add(alias);
+                    }
+                }
+            }
+            return result;
         }
 
         /**
@@ -1554,9 +1609,10 @@ public final class ConcolicConstraintSolver {
         if (!finished) {
             process.destroyForcibly();
             process.waitFor();
+            return new SolverOutput(true, "");
         }
         String stdout = readAll(process.getInputStream());
-        return new SolverOutput(!finished, stdout);
+        return new SolverOutput(false, stdout);
     }
 
     private static String readAll(InputStream stream) throws IOException {

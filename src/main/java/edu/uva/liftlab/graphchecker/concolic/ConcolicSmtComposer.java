@@ -1972,6 +1972,15 @@ public final class ConcolicSmtComposer {
             }
             if ("==".equals(operator) || "!=".equals(operator)) {
                 if (left.sort == Sort.STRING) {
+                    if (ContainerSmtCodec.handlesFieldBinding(expression)) {
+                        Term symbol = ContainerSmtCodec.handlesField(
+                                expression.get("_left")) ? right : left;
+                        String materialization = ContainerSmtCodec
+                                .materializedStringEquality(left.text,
+                                right.text, symbol.stringNullness);
+                        return dependent(new Term(materialization,
+                                Sort.BOOL), left, right);
+                    }
                     if (!left.stringReferenceOrigin.isEmpty()
                             && left.stringReferenceOrigin.equals(
                             right.stringReferenceOrigin)) {

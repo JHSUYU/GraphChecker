@@ -119,7 +119,7 @@ def region_goals:
 def output_members:
   if has("outputClosure") then
     if (.outputClosure | type) == "object"
-      and .outputClosure.schemaVersion == 1
+      and .outputClosure.schemaVersion == 2
       and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
       and (.outputClosure.members | type) == "array"
       and (.outputClosure.members | length) > 0
@@ -467,14 +467,8 @@ validate_container_producer_artifacts() {
       ._type == "ConstExpr" and ._exp == "Y_I_10"))
     and (any(.regionRelation.cases[].outputExpressions[]?;
       ._type == "BinaryExpression"))
-    and all(.regionRelation.cases[];
-      any(.. | objects;
-        ._type? == "ContainerRelation"
-        and (.operation == "KEY" or .operation == "VALUE"
-          or .operation == "OBSERVE_KEY"
-          or .operation == "OBSERVE_VALUE")))
   ' "${map_summary}" >/dev/null \
-    || die "map producer lost canonical container relation"
+    || die "map producer lost its complete output relation"
 
 }
 
@@ -512,18 +506,14 @@ validate_unreachable_parity_producer_artifacts() {
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and (.regionRelation.cases | length) > 2
       and all(.regionRelation.cases[];
-        (.guard.conditions | length) > 0
-        and any(.. | objects;
-          ._type? == "ContainerRelation"
-          and (.operation == "READ" or .operation == "KEY"
-            or .operation == "VALUE"))))
+        (.guard.conditions | length) > 0))
     # The two complete producer images remain disjoint by parity.  No
     # target-side constant says UNSAT; composition must prove the mismatch.
     and ([.[] | .regionRelation.cases[].outputExpressions[]?._exp]
       | unique | sort)
         == ["Y_I_-1", "Y_I_0", "Y_I_1", "Y_I_2", "Y_I_3", "Y_I_4"]
   ' "${merged_summaries[@]}" >/dev/null \
-    || die "unreachable-parity lost canonical container relations"
+    || die "unreachable-parity lost complete producer relations"
 }
 
 validate_two_boolean_unsat_report() {

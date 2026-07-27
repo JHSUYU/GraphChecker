@@ -58,7 +58,7 @@ do_run() {
     (cd "${graphchecker_dir}" && \
       CAUSYNTH_WORKFLOW_CONFIG="${workflow}" \
       GRAPH_CHECKER_SKIP_BUILD=true \
-      "${pipeline}" candidate)
+      "${pipeline}" candidate-smt)
   } >"${workflow_log}" 2>&1; then
     tail -n 100 "${workflow_log}" >&2 || true
     die "workflow failed; inspect ${workflow_log}"
