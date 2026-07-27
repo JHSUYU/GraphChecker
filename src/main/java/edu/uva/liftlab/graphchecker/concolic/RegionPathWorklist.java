@@ -213,27 +213,16 @@ public final class RegionPathWorklist {
 
         private void planSummary(PathObservation path) {
             List<SummaryBranchMapping> candidates = new ArrayList<>();
-            Set<String> concreteExploreSites = new LinkedHashSet<>();
             for (SummaryBranchMapping mapping : path.branchMappings()) {
                 String site = mapping.siteId();
                 if (!path.scope().branchSites().contains(site)) {
                     continue;
                 }
                 if (mapping.isConcreteObservation()) {
-                    if (mapping.isExplore()) {
-                        concreteExploreSites.add(site);
-                    }
                     continue;
                 }
                 if (!mapping.isExplore()) continue;
                 candidates.add(mapping);
-            }
-            if (candidates.isEmpty() && !concreteExploreSites.isEmpty()) {
-                for (String site : concreteExploreSites) {
-                    gap("MISSING_SYMBOLIC_BRANCH_PREDICATE",
-                            "OUTPUT_SCOPE_HAS_NO_SYMBOLIC_BRANCH_DECISION",
-                            path.regionId(), path.pathKey(), site, -1);
-                }
             }
             // Classic depth-first concolic order: flip the latest relevant
             // decision first, then progressively shorter prefixes.

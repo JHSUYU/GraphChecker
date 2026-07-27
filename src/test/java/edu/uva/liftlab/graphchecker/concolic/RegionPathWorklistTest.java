@@ -158,7 +158,7 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void concreteOnlyOutputBranchCannotCloseExploration() {
+    public void concreteOnlyOutputBranchNeedsNoFlipTask() {
         JsonObject summary = summary("ACT.CONCRETE.ONLY",
                 ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         JsonObject task = executionTask("ACT.CONCRETE.ONLY",
@@ -181,10 +181,10 @@ public class RegionPathWorklistTest {
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
-        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
                 result.manifest.get("state").getAsString());
-        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
-                .contains("OUTPUT_SCOPE_HAS_NO_SYMBOLIC_BRANCH_DECISION"));
+        assertTrue(result.manifest.getAsJsonArray("gaps").isEmpty());
+        assertTrue(result.tasks.isEmpty());
     }
 
     @Test

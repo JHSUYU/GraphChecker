@@ -40,8 +40,10 @@ public final class DivergentObjectFieldsReachableThreeThreadWorkload {
         }
 
         int compute() {
-            int primary = clamp(envelope.state.primary);
-            int backup = clamp(envelope.state.backup);
+            int primary = clamp(envelope.state.primary,
+                    envelope.state.backup, envelope.enabled);
+            int backup = clamp(envelope.state.backup,
+                    envelope.state.primary, !envelope.enabled);
             if (envelope.enabled) {
                 envelope.state.primary = primary + 6;
             } else {
@@ -49,17 +51,28 @@ public final class DivergentObjectFieldsReachableThreeThreadWorkload {
             }
             int selected = envelope.enabled
                     ? envelope.state.primary : envelope.state.backup;
-            for (int index = 0; index < 3; index++) {
-                selected++;
+            for (int index = 0; index < 4; index++) {
+                if ((index < 3 && envelope.enabled)
+                        || (index > 0 && !envelope.enabled
+                        && backup >= primary)) {
+                    selected++;
+                } else if ((index == 3 && envelope.enabled)
+                        || (index == 0 && !envelope.enabled)) {
+                    selected += primary - primary;
+                } else {
+                    selected--;
+                }
             }
             return selected;
         }
 
-        private static int clamp(int value) {
-            if (value < 0) {
+        private static int clamp(int value, int peer, boolean preferred) {
+            if ((value < 0 && peer >= 0)
+                    || (value == -1 && !preferred)) {
                 return 0;
             }
-            if (value > 4) {
+            if ((value > 4 && (preferred || peer <= 4))
+                    || (value == 5 && peer < 0)) {
                 return 4;
             }
             return value;
@@ -79,16 +92,29 @@ public final class DivergentObjectFieldsReachableThreeThreadWorkload {
         int compute() {
             Envelope selected = values[1];
             int value = selected.state.primary;
-            if (value < 0) {
+            int peer = selected.state.backup;
+            if ((value < 0 && peer >= 0)
+                    || (value == -1 && !selected.enabled)) {
                 value = 0;
             }
-            if (value > 3) {
+            if ((value > 3 && (selected.enabled || peer <= 3))
+                    || (value == 4 && peer < 0)) {
                 value = 3;
             }
-            if (selected.enabled) {
-                return value + 4;
+            int adjustment = 0;
+            for (int index = 0; index < 4; index++) {
+                if ((index < 2 && selected.enabled)
+                        || (index >= 2 && !selected.enabled)) {
+                    adjustment++;
+                } else if ((index == 3 && peer > value)
+                        || (index == 0 && value > peer)) {
+                    adjustment--;
+                }
             }
-            return value + 7;
+            if (selected.enabled) {
+                return value + adjustment + 2;
+            }
+            return value + adjustment + 5;
         }
     }
 

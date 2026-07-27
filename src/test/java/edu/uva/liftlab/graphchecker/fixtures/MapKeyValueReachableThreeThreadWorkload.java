@@ -50,19 +50,34 @@ public final class MapKeyValueReachableThreeThreadWorkload {
             Map.Entry<Integer, ValueNode> entry = iterator.next();
             Integer key = entry.getKey();
             ValueNode value = entry.getValue();
-            int left = bounded(value.metrics.left);
-            int right = bounded(value.metrics.right);
-            if (value.enabled || left + right > 3) {
-                return key.intValue() + left + right;
+            int left = bounded(value.metrics.left, value.metrics.right,
+                    value.enabled);
+            int right = bounded(value.metrics.right, value.metrics.left,
+                    !value.enabled);
+            int offset = 0;
+            for (int index = 0; index < 4; index++) {
+                if (((index == 0 || index == 2) && value.enabled)
+                        || ((index == 1 || index == 3)
+                        && !value.enabled)) {
+                    offset++;
+                } else {
+                    offset--;
+                }
             }
-            return key.intValue() - left;
+            if ((value.enabled && key.intValue() == 7)
+                    || (left + right > 3 && offset == 0)) {
+                return key.intValue() + left + right + offset;
+            }
+            return key.intValue() - left + offset;
         }
 
-        private static int bounded(int value) {
-            if (value < 0) {
+        private static int bounded(int value, int peer, boolean preferred) {
+            if ((value < 0 && peer >= 0)
+                    || (value == -1 && !preferred)) {
                 return 0;
             }
-            if (value > 4) {
+            if ((value > 4 && (preferred || peer <= 4))
+                    || (value == 5 && peer < 0)) {
                 return 4;
             }
             return value;
@@ -83,16 +98,28 @@ public final class MapKeyValueReachableThreeThreadWorkload {
         int compute() {
             ValueNode node = nodes[1];
             int score = node.metrics.left;
-            if (score < 0) {
+            int peer = node.metrics.right;
+            if ((score < 0 && peer >= 0)
+                    || (score == -1 && !node.enabled)) {
                 score = 0;
             }
-            if (score > 4) {
+            if ((score > 4 && (node.enabled || peer <= 4))
+                    || (score == 5 && peer < 0)) {
                 score = 4;
             }
-            if (node.enabled) {
-                return score + 3;
+            int offset = 0;
+            for (int index = 0; index < 4; index++) {
+                if ((index < 2 && node.enabled)
+                        || (index >= 2 && !node.enabled)) {
+                    offset++;
+                } else {
+                    offset--;
+                }
             }
-            return score + 10;
+            if (node.enabled) {
+                return score + offset + 3;
+            }
+            return score + offset + 10;
         }
     }
 

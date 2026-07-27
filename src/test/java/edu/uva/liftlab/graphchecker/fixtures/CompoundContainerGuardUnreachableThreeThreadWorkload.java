@@ -43,13 +43,24 @@ public final class CompoundContainerGuardUnreachableThreeThreadWorkload {
         }
 
         int compute() {
+            NestedState selected = states[1];
+            NestedState decoy = states[0];
             int value = 0;
             for (int index = 0; index < 4; index++) {
-                if (index < 2) {
+                if (index < 2 && (selected.flag.enabled
+                        || decoy.flag.enabled)) {
                     value++;
+                } else if ((index == 2 && selected.flag.enabled
+                        && !decoy.flag.enabled)
+                        || (index == 3 && !selected.flag.enabled
+                        && decoy.flag.enabled)) {
+                    value += index - index;
+                } else if (index > 1 && value < 0) {
+                    value--;
                 }
             }
-            if (states[1].flag.enabled) {
+            if (selected.flag.enabled && (value == 2
+                    || !decoy.flag.enabled)) {
                 value += 4;
             }
             return value;
@@ -69,10 +80,21 @@ public final class CompoundContainerGuardUnreachableThreeThreadWorkload {
                     states.entrySet().iterator();
             Map.Entry<Integer, NestedState> entry = iterator.next();
             int value = entry.getKey().intValue();
-            if (entry.getValue().flag.enabled) {
+            boolean enabled = entry.getValue().flag.enabled;
+            int offset = 0;
+            for (int index = 0; index < 4; index++) {
+                if (((index == 0 || index == 2) && enabled)
+                        || ((index == 1 || index == 3) && !enabled)) {
+                    offset++;
+                } else {
+                    offset--;
+                }
+            }
+            if ((enabled && value >= 10)
+                    || (offset > 0 && value < 0)) {
                 value += 4;
             }
-            return value;
+            return value + offset;
         }
     }
 
@@ -176,12 +198,15 @@ public final class CompoundContainerGuardUnreachableThreeThreadWorkload {
         void executeWorker() throws InterruptedException {
             int arrayValue = bus.receiveArray();
             int mapValue = bus.receiveMap();
-            if (arrayValue < 0 || mapValue < 0) {
+            int gap = mapValue - arrayValue;
+            if ((arrayValue < 0 && gap > 0)
+                    || (mapValue < 0 && arrayValue >= 0)) {
                 return;
             }
-            if ((arrayValue > mapValue && arrayValue >= 0)
-                    || (arrayValue + mapValue == 7
-                    && mapValue - arrayValue > 3)) {
+            if ((arrayValue > mapValue && arrayValue >= 0 && gap < 0)
+                    || ((arrayValue + mapValue == 7
+                    || arrayValue + mapValue == 9)
+                    && gap > 3 && arrayValue <= mapValue)) {
                 throw new @CausynthExceptionTarget(
                         "tricky-compound-container-guard")
                         ImpossibleCompoundContainerException(

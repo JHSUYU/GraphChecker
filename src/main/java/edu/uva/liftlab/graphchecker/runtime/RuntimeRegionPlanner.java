@@ -250,6 +250,9 @@ final class RuntimeRegionPlanner {
             List<UpstreamEdgeBinding> bindings) {
         Map<String, Long> latest = new LinkedHashMap<>();
         for (UpstreamEdgeBinding binding : bindings) {
+            if (sameRuntimeRoot(binding)) {
+                continue;
+            }
             String key = binding.downstream.instanceId + "\n"
                     + binding.edge.toPort;
             long writer = binding.readFrom.writerEventSeq();
@@ -260,6 +263,9 @@ final class RuntimeRegionPlanner {
         }
         List<UpstreamEdgeBinding> result = new ArrayList<>();
         for (UpstreamEdgeBinding binding : bindings) {
+            if (sameRuntimeRoot(binding)) {
+                continue;
+            }
             String key = binding.downstream.instanceId + "\n"
                     + binding.edge.toPort;
             if (latest.get(key) == binding.readFrom.writerEventSeq()) {
@@ -267,6 +273,21 @@ final class RuntimeRegionPlanner {
             }
         }
         return result;
+    }
+
+    /**
+     * Overlapping static regions can describe the same concrete root call.
+     * A write followed by a read inside that call is already represented by
+     * its single replay and path condition; treating it as an upstream
+     * activation invents a redundant output summary and loses array-element
+     * identity at the artificial boundary.
+     */
+    private static boolean sameRuntimeRoot(UpstreamEdgeBinding binding) {
+        return binding != null
+                && binding.upstream.root.callId
+                == binding.downstream.root.callId
+                && sameContext(binding.upstream.root,
+                binding.downstream.root);
     }
 
     private static List<MethodEvent> rootCandidates(
@@ -776,8 +797,7 @@ final class RuntimeRegionPlanner {
             List<FieldAccessEvent> fields) {
         FieldCell requested = fieldCell(outputCell);
         if (root == null || root.objectId == 0
-                || !requested.declaredSignature
-                || isArrayJavaType(requested.type)) {
+                || !requested.declaredSignature) {
             return FramePrestatePath.incomplete();
         }
 
@@ -1125,11 +1145,6 @@ final class RuntimeRegionPlanner {
             }
         }
         return sorted(fields);
-    }
-
-    private static boolean isArrayJavaType(String type) {
-        String value = safe(type).trim();
-        return value.startsWith("[") || value.endsWith("[]");
     }
 
     private static void collectGetters(String expression,
@@ -1532,6 +1547,13 @@ final class RuntimeRegionPlanner {
                     instance.region, concreteInputs, instance.root,
                     inputObjects, instance.runtimeEvents,
                     instance.fieldEvents);
+            // Edge bindings must address the canonical input action that the
+            // replay will actually execute.  Field-path collapsing can remove
+            // a parallel declared-field port after demand slicing; retaining
+            // that stale alias here makes read-from equality disappear during
+            // composition.
+            instance.concreteInputPortIds.retainAll(
+                    actionSymbols(symbolize));
             List<Map<String, Object>> branches = branchActions(
                     instance.region, instance.runtimeEvents);
             boolean symbolicPotential = !concreteInputs.isEmpty()
@@ -1574,6 +1596,15 @@ final class RuntimeRegionPlanner {
             drafts.put(instance.instanceId, plan);
         }
         return drafts;
+    }
+
+    private static Set<String> actionSymbols(
+            List<Map<String, Object>> actions) {
+        Set<String> result = new LinkedHashSet<>();
+        for (Map<String, Object> action : values(actions)) {
+            addNonBlank(result, string(action.get("symbol")));
+        }
+        return result;
     }
 
     private static Map<String, Object> admission(
@@ -3254,22 +3285,27 @@ final class RuntimeRegionPlanner {
             String value = safe(endpoint);
             StaticPort exact = null;
             int exactMatches = 0;
+            StaticPort leaf = null;
+            int leafMatches = 0;
             for (StaticPort port : inputs) {
                 if (retainedPortIds != null
                         && !retainedPortIds.contains(port.portId)) {
                     continue;
                 }
-                if (!value.equals(port.portId)
-                        && !value.equals(port.cell)) {
-                    continue;
+                if (value.equals(port.materialization.leafField())) {
+                    leaf = port;
+                    leafMatches++;
                 }
-                exact = port;
-                exactMatches++;
+                if (value.equals(port.portId)
+                        || value.equals(port.cell)) {
+                    exact = port;
+                    exactMatches++;
+                }
             }
-            if (exactMatches == 1) {
-                return new ConsumerInputResolution(exact);
-            }
-            return null;
+            return leafMatches == 1
+                    ? new ConsumerInputResolution(leaf)
+                    : leafMatches == 0 && exactMatches == 1
+                    ? new ConsumerInputResolution(exact) : null;
         }
 
         private StaticPort exactInputFor(String endpoint) {
@@ -3610,7 +3646,76 @@ final class RuntimeRegionPlanner {
                     }
                 }
             }
+            result.inputPortIds.removeIf(portId -> {
+                StaticPort port = region.exactInputFor(portId);
+                return port != null && exactConstructorLiteralInput(
+                        port.cell, runtimeRoot, trace);
+            });
             return result;
+        }
+
+        /**
+         * A constructor argument that is reached only through exact local /
+         * parameter copies from a literal constructor call is program state,
+         * not a symbolic activation boundary.  Follow the concrete caller
+         * chain selected by the trace while every static hop remains a unique
+         * value-flow source.
+         */
+        private boolean exactConstructorLiteralInput(
+                String initialCell, MethodEvent initialInvocation,
+                RuntimeTraceIndex trace) {
+            String cell = safe(initialCell);
+            MethodEvent invocation = initialInvocation;
+            Set<String> visited = new LinkedHashSet<>();
+            for (int depth = 0; depth < 32 && invocation != null; depth++) {
+                String visit = invocation.callId + "\n" + cell;
+                if (!visited.add(visit)) {
+                    return false;
+                }
+                int parameter = parameterIndex(cell);
+                String method = methodInCell(cell);
+                if (parameter >= 0 && invocation.method.equals(method)) {
+                    RuntimeEvent callsite = trace.callSitesByInvocation.get(
+                            invocation.parentSiteId);
+                    MethodEvent caller = trace.methodsByCall.get(
+                            invocation.parentCallId);
+                    if (callsite == null || caller == null) {
+                        return false;
+                    }
+                    Set<String> sources = new LinkedHashSet<>();
+                    for (StaticDataflowProjectionEdge edge : values(
+                            incomingByCell.get(cell))) {
+                        if (!edge.exactCallerValueAt(callsite, caller.method,
+                                parameter)) {
+                            continue;
+                        }
+                        if (edge.constructorLiteral()) {
+                            return true;
+                        }
+                        sources.add(edge.fromCell);
+                    }
+                    if (sources.size() != 1) {
+                        return false;
+                    }
+                    cell = sources.iterator().next();
+                    invocation = caller;
+                    continue;
+                }
+                Set<String> sources = new LinkedHashSet<>();
+                for (StaticDataflowProjectionEdge edge : values(
+                        incomingByCell.get(cell))) {
+                    if (edge.method.equals(invocation.method)
+                            && edge.exactConcreteDefinition(
+                            Collections.singleton(invocation.method))) {
+                        sources.add(edge.fromCell);
+                    }
+                }
+                if (sources.size() != 1) {
+                    return false;
+                }
+                cell = sources.iterator().next();
+            }
+            return false;
         }
 
         private StaticDataflowProjectionEdge uniqueRuntimeHeapWriteDefinition(
@@ -3709,6 +3814,7 @@ final class RuntimeRegionPlanner {
 
     private static final class StaticDataflowProjectionEdge {
         private final String edgeId;
+        private final String kind;
         private final String transferKind;
         private final String relation;
         private final boolean assertable;
@@ -3717,12 +3823,16 @@ final class RuntimeRegionPlanner {
         private final String method;
         private final String siteId;
         private final int unitIndex;
+        private final int argumentIndex;
+        private final String literalValue;
 
-        private StaticDataflowProjectionEdge(String edgeId,
+        private StaticDataflowProjectionEdge(String edgeId, String kind,
                 String transferKind, String relation, boolean assertable,
                 String fromCell, String toCell, String method,
-                String siteId, int unitIndex) {
+                String siteId, int unitIndex, int argumentIndex,
+                String literalValue) {
             this.edgeId = safe(edgeId);
+            this.kind = safe(kind);
             this.transferKind = safe(transferKind);
             this.relation = safe(relation);
             this.assertable = assertable;
@@ -3731,6 +3841,8 @@ final class RuntimeRegionPlanner {
             this.method = safe(method);
             this.siteId = safe(siteId);
             this.unitIndex = unitIndex;
+            this.argumentIndex = argumentIndex;
+            this.literalValue = safe(literalValue);
         }
 
         private static StaticDataflowProjectionEdge fromJson(
@@ -3744,6 +3856,7 @@ final class RuntimeRegionPlanner {
                 return null;
             }
             return new StaticDataflowProjectionEdge(id,
+                    jsonString(json, "kind"),
                     jsonString(json, "transferKind"),
                     jsonString(json, "relation"),
                     staticDataflowAssertable(json),
@@ -3751,7 +3864,23 @@ final class RuntimeRegionPlanner {
                     jsonString(json, "toCell"),
                     jsonString(json, "method"),
                     jsonString(json, "siteId"),
-                    jsonInt(json, "unitIndex", -1));
+                    jsonInt(json, "unitIndex", -1),
+                    jsonInt(json, "argumentIndex", -1),
+                    jsonString(json, "literalValue"));
+        }
+
+        private boolean exactCallerValueAt(
+                RuntimeEvent callsite, String callerMethod, int parameter) {
+            return assertable && "value_flow".equals(relation)
+                    && callerMethod.equals(method)
+                    && callsite.siteId.equals(siteId)
+                    && (argumentIndex < 0
+                    || parameter == argumentIndex);
+        }
+
+        private boolean constructorLiteral() {
+            return "constructor_caller_literal_argument".equals(kind)
+                    && argumentIndex >= 0 && !literalValue.isEmpty();
         }
 
         private boolean exactConcreteDefinition(
@@ -4371,6 +4500,9 @@ final class RuntimeRegionPlanner {
             Set<String> retainedPorts = new LinkedHashSet<>();
             collapseRuntimeConfirmedFieldPathAliases(evidence,
                     retainedBindings);
+            retainedBindings.removeIf(binding ->
+                    !evidence.concreteInputPortIds.contains(
+                            string(binding.get("inputPort"))));
             retainedPorts.clear();
             for (Map<String, Object> binding : retainedBindings) {
                 String port = string(binding.get("inputPort"));
