@@ -10,7 +10,8 @@ source_file="${graphchecker_dir}/src/test/java/edu/uva/liftlab/graphchecker/manu
 class_root="${graphchecker_dir}/target/manual-container-test-classes"
 work_root="${graphchecker_dir}/target/manual-container-three-thread-rpc"
 smt="${work_root}/candidate/candidate.smt2"
-workflow_log="${graphchecker_dir}/target/manual-container-workflow.log"
+workflow_log="${work_root}/workflow.log"
+legacy_workflow_log="${graphchecker_dir}/target/manual-container-workflow.log"
 
 die() {
   echo "[manual-container] $*" >&2
@@ -28,6 +29,7 @@ clean_classes() {
 do_clean() {
   CAUSYNTH_WORKFLOW_CONFIG="${workflow}" "${pipeline}" clean
   clean_classes
+  rm -f "${legacy_workflow_log}"
 }
 
 do_build() {
@@ -50,20 +52,23 @@ do_z3() {
 }
 
 do_run() {
-  mkdir -p "$(dirname "${workflow_log}")"
-  echo "[manual-container] running; details: ${workflow_log}" >&2
-  if ! {
-    do_clean
-    do_build
-    (cd "${graphchecker_dir}" && \
-      CAUSYNTH_WORKFLOW_CONFIG="${workflow}" \
-      GRAPH_CHECKER_SKIP_BUILD=true \
-      "${pipeline}" candidate-smt)
-  } >"${workflow_log}" 2>&1; then
-    tail -n 100 "${workflow_log}" >&2 || true
-    die "workflow failed; inspect ${workflow_log}"
-  fi
-  do_z3
+  local workflow_status
+  do_clean
+  mkdir -p "${work_root}"
+  echo "[manual-container] running; live log: ${workflow_log}" >&2
+  set +e
+  {
+    do_build &&
+      (cd "${graphchecker_dir}" && \
+        CAUSYNTH_WORKFLOW_CONFIG="${workflow}" \
+        GRAPH_CHECKER_SKIP_BUILD=true \
+        "${pipeline}" candidate-smt) &&
+      do_z3
+  } 2>&1 | tee "${workflow_log}"
+  workflow_status=${PIPESTATUS[0]}
+  set -e
+  [[ "${workflow_status}" -eq 0 ]] \
+    || die "workflow failed; inspect ${workflow_log}"
 }
 
 case "${1:-run}" in

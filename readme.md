@@ -101,6 +101,16 @@ output capture 当作互斥 activation。该设计已删除。
 `(regionInstanceId, goalId)` 标识一个语义 campaign，`taskId` 标识其中某次具体
 custom-JDK 执行。branch flip 是 output campaign 内部的路径枚举任务，不是新 activation。
 
+Workflow 只使用两种相对角色：
+
+- `TARGET`：包含目标 exception reach goal 的 campaign；
+- `PRODUCER`：沿 runtime-confirmed read-from edge 反向可达 TARGET 的 output
+  campaign，包括为其他 producer 提供输入的递归 producer。
+
+不存在 `ARRAYVALUE`、`MAPVALUE` 或 `UPSTREAM_N` 这类 workflow 身份。稳定
+`campaignId` 由 `regionId + regionInstanceId + goalId` 生成，目录和调度不依赖 Java
+字段名、container 类型或 producer 在依赖图中的深度。
+
 ## Output closure
 
 对下游请求的每个 OUT，Planner 做一次 backward dependency closure：
@@ -386,18 +396,26 @@ query key 去重，按 wave 合并新 paths，再生成下一批 flips。worker 
 2. `runtime/concolic_region_plan.jsonl`
    - 正确的 region instance 是否有 `OUTPUT_RELATION_CLOSURE` goal；
    - admission blockers。
-3. `schedule/execution_task_plan.jsonl`
-   - 实际 `taskId`、symbolize actions、branches、output closure。
-4. `producer-campaign/<output>/raw/*.jsonl`
-   - custom-JDK abort reason、unresolved input、PC、region-end expression。
-5. `producer-campaign/<output>/path-worklist.json`
-   - `OPEN/CLOSED/GAPPED` 和具体 gap。
-6. `producer-campaign/<output>/merged_region_summaries.jsonl`
-   - 每个 case 的 guard 与所有 output expressions。
+3. `campaigns/target/<campaignId>/execution_task_plan.jsonl`
+   - target 的 `taskId`、branch contract 和 replay root。
+4. `campaigns/producer/<campaignId>/execution_task_plan.jsonl`
+   - producer 的 `taskId`、symbolize actions、branches、output closure。
+5. 同一 campaign 目录中的 `concolic_region_results.jsonl`、
+   `concolic_region_summaries.jsonl` 和 `import_diagnostics.jsonl`
+   - custom-JDK abort reason、unresolved input、PC、region-end expression 和
+     Importer 拒绝原因。
+6. 同一 producer campaign 目录中的 `path_closure.json`、
+   `path_exploration_records.jsonl` 和 `merged_summary.jsonl`
+   - `CLOSED/GAPPED`、具体 gap、每个 case 的 guard 与所有 output expressions。
 7. `candidate/candidate_composition_manifest.json`
    - unresolved edge、sort/expression gap 和输入 summary SHA。
 8. `candidate/candidate.smt2`
    - 只在 manifest `CANDIDATE_READY` 且 gaps 为空后直接运行 Z3。
+
+manual workflow 的 console 输出同时完整保存在
+`target/manual-container-three-thread-rpc/workflow.log`。失败消息包含
+stage、component、campaign、region、instance、goal 和首要 artifact 路径；先看该路径，
+不必从最终 SMT 反推上游失败。
 
 常见错误定位：
 
@@ -455,10 +473,10 @@ composition is not structurally complete
 
 ## 2026-07-27 final validation
 
-本轮冻结后的生产 Java 为 43,670 行，相对 PR 0 记录的 81,084 行减少 37,414 行
-（约 46%）。`three-thread-rpc/run.sh` 从旧的 1,618 行降为 1,261 行；剩余 Shell
-负责可见的 stage orchestration、artifact lineage 和真实 workflow gate，不再复制
-Planner/Importer/Composer 的 schema 语义。
+本轮冻结后的生产 Java 为 43,606 行，相对 PR 0 记录的 81,084 行减少 37,478 行
+（约 46%）。`three-thread-rpc/run.sh` 从旧的 1,618 行降为 1,385 行；剩余 Shell
+负责可见的 stage orchestration、artifact lineage、并行 worker 和带完整上下文的失败
+诊断，不再复制 Planner/Importer/Composer 的 schema 语义。
 
 最终 gate：
 
@@ -468,6 +486,7 @@ Maven contract tests             105/105 PASS
 fixed-RPC stress, 5 x 20         100/100 PASS
 original real workflows           13/13 PASS
 container tricky workflows         5/5 PASS
+manual campaign-layout workflow    UNSAT PASS
 ```
 
 stress 的每个 `PASS` 同时要求：四行 concrete truth table 正确、真实 custom-JDK/concolic

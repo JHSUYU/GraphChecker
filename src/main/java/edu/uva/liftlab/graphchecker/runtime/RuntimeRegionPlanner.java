@@ -1693,7 +1693,7 @@ final class RuntimeRegionPlanner {
             outputGoal.put("admission", admission(writerPathReplayable,
                     writerPathReplayable && issues.isEmpty(),
                     writerPathReplayable
-                            ? "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
+                            ? "RUNTIME_CONFIRMED_PRODUCER_REPLAY"
                             : "RUNTIME_READ_FROM_WITNESS_ONLY_PATH_TRUNCATED",
                     issues));
 

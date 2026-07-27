@@ -14,8 +14,12 @@ experiments/generic/three-thread-rpc/manual-container/run.sh
 
 The command cleans its isolated work directory, builds GraphChecker without
 compiling the regular test tree, compiles only the manual workload, runs the
-real custom-JDK workflow, and prints only `sat` or `unsat`. Detailed workflow
-output is saved in `target/manual-container-workflow.log`.
+real custom-JDK workflow, and finally runs Z3. The complete workflow and the
+final `sat` or `unsat` result are shown live and saved together in:
+
+```text
+target/manual-container-three-thread-rpc/workflow.log
+```
 
 Individual commands are also available:
 
