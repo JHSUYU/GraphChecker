@@ -1,0 +1,22 @@
+# round=3
+case	class	expected	observed	result	exit	detail
+01	StressRoundFixture01	SAT	REACHABLE	PASS	0	-
+02	StressRoundFixture02	UNSAT	UNREACHABLE	PASS	0	-
+03	StressRoundFixture03	SAT	REACHABLE	PASS	0	-
+04	StressRoundFixture04	UNSAT	UNREACHABLE	PASS	0	-
+05	StressRoundFixture05	SAT	REACHABLE	PASS	0	-
+06	StressRoundFixture06	UNSAT	UNREACHABLE	PASS	0	-
+07	StressRoundFixture07	SAT	REACHABLE	PASS	0	-
+08	StressRoundFixture08	UNSAT	UNREACHABLE	PASS	0	-
+09	StressRoundFixture09	SAT	REACHABLE	PASS	0	-
+10	StressRoundFixture10	UNSAT	UNREACHABLE	PASS	0	-
+11	StressRoundFixture11	SAT	REACHABLE	PASS	0	-
+12	StressRoundFixture12	UNSAT	UNREACHABLE	PASS	0	-
+13	StressRoundFixture13	SAT	REACHABLE	PASS	0	-
+14	StressRoundFixture14	UNSAT	UNREACHABLE	PASS	0	-
+15	StressRoundFixture15	SAT	REACHABLE	PASS	0	-
+16	StressRoundFixture16	UNSAT	UNREACHABLE	PASS	0	-
+17	StressRoundFixture17	SAT	REACHABLE	PASS	0	-
+18	StressRoundFixture18	UNSAT	UNREACHABLE	PASS	0	-
+19	StressRoundFixture19	SAT	REACHABLE	PASS	0	-
+20	StressRoundFixture20	UNSAT	UNREACHABLE	PASS	0	-

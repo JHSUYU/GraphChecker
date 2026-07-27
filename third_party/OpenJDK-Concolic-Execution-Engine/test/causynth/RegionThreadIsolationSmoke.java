@@ -240,14 +240,14 @@ public final class RegionThreadIsolationSmoke {
              regionIndex++) {
             String regionId = "REGION.thread." + threadIndex + "."
                     + regionIndex;
-            String activationId = "ACT.thread." + threadIndex + "."
+            String taskId = "TASK.thread." + threadIndex + "."
                     + regionIndex;
             String prefix = "thread_" + threadIndex + "_region_"
                     + regionIndex;
             Input input = new Input(threadIndex * 100 + regionIndex + 1);
             Gate gate = gates[regionIndex];
 
-            long started = System.startConcolicRegion(regionId, activationId);
+            long started = System.startConcolicRegion(regionId, taskId);
             require(started == 0L, "region start rejected: " + started);
             String atStart = System.getConcolicRegionSummary();
             System.symbolizeField(input, "value", prefix);
@@ -268,7 +268,7 @@ public final class RegionThreadIsolationSmoke {
             require(has(atStart, "\"regionId\":\"" + regionId + "\""),
                     atStart);
             require(has(atStart,
-                    "\"taskId\":\"" + activationId + "\""),
+                    "\"taskId\":\"" + taskId + "\""),
                     atStart);
             require(has(atStart, "\"pathCondition\":[]"), atStart);
 
@@ -283,7 +283,7 @@ public final class RegionThreadIsolationSmoke {
             require(has(finished, "\"regionId\":\"" + regionId + "\""),
                     finished);
             require(has(finished,
-                    "\"taskId\":\"" + activationId + "\""),
+                    "\"taskId\":\"" + taskId + "\""),
                     finished);
             require(has(finished, prefix), finished);
 

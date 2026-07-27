@@ -66,7 +66,6 @@ project_repo=$(configured_value project_repo)
 project_test_classes=$(configured_value project_test_classes_dir)
 original_classes=$(configured_value project_classes_dir)
 instrumented_classes=$(configured_value analysis_classes_dir)
-static_regions=$(configured_value static_regions)
 static_graph=$(configured_value static_graph)
 runtime_edge_validations=$(configured_value runtime_edge_validations)
 graphchecker_jar=$(configured_value graphchecker_jar)
@@ -104,6 +103,7 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   import CH               Strictly import that producer capture
   explore-producer CH     Close and merge one producer path worklist
   candidate-compose       Compose producer relations with the target seed
+  candidate-smt           Run the clean workflow through candidate SMT
   candidate-solve         Check the candidate SMT with Z3
   candidate-manifest      Refresh hashes for an existing solved candidate
   candidate               Run the clean workflow through candidate SMT + Z3
@@ -151,20 +151,10 @@ validate_discovery_inputs() {
   require_file "runtime region plan" "${region_plan}"
   require_file "runtime edge validations" "${runtime_edge_validations}"
   require_file "static data-flow graph" "${static_graph}"
-  workflow_discovery --command validate >/dev/null \
-    || die "runtime read-from discovery is inconsistent"
 }
 
 discovered_producer_channels() {
   workflow_discovery --command producer-channels
-}
-
-discovered_channel() {
-  workflow_discovery --command resolve-channel --channel "$1"
-}
-
-producer_owner_channel() {
-  workflow_discovery --command owner-channel --channel "$1"
 }
 
 producer_binding() {
@@ -176,23 +166,18 @@ target_binding() {
 }
 
 channel_schedule() {
-  local channel
-  channel=$(producer_owner_channel "$1") || return $?
   printf '%s/schedule-%s\n' "${work_root}" \
-    "$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')"
+    "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
 }
 
 channel_classes() {
-  local channel
-  channel=$(producer_owner_channel "$1") || return $?
   printf '%s/concolic-%s-classes\n' "${work_root}" \
-    "$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')"
+    "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
 }
 
 scheduled_task() {
-  local requested=$1
-  local channel schedule
-  channel=$(discovered_channel "${requested}") || return $?
+  local channel=$1
+  local schedule
   schedule=$(channel_schedule "${channel}") || return $?
   require_file "scheduled producer task" \
     "${schedule}/execution_task_plan.jsonl"
@@ -272,11 +257,9 @@ do_schedule_target() {
 }
 
 do_schedule_producer() {
-  local requested=$1
-  local channel
+  local channel=$1
   local region instance goal output binding
   validate_discovery_inputs
-  channel=$(producer_owner_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
   IFS=$'\t' read -r region instance goal <<< "${binding}"
   output=$(channel_schedule "${channel}") || return $?
@@ -284,15 +267,13 @@ do_schedule_producer() {
     CAUSYNTH_SCHEDULE_OUTPUT_DIR="${output}" \
     "${runner}" --config "${config}" schedule \
       --region-id "${region}" --region-instance-id "${instance}" \
-      --goal-id "${goal}" \
-      --capture-only true --multiple-per-region true)
+      --goal-id "${goal}")
 }
 
 do_instrument() {
-  local requested=$1
-  local channel schedule classes task
+  local channel=$1
+  local schedule classes task
   validate_discovery_inputs
-  channel=$(producer_owner_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   classes=$(channel_classes "${channel}") || return $?
   task=$(scheduled_task "${channel}") || return $?
@@ -426,12 +407,11 @@ run_custom_plan() {
 }
 
 run_custom_java() {
-  local requested=$1
+  local channel=$1
   local b1=$2
   local b2=$3
-  local channel schedule classes task results
+  local schedule classes task results
   validate_discovery_inputs
-  channel=$(producer_owner_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   classes=$(channel_classes "${channel}") || return $?
   task=$(scheduled_task "${channel}") || return $?
@@ -441,11 +421,9 @@ run_custom_java() {
 }
 
 do_import() {
-  local requested=$1
-  local channel
+  local channel=$1
   local schedule
   validate_discovery_inputs
-  channel=$(producer_owner_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   scheduled_task "${channel}" >/dev/null
   import_plan "${schedule}/execution_task_plan.jsonl" \
@@ -546,13 +524,16 @@ combine_jsonl_unique() {
   local temporary
   temporary=$(mktemp "${output}.tmp.XXXXXX")
   if ! jq -c -s --arg identity "${identity_field}" '
+      def comparable:
+        if $identity == "summaryId" then del(.taskId) else . end;
       reduce .[] as $row (
         {order: [], rows: {}};
         ($row[$identity] // "") as $key
         | if ($row | type) != "object" or ($key | type) != "string"
             or ($key | length) == 0 then
             error("missing JSONL identity " + $identity)
-          elif (.rows | has($key)) and .rows[$key] != $row then
+          elif (.rows | has($key))
+              and (.rows[$key] | comparable) != ($row | comparable) then
             error("conflicting duplicate " + $identity + ":" + $key)
           elif (.rows | has($key)) then .
           else .order += [$key] | .rows[$key] = $row
@@ -570,10 +551,8 @@ combine_jsonl_unique() {
 }
 
 producer_campaign_directory() {
-  local channel
-  channel=$(producer_owner_channel "$1") || return $?
   printf '%s/%s\n' "${producer_campaign_root}" \
-    "$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')"
+    "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
 }
 
 run_path_task() {
@@ -585,7 +564,6 @@ run_path_task() {
   local z3=$6
   local solver_timeout=$7
   local solver_status solver_outcome replay_task raw imported
-  local replay_verification
 
   mkdir -p "${task_dir}/tmp"
   set +e
@@ -717,16 +695,10 @@ report_path_wave_failure() {
     echo "    solver: ${task_dir}/path_flip_solver_result.json" >&2
     echo "    raw result: ${task_dir}/concolic_region_results.jsonl" >&2
     echo "    import diagnostics: ${task_dir}/concolic_import_diagnostics.jsonl" >&2
-    echo "    replay verification: ${task_dir}/path_replay_verification.json" >&2
     if [[ -s "${task_dir}/path_flip_solver_result.json" ]]; then
       jq -r '
         "    solver-status=\(.status // "missing") solver=\(.solverStatus // "missing") reason=\(.reason // "")"
       ' "${task_dir}/path_flip_solver_result.json" >&2 || true
-    fi
-    if [[ -s "${task_dir}/path_replay_verification.json" ]]; then
-      jq -r '
-        "    verifier-status=\(.status // "missing") valid=\(.valid // false) failures=\((.failures // []) | join(","))"
-      ' "${task_dir}/path_replay_verification.json" >&2 || true
     fi
     if [[ -s "${task_dir}/stderr.log" ]]; then
       echo "    stderr tail:" >&2
@@ -909,10 +881,9 @@ explore_region_paths() {
 }
 
 do_explore_producer() {
-  local requested=$1
-  local channel schedule classes campaign region instance goal binding
+  local channel=$1
+  local schedule classes campaign region instance goal binding
   validate_discovery_inputs
-  channel=$(producer_owner_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
   IFS=$'\t' read -r region instance goal <<< "${binding}"
   schedule=$(channel_schedule "${channel}") || return $?
@@ -999,7 +970,8 @@ run_producers_parallel() {
     (
       set -euo pipefail
       run_producer_seed_pipeline "${channel}"
-      echo "[three-thread-rpc] producer ${channel} seed pipeline complete"
+      do_explore_producer "${channel}"
+      echo "[three-thread-rpc] producer ${channel} path campaign complete"
     ) &
     producer_pids+=("$!")
     if (( ${#producer_pids[@]} >= max_jobs )); then
@@ -1014,17 +986,13 @@ run_producers_parallel() {
       || die "producer region pipeline failed"
   fi
 
-  for channel in "${channels[@]}"; do
-    do_explore_producer "${channel}"
-    echo "[three-thread-rpc] producer ${channel} path campaign complete"
-  done
 }
 
 do_candidate_compose() {
   local target_region target_instance target_goal binding channel campaign
   local producer_binding_row producer_region producer_summary
   local compose_summaries
-  local -a channels bounded_args merged_inputs
+  local -a channels merged_inputs
   require_file "target seed summary" \
     "${target_schedule}/concolic_region_summaries.jsonl"
   require_file "target candidate branch query" \
@@ -1036,7 +1004,6 @@ do_candidate_compose() {
   IFS=$'\t' read -r target_region target_instance target_goal <<< "${binding}"
   mapfile -t channels < <(discovered_producer_channels | LC_ALL=C sort)
   [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
-  bounded_args=()
   merged_inputs=()
   for channel in "${channels[@]}"; do
     producer_binding_row=$(producer_binding "${channel}") || return $?
@@ -1051,7 +1018,6 @@ do_candidate_compose() {
       and .[0].relationallyComplete == true
     ' "${producer_summary}" >/dev/null \
       || die "producer relation is incomplete for channel ${channel}"
-    bounded_args+=(--bounded-upstream-region "${producer_region}")
     merged_inputs+=("${producer_summary}")
   done
   jq -e -s --argjson expected "${#merged_inputs[@]}" '
@@ -1067,7 +1033,7 @@ do_candidate_compose() {
     CAUSYNTH_COMPOSITION_MANIFEST="${candidate_root}/candidate_composition_manifest.json" \
     CAUSYNTH_FATAL_REGION="${target_region}" \
     CAUSYNTH_FATAL_REGION_INSTANCE_ID="${target_instance}" \
-    "${runner}" --config "${config}" compose "${bounded_args[@]}")
+    "${runner}" --config "${config}" compose)
   jq -e '
     .schemaVersion == 2
     and .kind == "CONCOLIC_COMPOSED_SMT"
@@ -1236,7 +1202,7 @@ write_candidate_manifest() {
   ' "${output}" >/dev/null || die "candidate manifest is incomplete"
 }
 
-do_candidate() {
+do_candidate_smt() {
   require_clean_work_root
   do_prepare
   do_analyze
@@ -1247,6 +1213,10 @@ do_candidate() {
   do_explore_target
   run_producers_parallel
   do_candidate_compose
+}
+
+do_candidate() {
+  do_candidate_smt
   do_candidate_solve
   write_candidate_manifest
   echo "[three-thread-rpc] complete Z3-checked candidate workflow"
@@ -1274,6 +1244,7 @@ case "${command_name}" in
   import) [[ $# -eq 1 ]] || die "import needs one discovered channel"; do_import "$1" ;;
   explore-producer) [[ $# -eq 1 ]] || die "explore-producer needs one discovered channel"; do_explore_producer "$1" ;;
   candidate-compose) [[ $# -eq 0 ]] || die "candidate-compose takes no arguments"; do_candidate_compose ;;
+  candidate-smt) [[ $# -eq 0 ]] || die "candidate-smt takes no arguments"; do_candidate_smt ;;
   candidate-solve) [[ $# -eq 0 ]] || die "candidate-solve takes no arguments"; do_candidate_solve ;;
   candidate-manifest) [[ $# -eq 0 ]] || die "candidate-manifest takes no arguments"; write_candidate_manifest ;;
   candidate) [[ $# -eq 0 ]] || die "candidate takes no arguments"; do_candidate ;;

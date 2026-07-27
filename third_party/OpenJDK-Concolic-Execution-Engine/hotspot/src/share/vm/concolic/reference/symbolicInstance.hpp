@@ -11,11 +11,13 @@
 #include "utilities/debug.hpp"
 
 #include <map>
+#include <set>
 #include <stdio.h>
 
 class SymInstance : public SymRef {
 private:
   bool _demand_symbolic_fields;
+  std::set<int> _written_fields;
 
 public:
   SymInstance(sym_rid_t sym_rid)
@@ -28,6 +30,14 @@ public:
 
   inline bool demand_symbolic_fields_enabled() const {
     return _demand_symbolic_fields;
+  }
+
+  inline void mark_field_written(int field_offset) {
+    _written_fields.insert(field_offset);
+  }
+
+  inline bool field_written(int field_offset) const {
+    return _written_fields.find(field_offset) != _written_fields.end();
   }
 
   virtual Expression *get(int field_offset) { return NULL; }

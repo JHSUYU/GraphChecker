@@ -46,12 +46,13 @@ public final class RegionMapIteratorRemoveApiSmoke {
                 iterator.remove();
             }
         }
+        String relation = System.getSymbolicExpression(state.entries);
         String summary = System.finishConcolicRegion();
 
         require(!state.entries.containsKey(7), summary);
         require(summary.contains("iterator_expiry"), summary);
         require(summary.contains("iterator_now"), summary);
-        require(summary.contains("java/util/HashMap remove"), summary);
+        require(relation.contains("\"operation\":\"REMOVE_AT\""), relation);
         require(summary.contains("\"_op\":\"<\""), summary);
         if (args.length > 0 && "--dump".equals(args[0])) {
             System.out.println(summary);

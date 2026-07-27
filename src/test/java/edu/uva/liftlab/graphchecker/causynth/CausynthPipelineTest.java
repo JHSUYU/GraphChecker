@@ -2,7 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.RootedOutputCapture;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -23,6 +23,7 @@ import soot.jimple.AssignStmt;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
 import soot.jimple.Jimple;
+import soot.jimple.NullConstant;
 import soot.jimple.Stmt;
 
 import java.lang.reflect.Method;
@@ -40,6 +41,7 @@ import java.util.Map;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
@@ -101,7 +103,7 @@ public class CausynthPipelineTest {
                     "capture and descriptor counts differ");
         }
         JsonObject envelope = new JsonObject();
-        envelope.addProperty("schemaVersion", 1);
+        envelope.addProperty("schemaVersion", 2);
         envelope.addProperty("kind", "OUTPUT_CLOSURE_CONTRACT");
         JsonObject producer = new JsonObject();
         producer.addProperty("regionId", regionId);
@@ -109,6 +111,7 @@ public class CausynthPipelineTest {
                 regionId + "@TEST#call" + rootCallId);
         producer.addProperty("rootCallId", rootCallId);
         envelope.add("producer", producer);
+        envelope.add("causalEdges", new JsonArray());
         JsonArray members = new JsonArray();
         for (int index = 0; index < captures.size(); index++) {
             JsonObject capture = captures.get(index).getAsJsonObject();
@@ -141,7 +144,18 @@ public class CausynthPipelineTest {
             member.add("slice", slice);
             members.add(member);
         }
-        activation.add("inputActions", new JsonArray());
+        JsonArray inputActions = new JsonArray();
+        for (int index = 0; index < captures.size(); index++) {
+            JsonObject capture = captures.get(index).getAsJsonObject();
+            JsonObject action = new JsonObject();
+            action.addProperty("symbol",
+                    capture.get("accessRootInputPort").getAsString());
+            action.addProperty("mode", "SYMBOLIC");
+            action.add("fieldPath",
+                    capture.getAsJsonArray("fieldPath").deepCopy());
+            inputActions.add(action);
+        }
+        activation.add("inputActions", inputActions);
         activation.addProperty("goalId", outputGoalId(activation));
         activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         activation.addProperty("regionId", regionId);
@@ -204,6 +218,11 @@ public class CausynthPipelineTest {
             }
             attachDirectOutputClosure(activation, "REGION.JOINT", 0,
                     captures, "I", "I");
+            JsonArray rootedPath = new JsonArray();
+            rootedPath.add("holder");
+            rootedPath.add("value0");
+            activation.getAsJsonArray("inputActions").get(0)
+                    .getAsJsonObject().add("fieldPath", rootedPath);
             JsonObject branch = new JsonObject();
             branch.addProperty("siteId", caller + "#u7");
             activation.add("branches", singletonJsonArray(branch));
@@ -214,9 +233,11 @@ public class CausynthPipelineTest {
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
                             plan, "TASK.JOINT.CAPTURE");
-            List<OutputCaptureSpec> selection =
+            List<RootedOutputCapture> selection =
                     instrumentation.outputCaptures();
             assertEquals(2, selection.size());
+            assertEquals(Arrays.asList("holder", "value0"),
+                    selection.get(0).fieldPath());
             assertEquals(Collections.singleton(7),
                     instrumentation.branches().units(caller));
 
@@ -354,12 +375,13 @@ public class CausynthPipelineTest {
             accessRoot.addProperty("symbol", "REGION.FIELD.in.0");
             accessRoot.addProperty("location", "RECEIVER_FIELD");
             accessRoot.addProperty("mode", "SYMBOLIC");
+            accessRoot.add("fieldPath", singletonJsonArray("value"));
             activation.add("inputActions",
                     singletonJsonArray(accessRoot));
             Files.write(plan, (activation + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
-            List<OutputCaptureSpec> selection =
+            List<RootedOutputCapture> selection =
                     ConcolicInstrumentationSelections
                             .InstrumentationPlan.from(
                             plan, "TASK.FIELD.CAPTURE")
@@ -386,9 +408,21 @@ public class CausynthPipelineTest {
             for (Unit unit : body.getUnits()) units.add(unit);
             int writeIndex = units.indexOf(write);
             int hookIndex = -1;
+            boolean nullOwnerGuard = false;
             InvokeExpr hook = null;
             for (int index = 0; index < units.size(); index++) {
                 Unit unit = units.get(index);
+                if (unit instanceof soot.jimple.IfStmt
+                        && ((soot.jimple.IfStmt) unit).getCondition()
+                        instanceof soot.jimple.EqExpr) {
+                    soot.jimple.BinopExpr condition =
+                            (soot.jimple.BinopExpr)
+                                    ((soot.jimple.IfStmt) unit)
+                                            .getCondition();
+                    nullOwnerGuard |= condition.getOp1()
+                            instanceof NullConstant
+                            || condition.getOp2() instanceof NullConstant;
+                }
                 if (!(unit instanceof Stmt)
                         || !((Stmt) unit).containsInvokeExpr()) continue;
                 InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
@@ -406,13 +440,68 @@ public class CausynthPipelineTest {
             assertEquals("REGION.FIELD.out.0.exit-field",
                     hook.getArg(0).toString()
                     .replace("\"", ""));
-            assertEquals(field.getSignature(), hook.getArg(3).toString()
-                    .replace("\"", ""));
-            assertSame(receiver, hook.getArg(4));
-            assertTrue(hook.getArg(5) instanceof Local);
+            assertEquals(3, hook.getArgCount());
+            assertTrue(hook.getArg(1) instanceof Local);
+            assertTrue(hook.getArg(2) instanceof Local);
+            assertTrue(nullOwnerGuard);
         } finally {
             folder.delete();
         }
+    }
+
+    @Test
+    public void constructorHooksStartAfterInitializationAndReturnReceiver() {
+        G.reset();
+        SootClass base = new SootClass("example.ConstructorBase",
+                Modifier.PUBLIC);
+        Scene.v().addClass(base);
+        SootMethod baseConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        base.addMethod(baseConstructor);
+        SootMethod staticHelper = new SootMethod("helper",
+                Collections.emptyList(), VoidType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        base.addMethod(staticHelper);
+
+        SootClass owner = new SootClass("example.ConstructorTarget",
+                Modifier.PUBLIC);
+        owner.setSuperclass(base);
+        Scene.v().addClass(owner);
+        SootMethod constructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        owner.addMethod(constructor);
+        Body body = Jimple.v().newBody(constructor);
+        constructor.setActiveBody(body);
+        Local receiver = Jimple.v().newLocal("r0",
+                RefType.v(owner.getName()));
+        Local initialized = Jimple.v().newLocal("initialized",
+                soot.IntType.v());
+        body.getLocals().add(receiver);
+        body.getLocals().add(initialized);
+        body.getUnits().add(Jimple.v().newIdentityStmt(receiver,
+                Jimple.v().newThisRef((RefType) receiver.getType())));
+        Stmt constructorCall = Jimple.v().newInvokeStmt(
+                Jimple.v().newSpecialInvokeExpr(receiver,
+                        baseConstructor.makeRef()));
+        body.getUnits().add(constructorCall);
+        AssignStmt firstInitializedUse = Jimple.v().newAssignStmt(
+                initialized, IntConstant.v(1));
+        body.getUnits().add(firstInitializedUse);
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+
+        assertSame(firstInitializedUse,
+                CausynthPipeline.safeInstrumentationEntry(
+                        body, constructor));
+        InvokeExpr invoke = constructorCall.getInvokeExpr();
+        assertNull(CausynthPipeline.runtimeCallSiteReceiver(invoke));
+        assertSame(receiver, CausynthPipeline.runtimeCallSiteReturnValue(
+                constructorCall, invoke));
+
+        Stmt ordinaryVoidCall = Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(staticHelper.makeRef()));
+        assertTrue(CausynthPipeline.runtimeCallSiteReturnValue(
+                ordinaryVoidCall,
+                ordinaryVoidCall.getInvokeExpr()) instanceof NullConstant);
     }
 
     private static void restoreProperty(String name, String value) {

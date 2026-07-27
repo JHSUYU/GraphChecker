@@ -16,11 +16,10 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveString;
 /**
  * Immutable solver-only context for path constraints that are not branches.
  *
- * <p>A {@link BranchReplayContract} remains the sole authority for branch
- * predicates and runtime branch replay.  VM array-load and method-relation
- * constraints can occur between those predicates, but they are not branch
- * witnesses and must never be converted into one.  This object preserves
- * only those positioned non-branch constraints for the path solver.</p>
+ * <p>A {@link BranchReplayContract} owns the decision positions. Every other
+ * positioned VM constraint in the retained prefix is solver context. IR
+ * support is decided once by the constraint solver rather than by a second,
+ * inevitably narrower whitelist here.</p>
  */
 public final class SolverPathContext {
     public static final int SCHEMA_VERSION = 1;
@@ -40,7 +39,11 @@ public final class SolverPathContext {
                             "non-branch constraint positions must be "
                                     + "strictly increasing");
                 }
-                validateExpression(constraint.expression);
+                if (constraint.expression == null
+                        || !constraint.expression.isJsonObject()) {
+                    throw new IllegalArgumentException(
+                            "non-branch solver constraint must be an object");
+                }
                 copy.add(new PositionedConstraint(
                         constraint.summaryPcIndex,
                         CanonicalJson.copy(constraint.expression)));
@@ -55,11 +58,7 @@ public final class SolverPathContext {
                 .<PositionedConstraint>emptyList());
     }
 
-    /**
-     * Partitions the retained source prefix without copying branch
-     * predicates.  Any unmapped Boolean predicate is rejected; only explicit
-     * VM relation nodes are admitted as non-branch solver context.
-     */
+    /** Partitions the retained source prefix by canonical decision position. */
     public static SolverPathContext fromPath(JsonArray pathCondition,
                                              Set<Integer> branchPositions,
                                              int targetPosition) {
@@ -146,21 +145,6 @@ public final class SolverPathContext {
         result.add("constraints", rows);
         result.addProperty("authority", AUTHORITY);
         return (JsonObject) CanonicalJson.copy(result);
-    }
-
-    private static void validateExpression(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) {
-            throw new IllegalArgumentException(
-                    "non-branch solver constraint must be an object");
-        }
-        JsonObject object = expression.getAsJsonObject();
-        String type = primitiveString(object, "_type");
-        if (!ContainerSmtCodec.EXPRESSION_TYPE.equals(type)
-                && !"MethodExpression".equals(type)) {
-            throw new IllegalArgumentException(
-                    "unwitnessed path predicate is not an admitted "
-                            + "non-branch constraint: " + type);
-        }
     }
 
     private static final class PositionedConstraint {

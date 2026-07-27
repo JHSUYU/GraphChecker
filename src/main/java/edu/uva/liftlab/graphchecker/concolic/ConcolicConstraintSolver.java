@@ -30,6 +30,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
@@ -43,24 +44,41 @@ public final class ConcolicConstraintSolver {
                                Path z3, long timeoutMillis)
             throws IOException, InterruptedException {
         PathQuery query = PathQuery.decode(task);
-        Encoder encoder = new Encoder();
         BranchReplayContract replayContract = query.replayContract;
-        JsonArray contextConstraints = query.pathContext.expressions();
-        for (int index = 0; index < contextConstraints.size(); index++) {
-            encoder.addConstraint(contextConstraints.get(index),
-                    "q_context_" + index);
-        }
         JsonArray branchConstraints = replayContract
                 .requiredPathPredicates();
-        Set<String> targetSymbols = Collections.emptySet();
+        JsonArray contextConstraints = query.pathContext.expressions();
+        List<JsonObject> actions = materializationActions(activation);
+        SparseContainerBoundaries containerBoundaries =
+                SparseContainerBoundaries.discover(
+                        branchConstraints, contextConstraints, actions);
+        Encoder encoder = new Encoder(containerBoundaries);
+        for (int index = 0; index < contextConstraints.size(); index++) {
+            JsonElement constraint = contextConstraints.get(index);
+            if (!containerBoundaries.isConcreteObservation(constraint)) {
+                encoder.addConstraint(constraint, "q_context_" + index);
+            }
+        }
+        List<Set<String>> branchSymbolSets = new ArrayList<>();
+        Set<String> targetSymbols = new LinkedHashSet<>();
         for (int index = 0; index < branchConstraints.size(); index++) {
             Set<String> symbols = encoder.addConstraint(
                     branchConstraints.get(index),
                     "q_branch_" + index);
+            branchSymbolSets.add(symbols);
             if (index + 1 == branchConstraints.size()) {
-                targetSymbols = symbols;
+                targetSymbols.addAll(symbols);
             }
         }
+        Set<String> replayControlSymbols = replayControlFrontier(
+                branchSymbolSets);
+        replayControlSymbols.retainAll(encoder.controlledSymbols);
+        replayControlSymbols.removeAll(
+                encoder.derivedFieldAliases(actions));
+        ReferenceDomains referenceDomains = encoder.bindReferenceDomains(
+                replayControlSymbols, actions,
+                referencesComparedWithNull(branchConstraints));
+        encoder.bindSparseContainerBoundaries();
         String smt = encoder.finish();
         JsonObject record = baseRecord(query.queryKey);
         record.add("unsupported", strings(encoder.unsupported));
@@ -71,8 +89,17 @@ public final class ConcolicConstraintSolver {
                     replayContract);
         }
 
-        List<JsonObject> actions = materializationActions(activation);
-        if (hasMaterializationGap(targetSymbols, actions, true)) {
+        if (!containerBoundaries.gaps.isEmpty()) {
+            record.addProperty("status", "MATERIALIZATION_GAP");
+            record.addProperty("reason",
+                    "SPARSE_CONTAINER_BOUNDARY_IS_NOT_MATERIALIZABLE");
+            record.add("unresolvedContainerBoundaries",
+                    strings(containerBoundaries.gaps));
+            return new Result(record, smt, new JsonArray(),
+                    replayContract);
+        }
+
+        if (hasMaterializationGap(encoder, targetSymbols, actions, true)) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
                     "FLIP_CONDITION_DEPENDS_ON_UNMATERIALIZABLE_SYMBOLS");
@@ -80,23 +107,18 @@ public final class ConcolicConstraintSolver {
                     replayContract);
         }
 
-        // Prefix inputs need real targets; environment terms remain unforced.
-        if (hasMaterializationGap(encoder.controlledSymbols, actions,
-                false)) {
-            record.addProperty("status", "MATERIALIZATION_GAP");
-            record.addProperty("reason",
-                    "PATH_CONSTRAINT_DEPENDS_ON_UNMATERIALIZABLE_"
-                            + "CONTROLLED_SYMBOLS");
-            return new Result(record, smt, new JsonArray(),
-                    replayContract);
-        }
-
-        // Preserve non-null prefix objects; materialize exact null references.
         Set<String> targetControlledSymbols = new LinkedHashSet<>(
                 targetSymbols);
         targetControlledSymbols.retainAll(encoder.controlledSymbols);
-        Set<String> projectedControlledSymbols = new LinkedHashSet<>(
-                encoder.controlledSymbols);
+
+        if (hasMaterializationGap(encoder, replayControlSymbols, actions,
+                false)) {
+            record.addProperty("status", "MATERIALIZATION_GAP");
+            record.addProperty("reason",
+                    "REPLAY_CONTROL_FRONTIER_IS_NOT_MATERIALIZABLE");
+            return new Result(record, smt, new JsonArray(),
+                    replayContract);
+        }
 
         Path executable = z3 == null ? Paths.get("z3") : z3;
         SolverOutput output = run(executable, smt,
@@ -122,29 +144,26 @@ public final class ConcolicConstraintSolver {
         }
 
         Map<String, String> values = parseGetValues(output.stdout);
-        for (String raw : encoder.controlledSymbols) {
-            if (targetControlledSymbols.contains(raw)
-                    || encoder.names(raw).sort != Sort.REF) {
-                continue;
-            }
-            String nullnessValue = values.get(
-                    encoder.names(raw).nullness);
-            if ("false".equals(nullnessValue)) {
-                projectedControlledSymbols.remove(raw);
-            }
-            // A missing/non-Boolean nullness value intentionally leaves the
-            // symbol projected. modelAssignments will omit it and the normal
-            // all-path-input completeness check below will fail closed.
+        ModelProjection projection = modelAssignments(encoder, values,
+                actions, replayControlSymbols, referenceDomains);
+        ModelProjection containerProjection =
+                sparseContainerAssignments(values, containerBoundaries,
+                        referenceDomains);
+        for (JsonElement assignment : containerProjection.assignments) {
+            projection.assignments.add(assignment);
         }
-        JsonArray assignments = modelAssignments(encoder, values, actions,
-                projectedControlledSymbols);
-        if (targetControlledSymbols.isEmpty()) {
+        projection.unresolved.addAll(containerProjection.unresolved);
+        JsonArray assignments = projection.assignments;
+        if (targetControlledSymbols.isEmpty()
+                && containerBoundaries.models.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
-        } else if (assignments.size() < projectedControlledSymbols.size()) {
+        } else if (!projection.unresolved.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
-                    "NOT_ALL_PATH_INPUT_SYMBOLS_HAVE_MATERIALIZATION_TARGETS");
+                    "REPLAY_CONTROL_FRONTIER_MODEL_IS_NOT_MATERIALIZABLE");
+            record.add("unresolvedReplayControlSymbols",
+                    strings(projection.unresolved));
         } else {
             record.addProperty("status", "SAT_MODEL_READY");
         }
@@ -168,6 +187,7 @@ public final class ConcolicConstraintSolver {
     }
 
     private static final class Encoder {
+        private final SparseContainerBoundaries containerBoundaries;
         private final Map<String, Sort> declarations = new LinkedHashMap<>();
         private final Map<String, String> functionDeclarations =
                 new LinkedHashMap<>();
@@ -175,10 +195,18 @@ public final class ConcolicConstraintSolver {
                 new LinkedHashMap<>();
         private final Map<String, String> containerStates =
                 new LinkedHashMap<>();
+        private final Map<String, Set<String>> fieldSymbols =
+                new LinkedHashMap<>();
         private final List<String> assertions = new ArrayList<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
         private final Set<String> controlledSymbols = new LinkedHashSet<>();
+        private final Set<String> additionalModelNames =
+                new LinkedHashSet<>();
         private Set<String> currentConstraintSymbols;
+
+        private Encoder(SparseContainerBoundaries containerBoundaries) {
+            this.containerBoundaries = containerBoundaries;
+        }
 
         private Set<String> addConstraint(
                 JsonElement expression, String origin) {
@@ -259,8 +287,10 @@ public final class ConcolicConstraintSolver {
         }
 
         private Term containerTerm(JsonObject expression, String origin) {
-            return fromContainerTerm(ContainerSmtCodec.term(
-                    expression, containerHost(origin)), origin);
+            ContainerSmtCodec.Term result = ContainerSmtCodec.term(
+                    expression, containerHost(origin));
+            containerBoundaries.record(expression, result);
+            return fromContainerTerm(result, origin);
         }
 
         private Term containerFieldTerm(
@@ -313,8 +343,11 @@ public final class ConcolicConstraintSolver {
                         JsonElement expression,
                         ContainerSmtCodec.Sort expected) {
                     if (ContainerSmtCodec.handles(expression)) {
-                        return ContainerSmtCodec.term(
-                                expression.getAsJsonObject(), this);
+                        JsonObject relation = expression.getAsJsonObject();
+                        ContainerSmtCodec.Term result =
+                                ContainerSmtCodec.term(relation, this);
+                        containerBoundaries.record(relation, result);
+                        return result;
                     }
                     if (ContainerSmtCodec.handlesField(expression)) {
                         return ContainerSmtCodec.field(
@@ -339,14 +372,31 @@ public final class ConcolicConstraintSolver {
                     Term value = term(expression, null,
                             origin + ":container-value");
                     if (value == null) return null;
+                    String integralValue = value.sort == Sort.INT
+                            ? ContainerSmtCodec.boxIntegral(value.text,
+                            expressionJavaType(expression)) : "";
+                    String stringValue = "";
+                    if (value.sort == Sort.STRING) {
+                        if (value.stringNullnessText.isEmpty()) {
+                            unsupported("ContainerStringNullness");
+                            return null;
+                        }
+                        stringValue = "false".equals(
+                                value.stringNullnessText)
+                                ? "(VString " + value.text + ")"
+                                : "(ite " + value.stringNullnessText
+                                + " (VRef nullRef) (VString "
+                                + value.text + "))";
+                    }
                     String boxed = value.sort == Sort.INT
-                            ? "(VInt " + value.text + ")"
+                            ? firstNonBlank(integralValue,
+                            "(VInt " + value.text + ")")
                             : value.sort == Sort.BOOL
                             ? "(VBool " + value.text + ")"
                             : value.sort == Sort.REF
                             ? "(VRef " + value.text + ")"
                             : value.sort == Sort.STRING
-                            ? "(VString " + value.text + ")"
+                            ? stringValue
                             : value.sort == Sort.FLOAT32
                             ? "(VFloat " + value.text + ")"
                             : value.sort == Sort.FLOAT64
@@ -366,14 +416,21 @@ public final class ConcolicConstraintSolver {
                             || value.sort != ContainerSmtCodec.Sort.VALUE) {
                         return value;
                     }
-                    Sort sort = sortOfJava(javaType);
-                    if (sort == Sort.INT) {
+                    String kind = ContainerSmtCodec.valueKind(javaType);
+                    if (!kind.isEmpty()) {
+                        require("((_ is " + kind + ") "
+                                + value.text + ")");
+                    }
+                    String integralValue =
+                            ContainerSmtCodec.unboxIntegral(
+                                    value.text, javaType);
+                    if (!integralValue.isEmpty()) {
                         return new ContainerSmtCodec.Term(
-                                "(valueInt " + value.text + ")",
-                                ContainerSmtCodec.Sort.INT,
+                                integralValue, ContainerSmtCodec.Sort.INT,
                                 JavaPrimitiveSmtSemantics.widthOfJavaType(
                                         javaType));
                     }
+                    Sort sort = sortOfJava(javaType);
                     if (sort == Sort.BOOL) {
                         return new ContainerSmtCodec.Term(
                                 "(valueBool " + value.text + ")",
@@ -400,6 +457,11 @@ public final class ConcolicConstraintSolver {
                                 ContainerSmtCodec.Sort.STRING);
                     }
                     return value;
+                }
+
+                @Override
+                public void require(String predicate) {
+                    assertions.add(predicate);
                 }
 
                 @Override
@@ -431,6 +493,16 @@ public final class ConcolicConstraintSolver {
                     Encoder.this.unsupported.add(origin + ":" + reason);
                 }
             };
+        }
+
+        private static Sort containerSort(ContainerSmtCodec.Sort sort) {
+            return sort == ContainerSmtCodec.Sort.BOOL ? Sort.BOOL
+                    : sort == ContainerSmtCodec.Sort.INT ? Sort.INT
+                    : sort == ContainerSmtCodec.Sort.FLOAT32 ? Sort.FLOAT32
+                    : sort == ContainerSmtCodec.Sort.FLOAT64 ? Sort.FLOAT64
+                    : sort == ContainerSmtCodec.Sort.STRING ? Sort.STRING
+                    : sort == ContainerSmtCodec.Sort.REF ? Sort.REF
+                    : Sort.UNKNOWN;
         }
 
         private ContainerSmtCodec.Term toContainerTerm(Term value) {
@@ -663,6 +735,7 @@ public final class ConcolicConstraintSolver {
         }
 
         private Term binary(JsonObject expression, String origin) {
+            recordFieldAlias(expression);
             String operator = string(expression, "_op");
             JsonElement leftExpression = expression.get("_left");
             if (leftExpression == null || leftExpression.isJsonNull()) {
@@ -742,6 +815,19 @@ public final class ConcolicConstraintSolver {
                     return stringNullComparison;
                 }
                 if (left.sort == Sort.STRING && right.sort == Sort.STRING) {
+                    if (ContainerSmtCodec.handlesFieldBinding(expression)) {
+                        Term symbol = ContainerSmtCodec.handlesField(
+                                expression.get("_left")) ? right : left;
+                        String materialization = ContainerSmtCodec
+                                .materializedStringEquality(left.text,
+                                right.text, symbol.stringNullnessText);
+                        if (materialization.isEmpty()) {
+                            unsupported.add(origin
+                                    + ":STRING_MATERIALIZATION_NULLNESS");
+                            return null;
+                        }
+                        return new Term(materialization, Sort.BOOL);
+                    }
                     if (!left.stringReferenceKey.isEmpty()
                             && left.stringReferenceKey.equals(
                             right.stringReferenceKey)) {
@@ -851,6 +937,169 @@ public final class ConcolicConstraintSolver {
             }
             unsupported.add(origin + ":BINARY_OPERATOR:" + operator);
             return null;
+        }
+
+        private void recordFieldAlias(JsonObject expression) {
+            if (!ContainerSmtCodec.handlesFieldBinding(expression)) return;
+            JsonElement left = expression.get("_left");
+            JsonObject field = ContainerSmtCodec.handlesField(left)
+                    ? left.getAsJsonObject()
+                    : expression.getAsJsonObject("_right");
+            JsonObject symbol = ContainerSmtCodec.handlesField(left)
+                    ? expression.getAsJsonObject("_right")
+                    : left.getAsJsonObject();
+            String raw = string(symbol, "_exp");
+            if (!regionInput(raw)) return;
+            fieldSymbols.computeIfAbsent(CanonicalJson.render(field),
+                    ignored -> new LinkedHashSet<>()).add(raw);
+        }
+
+        private Set<String> derivedFieldAliases(
+                List<JsonObject> actions) {
+            Set<String> result = new LinkedHashSet<>();
+            for (Set<String> aliases : fieldSymbols.values()) {
+                boolean hasTarget = false;
+                for (String alias : aliases) {
+                    if (materializationResolution(alias, actions,
+                            names(alias).sort) != null) {
+                        hasTarget = true;
+                        break;
+                    }
+                }
+                if (!hasTarget) continue;
+                for (String alias : aliases) {
+                    if (materializationResolution(alias, actions,
+                            names(alias).sort) == null) {
+                        result.add(alias);
+                    }
+                }
+            }
+            return result;
+        }
+
+        private void bindSparseContainerBoundaries() {
+            for (SparseContainerBoundary boundary
+                    : containerBoundaries.boundaries.values()) {
+                if (boundary.term == null) {
+                    containerBoundaries.gaps.add(boundary.identity()
+                            + ":MISSING_ENCODED_READ");
+                    continue;
+                }
+                String identity = boundary.identity() + "\u0000"
+                        + boundary.term.text;
+                boundary.modelName = "container_boundary__"
+                        + sha256(identity).substring(0, 16);
+                functionDeclarations.put(boundary.modelName,
+                        "(define-fun " + boundary.modelName + " () "
+                                + boundary.term.sort.smt + " "
+                                + boundary.term.text + ")");
+                additionalModelNames.add(boundary.modelName);
+                JavaPrimitiveSmtSemantics.IntegralDomain domain =
+                        JavaPrimitiveSmtSemantics.domainOfJavaType(
+                                boundary.javaType);
+                if (boundary.term.sort == Sort.INT && domain != null) {
+                    assertions.add("(and (<= " + domain.lower + " "
+                            + boundary.term.text + ") (<= "
+                            + boundary.term.text + " " + domain.upper
+                            + "))");
+                }
+                containerBoundaries.models.add(boundary);
+            }
+        }
+
+        private ReferenceDomains bindReferenceDomains(
+                Set<String> frontier, List<JsonObject> actions,
+                Set<String> nullableSymbols) {
+            ReferenceDomains domains = new ReferenceDomains();
+            Map<String, List<JsonObject>> actionsByDomain =
+                    referenceActionsByDomain(actions);
+            Map<Long, JsonObject> observedSources = new java.util.TreeMap<>();
+            for (List<JsonObject> candidates : actionsByDomain.values()) {
+                for (JsonObject candidate : candidates) {
+                    long identity = longInteger(candidate,
+                            "valueObjectId", 0L);
+                    JsonObject previous = observedSources.get(identity);
+                    if (identity > 0L && (previous == null
+                            || string(candidate, "symbol").compareTo(
+                            string(previous, "symbol")) < 0)) {
+                        observedSources.put(identity, candidate);
+                    }
+                }
+            }
+            List<String> observedTerms = new ArrayList<>();
+            for (Map.Entry<Long, JsonObject> entry
+                    : observedSources.entrySet()) {
+                Long identity = entry.getKey();
+                String identityName = observedReferenceName(identity);
+                declarations.put(identityName, Sort.REF);
+                assertions.add("(not (= " + identityName
+                        + " nullRef))");
+                additionalModelNames.add(identityName);
+                domains.addObserved(identityName,
+                        string(entry.getValue(), "symbol"));
+                observedTerms.add(identityName);
+            }
+            if (observedTerms.size() > 1) {
+                assertions.add("(distinct "
+                        + String.join(" ", observedTerms) + ")");
+            }
+            for (String raw : frontier) {
+                SymbolNames symbol = names(raw);
+                if (symbol == null || symbol.sort != Sort.REF) continue;
+                ActionMatch target = materializationResolution(raw, actions,
+                        Sort.REF);
+                if (target == null) continue;
+                String domainKey = referenceDomainKey(target.action);
+                List<JsonObject> candidates = actionsByDomain.get(domainKey);
+                if (candidates == null || candidates.isEmpty()) continue;
+
+                Map<Long, JsonObject> sourceByIdentity =
+                        new LinkedHashMap<>();
+                for (JsonObject candidate : candidates) {
+                    long identity = longInteger(candidate,
+                            "valueObjectId", 0L);
+                    JsonObject previous = sourceByIdentity.get(identity);
+                    if (identity > 0L && (previous == null
+                            || string(candidate, "symbol").compareTo(
+                            string(previous, "symbol")) < 0)) {
+                        sourceByIdentity.put(identity, candidate);
+                    }
+                }
+                if (sourceByIdentity.isEmpty()) continue;
+
+                List<String> domainTerms = new ArrayList<>();
+                for (Map.Entry<Long, JsonObject> entry
+                        : sourceByIdentity.entrySet()) {
+                    String identityName = observedReferenceName(
+                            entry.getKey());
+                    String selector = "select_ref__"
+                            + sha256(raw + "\u0000" + identityName)
+                            .substring(0, 16);
+                    functionDeclarations.put(selector,
+                            "(define-fun " + selector + " () Bool (= "
+                                    + symbol.solver + " " + identityName
+                                    + "))");
+                    additionalModelNames.add(selector);
+                    domains.add(raw, entry.getKey(),
+                            string(entry.getValue(), "symbol"), selector,
+                            longInteger(target.action,
+                                    "valueObjectId", 0L));
+                    domainTerms.add("(= " + symbol.solver + " "
+                            + identityName + ")");
+                }
+                if (nullableSymbols.contains(raw)) {
+                    domainTerms.add("(= " + symbol.solver + " nullRef)");
+                }
+                assertions.add(domainTerms.size() == 1
+                        ? domainTerms.get(0)
+                        : "(or " + String.join(" ", domainTerms) + ")");
+            }
+            return domains;
+        }
+
+        private static String observedReferenceName(long objectId) {
+            return "observed_ref__"
+                    + sha256(Long.toString(objectId)).substring(0, 16);
         }
 
         /**
@@ -1130,13 +1379,8 @@ public final class ConcolicConstraintSolver {
             result.append("(set-logic ALL)\n");
             result.append("(declare-sort Ref 0)\n");
             result.append("(declare-const nullRef Ref)\n");
-            result.append("(declare-datatypes () ((Value"
-                    + " (VInt (valueInt Int))"
-                    + " (VFloat (valueFloat (_ FloatingPoint 8 24)))"
-                    + " (VDouble (valueDouble (_ FloatingPoint 11 53)))"
-                    + " (VBool (valueBool Bool))"
-                    + " (VRef (valueRef Ref))"
-                    + " (VString (valueString String)))))\n");
+            result.append(ContainerSmtCodec.valueDatatypeDeclaration())
+                    .append('\n');
             for (String declaration : ContainerSmtCodec.preamble()) {
                 result.append(declaration).append('\n');
             }
@@ -1201,6 +1445,7 @@ public final class ConcolicConstraintSolver {
                     }
                 }
             }
+            modelNames.addAll(additionalModelNames);
             Collections.sort(modelNames);
             if (!modelNames.isEmpty()) {
                 result.append("(get-value (");
@@ -1288,12 +1533,12 @@ public final class ConcolicConstraintSolver {
         }
     }
 
-    private static JsonArray modelAssignments(Encoder encoder,
-                                              Map<String, String> values,
-                                              List<JsonObject> actions,
-                                              Set<String> projectedSymbols)
-            {
+    private static ModelProjection modelAssignments(
+            Encoder encoder, Map<String, String> values,
+            List<JsonObject> actions, Set<String> projectedSymbols,
+            ReferenceDomains referenceDomains) {
         JsonArray result = new JsonArray();
+        Set<String> unresolved = new LinkedHashSet<>(projectedSymbols);
         for (String raw : encoder.controlledSymbols) {
             if (!projectedSymbols.contains(raw)) continue;
             SymbolNames names = encoder.names(raw);
@@ -1316,34 +1561,40 @@ public final class ConcolicConstraintSolver {
                     || reference
                     && !("true".equals(nullValue)
                     || "false".equals(nullValue))) continue;
-            // A concrete non-null Java object cannot be reconstructed from
-            // the SMT Ref sort.  Prefix reference guards are deliberately
-            // kept out of projectedSymbols above and replayed from the source
-            // object.  A target reference is materializable exactly when the
-            // model selects null, which has a real runtime action.
-            if (reference && !"true".equals(nullValue)) continue;
-            ActionMatch match = materializationResolution(raw, actions);
+            ActionMatch match = materializationResolution(raw, actions, sort);
             if (match == null) continue;
+            ReferenceChoice referenceChoice = reference
+                    && "false".equals(nullValue)
+                    ? referenceDomains.selected(raw, values) : null;
+            if (reference && "false".equals(nullValue)
+                    && referenceChoice == null) {
+                continue;
+            }
+            if (reference && referenceChoice != null
+                    && referenceChoice.sourceIdentity
+                    == referenceChoice.targetIdentity) {
+                unresolved.remove(raw);
+                continue;
+            }
             JsonObject assignment = new JsonObject();
             assignment.addProperty("engineSymbol", raw);
-            assignment.addProperty("solverSymbol", solverName);
             if (sort == Sort.STRING) {
-                assignment.addProperty("nullnessSolverSymbol",
-                        names.nullness);
                 assignment.addProperty("modelIsNull",
                         "true".equals(nullValue));
             } else if (reference) {
-                assignment.addProperty("nullnessSolverSymbol",
-                        names.nullness);
                 assignment.addProperty("modelIsNull", true);
             }
             assignment.addProperty("inputSymbol", string(match.action,
                     "symbol"));
             if (reference) {
-                assignment.addProperty("valueType", "NULL");
-                assignment.addProperty("value", "null");
-                assignment.addProperty("referenceNullnessEncodingAuthority",
-                        "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1");
+                if ("true".equals(nullValue)) {
+                    assignment.addProperty("valueType", "NULL");
+                    assignment.addProperty("value", "null");
+                } else {
+                    assignment.addProperty("valueType", "REFERENCE_ALIAS");
+                    assignment.addProperty("referenceSourceInputSymbol",
+                            referenceChoice.sourceInputSymbol);
+                }
             } else if (sort.floating()) {
                 String descriptor = sort == Sort.FLOAT32 ? "F" : "D";
                 boolean isNaN = "true".equals(nanValue);
@@ -1356,22 +1607,11 @@ public final class ConcolicConstraintSolver {
                     && "true".equals(nullValue)) {
                 assignment.addProperty("valueType", "NULL");
                 assignment.addProperty("value", "null");
-                assignment.addProperty("nullableStringEncodingAuthority",
-                        "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
             } else {
                 assignment.addProperty("valueType", sort.name());
                 assignment.addProperty("value",
                         SmtModelValueCodec.normalizeScalar(value));
-                if (sort == Sort.STRING) {
-                    assignment.addProperty(
-                            "nullableStringEncodingAuthority",
-                            "JAVA_STRING_CONTENT_PLUS_EXPLICIT_"
-                                    + "NULLNESS_BOOL_V1");
-                }
             }
-            assignment.addProperty("authority", "Z3_PATH_FLIP_MODEL");
-            assignment.addProperty("materializeAtRealDefinition", true);
-            assignment.add("target", match.action);
             List<String> actionPath = stringList(array(match.action,
                     "fieldPath"));
             List<String> replayPath = !match.path.isEmpty()
@@ -1381,8 +1621,359 @@ public final class ConcolicConstraintSolver {
                         strings(replayPath));
             }
             result.add(assignment);
+            unresolved.remove(raw);
         }
-        return result;
+        return new ModelProjection(result, unresolved);
+    }
+
+    private static ModelProjection sparseContainerAssignments(
+            Map<String, String> values,
+            SparseContainerBoundaries boundaries,
+            ReferenceDomains referenceDomains) {
+        JsonArray assignments = new JsonArray();
+        Set<String> unresolved = new LinkedHashSet<>();
+        Map<String, List<SparseContainerBoundary>> referenceGroups =
+                new LinkedHashMap<>();
+        for (SparseContainerBoundary boundary : boundaries.models) {
+            String value = values.get(boundary.modelName);
+            if (value == null || boundary.action == null) {
+                unresolved.add(boundary.modelName);
+                continue;
+            }
+            if (boundary.term.sort == Sort.REF) {
+                referenceGroups.computeIfAbsent(value,
+                        ignored -> new ArrayList<>()).add(boundary);
+                continue;
+            }
+            assignments.add(containerAssignment(boundary,
+                    boundary.term.sort.name(),
+                    SmtModelValueCodec.normalizeScalar(value)));
+        }
+        for (Map.Entry<String, List<SparseContainerBoundary>> entry
+                : referenceGroups.entrySet()) {
+            List<SparseContainerBoundary> group = entry.getValue();
+            group.sort(Comparator.comparing(
+                    SparseContainerBoundary::identity));
+            String modelValue = entry.getKey();
+            if ("nullRef".equals(modelValue)) {
+                for (SparseContainerBoundary boundary : group) {
+                    assignments.add(containerAssignment(
+                            boundary, "NULL", "null"));
+                }
+                continue;
+            }
+            String ordinarySource =
+                    referenceDomains.sourceForModelValue(modelValue, values);
+            if (!ordinarySource.isEmpty()) {
+                for (SparseContainerBoundary target : group) {
+                    JsonObject assignment = containerAssignment(target,
+                            "CONTAINER_REFERENCE_ALIAS", "");
+                    assignment.addProperty("referenceSourceInputSymbol",
+                            ordinarySource);
+                    assignments.add(assignment);
+                }
+                continue;
+            }
+            if (group.size() < 2) {
+                SparseContainerBoundary only = group.get(0);
+                if (!only.preferredReferenceSource) {
+                    unresolved.add(only.modelName);
+                }
+                continue;
+            }
+            SparseContainerBoundary source = group.get(0);
+            for (SparseContainerBoundary candidate : group) {
+                if (candidate.preferredReferenceSource) {
+                    source = candidate;
+                    break;
+                }
+            }
+            for (SparseContainerBoundary target : group) {
+                if (target == source) continue;
+                JsonObject assignment = containerAssignment(target,
+                        "CONTAINER_REFERENCE_ALIAS", "");
+                assignment.addProperty("referenceSourceInputSymbol",
+                        string(source.action, "symbol"));
+                target.addSourceSelector(
+                        assignment.getAsJsonObject("containerTarget"),
+                        source);
+                assignments.add(assignment);
+            }
+        }
+        return new ModelProjection(assignments, unresolved);
+    }
+
+    private static JsonObject containerAssignment(
+            SparseContainerBoundary boundary, String valueType,
+            String value) {
+            JsonObject assignment = new JsonObject();
+            assignment.addProperty("modelAssignmentKey",
+                    boundary.modelName);
+            assignment.addProperty("engineSymbol", boundary.modelName);
+            assignment.addProperty("inputSymbol",
+                    string(boundary.action, "symbol"));
+            assignment.addProperty("valueType", valueType);
+            if (!value.isEmpty()) assignment.addProperty("value", value);
+            JsonObject target = new JsonObject();
+            boundary.addSelector(target);
+            assignment.add("containerTarget", target);
+            return assignment;
+    }
+
+    private static final class ModelProjection {
+        private final JsonArray assignments;
+        private final Set<String> unresolved;
+
+        private ModelProjection(JsonArray assignments,
+                                Set<String> unresolved) {
+            this.assignments = assignments;
+            this.unresolved = unresolved;
+        }
+    }
+
+    private static final class SparseContainerBoundaries {
+        private final Map<String, SparseContainerBoundary> boundaries =
+                new LinkedHashMap<>();
+        private final Set<String> gaps = new LinkedHashSet<>();
+        private final List<SparseContainerBoundary> models =
+                new ArrayList<>();
+
+        private static SparseContainerBoundaries discover(
+                JsonArray predicates, JsonArray context,
+                List<JsonObject> actions) {
+            SparseContainerBoundaries result =
+                    new SparseContainerBoundaries();
+            result.scan(predicates, true, false);
+            result.scan(context, false, false);
+            for (SparseContainerBoundary boundary
+                    : result.boundaries.values()) {
+                List<JsonObject> matches = containerBoundaryActions(
+                        boundary.stateSymbol, actions);
+                if (matches.size() == 1) {
+                    boundary.action = matches.get(0).deepCopy();
+                } else {
+                    result.gaps.add(boundary.identity()
+                            + ":REF_ACTION_MATCHES=" + matches.size());
+                }
+            }
+            return result;
+        }
+
+        private void scan(JsonElement element, boolean discover,
+                          boolean preferredReferenceSource) {
+            if (element == null || element.isJsonNull()) return;
+            if (element.isJsonArray()) {
+                for (JsonElement child : element.getAsJsonArray()) {
+                    scan(child, discover, preferredReferenceSource);
+                }
+                return;
+            }
+            if (!element.isJsonObject()) return;
+            JsonObject object = element.getAsJsonObject();
+            InitialContainerObservation.Read read =
+                    InitialContainerObservation.initialRead(object);
+            if (read != null) {
+                if (!read.concreteSelector()) {
+                    if (discover) gaps.add(read.shape + ":"
+                            + read.stateSymbol
+                            + ":NON_CONCRETE_SELECTOR");
+                } else {
+                    String identity = boundaryIdentity(read);
+                    SparseContainerBoundary existing =
+                            boundaries.get(identity);
+                    if (existing == null && discover) {
+                        boundaries.put(identity,
+                                new SparseContainerBoundary(read));
+                    } else if (existing != null
+                            && !JavaPrimitiveSmtSemantics
+                            .javaTypeDescriptor(existing.javaType)
+                            .equals(JavaPrimitiveSmtSemantics
+                                    .javaTypeDescriptor(read.javaType))) {
+                        gaps.add(existing.identity()
+                                + ":CONFLICTING_JAVA_TYPES");
+                    }
+                    existing = boundaries.get(identity);
+                    if (existing != null && preferredReferenceSource) {
+                        existing.preferredReferenceSource = true;
+                    }
+                }
+            }
+            boolean fieldAccess = "FieldAccessExpression".equals(
+                    string(object, "_type"));
+            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+                scan(entry.getValue(), discover,
+                        fieldAccess && "owner".equals(entry.getKey())
+                                || preferredReferenceSource);
+            }
+        }
+
+        private boolean isConcreteObservation(JsonElement expression) {
+            return InitialContainerObservation.isConcreteEquality(
+                    expression);
+        }
+
+        private void record(JsonObject expression,
+                            ContainerSmtCodec.Term encoded) {
+            InitialContainerObservation.Read read =
+                    InitialContainerObservation.initialRead(expression);
+            if (read == null || !read.concreteSelector()
+                    || encoded == null) {
+                return;
+            }
+            SparseContainerBoundary boundary = boundaries.get(
+                    boundaryIdentity(read));
+            if (boundary == null) return;
+            Sort sort = Encoder.containerSort(encoded.sort);
+            if (sort != Sort.INT && sort != Sort.BOOL
+                    && sort != Sort.REF) {
+                gaps.add(boundary.identity()
+                        + ":UNSUPPORTED_READ_SORT=" + sort);
+                return;
+            }
+            Term term = new Term(encoded.text, sort,
+                    encoded.integralWidth);
+            if (boundary.term == null) {
+                boundary.term = term;
+            } else if (boundary.term.sort != term.sort
+                    || !boundary.term.text.equals(term.text)) {
+                gaps.add(boundary.identity()
+                        + ":INCONSISTENT_ENCODED_READ");
+            }
+        }
+
+        private static String boundaryIdentity(
+                InitialContainerObservation.Read read) {
+            return read.shape + "\u0000" + read.stateSymbol + "\u0000"
+                    + read.selectorIdentity();
+        }
+    }
+
+    private static final class SparseContainerBoundary {
+        private final String shape;
+        private final String stateSymbol;
+        private final int index;
+        private final String keyJavaType;
+        private final String keyValue;
+        private final String selectorIdentity;
+        private final String iterationProjection;
+        private final String javaType;
+        private JsonObject action;
+        private Term term;
+        private String modelName = "";
+        private boolean preferredReferenceSource;
+
+        private SparseContainerBoundary(
+                InitialContainerObservation.Read read) {
+            this.shape = read.shape;
+            this.stateSymbol = read.stateSymbol;
+            this.index = read.index == null ? -1 : read.index;
+            this.keyJavaType = read.keyJavaType();
+            this.keyValue = read.keyValue();
+            this.selectorIdentity = read.selectorIdentity();
+            this.iterationProjection = read.iterationProjection;
+            this.javaType = read.javaType;
+        }
+
+        private String identity() {
+            return shape + ":" + stateSymbol + "["
+                    + selectorIdentity + "]";
+        }
+
+        private String selectorIdentity() {
+            return selectorIdentity;
+        }
+
+        private void addSelector(JsonObject target) {
+            target.addProperty("shape", shape);
+            if ("INDEXED".equals(shape)) {
+                target.addProperty("index", index);
+            } else if (!iterationProjection.isEmpty()) {
+                target.addProperty("selectorKind", "ITERATION_INDEX");
+                target.addProperty("index", index);
+                target.addProperty("projection", iterationProjection);
+            } else {
+                target.addProperty("keyJavaType", keyJavaType);
+                target.addProperty("keyValue", keyValue);
+            }
+        }
+
+        private void addSourceSelector(JsonObject target,
+                                       SparseContainerBoundary source) {
+            target.addProperty("sourceShape", source.shape);
+            if ("INDEXED".equals(source.shape)) {
+                target.addProperty("sourceIndex", source.index);
+            } else {
+                target.addProperty("sourceKeyJavaType",
+                        source.keyJavaType);
+                target.addProperty("sourceKeyValue", source.keyValue);
+            }
+        }
+    }
+
+    private static final class ReferenceDomains {
+        private final Map<String, List<ReferenceChoice>> choices =
+                new LinkedHashMap<>();
+        private final Map<String, String> observedSources =
+                new LinkedHashMap<>();
+
+        private void addObserved(String modelName, String inputSymbol) {
+            if (!modelName.isEmpty() && !inputSymbol.isEmpty()) {
+                observedSources.put(modelName, inputSymbol);
+            }
+        }
+
+        private void add(String raw, long sourceIdentity,
+                         String sourceInputSymbol, String selector,
+                         long targetIdentity) {
+            choices.computeIfAbsent(raw,
+                    ignored -> new ArrayList<>()).add(
+                    new ReferenceChoice(sourceIdentity, sourceInputSymbol,
+                            selector, targetIdentity));
+        }
+
+        private ReferenceChoice selected(String raw,
+                                         Map<String, String> values) {
+            for (ReferenceChoice choice : choices.getOrDefault(raw,
+                    Collections.<ReferenceChoice>emptyList())) {
+                if ("true".equals(values.get(choice.selector))) {
+                    return choice;
+                }
+            }
+            return null;
+        }
+
+        private String sourceForModelValue(
+                String modelValue, Map<String, String> values) {
+            String selected = "";
+            for (Map.Entry<String, String> source
+                    : observedSources.entrySet()) {
+                if (!modelValue.equals(values.get(source.getKey()))) {
+                    continue;
+                }
+                if (selected.isEmpty()
+                        || source.getValue().compareTo(selected) < 0) {
+                    selected = source.getValue();
+                }
+            }
+            return selected;
+        }
+    }
+
+    private static final class ReferenceChoice {
+        private final long sourceIdentity;
+        private final String sourceInputSymbol;
+        private final String selector;
+        private final long targetIdentity;
+
+        private ReferenceChoice(long sourceIdentity,
+                                String sourceInputSymbol,
+                                String selector,
+                                long targetIdentity) {
+            this.sourceIdentity = sourceIdentity;
+            this.sourceInputSymbol = sourceInputSymbol;
+            this.selector = selector;
+            this.targetIdentity = targetIdentity;
+        }
     }
 
     private static List<JsonObject> materializationActions(
@@ -1442,11 +2033,16 @@ public final class ConcolicConstraintSolver {
     }
 
     private static ActionMatch bestAction(
-            String raw, List<JsonObject> actions) {
+            String raw, List<JsonObject> actions, Sort expectedSort) {
         ActionMatch best = null;
         int bestLength = -1;
         for (JsonObject action : actions) {
-            if (!executable(action)) continue;
+            if (!executable(action)
+                    || expectedSort != null
+                    && materializationSort(action)
+                    != expectedSort) {
+                continue;
+            }
             String symbol = string(action, "symbol");
             if (symbol.isEmpty()) continue;
             List<JsonArray> paths = new ArrayList<>();
@@ -1472,21 +2068,205 @@ public final class ConcolicConstraintSolver {
     }
 
     private static ActionMatch materializationResolution(
+            String raw, List<JsonObject> actions, Sort expectedSort) {
+        return bestAction(raw, actions, expectedSort);
+    }
+
+    private static List<JsonObject> containerBoundaryActions(
             String raw, List<JsonObject> actions) {
-        return bestAction(raw, actions);
+        List<JsonObject> result = new ArrayList<>();
+        for (JsonObject action : actions) {
+            if (!executable(action)
+                    || materializationSort(action) != Sort.REF) {
+                continue;
+            }
+            String symbol = string(action, "symbol");
+            List<JsonArray> paths = new ArrayList<>();
+            paths.add(new JsonArray());
+            if (array(action, "fieldPath").size() > 0) {
+                paths.add(array(action, "fieldPath"));
+            }
+            for (JsonElement path : array(action, "fieldPaths")) {
+                if (path.isJsonArray()) paths.add(path.getAsJsonArray());
+            }
+            boolean matched = false;
+            for (JsonArray path : paths) {
+                List<String> segments = stringList(path);
+                if (segments.size() != path.size()) continue;
+                String label = symbol + (segments.isEmpty() ? ""
+                        : "." + String.join(".", segments));
+                if (matchesEngineSymbol(raw, label)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (matched) result.add(action);
+        }
+        result.sort(Comparator.comparing(value -> string(value, "symbol")));
+        return result;
     }
 
     private static boolean hasMaterializationGap(
-            Set<String> symbols, List<JsonObject> actions,
+            Encoder encoder, Set<String> symbols, List<JsonObject> actions,
             boolean requireRegionInput) {
         for (String symbol : symbols) {
             if ("N".equals(symbol) || "V".equals(symbol)) continue;
             if ((requireRegionInput && !regionInput(symbol))
-                    || materializationResolution(symbol, actions) == null) {
+                    || encoder.names(symbol) == null
+                    || materializationResolution(symbol, actions,
+                    encoder.names(symbol).sort) == null) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Branch predicates, rather than every semantic support expression in
+     * the PC, define replay's writable inputs. Every predicate in the
+     * contract participates: a later worklist wave still restarts from the
+     * fixed workload seed and must reconstruct the previously discovered
+     * prefix before it can flip the selected decision.
+     */
+    static Set<String> replayControlFrontier(
+            List<Set<String>> branchSymbols) {
+        Set<String> result = new LinkedHashSet<>();
+        if (branchSymbols == null) return result;
+        for (Set<String> predicate : branchSymbols) {
+            result.addAll(predicate);
+        }
+        return result;
+    }
+
+    private static boolean containsNullReference(JsonElement expression) {
+        if (expression == null || expression.isJsonNull()) return false;
+        if (expression.isJsonArray()) {
+            for (JsonElement element : expression.getAsJsonArray()) {
+                if (containsNullReference(element)) return true;
+            }
+            return false;
+        }
+        if (!expression.isJsonObject()) return false;
+        JsonObject object = expression.getAsJsonObject();
+        if ("SymbolExpression".equals(string(object, "_type"))
+                && "N".equals(string(object, "_exp"))) {
+            return true;
+        }
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            if (containsNullReference(entry.getValue())) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Null is a legal replay value only for the exact reference operand of a
+     * witnessed null comparison.  A null literal elsewhere in the query must
+     * not widen every reference domain.
+     */
+    static Set<String> referencesComparedWithNull(JsonArray constraints) {
+        Set<String> result = new LinkedHashSet<>();
+        if (constraints != null) {
+            for (JsonElement constraint : constraints) {
+                collectReferencesComparedWithNull(constraint, result);
+            }
+        }
+        return result;
+    }
+
+    private static void collectReferencesComparedWithNull(
+            JsonElement expression, Set<String> result) {
+        if (expression == null || expression.isJsonNull()) return;
+        if (expression.isJsonArray()) {
+            for (JsonElement element : expression.getAsJsonArray()) {
+                collectReferencesComparedWithNull(element, result);
+            }
+            return;
+        }
+        if (!expression.isJsonObject()) return;
+        JsonObject object = expression.getAsJsonObject();
+        if ("BinaryExpression".equals(string(object, "_type"))
+                && ("==".equals(string(object, "_op"))
+                || "!=".equals(string(object, "_op")))) {
+            JsonElement left = object.get("_left");
+            JsonElement right = object.get("_right");
+            boolean leftNull = containsNullReference(left);
+            boolean rightNull = containsNullReference(right);
+            if (leftNull != rightNull) {
+                collectReferenceSymbols(leftNull ? right : left, result);
+            }
+        }
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            collectReferencesComparedWithNull(entry.getValue(), result);
+        }
+    }
+
+    private static void collectReferenceSymbols(
+            JsonElement expression, Set<String> result) {
+        if (expression == null || expression.isJsonNull()) return;
+        if (expression.isJsonArray()) {
+            for (JsonElement element : expression.getAsJsonArray()) {
+                collectReferenceSymbols(element, result);
+            }
+            return;
+        }
+        if (!expression.isJsonObject()) return;
+        JsonObject object = expression.getAsJsonObject();
+        if ("SymbolExpression".equals(string(object, "_type"))) {
+            String raw = string(object, "_exp");
+            if (!raw.isEmpty() && !"N".equals(raw)) result.add(raw);
+            return;
+        }
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            collectReferenceSymbols(entry.getValue(), result);
+        }
+    }
+
+    private static Map<String, List<JsonObject>> referenceActionsByDomain(
+            List<JsonObject> actions) {
+        Map<String, List<JsonObject>> result = new LinkedHashMap<>();
+        for (JsonObject action : actions) {
+            String key = referenceDomainKey(action);
+            if (!key.isEmpty()) {
+                result.computeIfAbsent(key,
+                        ignored -> new ArrayList<>()).add(action);
+            }
+        }
+        for (List<JsonObject> group : result.values()) {
+            group.sort(Comparator.comparing(
+                    value -> string(value, "symbol")));
+        }
+        return result;
+    }
+
+    private static String referenceDomainKey(JsonObject action) {
+        if (!executable(action)
+                || materializationSort(action) != Sort.REF
+                || !"FIELD_ACCESS".equals(string(action, "bindingMode"))
+                || !"HEAP_OBJECT_FIELD".equals(string(action, "location"))
+                || longInteger(action, "fieldReceiverObjectId", 0L) <= 0L
+                || longInteger(action, "valueObjectId", 0L) <= 0L
+                || array(action, "fieldPath").size() != 1) {
+            return "";
+        }
+        return longInteger(action, "fieldReceiverObjectId", 0L) + "\u0000"
+                + JavaPrimitiveSmtSemantics.javaTypeDescriptor(
+                string(action, "javaType"));
+    }
+
+    private static Sort materializationSort(JsonObject action) {
+        String javaType = string(action, "javaType");
+        String normalized = javaType.replace('/', '.');
+        if ("java.lang.Boolean".equals(normalized)) return Sort.BOOL;
+        if ("java.lang.Byte".equals(normalized)
+                || "java.lang.Short".equals(normalized)
+                || "java.lang.Character".equals(normalized)
+                || "java.lang.Integer".equals(normalized)
+                || "java.lang.Long".equals(normalized)) {
+            return Sort.INT;
+        }
+        if ("java.lang.Float".equals(normalized)) return Sort.FLOAT32;
+        if ("java.lang.Double".equals(normalized)) return Sort.FLOAT64;
+        return sortOfJava(javaType);
     }
 
     private static boolean matchesEngineSymbol(
@@ -1496,11 +2276,10 @@ public final class ConcolicConstraintSolver {
         }
         if (engine.equals(semantic)) return true;
         String payload = "";
-        if (engine.length() > 10 && engine.charAt(0) == 'M'
-                && engine.charAt(1) == '_'
-                && "ZCBSIFJDL".indexOf(engine.charAt(2)) >= 0
-                && engine.startsWith("_field_", 3)) {
-            payload = engine.substring(10);
+        int fieldMarker = engine.startsWith("M_")
+                ? engine.indexOf("_field_", 2) : -1;
+        if (fieldMarker >= 0) {
+            payload = engine.substring(fieldMarker + "_field_".length());
         } else if (engine.startsWith("M_L'")) {
             int runtimeTypeEnd = engine.indexOf("'_", 4);
             if (runtimeTypeEnd > 4) {
@@ -1541,9 +2320,10 @@ public final class ConcolicConstraintSolver {
         if (!finished) {
             process.destroyForcibly();
             process.waitFor();
+            return new SolverOutput(true, "");
         }
         String stdout = readAll(process.getInputStream());
-        return new SolverOutput(!finished, stdout);
+        return new SolverOutput(false, stdout);
     }
 
     private static String readAll(InputStream stream) throws IOException {
@@ -1585,8 +2365,7 @@ public final class ConcolicConstraintSolver {
         if (rows == null) return result;
         for (String row : rows) {
             List<String> pair = SmtModelValueCodec.applicationItems(row);
-            if (pair != null && pair.size() == 2
-                    && pair.get(0).startsWith("sym__")) {
+            if (pair != null && pair.size() == 2) {
                 result.put(pair.get(0), pair.get(1));
             }
         }

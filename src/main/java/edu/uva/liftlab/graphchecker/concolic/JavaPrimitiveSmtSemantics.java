@@ -310,23 +310,15 @@ public final class JavaPrimitiveSmtSemantics {
         return null;
     }
 
-    /** Normalizes source descriptors emitted by both old and current VMs. */
     static String primitiveDescriptor(String javaType) {
         String type = javaType == null ? ""
                 : javaType.trim().replace('.', '/');
-        return "L".equals(type) ? type : javaTypeDescriptor(type);
+        return javaTypeDescriptor(type);
     }
 
-    /**
-     * Normalizes a cast target while preserving compatibility with the old
-     * VM's ambiguous bare {@code L} spelling for primitive long.
-     */
     static String primitiveTargetDescriptor(String javaType,
                                             String sourceDescriptor) {
-        String target = primitiveDescriptor(javaType);
-        return "L".equals(target)
-                && primitiveNumericDescriptor(sourceDescriptor)
-                ? "J" : target;
+        return primitiveDescriptor(javaType);
     }
 
     static boolean primitiveNumericDescriptor(String descriptor) {

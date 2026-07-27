@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.causynth;
 import soot.Unit;
 import soot.Value;
 import soot.ValueBox;
+import soot.SootField;
+import soot.SootFieldRef;
 import soot.jimple.FieldRef;
 import soot.jimple.InstanceFieldRef;
 import soot.jimple.Stmt;
@@ -33,6 +35,26 @@ final class CausynthStaticFacts {
     private static final Pattern FIELD_OWNER = Pattern.compile("<([^:]+):");
 
     private CausynthStaticFacts() {
+    }
+
+    /**
+     * Canonical Java field identity is the actual declaring field, not the
+     * constant-pool owner through which inherited bytecode happened to refer
+     * to it.
+     */
+    static SootField declaredField(SootFieldRef reference) {
+        if (reference == null) return null;
+        try {
+            return reference.resolve();
+        } catch (RuntimeException unresolved) {
+            return null;
+        }
+    }
+
+    static String declaredFieldSignature(SootFieldRef reference) {
+        SootField field = declaredField(reference);
+        return field == null ? reference.getSignature()
+                : field.getSignature();
     }
 
     static final class FieldWrite {
@@ -181,8 +203,8 @@ final class CausynthStaticFacts {
             for (ValueBox box : boxes) {
                 Value value = box.getValue();
                 if (value instanceof FieldRef) {
-                    fields.add(((FieldRef) value).getFieldRef()
-                            .getSignature());
+                    fields.add(declaredFieldSignature(
+                            ((FieldRef) value).getFieldRef()));
                 }
             }
             return new ArrayList<>(fields);
@@ -197,7 +219,8 @@ final class CausynthStaticFacts {
                 if (value instanceof InstanceFieldRef) {
                     InstanceFieldRef ref = (InstanceFieldRef) value;
                     String base = ref.getBase().toString();
-                    String field = ref.getFieldRef().getSignature();
+                    String field = declaredFieldSignature(
+                            ref.getFieldRef());
                     String key = base + "\n" + field;
                     if (seen.add(key)) {
                         accesses.add(new InstanceFieldAccess(base, field));

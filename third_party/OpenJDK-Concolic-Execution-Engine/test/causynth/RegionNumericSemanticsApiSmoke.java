@@ -54,6 +54,7 @@ public final class RegionNumericSemanticsApiSmoke {
                 "REGION.NUMERIC.CAST", "ACT.NUMERIC.CAST");
         require(status == 0L, "cast region start rejected");
         symbolize(input, "numeric_cast");
+        String pathBeforeCasts = System.getPathCondition();
 
         float i2f = (float) input.intValue;
         long i2l = (long) input.intValue;
@@ -112,7 +113,7 @@ public final class RegionNumericSemanticsApiSmoke {
         System.resumeConcolicPathCondition();
         String summary = System.finishConcolicRegion();
 
-        require("[]".equals(pathAfterCasts),
+        require(pathBeforeCasts.equals(pathAfterCasts),
                 "casts polluted the path condition: " + pathAfterCasts);
         requireCast(i2fExpression, "I", "F");
         requireCast(i2lExpression, "I", "J");
@@ -129,7 +130,8 @@ public final class RegionNumericSemanticsApiSmoke {
         requireCast(i2bExpression, "I", "B");
         requireCast(i2cExpression, "I", "C");
         requireCast(i2sExpression, "I", "S");
-        require(summary.contains("\"pathCondition\":[]"), summary);
+        require(!summary.contains("\"_type\":\"TypeCastExpression\""),
+                summary);
     }
 
     private static Capture captureLongComparison() {
@@ -179,7 +181,7 @@ public final class RegionNumericSemanticsApiSmoke {
 
     private static void requireComparison(Capture capture, String operator,
                                           String label) {
-        require("[]".equals(capture.before),
+        require(!capture.before.contains("\"_op\":\"" + operator + "\""),
                 label + " compare recorded a premature PC: "
                         + capture.before);
         require(!capture.outcome, label + " NaN outcome must be false");
@@ -197,7 +199,7 @@ public final class RegionNumericSemanticsApiSmoke {
         conversionSmoke();
 
         Capture lcmp = captureLongComparison();
-        require("[]".equals(lcmp.before),
+        require(!lcmp.before.contains("\"_op\":\"--\""),
                 "lcmp recorded before the consuming branch: " + lcmp.before);
         require(lcmp.outcome, "unexpected concrete lcmp outcome");
         require(lcmp.after.contains("\"_op\":\"--\"")

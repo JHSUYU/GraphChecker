@@ -69,11 +69,19 @@ public final class RegionNumericLoopApiSmoke {
                 "concrete branch marker rejected");
 
         String events = System.getConcolicBranchEvents();
-        require(exactCondition(events, "NUMERIC.LONG", 1, 0), events);
-        require(exactCondition(events, "NUMERIC.DOUBLE", 1, 1), events);
-        require(exactCondition(events, "NUMERIC.LOOP.GUARD", 1, 2), events);
-        require(exactCondition(events, "NUMERIC.LOOP.GUARD", 2, 3), events);
-        require(exactCondition(events, "NUMERIC.LOOP.GUARD", 3, 4), events);
+        int longIndex = conditionIndex(events, "NUMERIC.LONG", 1);
+        int doubleIndex = conditionIndex(events, "NUMERIC.DOUBLE", 1);
+        int loopFirstIndex = conditionIndex(events,
+                "NUMERIC.LOOP.GUARD", 1);
+        int loopSecondIndex = conditionIndex(events,
+                "NUMERIC.LOOP.GUARD", 2);
+        int loopExitIndex = conditionIndex(events,
+                "NUMERIC.LOOP.GUARD", 3);
+        require(longIndex >= 0 && longIndex < doubleIndex
+                        && doubleIndex < loopFirstIndex
+                        && loopFirstIndex < loopSecondIndex
+                        && loopSecondIndex < loopExitIndex,
+                events);
         require(emptyCondition(events, "NUMERIC.UNMODELED.CONCRETE", 1),
                 events);
         require(count(events, "\"conditionCount\":1") == 5, events);
@@ -84,12 +92,15 @@ public final class RegionNumericLoopApiSmoke {
 
         String summary = System.finishConcolicRegion();
         String longCondition = arrayObject(summary, "\"pathCondition\":[",
-                0);
+                longIndex);
         String doubleCondition = arrayObject(summary,
-                "\"pathCondition\":[", 1);
-        String loopFirst = arrayObject(summary, "\"pathCondition\":[", 2);
-        String loopSecond = arrayObject(summary, "\"pathCondition\":[", 3);
-        String loopExit = arrayObject(summary, "\"pathCondition\":[", 4);
+                "\"pathCondition\":[", doubleIndex);
+        String loopFirst = arrayObject(summary, "\"pathCondition\":[",
+                loopFirstIndex);
+        String loopSecond = arrayObject(summary, "\"pathCondition\":[",
+                loopSecondIndex);
+        String loopExit = arrayObject(summary, "\"pathCondition\":[",
+                loopExitIndex);
 
         require(longCondition.contains("numeric_loop_wide")
                         && longCondition.contains("\"_java_type\":\"J\""),
@@ -123,11 +134,16 @@ public final class RegionNumericLoopApiSmoke {
         System.out.println("CAUSYNTH_REGION_NUMERIC_LOOP_API_SMOKE_OK");
     }
 
-    private static boolean exactCondition(String events, String site,
-                                          int occurrence, int index) {
+    private static int conditionIndex(String events, String site,
+                                      int occurrence) {
         String event = event(events, site, occurrence);
-        return event.contains("\"conditionIndices\":[" + index + "]")
-                && event.contains("\"conditionCount\":1");
+        String marker = "\"conditionIndices\":[";
+        int start = event.indexOf(marker);
+        if (start < 0 || !event.contains("\"conditionCount\":1")) return -1;
+        start += marker.length();
+        int end = event.indexOf(']', start);
+        return end <= start ? -1
+                : Integer.parseInt(event.substring(start, end));
     }
 
     private static boolean emptyCondition(String events, String site,

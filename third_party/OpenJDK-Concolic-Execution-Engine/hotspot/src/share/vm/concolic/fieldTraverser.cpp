@@ -146,6 +146,11 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
       && _selected_field != fd->name()->as_C_string()) {
     return false;
   }
+  if (!_selected_holder.empty()
+      && (_selected_holder != fd->field_holder()->external_name()
+          || _selected_descriptor != fd->signature()->as_C_string())) {
+    return false;
+  }
 
   // TODO: directly transfer SymInstance*
   SymInstance *sym_inst;

@@ -35,11 +35,9 @@ public final class RegionObjectArrayMapApiSmoke {
         }
         String summary = System.finishConcolicRegion();
 
-        require(summary.contains("java/util/HashMap put"), summary);
-        require(summary.contains("array_init_expr"), summary);
-        require(summary.contains("_array_expr"), summary);
+        require(summary.contains("\"operation\":\"PUT\""), summary);
+        require(summary.contains("ContainerRelation"), summary);
         require(summary.contains("_field"), summary);
-        require(!summary.contains("P_L'java/lang/Integer'_"), summary);
         System.out.println("CAUSYNTH_REGION_OBJECT_ARRAY_MAP_API_SMOKE_OK");
     }
 

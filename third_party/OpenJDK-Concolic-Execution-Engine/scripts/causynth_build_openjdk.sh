@@ -8,6 +8,7 @@ GRAPH_CHECKER_ROOT=${GRAPH_CHECKER_ROOT:-$(cd "$JDK_ROOT/../.." && pwd)}
 CONF=${CONF:-linux-x86_64-normal-zero-release}
 JOBS=${JOBS:-4}
 LOG=${LOG:-info}
+FULL_JDK=${FULL_JDK:-false}
 BOOT_JDK=${BOOT_JDK:-/usr/lib/jvm/java-8-openjdk-amd64}
 BUILD_DIR="$JDK_ROOT/build/$CONF"
 SPEC_FILE="$BUILD_DIR/spec.gmk"
@@ -239,7 +240,7 @@ if [[ -x "$BUILD_DIR/images/j2re-image/bin/java" ]]; then
   EXISTING_RUNTIMES+=("$BUILD_DIR/images/j2re-image")
 fi
 
-if (( ${#EXISTING_RUNTIMES[@]} > 0 )); then
+if (( ${#EXISTING_RUNTIMES[@]} > 0 )) && [[ "$FULL_JDK" != true ]]; then
   make hotspot "${MAKE_ARGS[@]}"
   sync_hotspot_runtime
 else

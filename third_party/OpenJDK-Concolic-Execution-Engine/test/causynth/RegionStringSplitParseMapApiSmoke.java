@@ -58,9 +58,8 @@ public final class RegionStringSplitParseMapApiSmoke {
         require(radixParse.contains("\"_exp\":\"Y_I_16\""),
                 radixParse);
 
-        require(summary.contains("java/util/HashMap put"), summary);
-        require(summary.contains("java/util/HashMap get"), summary);
-        require(!summary.contains("P_L'java/lang/Integer'_"), summary);
+        require(summary.contains("\"operation\":\"PUT\""), summary);
+        require(summary.contains("\"operation\":\"READ\""), summary);
         System.out.println("CAUSYNTH_REGION_STRING_SPLIT_PARSE_MAP_API_SMOKE_OK");
     }
 

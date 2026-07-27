@@ -8,7 +8,6 @@
 #include "concolic/pathCondition.hpp"
 #include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicInstance.hpp"
-#include "concolic/reference/array/arrayInternal.hpp"
 #include "concolic/shadow/shadowStack.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/handles.hpp"
@@ -24,10 +23,6 @@ class ThreadContext {
    */
   typedef std::map<sym_rid_t, SymRef *> SymStore;
   typedef std::vector<Expression *> SymTmpExpStore;
-  // Global JNI handles are stable across moving GC while resolving to the
-  // current oop.  Raw arrayOop keys become stale at the first safepoint and
-  // cannot safely back concrete-array shadows.
-  typedef std::map<jobject, ArrayInternal *> ArrayStore;
   // Some VM-managed objects, most notably interned Strings, must never have
   // their shared oop header marked symbolic.  Keep their per-region symbolic
   // identity behind a GC-stable handle instead.  SymStore remains the sole
@@ -35,6 +30,7 @@ class ThreadContext {
   typedef std::map<jobject, SymInstance *> DetachedObjectStore;
   typedef std::map<sym_rid_t, Expression *> ContainerStateStore;
   typedef std::map<sym_rid_t, int> ContainerPositionStore;
+  typedef std::map<sym_rid_t, sym_rid_t> ContainerOwnerStore;
 
   struct BranchEvent {
     jlong event_id;
@@ -42,7 +38,7 @@ class ThreadContext {
     jlong owner_java_thread_id;
     jlong owner_os_thread_id;
     std::string region_id;
-    std::string activation_id;
+    std::string task_id;
     std::string site_id;
     int occurrence;
     bool outcome;
@@ -59,10 +55,10 @@ private:
   PathCondition _path_condition;
   MethodSymbolizer _method_symbolizer;
   JdbcMngr _jdbc_mngr;
-  ArrayStore _array_store;
   DetachedObjectStore _detached_object_store;
   ContainerStateStore _container_states;
   ContainerPositionStore _container_positions;
+  ContainerOwnerStore _container_owners;
 
   sym_rid_t _sym_rid_counter;
   sym_tmp_id_t _sym_tmp_id_counter;
@@ -77,7 +73,7 @@ private:
   bool _aborted;
   std::string _abort_reason;
   std::string _region_id;
-  std::string _activation_id;
+  std::string _task_id;
   jlong _context_id;
   jlong _owner_java_thread_id;
   jlong _owner_os_thread_id;
@@ -99,6 +95,9 @@ public:
   inline void symbolize(Handle handle, std::string prefix) { this->symbolize_recursive(handle(), prefix); }
   void symbolize_field(Handle handle, std::string field_name,
                        std::string prefix);
+  void symbolize_exact_field(
+      Handle owner, std::string declaring_class, std::string field_name,
+      std::string descriptor, std::string prefix);
   inline void symbolize_method(const char *class_name,
                                const char *method_name) {
     _method_symbolizer.add_method(class_name, method_name);
@@ -113,14 +112,14 @@ public:
   PathCondition &get_path_condition();
 
   inline void set_region_metadata(const char *region_id,
-                                  const char *activation_id) {
+                                  const char *task_id) {
     _region_id = region_id == NULL ? "" : region_id;
-    _activation_id = activation_id == NULL ? "" : activation_id;
+    _task_id = task_id == NULL ? "" : task_id;
   }
 
   inline const std::string &get_region_id() const { return _region_id; }
-  inline const std::string &get_activation_id() const {
-    return _activation_id;
+  inline const std::string &get_task_id() const {
+    return _task_id;
   }
 
   inline jlong get_context_id() const { return _context_id; }
@@ -171,10 +170,6 @@ public:
     return _s_stack.symbolic_tracking_enabled();
   }
 
-  inline const ArrayStore &get_array_store() const {
-    return _array_store;
-  }
-
   inline bool has_callback() const {
     return _method_symbolizer.has_callback();
   }
@@ -220,22 +215,18 @@ public:
     _path_condition.add(sym_exp);
   }
 
-  ArrayInternal* get_or_create_array_internal(arrayOop oop);
-  ArrayInternal* find_array_internal(arrayOop oop) const;
-  void store_array_element_shadow(arrayOop array, int index,
-                                  Expression *expression,
-                                  const char *provenance);
-  void prepare_arraycopy_shadow(arrayOop destination);
-  void arraycopy_shadow(arrayOop source, int source_pos,
-                        arrayOop destination, int destination_pos,
-                        int length);
-  void invalidate_arraycopy_shadow(arrayOop destination,
-                                   int destination_pos, int length);
+  void write_array_element(arrayOop array, int index,
+                           Expression *expression);
+  Expression *track_container(oop container, const char *shape,
+                              const std::string &prefix);
   Expression *container_state(oop container, const char *shape);
   Expression *find_container_state(oop container) const;
   void set_container_state(oop container, Expression *state);
+  void alias_container(oop derived, oop owner);
   int next_container_position(oop cursor);
-public:
+  int current_container_position(oop cursor);
+  void rewind_container_position(oop cursor);
+
   inline ShadowStack &get_shadow_stack() { return _s_stack; }
   /**
    * this will generate a new tmp_id; use it when `sym_exp` is newly

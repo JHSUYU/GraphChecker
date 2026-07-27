@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.Body;
@@ -741,6 +742,8 @@ final class SeedBackwardStaticAnalyzer {
             if (!defExactHit && defProjectionHit) {
                 promoteArrayContainerForProjectedElementRead(
                         method, fact, relevant);
+                promoteTypedCastOperandForProjectedFieldDemand(
+                        method, fact, relevant);
             }
             boolean defHit = defExactHit || defProjectionHit;
             boolean useExactHit = exactIntersects(relevant, uses);
@@ -826,6 +829,31 @@ final class SeedBackwardStaticAnalyzer {
                 ((ArrayRef) right).getBase().toString());
         if (!ignoreNode(base)) {
             relevant.add(base);
+        }
+    }
+
+    /**
+     * A checkcast gives an otherwise untyped reference the declared type
+     * needed to interpret a demanded field path.  Promote only the cast
+     * operand as an exact value: this lets an upstream modeled operation such
+     * as {@code Map.get} close over its receiver and arguments without ever
+     * inventing a globally valid {@code java.lang.Object#field:*} projection.
+     */
+    private void promoteTypedCastOperandForProjectedFieldDemand(
+            String method, Fact fact, Set<String> relevant) {
+        if (!(fact.unit instanceof AssignStmt)) {
+            return;
+        }
+        Value right = ((AssignStmt) fact.unit).getRightOp();
+        if (!(right instanceof CastExpr)
+                || !(((CastExpr) right).getType() instanceof soot.RefType)
+                || !(((CastExpr) right).getOp() instanceof Local)) {
+            return;
+        }
+        String operand = canonical(method,
+                ((CastExpr) right).getOp().toString());
+        if (!ignoreNode(operand)) {
+            relevant.add(operand);
         }
     }
 
@@ -1691,9 +1719,7 @@ final class SeedBackwardStaticAnalyzer {
         if (callee == null) {
             return;
         }
-        processSemanticMapLookup(callerMethod, fact, callee, defs,
-                callerRelevant);
-        processSemanticContainerProjection(callerMethod, fact,
+        processSemanticContainerOperation(callerMethod, fact,
                 callee, defs, callerRelevant);
         processAccessorInvoke(callerMethod, fact, callee, defs,
                 callerRelevant);
@@ -1703,6 +1729,8 @@ final class SeedBackwardStaticAnalyzer {
                 actuals, callerRelevant);
         boolean dynamicDispatch = !resolveDispatchTargets(callee)
                 .isEmpty();
+        boolean modeledContainerResult =
+                JavaContainerTypes.symbolicResultOperation(callee.raw);
         boolean expandableCallee = isExpandableMethod(callee.raw);
         SootMethod calleeMethod = expandableCallee ? methodsBySignature.get(callee.raw) : null;
         boolean runtimeRecursiveCaller =
@@ -1724,10 +1752,13 @@ final class SeedBackwardStaticAnalyzer {
                     "method call actual flows to callee formal",
                     callerMethod, fact, callee.raw, callee, actuals,
                     callerRelevant, calleeRelevant, expandableCallee);
-            propagateCallReturns("call_return",
-                    "callee return flows to caller local",
-                    callerMethod, fact, callee.raw, defs,
-                    callerRelevant, calleeRelevant, expandableCallee, false);
+            if (!modeledContainerResult) {
+                propagateCallReturns("call_return",
+                        "callee return flows to caller local",
+                        callerMethod, fact, callee.raw, defs,
+                        callerRelevant, calleeRelevant, expandableCallee,
+                        false);
+            }
         }
         if (expandableCallee && runtimeRecursiveCaller
                 && selectedMethods.contains(callee.raw)
@@ -1799,46 +1830,53 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * Closes the receiver dependency of the small Java collection API
-     * surface whose result is specified in terms of the receiver's
-     * elements.  Generic invoke handling deliberately excludes library
-     * receivers: an arbitrary instance method need not return anything
-     * derived from its receiver.  That conservative rule, however, loses
-     * the exact chain in code such as
-     * {@code map.values().toArray(new Value[0])} and can make an output
-     * slice appear independent of {@code map}.
-     *
-     * <p>Only exact, signature-checked Map view factories and Collection
-     * {@code toArray} overloads are admitted.  The edge records element
-     * identity flow; the VM's {@code ContainerRelation} owns concrete
-     * ordering, cardinality and mutation semantics.</p>
+     * Closes the operands of the Java collection operations modeled by the
+     * VM. Generic invoke handling deliberately excludes library receivers:
+     * an arbitrary instance method need not return anything derived from its
+     * receiver. A modeled container result, however, is a function of the
+     * receiver state and its call arguments. Keeping that ordinary dataflow
+     * in the slice lets the receiver become one canonical region live-in;
+     * the VM's {@code ContainerRelation} owns its value semantics.
      */
-    private void processSemanticContainerProjection(
+    private void processSemanticContainerOperation(
             String callerMethod, Fact fact, MethodSig callee,
             List<String> defs, Set<String> callerRelevant) {
-        if (!isSemanticContainerProjection(callee) || defs.isEmpty()) {
+        if (callee == null || defs.isEmpty()
+                || !(JavaContainerTypes.symbolicResultOperation(callee.raw)
+                || isSemanticContainerProjection(callee))) {
             return;
         }
-        String receiver = invokeBaseLocal(fact.unitText);
-        if (receiver == null) {
-            return;
-        }
-        String receiverNode = canonical(callerMethod, receiver);
-        if (ignoreNode(receiverNode)) {
-            return;
-        }
-
+        List<String> relevantDefs = new ArrayList<>();
         for (String def : defs) {
-            boolean defHit = callerRelevant.contains(def)
-                    || containsProjection(callerRelevant, def);
-            if (!defHit || ignoreNode(def)) {
-                continue;
+            if (!ignoreNode(def) && (callerRelevant.contains(def)
+                    || containsProjection(callerRelevant, def))) {
+                relevantDefs.add(def);
             }
+        }
+        if (relevantDefs.isEmpty()) return;
+
+        String receiver = invokeBaseLocal(fact.unitText);
+        if (receiver == null) return;
+        String receiverNode = canonical(callerMethod, receiver);
+        if (ignoreNode(receiverNode)) return;
+        for (String def : relevantDefs) {
             addEdgeInternal("container_projection", receiverNode, def,
                     callerMethod, fact,
-                    "Java collection contract makes result elements "
-                            + "depend on receiver elements", false);
-            callerRelevant.add(receiverNode);
+                    "modeled Java container result depends on receiver state",
+                    false);
+        }
+        callerRelevant.add(receiverNode);
+
+        for (String argument : canonicalPositionList(callerMethod,
+                actualInvokeArgs(fact.unitText))) {
+            if (ignoreNode(argument)) continue;
+            for (String def : relevantDefs) {
+                addEdgeInternal("container_argument", argument, def,
+                        callerMethod, fact,
+                        "modeled Java container result depends on argument",
+                        false);
+            }
+            callerRelevant.add(argument);
         }
     }
 
@@ -1895,56 +1933,6 @@ final class SeedBackwardStaticAnalyzer {
      * exception guard on the result can discover both keyId and allKeys
      * without naming either variable in target.yaml.
      */
-    private void processSemanticMapLookup(String callerMethod, Fact fact,
-                                          MethodSig callee,
-                                          List<String> defs,
-                                          Set<String> callerRelevant) {
-        if (!isSemanticMapLookup(callee) || defs.isEmpty()
-                || !intersects(callerRelevant, defs)) {
-            return;
-        }
-        String receiver = invokeBaseLocal(fact.unitText);
-        if (receiver != null) {
-            String receiverNode = canonical(callerMethod, receiver);
-            if (!ignoreNode(receiverNode)) {
-                for (String def : defs) {
-                    if (ignoreNode(def)) {
-                        continue;
-                    }
-                    addEdge("map_lookup_state", receiverNode, def,
-                            callerMethod, fact,
-                            "Map.get result depends on receiver map contents");
-                }
-                callerRelevant.add(receiverNode);
-            }
-        }
-        for (String actual : canonicalPositionList(callerMethod,
-                actualInvokeArgs(fact.unitText))) {
-            if (ignoreNode(actual)) {
-                continue;
-            }
-            for (String def : defs) {
-                if (ignoreNode(def)) {
-                    continue;
-                }
-                addEdge("map_lookup_key", actual, def,
-                        callerMethod, fact,
-                        "Map.get result depends on lookup key");
-            }
-            callerRelevant.add(actual);
-        }
-    }
-
-    private boolean isSemanticMapLookup(MethodSig callee) {
-        if (callee == null || !"get".equals(callee.name)
-                || callee.params.size() != 1) {
-            return false;
-        }
-        return callee.owner.startsWith("java.util.")
-                && (callee.owner.contains("Map")
-                || "java.util.Hashtable".equals(callee.owner));
-    }
-
     private void processConstructorObjectInvoke(String callerMethod, Fact fact,
                                                 MethodSig callee,
                                                 List<String> actuals,
@@ -2532,6 +2520,7 @@ final class SeedBackwardStaticAnalyzer {
             return;
         }
         edge.put("declaredFieldSignature", field.getSignature());
+        edge.put("declaredFieldStatic", field.isStatic());
     }
 
     /**

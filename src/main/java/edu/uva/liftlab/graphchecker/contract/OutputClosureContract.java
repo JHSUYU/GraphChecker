@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.SortedSet;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
 /**
@@ -23,17 +24,19 @@ import java.util.TreeSet;
  */
 public final class OutputClosureContract {
     public static final String FIELD = "outputClosure";
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
     public static final String KIND = "OUTPUT_CLOSURE_CONTRACT";
 
     private final Producer producer;
     private final List<Member> members;
+    private final List<JsonObject> causalEdges;
     private final Map<String, Member> byPort;
     private final ExecutionScope executionScope;
     private final String demandKey;
     private final String closureFingerprint;
 
-    OutputClosureContract(Producer producer, Collection<Member> source) {
+    OutputClosureContract(Producer producer, Collection<Member> source,
+                          Collection<JsonObject> edgeSource) {
         if (producer == null || source == null || source.isEmpty()) {
             throw new IllegalArgumentException(
                     "producer and at least one output member are required");
@@ -61,10 +64,31 @@ public final class OutputClosureContract {
                 }
             }
         }
+        TreeMap<String, JsonObject> edgeIndex = new TreeMap<>();
+        if (edgeSource != null) {
+            for (JsonObject edge : edgeSource) {
+                String id = text(edge, "edgeId");
+                JsonObject prior = edgeIndex.putIfAbsent(id,
+                        edge.deepCopy());
+                if (id.isEmpty() || prior != null
+                        && !CanonicalJson.render(prior).equals(
+                        CanonicalJson.render(edge))) {
+                    throw new IllegalArgumentException(
+                            "duplicate, conflicting or missing causal edge");
+                }
+            }
+        }
         this.producer = producer;
         this.members = Collections.unmodifiableList(ordered);
+        this.causalEdges = Collections.unmodifiableList(
+                new ArrayList<>(edgeIndex.values()));
         this.byPort = Collections.unmodifiableMap(index);
         this.executionScope = new ExecutionScope(ordered);
+        if (!edgeIndex.keySet().containsAll(
+                this.executionScope.causalEdgeIds())) {
+            throw new IllegalArgumentException(
+                    "output closure cites a missing causal edge");
+        }
         this.demandKey = CanonicalJson.sha256(demandIdentity());
         this.closureFingerprint = CanonicalJson.sha256(toJson());
     }
@@ -72,6 +96,12 @@ public final class OutputClosureContract {
     public Producer producer() { return producer; }
 
     public List<Member> members() { return members; }
+
+    public List<JsonObject> causalEdges() {
+        List<JsonObject> result = new ArrayList<>();
+        for (JsonObject edge : causalEdges) result.add(edge.deepCopy());
+        return Collections.unmodifiableList(result);
+    }
 
     public Member member(String portId) { return byPort.get(trim(portId)); }
 
@@ -91,25 +121,13 @@ public final class OutputClosureContract {
         result.addProperty("schemaVersion", SCHEMA_VERSION);
         result.addProperty("kind", KIND);
         result.add("producer", producer.toJson());
+        JsonArray edges = new JsonArray();
+        for (JsonObject edge : causalEdges) edges.add(edge.deepCopy());
+        result.add("causalEdges", edges);
         JsonArray encoded = new JsonArray();
         for (Member member : members) encoded.add(member.toJson());
         result.add("members", encoded);
         return result;
-    }
-
-    /** V1 joint execution is deliberately bounded to direct scalars. */
-    public boolean supportedJointCapture() {
-        if (members.size() == 1) return true;
-        for (Member member : members) {
-            if (member.javaTypeDescriptor().length() != 1
-                    || !"ZBCSIJFD".contains(member.javaTypeDescriptor())
-                    || !member.captureRequired()
-                    || !member.captureComplete()
-                    || member.captureBindings().size() != 1) {
-                return false;
-            }
-        }
-        return true;
     }
 
     private JsonObject demandIdentity() {
@@ -209,16 +227,6 @@ public final class OutputClosureContract {
             return text(output, "javaTypeDescriptor");
         }
 
-        public boolean captureRequired() {
-            return captureBindings().size() > 0;
-        }
-
-        public boolean captureComplete() {
-            return slice.getAsJsonArray("captureBindingIssues").size() == 0;
-        }
-
-        public JsonObject output() { return output.deepCopy(); }
-
         public JsonObject slice() { return slice.deepCopy(); }
 
         public JsonArray captures() { return captureBindings().deepCopy(); }
@@ -251,10 +259,6 @@ public final class OutputClosureContract {
         }
 
         public SortedSet<String> inputPorts() { return inputs; }
-
-        public SortedSet<String> sites() { return sites; }
-
-        public SortedSet<String> staticSites() { return staticSites; }
 
         public SortedSet<String> branchSites() {
             TreeSet<String> result = new TreeSet<>(sites);

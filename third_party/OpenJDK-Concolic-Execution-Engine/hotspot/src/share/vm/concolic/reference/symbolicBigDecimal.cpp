@@ -2,7 +2,6 @@
 
 #include "concolic/reference/symbolicBigDecimal.hpp"
 #include "concolic/concolicMngr.hpp"
-#include "concolic/exp/arrayInitExpression.hpp"
 #include "concolic/utils.hpp"
 
 

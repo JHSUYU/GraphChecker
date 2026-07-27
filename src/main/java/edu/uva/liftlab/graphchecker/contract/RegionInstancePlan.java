@@ -73,7 +73,6 @@ public final class RegionInstancePlan {
     void writeTaskIdentityTo(JsonObject target) {
         target.addProperty("regionId", regionId());
         target.addProperty("regionInstanceId", regionInstanceId());
-        copyIfPresent(encoded, target, "test");
         copyIfPresent(encoded, target, "rootSelector");
         copyIfPresent(encoded, target, "targetMethod");
         if (encoded.has("rootCallId")) {
@@ -124,12 +123,15 @@ public final class RegionInstancePlan {
         public boolean replayable() {
             String admissionState = admissionState();
             return "READY".equals(admissionState)
-                    || "DISCOVERED".equals(admissionState)
-                    || "EXECUTABLE".equals(admissionState);
+                    || "DISCOVERED".equals(admissionState);
         }
 
         public String admissionState() {
             return string(object(encoded, "admission"), "state");
+        }
+
+        public JsonArray admissionBlockers() {
+            return array(object(encoded, "admission"), "blockers");
         }
 
         public Set<String> runtimeDefinitionMethods() {

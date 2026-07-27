@@ -3,6 +3,7 @@
 #include <concolic/exp/methodExpression.hpp>
 #include "concolic/concolicMngr.hpp"
 #include "concolic/methodSymbolizerHandle.hpp"
+#include "concolic/reference/containerSupport.hpp"
 
 Expression *MethodSymbolizerHandle::get_primitive_exp(int offset, BasicType type) {
   Expression *exp;
@@ -93,7 +94,9 @@ int __attribute__((optimize("O0"))) MethodSymbolizerHandle::general_prepare_para
           exp = sym_inst->get_or_create_ref_exp(obj);
         }
       } else {
-        exp = SymInstance::get_exp_of(obj);
+        exp = ContainerSupport::result_type(obj, T_OBJECT) == T_OBJECT
+            ? SymInstance::get_exp_of(obj)
+            : ContainerSupport::concrete_value(obj);
       }
     }
   } else {
@@ -136,7 +139,9 @@ bool MethodSymbolizerHandle::general_check_param_symbolized_helper(BasicType typ
   } else if (type == T_OBJECT || type == T_ARRAY) {
     oop obj = this->get_param<oop>(locals_offset);
     Expression *exp = this->get_reference_exp(locals_offset, obj);
-    if (exp != NULL || (obj != NULL && obj->is_symbolic())) {
+    if (exp != NULL || (obj != NULL
+        && (obj->is_symbolic()
+            || ConcolicMngr::ctx->find_container_state(obj) != NULL))) {
       recording = true;
     }
   } else {

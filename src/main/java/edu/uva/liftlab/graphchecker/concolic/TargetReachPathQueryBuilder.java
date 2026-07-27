@@ -66,10 +66,11 @@ public final class TargetReachPathQueryBuilder {
         String region = string(seed, "regionId");
         String instance = string(seed, "regionInstanceId");
         String goalId = string(seed, "goalId");
+        String targetSite = string(seed, "targetSiteId");
         if (!region.equals(string(manifest, "regionId"))
                 || !goalId.equals(string(manifest, "goalId"))
                 || region.isEmpty() || instance.isEmpty()
-                || goalId.isEmpty()) {
+                || goalId.isEmpty() || targetSite.isEmpty()) {
             throw new IOException(
                     "target seed and closed path scope do not match");
         }
@@ -107,17 +108,6 @@ public final class TargetReachPathQueryBuilder {
             String pathKey = observation.pathKey();
             path.add("constraints",
                     array(summary, "pathCondition").deepCopy());
-            JsonArray placeholderBindings = array(summary,
-                    "vmIntrinsicPlaceholderBindings");
-            JsonArray placeholderRequirements = array(summary,
-                    "unforcedEnvironmentValidationRequirements");
-            if (placeholderBindings.size() > 0
-                    || placeholderRequirements.size() > 0) {
-                path.add("vmIntrinsicPlaceholderBindings",
-                        placeholderBindings.deepCopy());
-                path.add("unforcedEnvironmentValidationRequirements",
-                        placeholderRequirements.deepCopy());
-            }
             JsonObject previous = pathsByKey.put(pathKey, path);
             if (previous != null && !previous.equals(path)) {
                 throw new IOException(
@@ -137,6 +127,7 @@ public final class TargetReachPathQueryBuilder {
         result.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
         result.addProperty("regionId", region);
         result.addProperty("regionInstanceId", instance);
+        result.addProperty("targetSiteId", targetSite);
         result.add("paths", encodedPaths);
         result.add("seedReplayContract",
                 object(seed, "replayContract").deepCopy());

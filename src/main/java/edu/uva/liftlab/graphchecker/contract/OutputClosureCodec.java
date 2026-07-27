@@ -84,6 +84,7 @@ public final class OutputClosureCodec {
                         requireText(scope, "regionInstanceId"),
                         requireLong(scope, "rootCallId"));
 
+        List<JsonObject> causalEdges = causalEdges(envelope);
         JsonArray rows = requireArray(envelope, "members");
         if (rows.size() == 0) {
             throw new IllegalArgumentException(
@@ -100,14 +101,7 @@ public final class OutputClosureCodec {
             producer.requireOutputPort(member.portId());
             members.add(member);
         }
-        OutputClosureContract result =
-                new OutputClosureContract(producer, members);
-        if (!result.supportedJointCapture()) {
-            throw new IllegalArgumentException(
-                    "multi-output V1 requires one direct primitive capture "
-                            + "per member");
-        }
-        return result;
+        return new OutputClosureContract(producer, members, causalEdges);
     }
 
     /**
@@ -123,6 +117,7 @@ public final class OutputClosureCodec {
         OutputClosureContract.Producer producer = null;
         Map<String, OutputClosureContract.Member> members =
                 new LinkedHashMap<>();
+        Map<String, JsonObject> causalEdges = new LinkedHashMap<>();
         for (OutputClosureContract contract : contracts) {
             if (contract == null) {
                 throw new IllegalArgumentException(
@@ -142,14 +137,18 @@ public final class OutputClosureCodec {
                             "conflicting output member " + member.portId());
                 }
             }
+            for (JsonObject edge : contract.causalEdges()) {
+                String id = requireText(edge, "edgeId");
+                JsonObject prior = causalEdges.putIfAbsent(id, edge);
+                if (prior != null && !CanonicalJson.render(prior)
+                        .equals(CanonicalJson.render(edge))) {
+                    throw new IllegalArgumentException(
+                            "conflicting causal edge " + id);
+                }
+            }
         }
-        OutputClosureContract result =
-                new OutputClosureContract(producer, members.values());
-        if (!result.supportedJointCapture()) {
-            throw new IllegalArgumentException(
-                    "merged output closure is outside V1 joint scope");
-        }
-        return result;
+        return new OutputClosureContract(producer, members.values(),
+                causalEdges.values());
     }
 
     /**
@@ -164,6 +163,17 @@ public final class OutputClosureCodec {
         JsonObject normalizedSlice = slice == null
                 ? null : slice.deepCopy();
         requireArray(normalizedSlice, "captureBindings");
+        JsonArray encodedEdges = requireArray(normalizedSlice,
+                "causalEdges");
+        List<JsonObject> causalEdges = new ArrayList<>();
+        for (int i = 0; i < encodedEdges.size(); i++) {
+            if (!encodedEdges.get(i).isJsonObject()) {
+                throw new IllegalArgumentException(
+                        "causalEdges[" + i + "] must be an object");
+            }
+            causalEdges.add(encodedEdges.get(i).getAsJsonObject());
+        }
+        normalizedSlice.remove("causalEdges");
         String descriptor = javaTypeDescriptor(javaType);
         requireFieldDescriptor(descriptor, "requested output");
 
@@ -182,7 +192,7 @@ public final class OutputClosureCodec {
         OutputClosureContract.Member decoded = decodeMember(member, 0);
         producer.requireOutputPort(decoded.portId());
         return new OutputClosureContract(producer,
-                Collections.singletonList(decoded));
+                Collections.singletonList(decoded), causalEdges);
     }
 
     public static void writeTo(JsonObject activation,
@@ -223,6 +233,10 @@ public final class OutputClosureCodec {
         requireFieldDescriptor(descriptor, path);
 
         JsonObject slice = requireObject(encoded, "slice");
+        if (slice.has("causalEdges")) {
+            throw new IllegalArgumentException(
+                    path + ".slice contains non-canonical causalEdges");
+        }
         validateSliceShape(slice, port, cell, path + ".slice");
         JsonArray bindings = requireArray(slice, "captureBindings");
         validateCaptureLedger(bindings, port, cell, path,
@@ -285,8 +299,8 @@ public final class OutputClosureCodec {
         String javaType = requireText(binding, "javaType");
         if (field == null || !cell.equals(
                 requireText(binding, "fieldSignature"))
-                || fieldPath.isEmpty()
-                || !field.name().equals(fieldPath.get(fieldPath.size() - 1))
+                || fieldPath.size() != 1
+                || !field.name().equals(fieldPath.get(0))
                 || !field.type().equals(javaType)
                 || !descriptor.equals(javaTypeDescriptor(javaType))) {
             throw new IllegalArgumentException(
@@ -300,6 +314,21 @@ public final class OutputClosureCodec {
             throw new IllegalArgumentException(
                     path + ".javaTypeDescriptor is invalid: " + value);
         }
+    }
+
+    private static List<JsonObject> causalEdges(JsonObject envelope) {
+        JsonArray encoded = requireArray(envelope, "causalEdges");
+        List<JsonObject> result = new ArrayList<>();
+        for (int i = 0; i < encoded.size(); i++) {
+            if (!encoded.get(i).isJsonObject()) {
+                throw new IllegalArgumentException(
+                        "causalEdges[" + i + "] must be an object");
+            }
+            JsonObject edge = encoded.get(i).getAsJsonObject();
+            requireText(edge, "edgeId");
+            result.add(edge);
+        }
+        return result;
     }
 
     private static void validateOuterScope(

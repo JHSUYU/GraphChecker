@@ -9,6 +9,7 @@ import java.util.Collections;
 import java.util.List;
 
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
+import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
@@ -24,6 +25,74 @@ public final class ContainerSmtCodec {
     public static final String EXPRESSION_TYPE = "ContainerRelation";
 
     private ContainerSmtCodec() {
+    }
+
+    /** One tagged transport value shared by path solving and composition. */
+    static String valueDatatypeDeclaration() {
+        return "(declare-datatypes () ((Value"
+                + " (VByte (valueByte Int))"
+                + " (VChar (valueChar Int))"
+                + " (VShort (valueShort Int))"
+                + " (VInt (valueInt Int))"
+                + " (VLong (valueLong Int))"
+                + " (VFloat (valueFloat (_ FloatingPoint 8 24)))"
+                + " (VDouble (valueDouble (_ FloatingPoint 11 53)))"
+                + " (VBool (valueBool Bool))"
+                + " (VRef (valueRef Ref))"
+                + " (VString (valueString String)))))";
+    }
+
+    /**
+     * Integral scalars share SMT {@code Int}; only their container {@code
+     * Value} representation is tagged with the Java primitive kind.
+     */
+    static String boxIntegral(String value, String javaType) {
+        String constructor = integralValuePart(javaType, true);
+        return constructor.isEmpty() ? "" : "(" + constructor + " "
+                + value + ")";
+    }
+
+    static String unboxIntegral(String value, String javaType) {
+        String accessor = integralValuePart(javaType, false);
+        return accessor.isEmpty() ? "" : "(" + accessor + " "
+                + value + ")";
+    }
+
+    static String valueKind(String javaType) {
+        String integral = integralValuePart(javaType, true);
+        if (!integral.isEmpty()) return integral;
+        String descriptor = JavaPrimitiveBoxing
+                .primitiveDescriptor(javaType);
+        if (descriptor.isEmpty()) {
+            descriptor = JavaPrimitiveSmtSemantics
+                    .javaTypeDescriptor(javaType);
+        }
+        if ("Z".equals(descriptor)) return "VBool";
+        if ("F".equals(descriptor)) return "VFloat";
+        if ("D".equals(descriptor)) return "VDouble";
+        if ("Ljava/lang/String;".equals(descriptor)) return "VString";
+        if ("L".equals(javaType) || descriptor.startsWith("L")
+                || descriptor.startsWith("[")) {
+            return "VRef";
+        }
+        return "";
+    }
+
+    private static String integralValuePart(
+            String javaType, boolean constructor) {
+        String descriptor = JavaPrimitiveBoxing
+                .primitiveDescriptor(javaType);
+        if (descriptor.isEmpty()) {
+            descriptor = JavaPrimitiveSmtSemantics
+                    .javaTypeDescriptor(javaType);
+        }
+        String name = "B".equals(descriptor) ? "Byte"
+                : "C".equals(descriptor) ? "Char"
+                : "S".equals(descriptor) ? "Short"
+                : "I".equals(descriptor) ? "Int"
+                : "J".equals(descriptor) ? "Long" : "";
+        return name.isEmpty() ? ""
+                : (constructor ? "V" : "value") + name;
     }
 
     /**
@@ -69,8 +138,6 @@ public final class ContainerSmtCodec {
                         + " (lambda ((q Int)) (ite (< q i)"
                         + " (select (indexed_elements s) q)"
                         + " (select (indexed_elements s) (+ q 1))))))",
-                "(define-fun indexed_clear ((s IndexedState)) IndexedState"
-                        + " (mkIndexedState 0 (indexed_elements s)))",
                 "(define-fun indexed_contains ((s IndexedState) (v Value))"
                         + " Bool (exists ((i Int))"
                         + " (and (<= 0 i) (< i (indexed_size s))"
@@ -115,12 +182,7 @@ public final class ContainerSmtCodec {
                         + " (> (select (assoc_position s) key) p))"
                         + " (- (select (assoc_position s) key) 1)"
                         + " (select (assoc_position s) key))))))"
-                        + " s))",
-                "(define-fun assoc_clear ((s AssocState)) AssocState"
-                        + " (mkAssocState 0"
-                        + " ((as const (Array Value Bool)) false)"
-                        + " (assoc_values s) (assoc_order s)"
-                        + " ((as const (Array Value Int)) (- 1))))"
+                        + " s))"
         ));
     }
 
@@ -136,12 +198,98 @@ public final class ContainerSmtCodec {
                 string(expression.getAsJsonObject(), "_type"));
     }
 
+    public static boolean handlesFieldBinding(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return false;
+        JsonObject binary = expression.getAsJsonObject();
+        String position = string(binary, "_code_position");
+        if (!"BinaryExpression".equals(string(binary, "_type"))
+                || !"==".equals(string(binary, "_op"))
+                || position.indexOf(
+                "java.lang.System.symbolizeExactField(") < 0
+                && position.indexOf(
+                "java.lang.System.symbolizeField(") < 0
+                && position.indexOf("java.lang.System.symbolize(") < 0) {
+            return false;
+        }
+        return handlesField(binary.get("_left"))
+                && symbol(binary.get("_right"))
+                || handlesField(binary.get("_right"))
+                && symbol(binary.get("_left"));
+    }
+
+    /**
+     * VM array access contributes concrete bounds and symbolic read/size
+     * relations to the PC.  They constrain a source branch but are not
+     * branches themselves.
+     */
+    public static boolean handlesAccessConstraint(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return false;
+        JsonObject binary = expression.getAsJsonObject();
+        if (!"BinaryExpression".equals(string(binary, "_type"))) {
+            return false;
+        }
+        JsonElement left = binary.get("_left");
+        JsonElement right = binary.get("_right");
+        return handles(left) || handles(right)
+                || constant(left) && constant(right);
+    }
+
+    private static boolean constant(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return false;
+        String type = string(expression.getAsJsonObject(), "_type");
+        return "ConstExpr".equals(type) || "ConSymbolExp".equals(type)
+                || "ConStringSymbolExp".equals(type);
+    }
+
+    public static String materializedStringEquality(
+            String left, String right, String symbolNullness) {
+        if (symbolNullness == null || symbolNullness.isEmpty()) return "";
+        String equality = "(= " + left + " " + right + ")";
+        return "false".equals(symbolNullness) ? equality
+                : "(and " + equality + " (not "
+                + symbolNullness + "))";
+    }
+
+    private static boolean symbol(JsonElement expression) {
+        return expression != null && expression.isJsonObject()
+                && "SymbolExpression".equals(
+                string(expression.getAsJsonObject(), "_type"));
+    }
+
     public static Term field(JsonObject expression, Host host) {
         Term owner = host.operand(expression.get("owner"), Sort.REF);
         if (owner == null) return null;
-        return host.field(owner, string(expression, "ownerClass"),
-                JsonFields.integer(expression, "fieldOffset", -1),
-                string(expression, "_java_type"));
+        String ownerClass = string(expression, "ownerClass");
+        String javaType = string(expression, "_java_type");
+        if (boxedPrimitiveValue(owner, ownerClass, javaType)) {
+            return owner;
+        }
+        return host.field(owner, ownerClass,
+                JsonFields.integer(expression, "fieldOffset", -1), javaType);
+    }
+
+    private static boolean boxedPrimitiveValue(
+            Term owner, String ownerClass, String javaType) {
+        if ("java/lang/Boolean".equals(ownerClass)) {
+            return "Z".equals(javaType) && owner.sort == Sort.BOOL;
+        }
+        if ("java/lang/Float".equals(ownerClass)) {
+            return "F".equals(javaType) && owner.sort == Sort.FLOAT32;
+        }
+        if ("java/lang/Double".equals(ownerClass)) {
+            return "D".equals(javaType) && owner.sort == Sort.FLOAT64;
+        }
+        return ("java/lang/Byte".equals(ownerClass)
+                && "B".equals(javaType)
+                || "java/lang/Character".equals(ownerClass)
+                && "C".equals(javaType)
+                || "java/lang/Short".equals(ownerClass)
+                && "S".equals(javaType)
+                || "java/lang/Integer".equals(ownerClass)
+                && "I".equals(javaType)
+                || "java/lang/Long".equals(ownerClass)
+                && "J".equals(javaType))
+                && owner.sort == Sort.INT;
     }
 
     public static Term term(JsonObject expression, Host host) {
@@ -233,12 +381,51 @@ public final class ContainerSmtCodec {
             return new Term("(= " + selected + " " + value.text + ")",
                     Sort.BOOL);
         }
-        Term receiver = host.operand(expression.get("receiver"),
-                "INDEXED".equals(shape) ? Sort.INDEXED : Sort.ASSOCIATIVE);
+        if ("HAS_NEXT".equals(operation)) {
+            Sort stateSort = "INDEXED".equals(shape)
+                    ? Sort.INDEXED : Sort.ASSOCIATIVE;
+            Term state = host.operand(expression.get("receiver"), stateSort);
+            JsonArray positions = array(expression, "arguments");
+            Term position = positions.size() == 1
+                    ? host.operand(positions.get(0), Sort.INT) : null;
+            if (state == null || position == null) {
+                host.unsupported("ContainerRelation:" + shape
+                        + ":HAS_NEXT");
+                return null;
+            }
+            String size = stateSort == Sort.INDEXED
+                    ? "(indexed_size " + state.text + ")"
+                    : "(assoc_size " + state.text + ")";
+            return new Term("(and (<= 0 " + position.text + ") (< "
+                    + position.text + " " + size + "))", Sort.BOOL);
+        }
         JsonArray arguments = array(expression, "arguments");
-        if (receiver == null) return null;
-
+        if ("CLEAR".equals(operation)) {
+            if (arguments.size() != 0) {
+                host.unsupported("ContainerRelation:" + shape
+                        + ":CLEAR:arity=" + arguments.size());
+                return null;
+            }
+            if ("INDEXED".equals(shape)) {
+                return new Term("(mkIndexedState 0"
+                        + " ((as const (Array Int Value))"
+                        + " (VRef nullRef)))", Sort.INDEXED);
+            }
+            if ("ASSOCIATIVE".equals(shape)) {
+                return new Term("(mkAssocState 0"
+                        + " ((as const (Array Value Bool)) false)"
+                        + " ((as const (Array Value Value))"
+                        + " (VRef nullRef))"
+                        + " ((as const (Array Int Value))"
+                        + " (VRef nullRef))"
+                        + " ((as const (Array Value Int)) (- 1)))",
+                        Sort.ASSOCIATIVE);
+            }
+        }
         if ("INDEXED".equals(shape)) {
+            Term receiver = host.operand(expression.get("receiver"),
+                    Sort.INDEXED);
+            if (receiver == null) return null;
             if ("ITERATOR".equals(operation)) return receiver;
             if ("SIZE".equals(operation)) {
                 return new Term("(indexed_size " + receiver.text + ")",
@@ -279,10 +466,6 @@ public final class ContainerSmtCodec {
                         : new Term("(indexed_remove " + receiver.text + " "
                         + index.text + ")", Sort.INDEXED);
             }
-            if ("CLEAR".equals(operation) && arguments.size() == 0) {
-                return new Term("(indexed_clear " + receiver.text + ")",
-                        Sort.INDEXED);
-            }
             if ("CONTAINS".equals(operation) && arguments.size() == 1) {
                 Term value = host.box(arguments.get(0));
                 return value == null ? null
@@ -294,33 +477,34 @@ public final class ContainerSmtCodec {
                         Sort.BOOL);
             }
         } else if ("ASSOCIATIVE".equals(shape)) {
-            if ("ITERATOR".equals(operation)
-                    || "ENTRY_VIEW".equals(operation)
-                    || "KEY_VIEW".equals(operation)
-                    || "VALUE_VIEW".equals(operation)) return receiver;
             if ("SIZE".equals(operation)) {
-                return new Term("(assoc_size " + receiver.text + ")",
-                        Sort.INT);
+                return associativeSize(expression.get("receiver"), host);
             }
             if ("CONTAINS".equals(operation) && arguments.size() == 1) {
                 Term key = host.box(arguments.get(0));
                 return key == null ? null
-                        : new Term("(assoc_has " + receiver.text + " "
-                        + key.text + ")", Sort.BOOL);
+                        : associativeHas(expression.get("receiver"),
+                        key, host);
             }
             if ("READ".equals(operation) && arguments.size() == 1) {
                 Term key = host.box(arguments.get(0));
                 return key == null ? null
-                        : host.unbox(new Term("(ite (assoc_has "
-                        + receiver.text + " "
-                        + key.text + ") (assoc_read " + receiver.text + " "
-                        + key.text + ") (VRef nullRef))", Sort.VALUE),
-                        javaType);
+                        : host.unbox(associativeRead(
+                        expression.get("receiver"), key, host), javaType);
             }
             if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
-                return new Term("(= (assoc_size " + receiver.text + ") 0)",
-                        Sort.BOOL);
+                Term size = associativeSize(
+                        expression.get("receiver"), host);
+                return size == null ? null
+                        : new Term("(= " + size.text + " 0)", Sort.BOOL);
             }
+            Term receiver = host.operand(expression.get("receiver"),
+                    Sort.ASSOCIATIVE);
+            if (receiver == null) return null;
+            if ("ITERATOR".equals(operation)
+                    || "ENTRY_VIEW".equals(operation)
+                    || "KEY_VIEW".equals(operation)
+                    || "VALUE_VIEW".equals(operation)) return receiver;
             if ("PUT".equals(operation) && arguments.size() == 2) {
                 Term key = host.box(arguments.get(0));
                 Term value = host.box(arguments.get(1));
@@ -329,20 +513,119 @@ public final class ContainerSmtCodec {
                         + key.text + " " + value.text + ")",
                         Sort.ASSOCIATIVE);
             }
+            if ("REMOVE_AT".equals(operation)
+                    && arguments.size() == 1) {
+                Term index = host.operand(arguments.get(0), Sort.INT);
+                return index == null ? null
+                        : new Term("(assoc_remove " + receiver.text
+                        + " (assoc_key_at " + receiver.text + " "
+                        + index.text + "))", Sort.ASSOCIATIVE);
+            }
             if ("REMOVE".equals(operation) && arguments.size() == 1) {
                 Term key = host.box(arguments.get(0));
                 return key == null ? null
                         : new Term("(assoc_remove " + receiver.text + " "
                         + key.text + ")", Sort.ASSOCIATIVE);
             }
-            if ("CLEAR".equals(operation) && arguments.size() == 0) {
-                return new Term("(assoc_clear " + receiver.text + ")",
-                        Sort.ASSOCIATIVE);
-            }
         }
         host.unsupported("ContainerRelation:" + shape + ":"
                 + operation + ":arity=" + arguments.size());
         return null;
+    }
+
+    /**
+     * Projects order-independent observations through associative mutations.
+     * Iterator operations still consume the full {@link AssocState}, including
+     * order and position, but a keyed lookup does not need either component.
+     */
+    private static Term associativeHas(
+            JsonElement expression, Term key, Host host) {
+        Mutation mutation = associativeMutation(expression);
+        if (mutation == null) {
+            Term state = host.operand(expression, Sort.ASSOCIATIVE);
+            return state == null ? null
+                    : new Term("(assoc_has " + state.text + " "
+                    + key.text + ")", Sort.BOOL);
+        }
+        if ("CLEAR".equals(mutation.operation)) {
+            return new Term("false", Sort.BOOL);
+        }
+        Term mutatedKey = host.box(mutation.arguments.get(0));
+        Term previous = associativeHas(mutation.receiver, key, host);
+        if (mutatedKey == null || previous == null) return null;
+        String sameKey = "(= " + key.text + " " + mutatedKey.text + ")";
+        return "PUT".equals(mutation.operation)
+                ? new Term("(or " + sameKey + " " + previous.text + ")",
+                Sort.BOOL)
+                : new Term("(and (not " + sameKey + ") "
+                + previous.text + ")", Sort.BOOL);
+    }
+
+    private static Term associativeRead(
+            JsonElement expression, Term key, Host host) {
+        Mutation mutation = associativeMutation(expression);
+        if (mutation == null) {
+            Term state = host.operand(expression, Sort.ASSOCIATIVE);
+            return state == null ? null
+                    : new Term("(ite (assoc_has " + state.text + " "
+                    + key.text + ") (assoc_read " + state.text + " "
+                    + key.text + ") (VRef nullRef))", Sort.VALUE);
+        }
+        if ("CLEAR".equals(mutation.operation)) {
+            return new Term("(VRef nullRef)", Sort.VALUE);
+        }
+        Term mutatedKey = host.box(mutation.arguments.get(0));
+        Term previous = associativeRead(mutation.receiver, key, host);
+        if (mutatedKey == null || previous == null) return null;
+        Term mutatedValue = "PUT".equals(mutation.operation)
+                ? host.box(mutation.arguments.get(1))
+                : new Term("(VRef nullRef)", Sort.VALUE);
+        return mutatedValue == null ? null : new Term(
+                "(ite (= " + key.text + " " + mutatedKey.text + ") "
+                        + mutatedValue.text + " " + previous.text + ")",
+                Sort.VALUE);
+    }
+
+    private static Term associativeSize(JsonElement expression, Host host) {
+        Mutation mutation = associativeMutation(expression);
+        if (mutation == null) {
+            Term state = host.operand(expression, Sort.ASSOCIATIVE);
+            return state == null ? null
+                    : new Term("(assoc_size " + state.text + ")", Sort.INT);
+        }
+        if ("CLEAR".equals(mutation.operation)) {
+            return new Term("0", Sort.INT);
+        }
+        Term key = host.box(mutation.arguments.get(0));
+        Term previousSize = associativeSize(mutation.receiver, host);
+        Term previouslyPresent = key == null ? null
+                : associativeHas(mutation.receiver, key, host);
+        if (previousSize == null || previouslyPresent == null) return null;
+        String changedSize = "PUT".equals(mutation.operation)
+                ? "(+ " + previousSize.text + " 1)"
+                : "(- " + previousSize.text + " 1)";
+        return new Term("(ite " + previouslyPresent.text + " "
+                + ("PUT".equals(mutation.operation)
+                ? previousSize.text : changedSize) + " "
+                + ("PUT".equals(mutation.operation)
+                ? changedSize : previousSize.text) + ")", Sort.INT);
+    }
+
+    private static Mutation associativeMutation(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return null;
+        JsonObject relation = expression.getAsJsonObject();
+        if (!EXPRESSION_TYPE.equals(string(relation, "_type"))
+                || !"ASSOCIATIVE".equals(string(relation, "shape"))) {
+            return null;
+        }
+        String operation = string(relation, "operation");
+        JsonArray arguments = array(relation, "arguments");
+        int arity = "CLEAR".equals(operation) ? 0
+                : "REMOVE".equals(operation) ? 1
+                : "PUT".equals(operation) ? 2 : -1;
+        return arity >= 0 && arguments.size() == arity
+                ? new Mutation(operation, relation.get("receiver"), arguments)
+                : null;
     }
 
     private static Entry entry(JsonElement expression, Host host) {
@@ -399,6 +682,8 @@ public final class ContainerSmtCodec {
 
         Term unbox(Term value, String javaType);
 
+        void require(String predicate);
+
         Term field(Term owner, String ownerClass, int fieldOffset,
                    String javaType);
 
@@ -445,6 +730,19 @@ public final class ContainerSmtCodec {
         private View(String kind, Term state) {
             this.kind = kind;
             this.state = state;
+        }
+    }
+
+    private static final class Mutation {
+        private final String operation;
+        private final JsonElement receiver;
+        private final JsonArray arguments;
+
+        private Mutation(String operation, JsonElement receiver,
+                         JsonArray arguments) {
+            this.operation = operation;
+            this.receiver = receiver;
+            this.arguments = arguments;
         }
     }
 }

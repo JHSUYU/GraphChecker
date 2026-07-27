@@ -51,21 +51,11 @@ public final class FieldPathSpec {
         return Collections.unmodifiableList(result);
     }
 
-    public static String accessOwner(String cell) {
-        DeclaredField declared = declaredField(cell);
-        return declared == null ? "" : declared.owner();
-    }
-
     public static String leafOwner(String cell) {
         DeclaredField declared = declaredField(cell);
         if (declared == null) return "";
         return trim(cell).contains("#field:")
                 ? declared.type() : declared.owner();
-    }
-
-    public static String leafName(String cell) {
-        List<String> path = path(cell);
-        return path.isEmpty() ? "" : path.get(path.size() - 1);
     }
 
     public static List<String> stringArray(JsonObject object,

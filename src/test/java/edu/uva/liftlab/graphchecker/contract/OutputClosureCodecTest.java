@@ -20,6 +20,9 @@ public class OutputClosureCodecTest {
         JsonObject materialization = new JsonObject();
         materialization.addProperty("kind", "FIELD_READ");
         materialization.addProperty("javaType", "boolean");
+        JsonArray accessSites = new JsonArray();
+        accessSites.add("<example.GuardNode: boolean enabled()>#u1");
+        materialization.add("accessSites", accessSites);
         port.add("materialization", materialization);
 
         assertEquals("boolean",
@@ -59,6 +62,8 @@ public class OutputClosureCodecTest {
         OutputClosureContract right = OutputClosureCodec.decode(
                 canonicalActivation("REGION.1.out.1", "<P: int y>", "DF.2"));
         JsonObject envelope = left.toJson();
+        JsonArray causalEdges = envelope.getAsJsonArray("causalEdges");
+        causalEdges.add(right.toJson().getAsJsonArray("causalEdges").get(0));
         JsonArray members = new JsonArray();
         members.add(right.toJson().getAsJsonArray("members").get(0));
         members.add(left.toJson().getAsJsonArray("members").get(0));
@@ -68,7 +73,33 @@ public class OutputClosureCodecTest {
         assertEquals(2, joint.members().size());
         assertEquals("REGION.1.out.0", joint.members().get(0).portId());
         assertEquals("REGION.1.out.1", joint.members().get(1).portId());
-        assertTrue(joint.supportedJointCapture());
+    }
+
+    @Test
+    public void jointCaptureSupportsPrimitiveMapAndArrayMembers() {
+        OutputClosureContract scalar = OutputClosureCodec.decode(
+                canonicalActivation("REGION.1.out.0", "<P: int count>",
+                        "DF.1", "int"));
+        OutputClosureContract map = OutputClosureCodec.decode(
+                canonicalActivation("REGION.1.out.1",
+                        "<P: java.util.Map values>", "DF.2",
+                        "java.util.Map"));
+        OutputClosureContract array = OutputClosureCodec.decode(
+                canonicalActivation("REGION.1.out.2",
+                        "<P: int[] entries>", "DF.3", "int[]"));
+
+        OutputClosureContract joint = OutputClosureCodec.merge(
+                Arrays.asList(array, scalar, map));
+        OutputClosureContract roundTrip =
+                OutputClosureCodec.decodeEnvelope(joint.toJson());
+
+        assertEquals("I", roundTrip.member(
+                "REGION.1.out.0").javaTypeDescriptor());
+        assertEquals("Ljava/util/Map;", roundTrip.member(
+                "REGION.1.out.1").javaTypeDescriptor());
+        assertEquals("[I", roundTrip.member(
+                "REGION.1.out.2").javaTypeDescriptor());
+        assertEquals(3, OutputClosureCodec.captureSpecs(roundTrip).size());
     }
 
     @Test
@@ -126,7 +157,7 @@ public class OutputClosureCodecTest {
     }
 
     @Test
-    public void jointCaptureCompletenessCannotBeInventedByMemberView() {
+    public void codecPreservesCaptureIssuesForAdmissionBoundary() {
         OutputClosureContract first = OutputClosureCodec.decode(
                 canonicalActivation("REGION.1.out.0", "<P: int x>", "DF.1"));
         OutputClosureContract second = OutputClosureCodec.decode(
@@ -138,8 +169,10 @@ public class OutputClosureCodecTest {
                 .getAsJsonArray("captureBindingIssues")
                 .add("MISSING_CAPTURE");
 
-        expectFailure(() -> OutputClosureCodec.decodeEnvelope(envelope),
-                "multi-output V1 requires");
+        OutputClosureContract incompleteJoint =
+                OutputClosureCodec.decodeEnvelope(envelope);
+        assertEquals(1, incompleteJoint.member("REGION.1.out.1")
+                .slice().getAsJsonArray("captureBindingIssues").size());
 
         JsonObject singleton = first.toJson();
         singleton.getAsJsonArray("members").get(0).getAsJsonObject()
@@ -148,12 +181,17 @@ public class OutputClosureCodecTest {
                 .add("MISSING_CAPTURE");
         OutputClosureContract incomplete =
                 OutputClosureCodec.decodeEnvelope(singleton);
-        assertFalse(incomplete.member(
-                "REGION.1.out.0").captureComplete());
+        assertEquals(1, incomplete.member("REGION.1.out.0")
+                .slice().getAsJsonArray("captureBindingIssues").size());
     }
 
     private static JsonObject canonicalActivation(
             String port, String cell, String edgeId) {
+        return canonicalActivation(port, cell, edgeId, "int");
+    }
+
+    private static JsonObject canonicalActivation(
+            String port, String cell, String edgeId, String javaType) {
         String method = "<P: void run()>";
         String site = method + "#u2";
         String region = port.substring(0, port.indexOf(".out."));
@@ -172,7 +210,7 @@ public class OutputClosureCodecTest {
         fieldPath.add(FieldPathSpec.declaredField(cell).name());
         capture.add("fieldPath", fieldPath);
         capture.addProperty("fieldSignature", cell);
-        capture.addProperty("javaType", "int");
+        capture.addProperty("javaType", javaType);
         JsonArray captures = new JsonArray();
         captures.add(capture);
 
@@ -210,7 +248,7 @@ public class OutputClosureCodecTest {
         slice.add("captureBindings", captures.deepCopy());
         OutputClosureCodec.writeTo(activation, OutputClosureCodec.singleton(
                 region, region + "@test#call7", 7, port, cell,
-                "HEAP_STATE", "I", slice));
+                "HEAP_STATE", javaType, slice));
         return activation;
     }
 

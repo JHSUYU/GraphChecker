@@ -183,6 +183,28 @@ Klass *OopUtils::get_fd_by_name(oop obj, const std::string &name, const std::str
   return klass;
 }
 
+Klass *OopUtils::get_local_fd_by_name(
+    oop obj, const std::string &declaring_class, const std::string &name,
+    const std::string &signature, fieldDescriptor& ret_fd) {
+  if (obj == NULL || !obj->is_instance()) return NULL;
+
+  Thread *thread = ConcolicMngr::ctx->get_thread();
+  TempNewSymbol field_name = SymbolTable::new_symbol(name.c_str(), thread);
+  TempNewSymbol field_signature =
+      SymbolTable::new_symbol(signature.c_str(), thread);
+  for (Klass *candidate = obj->klass(); candidate != NULL;
+       candidate = candidate->super()) {
+    if (!candidate->oop_is_instance()
+        || declaring_class != candidate->external_name()) {
+      continue;
+    }
+    InstanceKlass *holder = InstanceKlass::cast(candidate);
+    return holder->find_local_field(
+        field_name, field_signature, &ret_fd) ? holder : NULL;
+  }
+  return NULL;
+}
+
 #define DEFINE_GET_FIELD_BY_NAME(ret_type, field_type, not_found)                                               \
 ret_type OopUtils::field_type##_field_by_name(oop obj, const std::string &name, const std::string &signature) { \
   fieldDescriptor fd;                                                                                           \

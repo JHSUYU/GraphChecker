@@ -115,7 +115,6 @@ public final class RelationSummary {
         guard.add("conditions", path.pathCondition());
         item.add("guard", guard);
         item.add("outputExpressions", path.outputExpressions());
-        path.copyRelationEvidenceTo(item);
         item.addProperty("sourceTaskId", path.sourceTaskId());
         return item;
     }

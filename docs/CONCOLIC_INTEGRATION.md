@@ -85,8 +85,11 @@ fieldOwner
 fieldValue
 ```
 
-Runtime 核对 owner/path/type 后调用 `getSymbolicExpression(fieldValue)`。capture identity
-不含 assignment site 或 occurrence。
+插桩把 exact leaf owner、field name、JVM descriptor 和 concrete value 一并交给
+`getSymbolicFieldExpression(owner,name,descriptor,value)`。VM 直接读取该字段在当前
+replay 结束时的 shadow；shadow 为空时才构造 exact concrete primitive/String/null
+表达式。capture identity 不含 assignment site 或 occurrence，也不根据 seed path
+预选写点。
 
 异常出口不产生普通 output capture。
 
@@ -118,8 +121,10 @@ cursor sym_rid -> next fixed iterator position
 - associative `STATE(receiver)` 使用 activation-local reference identity。
 
 array/List/Map operation 的 concrete result 会形成 equality observation。成功的 indexed
-访问还记录 bounds。mutation 将 state table 原子替换为新的 DAG 节点；region-end
-`getSymbolicExpression(container)` 返回表中最终节点。
+访问还记录 bounds。mutation 将 state table 原子替换为新的 DAG 节点。region 正常
+退出时，runtime 对实际 array/Collection/Set/Map 值调用
+`snapshotContainerExpression(...)`，随后 `getSymbolicExpression(container)` 返回
+该 replay 的最终 container state；因此输出不依赖 assignment-site capture。
 
 Java 侧没有第二份 container event ledger。
 

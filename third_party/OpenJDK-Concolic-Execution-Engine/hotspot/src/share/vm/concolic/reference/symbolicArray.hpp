@@ -15,7 +15,6 @@
 class SymArr : public SymRef {
 private:
   int _version;
-  int _load_count;
   Expression *_length_exp;
   Expression *_ref_exp;
 
@@ -32,7 +31,6 @@ public:
 
   inline void store() {
     ++_version;
-    _load_count = 0;
   }
 
   inline void set_length_exp(Expression *length_exp) {
@@ -43,8 +41,6 @@ public:
 
   inline Expression *get_length_exp() { return _length_exp; }
   inline int get_version() { return _version; }
-  inline int get_load_count() { return _load_count; }
-  inline int get_and_inc_load_count() { return ++_load_count; }
 
 public:
   void print();

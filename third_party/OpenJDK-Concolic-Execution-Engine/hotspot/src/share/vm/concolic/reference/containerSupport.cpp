@@ -4,9 +4,40 @@
 #include "classfile/vmSymbols.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/exp/containerExpression.hpp"
+#include "concolic/exp/symbolExpression.hpp"
 #include "concolic/methodSymbolizerHandle.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
+#include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicString.hpp"
+
+const char *ContainerSupport::shape(oop value) {
+  if (value == NULL) return NULL;
+  if (value->is_array()) return "INDEXED";
+  if (value->klass() == NULL || value->klass()->name() == NULL) return NULL;
+  Symbol *name = value->klass()->name();
+  if (name->equals("java/util/ArrayList")
+      || name->equals("java/util/AbstractList")
+      || name->equals("java/util/ArrayDeque")) {
+    return "INDEXED";
+  }
+  if (name->equals("java/util/HashMap")
+      || name->equals("java/util/LinkedHashMap")
+      || name->equals("java/util/HashSet")
+      || name->equals("java/util/LinkedHashSet")) {
+    return "ASSOCIATIVE";
+  }
+  return NULL;
+}
+
+bool ContainerSupport::indexed(oop value) {
+  const char *value_shape = shape(value);
+  return value_shape != NULL && value_shape[0] == 'I';
+}
+
+bool ContainerSupport::associative(oop value) {
+  const char *value_shape = shape(value);
+  return value_shape != NULL && value_shape[0] == 'A';
+}
 
 BasicType ContainerSupport::result_type(oop result, BasicType declared) {
   if (result == NULL || declared != T_OBJECT) return declared;
@@ -32,6 +63,17 @@ std::string ContainerSupport::java_type(oop result, BasicType declared) {
 
 Expression *ContainerSupport::concrete_value(oop value) {
   if (value == NULL) return SymbolExpression::get(Sym_NULL);
+  if (value->is_array()) {
+    SymArr *array =
+        ConcolicMngr::ctx->get_or_alloc_sym_array((arrayOop)value);
+    if (array != NULL && array->get_ref_exp() != NULL) {
+      return array->get_ref_exp();
+    }
+    return array == NULL
+        ? static_cast<Expression *>(new PlaceHolderSymbolExp(value))
+        : static_cast<Expression *>(new ArraySymbolExp(
+              array->get_sym_rid(), array->get_version(), T_OBJECT));
+  }
   Symbol *type = value->klass()->name();
   if (type->equals(SymPrimitive<jboolean>::TYPE_NAME))
     return SymPrimitive<jboolean>::get_exp_of(value);
@@ -108,13 +150,23 @@ void ContainerSupport::constrain_position(
       position, size, allow_end ? op_le : op_lt, true));
 }
 
-void ContainerSupport::attach_result(oop result, Expression *expression) {
+void ContainerSupport::attach_result(oop result, Expression *expression,
+                                     oop owner) {
   if (result == NULL || expression == NULL) return;
+  if (result->is_array()) {
+    SymArr *array =
+        ConcolicMngr::ctx->get_or_alloc_sym_array((arrayOop)result);
+    if (array != NULL) array->set_ref_exp(expression);
+    return;
+  }
   SymInstance *instance =
       ConcolicMngr::ctx->get_or_alloc_sym_inst(result);
   if (instance == NULL) return;
   instance->set_ref_exp(expression);
   instance->enable_demand_symbolic_fields();
+  if (owner != NULL) {
+    ConcolicMngr::ctx->alias_container(result, owner);
+  }
 }
 
 #endif  // ENABLE_CONCOLIC

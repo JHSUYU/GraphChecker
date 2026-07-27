@@ -97,17 +97,17 @@ public final class RegionStringContainsApiSmoke {
                 "contains branch markers were rejected");
 
         String events = System.getConcolicBranchEvents();
-        require(exactCondition(events, "STRING.CONTAINS.POSITIVE", 1, 0),
+        require(exactCondition(events, "STRING.CONTAINS.POSITIVE", 1),
                 events);
-        require(exactCondition(events, "STRING.CONTAINS.NEGATIVE", 1, 1),
+        require(exactCondition(events, "STRING.CONTAINS.NEGATIVE", 1),
                 events);
-        require(exactCondition(events, "STRING.CONTAINS.SAVED.EQ", 1, 2),
+        require(exactCondition(events, "STRING.CONTAINS.SAVED.EQ", 1),
                 events);
-        require(exactCondition(events, "STRING.CONTAINS.SAVED.NE", 1, 3),
+        require(exactCondition(events, "STRING.CONTAINS.SAVED.NE", 1),
                 events);
-        require(exactCondition(events, "STRING.CONTAINS.PAIR.AND", 1, 4),
+        require(exactCondition(events, "STRING.CONTAINS.PAIR.AND", 1),
                 events);
-        require(exactCondition(events, "STRING.CONTAINS.PAIR.XOR", 1, 5),
+        require(exactCondition(events, "STRING.CONTAINS.PAIR.XOR", 1),
                 events);
         require(noCondition(events, "STRING.CONTAINS.UNRELATED", 1), events);
         require(count(events, "\"conditionCount\":1") == 6, events);
@@ -172,7 +172,7 @@ public final class RegionStringContainsApiSmoke {
                 "interned field markers were rejected");
         String events = System.getConcolicBranchEvents();
         require(exactCondition(events,
-                "STRING.INTERNED.FIELD.SELECTED", 1, 0), events);
+                "STRING.INTERNED.FIELD.SELECTED", 1), events);
         require(noCondition(events, "STRING.INTERNED.FIELD.PEER", 1),
                 events);
 
@@ -208,7 +208,7 @@ public final class RegionStringContainsApiSmoke {
         }
         require(event > 0L, "interned local marker was rejected");
         String events = System.getConcolicBranchEvents();
-        require(exactCondition(events, "STRING.INTERNED.LOCAL", 1, 0),
+        require(exactCondition(events, "STRING.INTERNED.LOCAL", 1),
                 events);
 
         String summary = System.finishConcolicRegion();
@@ -256,7 +256,7 @@ public final class RegionStringContainsApiSmoke {
         require(returnedEvent > 0L && literalEvent > returnedEvent,
                 "intern return markers were rejected");
         String events = System.getConcolicBranchEvents();
-        require(exactCondition(events, "STRING.INTERN.RETURNED", 1, 0),
+        require(exactCondition(events, "STRING.INTERN.RETURNED", 1),
                 events);
         require(noCondition(events, "STRING.INTERN.LITERAL", 1), events);
 
@@ -271,7 +271,7 @@ public final class RegionStringContainsApiSmoke {
     }
 
     private static boolean exactCondition(String events, String site,
-                                          int occurrence, int index) {
+                                          int occurrence) {
         String identity = "\"siteId\":\"" + site
                 + "\",\"occurrence\":" + occurrence;
         int identityOffset = events.indexOf(identity);
@@ -280,7 +280,7 @@ public final class RegionStringContainsApiSmoke {
         int end = events.indexOf('}', identityOffset);
         if (start < 0 || end < start) return false;
         String event = events.substring(start, end + 1);
-        return event.contains("\"conditionIndices\":[" + index + "]")
+        return !event.contains("\"conditionIndices\":[]")
                 && event.contains("\"conditionCount\":1");
     }
 

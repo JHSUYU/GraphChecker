@@ -151,7 +151,7 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
     event.owner_java_thread_id = _owner_java_thread_id;
     event.owner_os_thread_id = _owner_os_thread_id;
     event.region_id = _region_id;
-    event.activation_id = _activation_id;
+    event.task_id = _task_id;
     event.site_id = _pending_branch_site_id;
     event.occurrence = _pending_branch_occurrence;
     event.outcome = outcome;
@@ -188,7 +188,7 @@ std::string ThreadContext::get_branch_events() const {
   writer.Key("regionId");
   writer.String(_region_id.c_str());
   writer.Key("taskId");
-  writer.String(_activation_id.c_str());
+  writer.String(_task_id.c_str());
   writer.Key("events");
   writer.StartArray();
   for (size_t index = 0; index < _branch_events.size(); ++index) {
@@ -205,7 +205,7 @@ std::string ThreadContext::get_branch_events() const {
     writer.Key("regionId");
     writer.String(event.region_id.c_str());
     writer.Key("taskId");
-    writer.String(event.activation_id.c_str());
+    writer.String(event.task_id.c_str());
     writer.Key("siteId");
     writer.String(event.site_id.c_str());
     writer.Key("occurrence");
@@ -235,18 +235,6 @@ std::string ThreadContext::get_branch_events() const {
 }
 
 ThreadContext::~ThreadContext() {
-  // ArrayInternal entries may share expressions owned by SymRef, temporary,
-  // or path-condition stores.  Drop the array store's references first, then
-  // tear down the other owners.  This keeps the ownership direction explicit
-  // and also releases all GC-tracked global handles before heap-id cleanup.
-  ArrayStore::iterator arr_it;
-  for (arr_it = _array_store.begin(); arr_it != _array_store.end(); arr_it++) {
-    guarantee(arr_it->second != NULL, "Array store should not be null");
-    delete arr_it->second;
-    JNIHandles::destroy_global(arr_it->first);
-  }
-  _array_store.clear();
-
   for (ContainerStateStore::iterator state = _container_states.begin();
        state != _container_states.end(); ++state) {
     Expression::gc(state->second);
@@ -287,6 +275,26 @@ ThreadContext::~ThreadContext() {
   SymStmt::resetGlobalCounter();
 }
 
+Expression *ThreadContext::track_container(
+    oop container, const char *shape, const std::string &prefix) {
+  if (container == NULL || shape == NULL || prefix.empty()) return NULL;
+  Expression *existing = find_container_state(container);
+  if (existing != NULL) return existing;
+
+  if (container->is_array()) {
+    SymArr *array = get_or_alloc_sym_array((arrayOop)container);
+    if (array == NULL) return NULL;
+    array->set_ref_exp(new FieldSymbolExp(
+        array->get_sym_rid(), prefix, T_ARRAY));
+  } else {
+    SymInstance *instance = get_or_alloc_sym_inst(container);
+    if (instance == NULL) return NULL;
+    instance->set_ref_exp(new FieldSymbolExp(
+        instance->get_sym_rid(), prefix, T_OBJECT));
+  }
+  return container_state(container, shape);
+}
+
 Expression *ThreadContext::container_state(oop container,
                                            const char *shape) {
   if (container == NULL) return NULL;
@@ -307,8 +315,11 @@ Expression *ThreadContext::container_state(oop container,
     id = instance->get_sym_rid();
     identity = instance->get_or_create_ref_exp(container);
   }
+  ContainerOwnerStore::const_iterator owner = _container_owners.find(id);
+  if (owner != _container_owners.end()) id = owner->second;
   ContainerStateStore::iterator existing = _container_states.find(id);
   if (existing != _container_states.end()) return existing->second;
+  if (owner != _container_owners.end()) return NULL;
 
   exp_list_t state_arguments;
   if (container->is_array()) {
@@ -336,6 +347,8 @@ Expression *ThreadContext::find_container_state(oop container) const {
     if (instance == NULL) return NULL;
     id = instance->get_sym_rid();
   }
+  ContainerOwnerStore::const_iterator owner = _container_owners.find(id);
+  if (owner != _container_owners.end()) id = owner->second;
   ContainerStateStore::const_iterator state = _container_states.find(id);
   return state == _container_states.end() ? NULL : state->second;
 }
@@ -352,6 +365,8 @@ void ThreadContext::set_container_state(oop container, Expression *state) {
     if (instance == NULL) return;
     id = instance->get_sym_rid();
   }
+  ContainerOwnerStore::const_iterator owner = _container_owners.find(id);
+  if (owner != _container_owners.end()) id = owner->second;
   ContainerStateStore::iterator existing = _container_states.find(id);
   if (existing != _container_states.end()) {
     Expression::gc(existing->second);
@@ -362,6 +377,34 @@ void ThreadContext::set_container_state(oop container, Expression *state) {
   state->inc_ref();
 }
 
+void ThreadContext::write_array_element(arrayOop array, int index,
+                                        Expression *expression) {
+  if (array == NULL || expression == NULL || index < 0
+      || index >= array->length()) return;
+  SymArr *symbolic = get_or_alloc_sym_array(array);
+  if (symbolic == NULL) return;
+  exp_list_t arguments;
+  arguments.push_back(new ConExpression((jint)index));
+  arguments.push_back(expression);
+  Expression *next = new ContainerExpression(
+      "INDEXED", "WRITE", container_state(array, "INDEXED"), arguments);
+  set_container_state(array, next);
+  symbolic->store();
+}
+
+void ThreadContext::alias_container(oop derived, oop owner) {
+  if (derived == NULL || owner == NULL || derived->is_array()
+      || owner->is_array()) return;
+  SymInstance *derived_instance = get_or_alloc_sym_inst(derived);
+  SymInstance *owner_instance = get_or_alloc_sym_inst(owner);
+  if (derived_instance == NULL || owner_instance == NULL) return;
+  sym_rid_t owner_id = owner_instance->get_sym_rid();
+  ContainerOwnerStore::const_iterator canonical =
+      _container_owners.find(owner_id);
+  if (canonical != _container_owners.end()) owner_id = canonical->second;
+  _container_owners[derived_instance->get_sym_rid()] = owner_id;
+}
+
 int ThreadContext::next_container_position(oop cursor) {
   if (cursor == NULL || cursor->is_array()) return -1;
   SymInstance *instance = get_or_alloc_sym_inst(cursor);
@@ -370,6 +413,21 @@ int ThreadContext::next_container_position(oop cursor) {
   int position = _container_positions[id];
   _container_positions[id] = position + 1;
   return position;
+}
+
+int ThreadContext::current_container_position(oop cursor) {
+  if (cursor == NULL || cursor->is_array()) return 0;
+  SymInstance *instance = get_or_alloc_sym_inst(cursor);
+  if (instance == NULL) return 0;
+  return _container_positions[instance->get_sym_rid()];
+}
+
+void ThreadContext::rewind_container_position(oop cursor) {
+  if (cursor == NULL || cursor->is_array()) return;
+  SymInstance *instance = get_or_alloc_sym_inst(cursor);
+  if (instance == NULL) return;
+  int &position = _container_positions[instance->get_sym_rid()];
+  if (position > 0) --position;
 }
 
 SymInstance *ThreadContext::get_or_alloc_sym_inst(oop obj) {
@@ -579,8 +637,17 @@ void ThreadContext::symbolize_recursive(oop obj, std::string prefix) {
     }
   } else if (obj != NULL) {
     SymInstance *instance = find_sym_inst(obj);
+    ResourceMark rm;
+    BasicType boxed_type = primitive_target(
+        std::string(obj->klass()->name()->as_C_string()));
     if (instance != NULL
-        && obj->klass()->name() != vmSymbols::java_lang_String()) {
+        && obj->klass()->name() != vmSymbols::java_lang_String()
+        && boxed_type == T_ILLEGAL) {
+      // A boxed primitive's SymPrimitive::_exp is its value shadow.  The
+      // recursive field walk above has already assigned that shadow the
+      // wrapper's primitive type; replacing it with an object-typed identity
+      // makes intValue()/booleanValue()/... return a reference expression.
+      // Only ordinary objects need this prefix-based reference identity.
       instance->set_ref_exp(new FieldSymbolExp(
           instance->get_sym_rid(), prefix, T_OBJECT));
     }
@@ -594,6 +661,14 @@ void ThreadContext::symbolize_recursive(oop obj, std::string prefix) {
 void ThreadContext::symbolize_field(Handle handle, std::string field_name,
                                     std::string prefix) {
   FieldSymbolizer field_symbolizer(handle(), *this, prefix, field_name);
+  field_symbolizer.do_once();
+}
+
+void ThreadContext::symbolize_exact_field(
+    Handle owner, std::string declaring_class, std::string field_name,
+    std::string descriptor, std::string prefix) {
+  FieldSymbolizer field_symbolizer(
+      owner(), *this, prefix, declaring_class, field_name, descriptor);
   field_symbolizer.do_once();
 }
 
@@ -628,14 +703,13 @@ std::string ThreadContext::get_current_code_pos() {
   address bcp = istate->bcp();
 
   Method *method = istate->method();
-  int line = -1;
+  int bci = -1;
   if (bcp != NULL) {
-    int bci = method->bci_from(bcp);
-    line = method->line_number_from_bci(bci);
+    bci = method->bci_from(bcp);
   }
 
   method->print_name(&ss);
-  ss.print(":%d", line);
+  ss.print(":%d", bci);
 
   return std::string(buf, ss.size());
 }

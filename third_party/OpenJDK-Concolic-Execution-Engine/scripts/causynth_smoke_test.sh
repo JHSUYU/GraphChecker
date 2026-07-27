@@ -1,26 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+JDK_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 CONF=${CONF:-linux-x86_64-normal-zero-release}
-JDK_HOME=${JDK_HOME:-"$PWD/build/$CONF/images/j2sdk-image"}
-OUT=${OUT:-"$PWD/build/causynth-smoke"}
+JDK_HOME=${JDK_HOME:-"$JDK_ROOT/build/$CONF/images/j2sdk-image"}
+OUT=${OUT:-"$JDK_ROOT/build/causynth-smoke"}
 
 mkdir -p "$OUT"
+cd "$JDK_ROOT"
 "$JDK_HOME/bin/javac" -d "$OUT" \
   test/causynth/RegionApiSmoke.java \
-  test/causynth/RegionArrayCopyExceptionApiSmoke.java \
-  test/causynth/RegionArrayValueApiSmoke.java \
-  test/causynth/RegionArrayValueMapProjectionApiSmoke.java \
+  test/causynth/RegionBoxedPrimitiveApiSmoke.java \
+  test/causynth/RegionContainerRelationApiSmoke.java \
   test/causynth/RegionBranchEventApiSmoke.java \
   test/causynth/RegionFieldApiSmoke.java \
+  test/causynth/RegionFieldExpressionApiSmoke.java \
+  test/causynth/RegionContainerLiveInApiSmoke.java \
   test/causynth/RegionMapApiSmoke.java \
   test/causynth/RegionMapIteratorRemoveApiSmoke.java \
   test/causynth/RegionNumericLoopApiSmoke.java \
   test/causynth/RegionNumericSemanticsApiSmoke.java \
   test/causynth/RegionObjectArrayMapApiSmoke.java \
+  test/causynth/RegionOutputContainerSnapshotApiSmoke.java \
   test/causynth/RegionPausedSymbolizationSmoke.java \
   test/causynth/RegionLookupSwitchApiSmoke.java \
   test/causynth/RegionReferenceBranchApiSmoke.java \
+  test/causynth/RegionRepeatedFieldOwnerMapApiSmoke.java \
   test/causynth/RegionShadowStackLifecycleSmoke.java \
   test/causynth/RegionStringContainsApiSmoke.java \
   test/causynth/RegionStringConversionApiSmoke.java \
@@ -30,19 +36,22 @@ mkdir -p "$OUT"
 
 for smoke in \
   RegionApiSmoke \
-  RegionArrayCopyExceptionApiSmoke \
-  RegionArrayValueApiSmoke \
-  RegionArrayValueMapProjectionApiSmoke \
+  RegionBoxedPrimitiveApiSmoke \
+  RegionContainerRelationApiSmoke \
   RegionBranchEventApiSmoke \
   RegionFieldApiSmoke \
+  RegionFieldExpressionApiSmoke \
+  RegionContainerLiveInApiSmoke \
   RegionMapApiSmoke \
   RegionMapIteratorRemoveApiSmoke \
   RegionNumericLoopApiSmoke \
   RegionNumericSemanticsApiSmoke \
   RegionObjectArrayMapApiSmoke \
+  RegionOutputContainerSnapshotApiSmoke \
   RegionPausedSymbolizationSmoke \
   RegionLookupSwitchApiSmoke \
   RegionReferenceBranchApiSmoke \
+  RegionRepeatedFieldOwnerMapApiSmoke \
   RegionShadowStackLifecycleSmoke \
   RegionStringContainsApiSmoke \
   RegionStringConversionApiSmoke \

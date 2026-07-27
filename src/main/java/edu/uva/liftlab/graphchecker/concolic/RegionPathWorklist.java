@@ -18,8 +18,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Builds bounded branch-flip work for one region closure. */
@@ -53,15 +51,9 @@ public final class RegionPathWorklist {
         private final List<PathObservation> paths = new ArrayList<>();
         private final List<JsonObject> tasks = new ArrayList<>();
         private final List<JsonObject> gaps = new ArrayList<>();
-        private final List<JsonObject> deferredObservations =
-                new ArrayList<>();
         private final Set<String> gapKeys = new LinkedHashSet<>();
-        private final Set<String> deferredObservationKeys =
-                new LinkedHashSet<>();
         private final Set<String> emitted = new LinkedHashSet<>();
         private final Set<String> observedFlipKeys = new LinkedHashSet<>();
-        private final Set<String> witnessedBranchPositions =
-                new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
         private Planner(List<JsonObject> summaries,
@@ -187,13 +179,9 @@ public final class RegionPathWorklist {
                 String pathKey = path.pathKey();
                 PathObservation previous = caseByPath.get(pathKey);
                 if (previous != null) {
-                    if (!previous.stableCaseFingerprint().equals(
-                            path.stableCaseFingerprint())) {
-                        gap("CONFLICTING_DUPLICATE_PATH_PAYLOAD",
-                                "PATH_CERTIFICATES_DISAGREE",
-                                region, pathKey, "", -1);
-                    }
-                } else if (contract.members().size() > 1
+                    continue;
+                }
+                if (contract.members().size() > 1
                         && !path.hasExactOutputSet(
                         contract.outputPorts())) {
                     gap("JOINT_OUTPUT_EXPRESSION_SET_MISMATCH",
@@ -225,28 +213,27 @@ public final class RegionPathWorklist {
 
         private void planSummary(PathObservation path) {
             List<SummaryBranchMapping> candidates = new ArrayList<>();
+            Set<String> concreteExploreSites = new LinkedHashSet<>();
             for (SummaryBranchMapping mapping : path.branchMappings()) {
                 String site = mapping.siteId();
                 if (!path.scope().branchSites().contains(site)) {
                     continue;
                 }
                 if (mapping.isConcreteObservation()) {
-                    if (!mapping.isExplore()
-                            || coveredConcreteObservation(
-                            path.scope(), mapping)) {
-                        continue;
+                    if (mapping.isExplore()) {
+                        concreteExploreSites.add(site);
                     }
-                    if (!requiresSymbolicCondition(path.scope(), site)) {
-                        continue;
-                    }
-                    deferObservation("UNMAPPED_BRANCH",
-                            "NO_NORMALIZED_CONDITION",
-                            path.regionId(), path.pathKey(), site,
-                            mapping.occurrence());
                     continue;
                 }
                 if (!mapping.isExplore()) continue;
                 candidates.add(mapping);
+            }
+            if (candidates.isEmpty() && !concreteExploreSites.isEmpty()) {
+                for (String site : concreteExploreSites) {
+                    gap("MISSING_SYMBOLIC_BRANCH_PREDICATE",
+                            "OUTPUT_SCOPE_HAS_NO_SYMBOLIC_BRANCH_DECISION",
+                            path.regionId(), path.pathKey(), site, -1);
+                }
             }
             // Classic depth-first concolic order: flip the latest relevant
             // decision first, then progressively shorter prefixes.
@@ -277,18 +264,8 @@ public final class RegionPathWorklist {
 
         private void emitTask(PathObservation path,
                               SummaryBranchMapping mapping) {
-            BranchReplayContract replay;
-            try {
-                replay = BranchReplayContract.fromSummary(
-                        path.replayPayload(), path.branchMappings(), mapping);
-            } catch (IllegalArgumentException incompleteWitness) {
-                gap("INVALID_BRANCH_WITNESS_PREFIX",
-                        "BRANCH_WITNESS_OR_NON_BRANCH_CONTEXT_DOES_NOT_"
-                                + "PARTITION_SUMMARY_PC_PREFIX",
-                        path.regionId(), path.pathKey(),
-                        mapping.siteId(), mapping.occurrence());
-                return;
-            }
+            BranchReplayContract replay = BranchReplayContract.fromSummary(
+                    path.replayPayload(), path.branchMappings(), mapping);
             boolean desired = replay.requiredTakenOutcome();
             String key = path.flipKey(mapping, desired);
 
@@ -328,8 +305,6 @@ public final class RegionPathWorklist {
                     if (!mapping.isWitnessed() || !mapping.isExplore()) {
                         continue;
                     }
-                    witnessedBranchPositions.add(branchPosition(
-                            path.scope(), mapping));
                     if (!path.regionId().isEmpty()
                             && path.scope().branchSites().contains(
                             mapping.siteId())) {
@@ -338,71 +313,6 @@ public final class RegionPathWorklist {
                     }
                 }
             }
-        }
-
-        private boolean coveredConcreteObservation(
-                PathObservation.Scope scope, SummaryBranchMapping mapping) {
-            return mapping.isConcreteObservation()
-                    && witnessedBranchPositions.contains(branchPosition(
-                    scope, mapping));
-        }
-
-        private boolean requiresSymbolicCondition(
-                PathObservation.Scope scope, String site) {
-            OutputClosureContract closure = scope.outputClosure();
-            if (closure == null) return true;
-            OutputClosureContract.ExecutionScope execution =
-                    closure.executionScope();
-            if (!execution.staticSites().contains(site)) return false;
-            Set<String> boundPorts = new LinkedHashSet<>();
-            Set<String> reachable = new LinkedHashSet<>();
-            List<JsonObject> edges = new ArrayList<>();
-            for (OutputClosureContract.Member member : closure.members()) {
-                JsonObject slice = member.slice();
-                for (JsonElement element : array(slice, "inputBindings")) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject binding = element.getAsJsonObject();
-                    String port = string(binding, "inputPort");
-                    String cell = string(binding, "dependencyCell");
-                    if (execution.inputPorts().contains(port)
-                            && !cell.isEmpty()) {
-                        boundPorts.add(port);
-                        reachable.add(cell);
-                    }
-                }
-                for (JsonElement element : array(slice, "causalEdges")) {
-                    if (element.isJsonObject()) {
-                        edges.add(element.getAsJsonObject());
-                    }
-                }
-            }
-            if (!boundPorts.containsAll(execution.inputPorts())) return true;
-
-            boolean guardSeen = false;
-            int previousSize;
-            do {
-                previousSize = reachable.size();
-                for (JsonObject edge : edges) {
-                    String from = string(edge, "fromCell");
-                    if ("GUARD".equals(string(edge, "transferKind"))) {
-                        if (site.equals(string(edge, "siteId"))
-                                || site.equals(string(edge, "guardSiteId"))) {
-                            guardSeen = true;
-                            if (reachable.contains(from)) return true;
-                        }
-                    } else if (reachable.contains(from)) {
-                        String to = string(edge, "toCell");
-                        if (!to.isEmpty()) reachable.add(to);
-                    }
-                }
-            } while (reachable.size() != previousSize);
-            return !guardSeen;
-        }
-
-        private String branchPosition(PathObservation.Scope scope,
-                                      SummaryBranchMapping mapping) {
-            return scope.identity() + "\n" + mapping.siteId()
-                    + "\n" + mapping.occurrence();
         }
 
         private JsonObject manifest(boolean hasObservedPath,
@@ -424,17 +334,6 @@ public final class RegionPathWorklist {
                         "REGION_PATH_WORKLIST_REQUIRES_ONE_SCOPE",
                         regionId, "", "", -1);
             }
-            if (tasks.isEmpty()) {
-                for (JsonObject observation : deferredObservations) {
-                    gap(string(observation, "kind"),
-                            string(observation, "reason"),
-                            string(observation, "regionId"),
-                            string(observation, "pathKey"),
-                            string(observation, "siteId"),
-                            integer(observation, "occurrence", -1));
-                }
-            }
-
             State state = !hasObservedPath
                     ? State.NOT_STARTED
                     : !gaps.isEmpty()
@@ -459,10 +358,6 @@ public final class RegionPathWorklist {
                 }
             }
             result.add("gaps", GSON.toJsonTree(gaps));
-            if (!tasks.isEmpty() && !deferredObservations.isEmpty()) {
-                result.add("deferredObservations",
-                        GSON.toJsonTree(deferredObservations));
-            }
             return result;
         }
 
@@ -488,13 +383,6 @@ public final class RegionPathWorklist {
                          String pathKey, String site, int occurrence) {
             addIssue(gaps, gapKeys, kind, reason, region, pathKey, site,
                     occurrence);
-        }
-
-        private void deferObservation(String kind, String reason,
-                                      String region, String pathKey,
-                                      String site, int occurrence) {
-            addIssue(deferredObservations, deferredObservationKeys, kind,
-                    reason, region, pathKey, site, occurrence);
         }
 
         private void addIssue(List<JsonObject> destination, Set<String> keys,

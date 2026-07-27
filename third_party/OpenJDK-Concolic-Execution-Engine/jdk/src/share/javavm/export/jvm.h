@@ -128,6 +128,11 @@ JVM_SymbolizeField(JNIEnv *env, jclass ignored, jobject obj,
                    jstring field_name, jstring prefix);
 
 JNIEXPORT void JNICALL
+JVM_SymbolizeExactField(JNIEnv *env, jclass ignored, jobject owner,
+                        jstring declaring_class, jstring field_name,
+                        jstring descriptor, jstring prefix);
+
+JNIEXPORT void JNICALL
 JVM_SymbolizeMethod(JNIEnv *env, jclass ignored, jobject holder_name, jobject callee_name);
 
 JNIEXPORT void JNICALL
@@ -167,6 +172,20 @@ JVM_GetConcolicBranchEvents(JNIEnv *env, jclass ignored);
 
 JNIEXPORT jstring JNICALL
 JVM_GetSymbolicExpression(JNIEnv *env, jclass ignored, jobject obj);
+
+JNIEXPORT jstring JNICALL
+JVM_GetSymbolicFieldExpression(JNIEnv *env, jclass ignored, jobject owner,
+                               jstring declaring_class, jstring field_name,
+                               jstring descriptor, jobject concrete_value);
+
+JNIEXPORT jboolean JNICALL
+JVM_TrackContainerExpression(JNIEnv *env, jclass ignored, jobject container,
+                             jstring prefix);
+
+JNIEXPORT jboolean JNICALL
+JVM_SnapshotContainerExpression(JNIEnv *env, jclass ignored,
+                                jobject container, jobjectArray keys,
+                                jobjectArray values, jint kind);
 
 JNIEXPORT jstring JNICALL
 JVM_GetConcolicRegionSummary(JNIEnv *env, jclass ignored);

@@ -51,7 +51,9 @@ private:
   ThreadContext &_ctx;
   std::vector<SymRef *> _sym_refs;
   std::vector<std::string> _prefix_lst;
+  std::string _selected_holder;
   std::string _selected_field;
+  std::string _selected_descriptor;
 
 public:
   FieldSymbolizer(oop obj, ThreadContext &ctx)
@@ -63,6 +65,15 @@ public:
   FieldSymbolizer(oop obj, ThreadContext &ctx, std::string prefix,
                   std::string selected_field)
       : FieldTraverser(obj), _ctx(ctx), _selected_field(selected_field) {
+    _prefix_lst.push_back(prefix);
+  }
+  FieldSymbolizer(
+      oop obj, ThreadContext &ctx, std::string prefix,
+      std::string selected_holder, std::string selected_field,
+      std::string selected_descriptor)
+      : FieldTraverser(obj), _ctx(ctx),
+        _selected_holder(selected_holder), _selected_field(selected_field),
+        _selected_descriptor(selected_descriptor) {
     _prefix_lst.push_back(prefix);
   }
   bool print_field(fieldDescriptor *fd, oop obj);
