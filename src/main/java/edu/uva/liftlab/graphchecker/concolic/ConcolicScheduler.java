@@ -68,7 +68,8 @@ public final class ConcolicScheduler {
         Arguments arguments = Arguments.parse(args);
         Result result = schedule(arguments);
         if (result.executionTasks.isEmpty()) {
-            System.exit(2);
+            throw new IllegalStateException(noCandidateDiagnostic(arguments,
+                    readJsonl(arguments.regionPlan)));
         }
     }
 
@@ -124,7 +125,6 @@ public final class ConcolicScheduler {
             }
             result.executionTasks.add(executionTask);
         }
-
         writeJsonl(arguments.outputDirectory.resolve(
                         "execution_task_plan.jsonl"),
                 result.executionTasks);
@@ -1329,6 +1329,83 @@ public final class ConcolicScheduler {
                     ? Collections.<JsonObject>emptyList() : values;
         }
 
+    }
+
+    /** Describes the existing selection/admission decision without adding one. */
+    private static String noCandidateDiagnostic(
+            Arguments arguments, List<JsonObject> rows) {
+        JsonObject selected = null;
+        Goal selectedGoal = null;
+        boolean regionFound = false;
+        String reason = "REGION_NOT_FOUND";
+        for (JsonObject row : rows) {
+            RegionInstancePlan plan = RegionInstancePlan.decode(row);
+            if (!arguments.regionId.isEmpty()
+                    && !arguments.regionId.equals(plan.regionId())) continue;
+            regionFound = true;
+            if (!arguments.regionInstanceId.isEmpty()
+                    && !arguments.regionInstanceId.equals(
+                    plan.regionInstanceId())) continue;
+            selected = row;
+            reason = "GOAL_NOT_FOUND";
+            for (Goal goal : plan.goals()) {
+                if (!arguments.goalId.isEmpty()
+                        && !arguments.goalId.equals(goal.goalId())) continue;
+                selectedGoal = goal;
+                boolean targetFound = arguments.targetSite.isEmpty();
+                for (JsonElement branch : goal.branches()) {
+                    targetFound |= branch.isJsonObject()
+                            && arguments.targetSite.equals(string(
+                            branch.getAsJsonObject(), "siteId"));
+                }
+                reason = !goal.replayable() ? "GOAL_NOT_REPLAYABLE"
+                        : goal.kind().capturesOutputRelation()
+                        && !"READY".equals(goal.admissionState())
+                        ? "OUTPUT_GOAL_NOT_READY"
+                        : goal.kind().capturesOutputRelation()
+                        && goal.outputClosure() == null
+                        ? "OUTPUT_CLOSURE_MISSING"
+                        : !targetFound ? "TARGET_SITE_NOT_FOUND"
+                        : "NO_ELIGIBLE_CANDIDATE";
+                break;
+            }
+            if (selectedGoal != null || !arguments.goalId.isEmpty()) break;
+        }
+        if (selected == null && regionFound) {
+            reason = "REGION_INSTANCE_NOT_FOUND";
+        }
+        String targetMethod = selected == null ? ""
+                : string(selected, "targetMethod");
+        JsonObject root = selected == null ? new JsonObject()
+                : object(selected, "rootSelector");
+        String state = selectedGoal == null ? ""
+                : selectedGoal.admissionState();
+        String blockers = selectedGoal == null ? ""
+                : selectedGoal.admissionBlockers().toString();
+        return "component=SCHEDULER reason=" + reason
+                + " region=" + display(arguments.regionId)
+                + " instance=" + display(arguments.regionInstanceId)
+                + " goal=" + display(arguments.goalId)
+                + " targetSite=" + display(arguments.targetSite)
+                + " targetMethod=" + display(targetMethod)
+                + " root=" + display(root.size() == 0 ? ""
+                : CanonicalJson.render(root))
+                + " admissionState=" + display(state)
+                + " blockers=" + display(blockers)
+                + " artifacts={regions=" + artifact(arguments.regions)
+                + ",regionPlan=" + artifact(arguments.regionPlan)
+                + ",edgeValidations=" + artifact(arguments.edgeValidations)
+                + ",staticGraph=" + artifact(arguments.staticGraph)
+                + ",summaries=" + artifact(arguments.summaries) + "}";
+    }
+
+    private static String display(String value) {
+        return safe(value).isEmpty() ? "<none>" : value;
+    }
+
+    private static String artifact(Path path) {
+        return path == null ? "<none>"
+                : path.toAbsolutePath().normalize().toString();
     }
 
     public static final class Result {

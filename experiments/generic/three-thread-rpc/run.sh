@@ -16,6 +16,29 @@ die() {
   exit 1
 }
 
+stage_error() {
+  local stage=$1
+  local component=$2
+  local campaign=${3:--}
+  local region=${4:--}
+  local instance=${5:--}
+  local goal=${6:--}
+  local artifact=${7:--}
+  shift 7
+  {
+    echo "[three-thread-rpc:error]"
+    echo "  stage=${stage}"
+    echo "  component=${component}"
+    echo "  campaign=${campaign}"
+    echo "  region=${region}"
+    echo "  instance=${instance}"
+    echo "  goal=${goal}"
+    echo "  reason=$*"
+    echo "  artifact=${artifact}"
+  } >&2
+  exit 1
+}
+
 trim_value() {
   local value=$1
   value="${value#"${value%%[![:space:]]*}"}"
@@ -80,10 +103,9 @@ fixture_package=${fixture_class%.*}
 fixture_package=${fixture_package//./\/}
 fixture_simple_class=${fixture_class##*.}
 region_plan=$(configured_value runtime_region_plan)
-target_schedule=$(configured_value schedule_output_dir)
-target_classes="${work_root}/concolic-target-classes"
-producer_campaign_root="${work_root}/producer-campaign"
-target_campaign_root="${work_root}/target-campaign"
+campaign_root="${work_root}/campaigns"
+producer_campaign_root="${campaign_root}/producer"
+target_campaign_root="${campaign_root}/target"
 candidate_root="${work_root}/candidate"
 
 usage() {
@@ -93,15 +115,15 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   prepare                 Build GraphChecker and isolate fixture classes
   analyze                 Static analysis plus trace instrumentation
   trace                   Run a non-bug concrete discovery execution
-  discover                Resolve channel producers and target from evidence
+  discover                Resolve producer and target campaigns from evidence
   schedule-target         Schedule one unforced consumer target seed
   seed-target             Capture/import the unforced target seed query
   explore-target          Close target-function paths and build reach query
-  schedule-producer CH    Schedule one channel's OUTPUT_RELATION_CLOSURE goal
-  instrument CH           Instrument that producer's scheduled execution goal
-  replay CH [b1 b2]       Run one real custom-JDK concolic capture
-  import CH               Strictly import that producer capture
-  explore-producer CH     Close and merge one producer path worklist
+  schedule-producer ID    Schedule one producer campaign
+  instrument ID           Instrument that campaign's execution goal
+  replay ID [b1 b2]       Run one real custom-JDK concolic capture
+  import ID               Strictly import that producer capture
+  explore-producer ID     Close and merge one producer path worklist
   candidate-compose       Compose producer relations with the target seed
   candidate-smt           Run the clean workflow through candidate SMT
   candidate-solve         Check the candidate SMT with Z3
@@ -111,9 +133,9 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   all                     Alias for candidate
   clean                   Remove only the configured fixture work products
 
-No command writes SMT text or a reachability formula. Local channels are
-discovered from runtime-confirmed shared-field read-from evidence; this
-fixture has no declared RPC mapping.
+No command writes SMT text or a reachability formula. Producer dependencies
+are discovered from runtime-confirmed read-from evidence. Campaign identity is
+region-instance/goal based and does not depend on an output field name.
 The terminal artifact is deliberately CANDIDATE_ONLY.  Promoting it to a
 trusted result by a natural replay is a documented follow-up TODO.
 Producer seed pipelines use up to eight region workers by default. Path
@@ -153,43 +175,53 @@ validate_discovery_inputs() {
   require_file "static data-flow graph" "${static_graph}"
 }
 
-discovered_producer_channels() {
-  workflow_discovery --command producer-channels
+discovered_producer_campaigns() {
+  workflow_discovery --command producer-demands
 }
 
 producer_binding() {
-  workflow_discovery --command producer-binding --channel "$1"
+  workflow_discovery --command producer-binding --campaign "$1"
 }
 
 target_binding() {
   workflow_discovery --command target-binding
 }
 
-channel_schedule() {
-  printf '%s/schedule-%s\n' "${work_root}" \
-    "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+producer_campaign_directory() {
+  printf '%s/%s\n' "${producer_campaign_root}" "$1"
 }
 
-channel_classes() {
-  printf '%s/concolic-%s-classes\n' "${work_root}" \
-    "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+target_campaign_binding() {
+  target_binding
+}
+
+target_campaign_directory() {
+  local binding campaign region instance goal
+  binding=$(target_campaign_binding) || return $?
+  IFS=$'\t' read -r campaign region instance goal <<< "${binding}"
+  [[ -n "${campaign}" && -n "${region}" && -n "${instance}" \
+      && -n "${goal}" ]] \
+    || die "target binding is incomplete: ${binding}"
+  printf '%s/%s\n' "${target_campaign_root}" "${campaign}"
 }
 
 scheduled_task() {
-  local channel=$1
-  local schedule
-  schedule=$(channel_schedule "${channel}") || return $?
+  local campaign_id=$1
+  local campaign
+  campaign=$(producer_campaign_directory "${campaign_id}") || return $?
   require_file "scheduled producer task" \
-    "${schedule}/execution_task_plan.jsonl"
-  workflow_discovery --command scheduled-task --channel "${channel}" \
-    --task-plan "${schedule}/execution_task_plan.jsonl"
+    "${campaign}/execution_task_plan.jsonl"
+  workflow_discovery --command scheduled-task --campaign "${campaign_id}" \
+    --task-plan "${campaign}/execution_task_plan.jsonl"
 }
 
 scheduled_target_task() {
+  local campaign
+  campaign=$(target_campaign_directory) || return $?
   require_file "scheduled target task" \
-    "${target_schedule}/execution_task_plan.jsonl"
+    "${campaign}/execution_task_plan.jsonl"
   workflow_discovery --command scheduled-target-task \
-    --task-plan "${target_schedule}/execution_task_plan.jsonl"
+    --task-plan "${campaign}/execution_task_plan.jsonl"
 }
 
 do_prepare() {
@@ -244,41 +276,67 @@ do_discover() {
 }
 
 do_schedule_target() {
-  local region instance goal binding
+  local campaign_id region instance goal binding campaign plan
   validate_discovery_inputs
   binding=$(target_binding) || return $?
-  IFS=$'\t' read -r region instance goal <<< "${binding}"
-  (cd "${graphchecker_dir}" && "${runner}" --config "${config}" schedule \
-    --region-id "${region}" --region-instance-id "${instance}" \
-    --goal-id "${goal}")
-  jq -e -s 'length == 1' \
-    "${target_schedule}/execution_task_plan.jsonl" >/dev/null \
-    || die "target scheduler did not emit exactly one task"
+  IFS=$'\t' read -r campaign_id region instance goal <<< "${binding}"
+  campaign="${target_campaign_root}/${campaign_id}"
+  plan="${campaign}/execution_task_plan.jsonl"
+  mkdir -p "${campaign}"
+  if ! (cd "${graphchecker_dir}" && \
+      CAUSYNTH_SCHEDULE_OUTPUT_DIR="${campaign}" \
+      "${runner}" --config "${config}" schedule \
+        --region-id "${region}" --region-instance-id "${instance}" \
+        --goal-id "${goal}"); then
+    stage_error SCHEDULE ConcolicScheduler "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${region_plan}" \
+      "target scheduler rejected the selected goal"
+  fi
+  jq -e -s 'length == 1' "${plan}" >/dev/null \
+    || stage_error SCHEDULE ConcolicScheduler "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${plan}" \
+      "target scheduler did not emit exactly one task"
 }
 
 do_schedule_producer() {
-  local channel=$1
-  local region instance goal output binding
+  local campaign_id=$1
+  local bound_campaign region instance goal output binding plan
   validate_discovery_inputs
-  binding=$(producer_binding "${channel}") || return $?
-  IFS=$'\t' read -r region instance goal <<< "${binding}"
-  output=$(channel_schedule "${channel}") || return $?
-  (cd "${graphchecker_dir}" && \
+  binding=$(producer_binding "${campaign_id}") || return $?
+  IFS=$'\t' read -r bound_campaign region instance goal <<< "${binding}"
+  output=$(producer_campaign_directory "${campaign_id}") || return $?
+  plan="${output}/execution_task_plan.jsonl"
+  mkdir -p "${output}"
+  if ! (cd "${graphchecker_dir}" && \
     CAUSYNTH_SCHEDULE_OUTPUT_DIR="${output}" \
     "${runner}" --config "${config}" schedule \
       --region-id "${region}" --region-instance-id "${instance}" \
-      --goal-id "${goal}")
+      --goal-id "${goal}"); then
+    stage_error SCHEDULE ConcolicScheduler "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${region_plan}" \
+      "producer scheduler rejected the selected goal"
+  fi
+  jq -e -s 'length == 1' "${plan}" >/dev/null \
+    || stage_error SCHEDULE ConcolicScheduler "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${plan}" \
+      "producer scheduler did not emit exactly one task"
 }
 
 do_instrument() {
-  local channel=$1
-  local schedule classes task
+  local campaign_id=$1
+  local campaign classes task binding bound_campaign region instance goal
   validate_discovery_inputs
-  schedule=$(channel_schedule "${channel}") || return $?
-  classes=$(channel_classes "${channel}") || return $?
-  task=$(scheduled_task "${channel}") || return $?
-  instrument_plan "${schedule}/execution_task_plan.jsonl" \
-    "${task}" "${classes}"
+  binding=$(producer_binding "${campaign_id}") || return $?
+  IFS=$'\t' read -r bound_campaign region instance goal <<< "${binding}"
+  campaign=$(producer_campaign_directory "${campaign_id}") || return $?
+  classes="${campaign}/classes"
+  task=$(scheduled_task "${campaign_id}") || return $?
+  if ! (instrument_plan "${campaign}/execution_task_plan.jsonl" \
+      "${task}" "${classes}"); then
+    stage_error INSTRUMENT GraphChecker "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${campaign}/execution_task_plan.jsonl" \
+      "failed to instrument the selected producer task"
+  fi
 }
 
 instrument_plan() {
@@ -407,28 +465,42 @@ run_custom_plan() {
 }
 
 run_custom_java() {
-  local channel=$1
+  local campaign_id=$1
   local b1=$2
   local b2=$3
-  local schedule classes task results
+  local campaign classes task results binding bound_campaign region instance goal
   validate_discovery_inputs
-  schedule=$(channel_schedule "${channel}") || return $?
-  classes=$(channel_classes "${channel}") || return $?
-  task=$(scheduled_task "${channel}") || return $?
-  results="${schedule}/concolic_region_results.jsonl"
-  run_custom_plan "${schedule}/execution_task_plan.jsonl" \
-    "${task}" "${classes}" "${results}" "${b1}" "${b2}" false
+  binding=$(producer_binding "${campaign_id}") || return $?
+  IFS=$'\t' read -r bound_campaign region instance goal <<< "${binding}"
+  campaign=$(producer_campaign_directory "${campaign_id}") || return $?
+  classes="${campaign}/classes"
+  task=$(scheduled_task "${campaign_id}") || return $?
+  results="${campaign}/concolic_region_results.jsonl"
+  if ! (run_custom_plan "${campaign}/execution_task_plan.jsonl" \
+      "${task}" "${classes}" "${results}" "${b1}" "${b2}" false); then
+    stage_error REPLAY CUSTOM_JDK "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${results}" \
+      "custom-JDK replay failed; inspect the raw result and campaign logs"
+  fi
 }
 
 do_import() {
-  local channel=$1
-  local schedule
+  local campaign_id=$1
+  local campaign binding bound_campaign region instance goal diagnostics
   validate_discovery_inputs
-  schedule=$(channel_schedule "${channel}") || return $?
-  scheduled_task "${channel}" >/dev/null
-  import_plan "${schedule}/execution_task_plan.jsonl" \
-    "${schedule}/concolic_region_results.jsonl" \
-    "${schedule}/concolic_region_summaries.jsonl" "${schedule}"
+  binding=$(producer_binding "${campaign_id}") || return $?
+  IFS=$'\t' read -r bound_campaign region instance goal <<< "${binding}"
+  campaign=$(producer_campaign_directory "${campaign_id}") || return $?
+  diagnostics="${campaign}/import_diagnostics.jsonl"
+  scheduled_task "${campaign_id}" >/dev/null
+  if ! (import_plan "${campaign}/execution_task_plan.jsonl" \
+      "${campaign}/concolic_region_results.jsonl" \
+      "${campaign}/concolic_region_summaries.jsonl" "${campaign}"); then
+    [[ ! -s "${diagnostics}" ]] || jq -c . "${diagnostics}" >&2 || true
+    stage_error IMPORT ConcolicSummaryImporter "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${diagnostics}" \
+      "producer raw result could not be imported"
+  fi
 }
 
 import_plan() {
@@ -443,7 +515,7 @@ import_plan() {
     CAUSYNTH_RAW_RESULTS="${results}" \
     CAUSYNTH_IMPORT_TASK_PLAN="${plan}" \
     CAUSYNTH_IMPORTED_SUMMARIES="${summaries}" \
-    CAUSYNTH_IMPORT_DIAGNOSTICS="${output_dir}/concolic_import_diagnostics.jsonl" \
+    CAUSYNTH_IMPORT_DIAGNOSTICS="${output_dir}/import_diagnostics.jsonl" \
     "${runner}" --config "${config}" import)
 }
 
@@ -550,11 +622,6 @@ combine_jsonl_unique() {
   mv -f "${temporary}" "${output}"
 }
 
-producer_campaign_directory() {
-  printf '%s/%s\n' "${producer_campaign_root}" \
-    "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-}
-
 run_path_task() {
   local query_key=$1
   local worklist=$2
@@ -649,7 +716,7 @@ run_path_task() {
     else error("imported replay did not satisfy the canonical admission")
     end
   ' "${imported}" >"${task_dir}/exploration_record.jsonl" \
-    || die "path replay admission failed; inspect ${task_dir}/execution_task_plan.jsonl, ${raw}, ${imported}, and ${task_dir}/concolic_import_diagnostics.jsonl"
+    || die "path replay admission failed; inspect ${task_dir}/execution_task_plan.jsonl, ${raw}, ${imported}, and ${task_dir}/import_diagnostics.jsonl"
 }
 
 wait_for_path_wave() {
@@ -694,7 +761,7 @@ report_path_wave_failure() {
     echo "    stderr: ${task_dir}/stderr.log" >&2
     echo "    solver: ${task_dir}/path_flip_solver_result.json" >&2
     echo "    raw result: ${task_dir}/concolic_region_results.jsonl" >&2
-    echo "    import diagnostics: ${task_dir}/concolic_import_diagnostics.jsonl" >&2
+    echo "    import diagnostics: ${task_dir}/import_diagnostics.jsonl" >&2
     if [[ -s "${task_dir}/path_flip_solver_result.json" ]]; then
       jq -r '
         "    solver-status=\(.status // "missing") solver=\(.solverStatus // "missing") reason=\(.reason // "")"
@@ -770,9 +837,9 @@ explore_region_paths() {
   require_file "${label} seed summary" \
     "${schedule}/concolic_region_summaries.jsonl"
   require_directory "${label} concolic classes" "${classes}"
-  [[ ! -e "${campaign}" ]] \
-    || die "${label} campaign already exists: ${campaign}"
   mkdir -p "${campaign}"
+  [[ ! -e "${campaign}/observed_path_summaries.jsonl" ]] \
+    || die "${label} path exploration already exists: ${campaign}"
   state_dir="${campaign}/.state"
   mkdir -p "${state_dir}"
   summaries="${campaign}/observed_path_summaries.jsonl"
@@ -838,9 +905,9 @@ explore_region_paths() {
       [[ ! -s "${planner_dir}/region_path_worklist.jsonl" ]] \
         || die "closed ${label} worklist retained pending tasks"
       cp -f "${planner_dir}/region_path_manifest.json" \
-        "${campaign}/region_path_closure.json"
+        "${campaign}/path_closure.json"
       cp -f "${planner_dir}/merged_region_summaries.jsonl" \
-        "${campaign}/merged_region_summaries.jsonl"
+        "${campaign}/merged_summary.jsonl"
       break
     fi
     jq -e '.state == "PENDING"' \
@@ -881,65 +948,87 @@ explore_region_paths() {
 }
 
 do_explore_producer() {
-  local channel=$1
-  local schedule classes campaign region instance goal binding
+  local campaign_id=$1
+  local campaign classes region instance goal binding bound_campaign merged
   validate_discovery_inputs
-  binding=$(producer_binding "${channel}") || return $?
-  IFS=$'\t' read -r region instance goal <<< "${binding}"
-  schedule=$(channel_schedule "${channel}") || return $?
-  classes=$(channel_classes "${channel}") || return $?
-  campaign=$(producer_campaign_directory "${channel}") || return $?
-  explore_region_paths "producer ${channel}" "${region}" "${goal}" "${schedule}" \
-    "${classes}" "${campaign}"
+  binding=$(producer_binding "${campaign_id}") || return $?
+  IFS=$'\t' read -r bound_campaign region instance goal <<< "${binding}"
+  campaign=$(producer_campaign_directory "${campaign_id}") || return $?
+  classes="${campaign}/classes"
+  merged="${campaign}/merged_summary.jsonl"
+  if ! (explore_region_paths "producer ${campaign_id}" "${region}" "${goal}" \
+      "${campaign}" "${classes}" "${campaign}"); then
+    stage_error PATH_EXPLORE ConcolicPathFlipPlanner "${campaign_id}" \
+      "${region}" "${instance}" "${goal}" "${campaign}/path_closure.json" \
+      "producer path campaign did not close"
+  fi
 
-  debug_merged_relation "${campaign}/merged_region_summaries.jsonl"
+  debug_merged_relation "${merged}"
   jq -e -s --arg region "${region}" '
     length == 1
     and .[0].outputClosure.producer.regionId == $region
     and .[0].relationallyComplete == true
-  ' "${campaign}/merged_region_summaries.jsonl" >/dev/null \
-    || die "producer merged relation is not complete for channel ${channel}"
+  ' "${merged}" >/dev/null \
+    || stage_error MERGE RegionSummaryMerger "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${merged}" \
+      "producer merged relation is not complete"
   discard_successful_iteration "${campaign}"
   discard_successful_campaign_state "${campaign}"
 }
 
 do_explore_target() {
-  local binding region instance goal campaign exception_type
+  local binding campaign_id region instance goal campaign classes
+  local exception_type reach_query
   validate_discovery_inputs
   binding=$(target_binding) || return $?
-  IFS=$'\t' read -r region instance goal <<< "${binding}"
-  campaign="${target_campaign_root}"
-  explore_region_paths "target" "${region}" "${goal}" "${target_schedule}" \
-    "${target_classes}" "${campaign}"
+  IFS=$'\t' read -r campaign_id region instance goal <<< "${binding}"
+  campaign="${target_campaign_root}/${campaign_id}"
+  classes="${campaign}/classes"
+  reach_query="${campaign}/reach_query.jsonl"
+  if ! (explore_region_paths "target ${campaign_id}" "${region}" "${goal}" \
+      "${campaign}" "${classes}" "${campaign}"); then
+    stage_error PATH_EXPLORE ConcolicPathFlipPlanner "${campaign_id}" \
+      "${region}" "${instance}" "${goal}" "${campaign}/path_closure.json" \
+      "target path campaign did not close"
+  fi
   exception_type=$(jq -er '
     .exception | select(type == "string" and length > 0)
   ' "${work_root}/analysis/target_resolved.json") \
-    || die "target attestation has no exception"
-  run_graphchecker_main \
+    || stage_error MERGE TargetReachPathQueryBuilder "${campaign_id}" \
+      "${region}" "${instance}" "${goal}" \
+      "${work_root}/analysis/target_resolved.json" \
+      "target attestation has no exception"
+  if ! run_graphchecker_main \
     edu.uva.liftlab.graphchecker.concolic.TargetReachPathQueryBuilder \
     --summaries "${campaign}/observed_path_summaries.jsonl" \
-    --path-manifest "${campaign}/region_path_closure.json" \
-    --seed-query "${target_schedule}/branch_queries.jsonl" \
+    --path-manifest "${campaign}/path_closure.json" \
+    --seed-query "${campaign}/branch_queries.jsonl" \
     --exception-type "${exception_type}" \
-    --output "${target_schedule}/branch_queries.jsonl" >/dev/null
+    --output "${reach_query}" >/dev/null; then
+    stage_error MERGE TargetReachPathQueryBuilder "${campaign_id}" \
+      "${region}" "${instance}" "${goal}" "${campaign}/path_closure.json" \
+      "failed to build the closed target reach query"
+  fi
   jq -e -s '
     length == 1
     and .[0].kind == "TARGET_REACH_PATH_SET_QUERY"
     and .[0].constraintAuthority
       == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
-  ' "${target_schedule}/branch_queries.jsonl" >/dev/null \
-    || die "closed target reach query is incomplete"
+  ' "${reach_query}" >/dev/null \
+    || stage_error MERGE TargetReachPathQueryBuilder "${campaign_id}" \
+      "${region}" "${instance}" "${goal}" "${reach_query}" \
+      "closed target reach query is incomplete"
   discard_successful_iteration "${campaign}"
   discard_successful_campaign_state "${campaign}"
-  echo "[three-thread-rpc] target reach paths: $(jq -r '.paths | length' "${target_schedule}/branch_queries.jsonl")"
+  echo "[three-thread-rpc] target reach paths: $(jq -r '.paths | length' "${reach_query}")"
 }
 
 run_producer_seed_pipeline() {
-  local channel=$1
-  do_schedule_producer "${channel}"
-  do_instrument "${channel}"
-  run_custom_java "${channel}" false false
-  do_import "${channel}"
+  local campaign_id=$1
+  do_schedule_producer "${campaign_id}"
+  do_instrument "${campaign_id}"
+  run_custom_java "${campaign_id}" false false
+  do_import "${campaign_id}"
 }
 
 wait_for_producer_batch() {
@@ -953,25 +1042,25 @@ wait_for_producer_batch() {
 }
 
 run_producers_parallel() {
-  local channel max_jobs
-  local -a channels producer_pids=()
-  mapfile -t channels < <(discovered_producer_channels | LC_ALL=C sort)
-  [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
+  local campaign_id max_jobs
+  local -a campaigns producer_pids=()
+  mapfile -t campaigns < <(discovered_producer_campaigns | LC_ALL=C sort)
+  [[ ${#campaigns[@]} -gt 0 ]] || die "runtime discovery found no producers"
 
   max_jobs=${CAUSYNTH_REGION_JOBS:-8}
   [[ "${max_jobs}" =~ ^[1-9][0-9]*$ ]] \
     || die "CAUSYNTH_REGION_JOBS must be a positive integer"
-  if (( max_jobs > ${#channels[@]} )); then
-    max_jobs=${#channels[@]}
+  if (( max_jobs > ${#campaigns[@]} )); then
+    max_jobs=${#campaigns[@]}
   fi
 
-  echo "[three-thread-rpc] running ${#channels[@]} producer demand(s) with ${max_jobs} worker process(es)"
-  for channel in "${channels[@]}"; do
+  echo "[three-thread-rpc] running ${#campaigns[@]} producer campaign(s) with ${max_jobs} worker process(es)"
+  for campaign_id in "${campaigns[@]}"; do
     (
       set -euo pipefail
-      run_producer_seed_pipeline "${channel}"
-      do_explore_producer "${channel}"
-      echo "[three-thread-rpc] producer ${channel} path campaign complete"
+      run_producer_seed_pipeline "${campaign_id}"
+      do_explore_producer "${campaign_id}"
+      echo "[three-thread-rpc] producer ${campaign_id} path campaign complete"
     ) &
     producer_pids+=("$!")
     if (( ${#producer_pids[@]} >= max_jobs )); then
@@ -989,27 +1078,32 @@ run_producers_parallel() {
 }
 
 do_candidate_compose() {
-  local target_region target_instance target_goal binding channel campaign
-  local producer_binding_row producer_region producer_summary
+  local target_campaign_id target_region target_instance target_goal
+  local target_campaign binding campaign_id campaign
+  local producer_binding_row bound_campaign producer_region
+  local producer_instance producer_goal producer_summary
   local compose_summaries
-  local -a channels merged_inputs
+  local -a campaigns merged_inputs
+  binding=$(target_binding) || return $?
+  IFS=$'\t' read -r target_campaign_id target_region target_instance \
+    target_goal <<< "${binding}"
+  target_campaign="${target_campaign_root}/${target_campaign_id}"
   require_file "target seed summary" \
-    "${target_schedule}/concolic_region_summaries.jsonl"
+    "${target_campaign}/concolic_region_summaries.jsonl"
   require_file "target candidate branch query" \
-    "${target_schedule}/branch_queries.jsonl"
+    "${target_campaign}/reach_query.jsonl"
   [[ ! -e "${candidate_root}" ]] \
     || die "candidate output already exists: ${candidate_root}"
   mkdir -p "${candidate_root}"
-  binding=$(target_binding) || return $?
-  IFS=$'\t' read -r target_region target_instance target_goal <<< "${binding}"
-  mapfile -t channels < <(discovered_producer_channels | LC_ALL=C sort)
-  [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
+  mapfile -t campaigns < <(discovered_producer_campaigns | LC_ALL=C sort)
+  [[ ${#campaigns[@]} -gt 0 ]] || die "runtime discovery found no producers"
   merged_inputs=()
-  for channel in "${channels[@]}"; do
-    producer_binding_row=$(producer_binding "${channel}") || return $?
-    IFS=$'\t' read -r producer_region _ <<< "${producer_binding_row}"
-    campaign=$(producer_campaign_directory "${channel}") || return $?
-    producer_summary="${campaign}/merged_region_summaries.jsonl"
+  for campaign_id in "${campaigns[@]}"; do
+    producer_binding_row=$(producer_binding "${campaign_id}") || return $?
+    IFS=$'\t' read -r bound_campaign producer_region producer_instance \
+      producer_goal <<< "${producer_binding_row}"
+    campaign=$(producer_campaign_directory "${campaign_id}") || return $?
+    producer_summary="${campaign}/merged_summary.jsonl"
     require_file "merged producer summary" "${producer_summary}"
     jq -e -s --arg region "${producer_region}" '
       length == 1
@@ -1017,7 +1111,9 @@ do_candidate_compose() {
       and (.[0].summaryId | type == "string" and length > 0)
       and .[0].relationallyComplete == true
     ' "${producer_summary}" >/dev/null \
-      || die "producer relation is incomplete for channel ${channel}"
+      || stage_error COMPOSE ConcolicSmtComposer "${campaign_id}" \
+        "${producer_region}" "${producer_instance}" "${producer_goal}" \
+        "${producer_summary}" "producer relation is incomplete"
     merged_inputs+=("${producer_summary}")
   done
   jq -e -s --argjson expected "${#merged_inputs[@]}" '
@@ -1026,14 +1122,19 @@ do_candidate_compose() {
   ' "${merged_inputs[@]}" >/dev/null \
     || die "producer relation identities are not unique"
   compose_summaries=$(IFS=:; printf '%s' "${merged_inputs[*]}")
-  (cd "${graphchecker_dir}" && \
-    CAUSYNTH_FATAL_QUERIES="${target_schedule}/branch_queries.jsonl" \
+  if ! (cd "${graphchecker_dir}" && \
+    CAUSYNTH_FATAL_QUERIES="${target_campaign}/reach_query.jsonl" \
     CAUSYNTH_COMPOSE_SUMMARIES="${compose_summaries}" \
     CAUSYNTH_COMPOSED_SMT="${candidate_root}/candidate.smt2" \
     CAUSYNTH_COMPOSITION_MANIFEST="${candidate_root}/candidate_composition_manifest.json" \
     CAUSYNTH_FATAL_REGION="${target_region}" \
     CAUSYNTH_FATAL_REGION_INSTANCE_ID="${target_instance}" \
-    "${runner}" --config "${config}" compose)
+    "${runner}" --config "${config}" compose); then
+    stage_error COMPOSE ConcolicSmtComposer "${target_campaign_id}" \
+      "${target_region}" "${target_instance}" "${target_goal}" \
+      "${candidate_root}/candidate_composition_manifest.json" \
+      "producer relations could not be composed with the target query"
+  fi
   jq -e '
     .schemaVersion == 2
     and .kind == "CONCOLIC_COMPOSED_SMT"
@@ -1041,7 +1142,14 @@ do_candidate_compose() {
     and .trustState == "CANDIDATE_ONLY"
     and (.gaps | type == "array" and length == 0)
   ' "${candidate_root}/candidate_composition_manifest.json" >/dev/null \
-    || die "composition is not a structurally complete candidate model"
+    || {
+      jq -c '.gaps[]?' \
+        "${candidate_root}/candidate_composition_manifest.json" >&2 || true
+      stage_error COMPOSE ConcolicSmtComposer "${target_campaign_id}" \
+        "${target_region}" "${target_instance}" "${target_goal}" \
+        "${candidate_root}/candidate_composition_manifest.json" \
+        "composition is not a structurally complete candidate model"
+    }
 }
 
 do_candidate_solve() {
@@ -1084,21 +1192,38 @@ do_candidate_solve() {
 }
 
 do_seed_target() {
-  local instance goal task region binding summary
+  local campaign_id instance goal task region binding summary campaign classes
+  local diagnostics
   validate_discovery_inputs
   task=$(scheduled_target_task) || return $?
   binding=$(target_binding) || return $?
-  IFS=$'\t' read -r region instance goal <<< "${binding}"
-  instrument_plan "${target_schedule}/execution_task_plan.jsonl" \
-    "${task}" "${target_classes}"
-  run_custom_plan "${target_schedule}/execution_task_plan.jsonl" \
-    "${task}" "${target_classes}" \
-    "${target_schedule}/concolic_region_results.jsonl" false false false
-  import_plan "${target_schedule}/execution_task_plan.jsonl" \
-    "${target_schedule}/concolic_region_results.jsonl" \
-    "${target_schedule}/concolic_region_summaries.jsonl" \
-    "${target_schedule}"
-  summary="${target_schedule}/concolic_region_summaries.jsonl"
+  IFS=$'\t' read -r campaign_id region instance goal <<< "${binding}"
+  campaign="${target_campaign_root}/${campaign_id}"
+  classes="${campaign}/classes"
+  diagnostics="${campaign}/import_diagnostics.jsonl"
+  if ! (instrument_plan "${campaign}/execution_task_plan.jsonl" \
+      "${task}" "${classes}"); then
+    stage_error INSTRUMENT GraphChecker "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${campaign}/execution_task_plan.jsonl" \
+      "failed to instrument the selected target task"
+  fi
+  if ! (run_custom_plan "${campaign}/execution_task_plan.jsonl" \
+      "${task}" "${classes}" \
+      "${campaign}/concolic_region_results.jsonl" false false false); then
+    stage_error REPLAY CUSTOM_JDK "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${campaign}/concolic_region_results.jsonl" \
+      "custom-JDK target seed replay failed"
+  fi
+  if ! (import_plan "${campaign}/execution_task_plan.jsonl" \
+      "${campaign}/concolic_region_results.jsonl" \
+      "${campaign}/concolic_region_summaries.jsonl" \
+      "${campaign}"); then
+    [[ ! -s "${diagnostics}" ]] || jq -c . "${diagnostics}" >&2 || true
+    stage_error IMPORT ConcolicSummaryImporter "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${diagnostics}" \
+      "target seed raw result could not be imported"
+  fi
+  summary="${campaign}/concolic_region_summaries.jsonl"
   if ! jq -e -s --arg region "${region}" --arg task "${task}" \
       --arg instance "${instance}" \
       --arg goal "${goal}" '
@@ -1110,13 +1235,20 @@ do_seed_target() {
       and .[0].relationallyComplete == true
       and .[0].goalKind == "TARGET_REACH_CLOSURE"
     ' "${summary}" >/dev/null; then
-    die "target seed import is not one valid target-branch observation"
+    stage_error IMPORT ConcolicSummaryImporter "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${summary}" \
+      "target seed import is not one valid target-branch observation"
   fi
-  (cd "${graphchecker_dir}" && \
-    CAUSYNTH_SCHEDULE_SUMMARIES="${summary}" \
-    "${runner}" --config "${config}" schedule \
-      --region-id "${region}" --region-instance-id "${instance}" \
-      --goal-id "${goal}")
+  if ! (cd "${graphchecker_dir}" && \
+      CAUSYNTH_SCHEDULE_OUTPUT_DIR="${campaign}" \
+      CAUSYNTH_SCHEDULE_SUMMARIES="${summary}" \
+      "${runner}" --config "${config}" schedule \
+        --region-id "${region}" --region-instance-id "${instance}" \
+        --goal-id "${goal}"); then
+    stage_error SCHEDULE ConcolicScheduler "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${summary}" \
+      "target seed summary could not be converted to a solver query"
+  fi
   if ! jq -e -s --arg region "${region}" --arg instance "${instance}" \
       --arg goal "${goal}" '
       length == 1
@@ -1128,10 +1260,12 @@ do_seed_target() {
       and .[0].readyForSolver == true
       and .[0].replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
       and .[0].solverPathContext.kind == "NON_BRANCH_SOLVER_PATH_CONTEXT"
-    ' "${target_schedule}/branch_queries.jsonl" >/dev/null; then
-    die "target seed scheduler did not emit one solver-ready candidate query"
+    ' "${campaign}/branch_queries.jsonl" >/dev/null; then
+    stage_error SCHEDULE ConcolicScheduler "${campaign_id}" "${region}" \
+      "${instance}" "${goal}" "${campaign}/branch_queries.jsonl" \
+      "target seed scheduler did not emit one solver-ready candidate query"
   fi
-  echo "[three-thread-rpc] target seed query: ${target_schedule}/branch_queries.jsonl"
+  echo "[three-thread-rpc] target seed query: ${campaign}/branch_queries.jsonl"
 }
 
 do_clean() {
@@ -1149,15 +1283,6 @@ do_clean() {
     find "${work_root}" -mindepth 1 -delete
   fi
   echo "[three-thread-rpc] cleaned ${work_root}"
-}
-
-require_clean_work_root() {
-  local first_entry=""
-  if [[ -d "${work_root}" ]]; then
-    first_entry=$(find "${work_root}" -mindepth 1 -print -quit)
-  fi
-  [[ -z "${first_entry}" ]] || die \
-    "all requires an empty fixture work root; run '$0 clean' first"
 }
 
 write_candidate_manifest() {
@@ -1203,7 +1328,6 @@ write_candidate_manifest() {
 }
 
 do_candidate_smt() {
-  require_clean_work_root
   do_prepare
   do_analyze
   do_trace
@@ -1235,14 +1359,14 @@ case "${command_name}" in
   schedule-target) [[ $# -eq 0 ]] || die "schedule-target takes no arguments"; do_schedule_target ;;
   seed-target) [[ $# -eq 0 ]] || die "seed-target takes no arguments"; do_seed_target ;;
   explore-target) [[ $# -eq 0 ]] || die "explore-target takes no arguments"; do_explore_target ;;
-  schedule-producer) [[ $# -eq 1 ]] || die "schedule-producer needs one discovered channel"; do_schedule_producer "$1" ;;
-  instrument) [[ $# -eq 1 ]] || die "instrument needs one discovered channel"; do_instrument "$1" ;;
+  schedule-producer) [[ $# -eq 1 ]] || die "schedule-producer needs one campaign ID"; do_schedule_producer "$1" ;;
+  instrument) [[ $# -eq 1 ]] || die "instrument needs one campaign ID"; do_instrument "$1" ;;
   replay)
-    [[ $# -ge 1 && $# -le 3 ]] || die "replay needs CHANNEL [b1 b2]"
+    [[ $# -ge 1 && $# -le 3 ]] || die "replay needs CAMPAIGN [b1 b2]"
     run_custom_java "$1" "${2:-false}" "${3:-false}"
     ;;
-  import) [[ $# -eq 1 ]] || die "import needs one discovered channel"; do_import "$1" ;;
-  explore-producer) [[ $# -eq 1 ]] || die "explore-producer needs one discovered channel"; do_explore_producer "$1" ;;
+  import) [[ $# -eq 1 ]] || die "import needs one campaign ID"; do_import "$1" ;;
+  explore-producer) [[ $# -eq 1 ]] || die "explore-producer needs one campaign ID"; do_explore_producer "$1" ;;
   candidate-compose) [[ $# -eq 0 ]] || die "candidate-compose takes no arguments"; do_candidate_compose ;;
   candidate-smt) [[ $# -eq 0 ]] || die "candidate-smt takes no arguments"; do_candidate_smt ;;
   candidate-solve) [[ $# -eq 0 ]] || die "candidate-solve takes no arguments"; do_candidate_solve ;;
