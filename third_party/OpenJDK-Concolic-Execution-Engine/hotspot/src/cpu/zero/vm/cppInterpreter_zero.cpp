@@ -560,6 +560,22 @@ int CppInterpreter::accessor_entry(Method* method, intptr_t UNUSED, TRAPS) {
     return normal_entry(method, 0, THREAD);
   }
 
+#ifdef ENABLE_CONCOLIC
+  SymInstance *container_entry =
+      ConcolicMngr::can_do_concolic()
+          ? ConcolicMngr::ctx->find_sym_inst(object) : NULL;
+  if (container_entry != NULL
+      && container_entry->get_ref_exp() != NULL
+      && (method->name()->equals("getKey")
+          || method->name()->equals("getValue"))) {
+    // Map entry accessors are container operations, not ordinary object
+    // fields.  The fast accessor creates no Java frame and would bypass the
+    // canonical KEY/VALUE relation handler, so tracked entries use the normal
+    // entry while unrelated getters retain the fast path.
+    return normal_entry(method, 0, THREAD);
+  }
+#endif
+
   // Read the field index from the bytecode, which looks like this:
   //  0:  aload_0
   //  1:  getfield
@@ -691,7 +707,9 @@ int CppInterpreter::accessor_entry(Method* method, intptr_t UNUSED, TRAPS) {
     if (sym_inst != NULL) {
       sym_rid = sym_inst->get_sym_rid();
       sym_exp = sym_inst->get(field_offset);
-      if (sym_exp == NULL && sym_inst->demand_symbolic_fields_enabled()) {
+      if (sym_exp == NULL
+          && sym_inst->demand_symbolic_fields_enabled()
+          && !sym_inst->field_written(field_offset)) {
         sym_inst->init_sym_exp(field_offset, field_type);
         sym_exp = sym_inst->get(field_offset);
       }

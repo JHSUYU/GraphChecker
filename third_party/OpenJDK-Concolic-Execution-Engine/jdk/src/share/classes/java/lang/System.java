@@ -458,6 +458,32 @@ public final class System {
     public static native String getSymbolicExpression(Object obj);
 
     /**
+     * Serializes the exact symbolic shadow of one instance field.  When the
+     * field has no shadow, the VM returns the exact concrete value expression
+     * for supported scalar/container values.
+     */
+    public static native String getSymbolicFieldExpression(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, Object concreteValue);
+
+    /**
+     * Gives one supported container live-in a canonical symbolic state.
+     * Unlike {@link #symbolize(Object, String)}, this does not recursively
+     * symbolize implementation fields or snapshot concrete members.
+     */
+    public static native boolean trackContainerExpression(Object container,
+                                                          String prefix);
+
+    /**
+     * Attaches an exact snapshot state to a supported container that has no
+     * symbolic state yet.  {@code kind} is 0 for indexed collections, 1 for
+     * maps, 2 for sets, and 3 for Java arrays.  Existing symbolic state is
+     * preserved.
+     */
+    public static native boolean snapshotContainerExpression(
+            Object container, Object[] keys, Object[] values, int kind);
+
+    /**
      * Returns the active region metadata and path condition without ending
      * concolic execution.
      */
@@ -491,6 +517,15 @@ public final class System {
      */
     public static native void symbolizeField(Object obj, String fieldName,
                                              String prefix);
+
+    /**
+     * Makes exactly one declared instance field symbolic.  The declaring
+     * class is its binary name (as returned by {@link Class#getName()});
+     * inherited fields with the same name and descriptor are not selected.
+     */
+    public static native void symbolizeExactField(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, String prefix);
 
     /**
      * make an method symbolic

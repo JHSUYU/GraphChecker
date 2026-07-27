@@ -17,7 +17,7 @@ public final class BranchReplayObservationValidator {
     }
 
     static List<String> validateEncoded(JsonElement encoded,
-                                        JsonArray rawMappings) {
+                                        JsonArray canonicalMappings) {
         if (encoded == null) {
             return Collections.singletonList(
                     "BRANCH_REPLAY_CONTRACT_MISSING");
@@ -34,13 +34,15 @@ public final class BranchReplayObservationValidator {
                     + malformed.getMessage());
         }
         List<BranchWitness> observed = new ArrayList<>();
-        for (JsonElement element : rawMappings) {
+        for (JsonElement element : canonicalMappings) {
             if (!element.isJsonObject()) continue;
-            JsonElement witness = element.getAsJsonObject().get("witness");
-            if (witness == null || !witness.isJsonObject()) continue;
             try {
-                observed.add(BranchWitness.fromJson(
-                        witness.getAsJsonObject()));
+                SummaryBranchMapping mapping =
+                        SummaryBranchMapping.fromJson(
+                                element.getAsJsonObject());
+                if (mapping.isWitnessed()) {
+                    observed.add(mapping.witness());
+                }
             } catch (IllegalArgumentException ignored) {
                 // Malformed rows cannot satisfy a required replay event.
             }
@@ -100,7 +102,8 @@ public final class BranchReplayObservationValidator {
             failures.add(id + ":" + (prefix
                     ? "PREFIX_OUT_OF_ORDER" : "TARGET_BEFORE_PREFIX"));
         }
-        if (actual.sourceTakenOutcome() != outcome) {
+        if (!expected.isPcPredicateDecision()
+                && actual.sourceTakenOutcome() != outcome) {
             failures.add(id + ":" + role + "_OUTCOME_MISMATCH");
         }
         if (!BranchPredicateAlgebra.replayEquivalent(
@@ -111,6 +114,6 @@ public final class BranchReplayObservationValidator {
     }
 
     private static String event(BranchWitness witness) {
-        return witness.siteId() + "\u0000" + witness.occurrence();
+        return witness.decisionIdentity();
     }
 }

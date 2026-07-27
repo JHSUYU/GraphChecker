@@ -78,6 +78,23 @@ public class BranchReplayContractTest {
     }
 
     @Test
+    public void pcPredicateReplayUsesPredicateNotJimpleOutcome() {
+        JsonObject predicate = predicate(">", "REGION.IN.x", "7");
+        BranchWitness source = BranchWitness.pcPredicate(
+                "ROOT#u7", "ROOT", 7, 1, 2, predicate, 5);
+        BranchReplayContract contract = BranchReplayContract.flip(
+                Collections.<BranchWitness>emptyList(), source);
+        BranchWitness replayed = BranchWitness.pcPredicate(
+                "ROOT#u7", "ROOT", 7, 1, 2,
+                BranchPredicateAlgebra.complement(predicate), 3);
+
+        assertTrue(BranchReplayObservationValidator.validate(
+                contract, Collections.singletonList(replayed)).isEmpty());
+        assertEquals(2, BranchReplayContract.fromJson(contract.toJson())
+                .source().decisionOrdinal());
+    }
+
+    @Test
     public void explicitFieldBindingIsSolverContextNotBranchEvidence() {
         JsonObject field = new JsonObject();
         field.addProperty("_type", "FieldAccessExpression");
@@ -88,8 +105,8 @@ public class BranchReplayContractTest {
         JsonObject binding = predicate("==", field,
                 symbol("M_I_field_input"));
         binding.addProperty("_code_position",
-                "static void java.lang.System.symbolizeField"
-                        + "(jobject, jobject, jobject):-1");
+                "static void java.lang.System.symbolizeExactField"
+                        + "(jobject, jobject, jobject, jobject, jobject):-1");
         JsonArray path = new JsonArray();
         path.add(binding);
         path.add(predicate(">", "M_I_field_input", "7"));

@@ -52,8 +52,16 @@ path condition + final OUT expression
 
 The VM does not preselect an assignment site. Multiple writes, branch-dependent
 writes and no-write frame conditions therefore use the actual final value of
-each replay. `RegionSummaryMerger` creates one guarded relation from the
-admitted path rows.
+each replay. Normal-exit field capture reads the exact owner-field shadow:
+an unchanged shadow preserves the pre-state expression, while a concrete
+write produces the exact String/null/primitive constant for that path.
+`RegionSummaryMerger` creates one guarded relation from the admitted path rows.
+
+Demand-symbolized objects distinguish an absent field shadow from a field that
+was concretely overwritten in the current activation. `putfield`/`putstatic`
+leave an activation-local written marker when they clear a symbolic shadow;
+ordinary and Zero fast `getfield` paths therefore cannot resurrect the old
+pre-state expression after a concrete write.
 
 Several requested ports belonging to one downstream demand are carried by one
 joint goal and one shared path case. Independent summaries from different
@@ -102,15 +110,16 @@ Supported public operations are intentionally narrow:
 - Map: get, put, remove by key, containsKey, size, isEmpty, clear and read-only
   entry/key/value iteration, iterator removal and backed-view clear.
 
-Callback mutators (`compute*`, `merge`, `replaceAll`), bulk mutation, iterator
-mutation and live-view mutation are not modeled. A symbolic execution reaching
-one of these boundaries aborts with one explicit reason.
+Callback mutators (`compute*`, `merge`, `replaceAll`) and bulk mutation are not
+modeled. Iterator `remove` and backed-view `clear` are the only supported
+view mutations; other live-view mutations abort with one explicit reason.
 
 There is no Java-side element ledger, finite snapshot, engine array binding,
 Map-entry projection or container-specific dynamic binding. Initial container
 state is activation-local; only operations demanded by an executed path are
-observed. This supports variable length without enumerating a container before
-execution.
+observed. This supports variable-length collections and arrays allocated from a
+symbolic length without enumerating a container before execution; an existing
+Java array keeps its concrete length.
 
 ## Replay admission
 

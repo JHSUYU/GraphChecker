@@ -14,6 +14,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 
 import java.io.File;
@@ -86,7 +87,8 @@ public final class BooleanReachConditionExtractor {
 
         PortCatalog ports = PortCatalog.from(regions);
         Discovery discovery = discover(composedSmt,
-                suppliedInputs(manifest), ports);
+                suppliedInputs(manifest), ports,
+                PortOccurrenceCatalog.from(manifest));
         List<RootInput> inputs = discovery.rootInputs;
         JsonObject roots = new JsonObject();
         roots.add("booleanInputs", inputCatalog(inputs));
@@ -168,27 +170,36 @@ public final class BooleanReachConditionExtractor {
                 "trustState"))) {
             gaps.add("COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE");
         }
+        JsonElement occurrences = manifest == null ? null
+                : manifest.get("canonicalPortOccurrences");
+        if (occurrences == null || !occurrences.isJsonArray()) {
+            gaps.add("CANONICAL_PORT_OCCURRENCE_CATALOG_MISSING");
+        }
     }
 
     private static Discovery discover(String smt,
                                       Set<String> upstreamSupplied,
-                                      PortCatalog ports) {
+                                      PortCatalog ports,
+                                      PortOccurrenceCatalog occurrences) {
         List<RootInput> roots = new ArrayList<>();
         List<RootInput> domainInputs = new ArrayList<>();
         List<RootInput> scalarRoots = new ArrayList<>();
-        for (PortInfo port : ports.sortedInputs()) {
+        for (PortOccurrenceInfo occurrence : occurrences.sorted()) {
+            PortInfo port = ports.input(occurrence.portId);
+            if (port == null) continue;
             ScalarEncoding encoding = ScalarEncoding.of(port.descriptor);
-            if (encoding == null) continue;
-            String solverTerm = encoding.solverTerm(port.id);
-            String portTerm = "port__" + smtName(port.id);
-            String nullnessSolverTerm = encoding == ScalarEncoding.STRING
-                    ? "sym__port__" + smtName(port.id)
-                    + "__string_is_null" : "";
-            boolean declared = canonicalScalarBindingDeclared(smt, portTerm,
-                    solverTerm, nullnessSolverTerm, encoding);
+            if (encoding == null
+                    || !encoding.occurrenceSort.equals(occurrence.sort)) {
+                continue;
+            }
+            boolean declared = canonicalScalarBindingDeclared(smt,
+                    occurrence.portTerm, occurrence.solverTerm,
+                    occurrence.nullnessSolverTerm, encoding);
             if (!declared) continue;
             if (port.javaBoolean) {
-                RootInput input = new RootInput(port, solverTerm, "");
+                RootInput input = new RootInput(port,
+                        occurrence.regionInstanceId, occurrence.solverTerm,
+                        "");
                 domainInputs.add(input);
                 if (upstreamSupplied.contains(port.id)) {
                     continue;
@@ -197,15 +208,19 @@ public final class BooleanReachConditionExtractor {
             } else if (upstreamSupplied.contains(port.id)) {
                 continue;
             } else {
-                scalarRoots.add(new RootInput(port, solverTerm,
-                        nullnessSolverTerm));
+                scalarRoots.add(new RootInput(port,
+                        occurrence.regionInstanceId, occurrence.solverTerm,
+                        occurrence.nullnessSolverTerm));
             }
         }
-        Collections.sort(roots, Comparator.comparing(value -> value.port.id));
+        Comparator<RootInput> byOccurrence = Comparator
+                .comparing((RootInput value) -> value.port.id)
+                .thenComparing(value -> value.regionInstanceId);
+        Collections.sort(roots, byOccurrence);
         Collections.sort(domainInputs, Comparator.comparing(
-                value -> value.port.id));
-        Collections.sort(scalarRoots, Comparator.comparing(
-                value -> value.port.id));
+                (RootInput value) -> value.port.id).thenComparing(
+                value -> value.regionInstanceId));
+        Collections.sort(scalarRoots, byOccurrence);
         return new Discovery(roots, domainInputs, scalarRoots);
     }
 
@@ -227,9 +242,11 @@ public final class BooleanReachConditionExtractor {
             return smt.contains("(= " + portTerm + " " + boxed + ")")
                     || smt.contains("(= " + boxed + " " + portTerm + ")");
         }
+        String valueConstructor = ContainerSmtCodec.valueKind(
+                encoding.javaDescriptor);
         return smt.contains("(= " + portTerm + " ("
-                + encoding.valueConstructor + " " + solverTerm + "))")
-                || smt.contains("(= (" + encoding.valueConstructor + " "
+                + valueConstructor + " " + solverTerm + "))")
+                || smt.contains("(= (" + valueConstructor + " "
                 + solverTerm + ") " + portTerm + ")");
     }
 
@@ -370,12 +387,15 @@ public final class BooleanReachConditionExtractor {
 
     private static final class RootInput {
         private final PortInfo port;
+        private final String regionInstanceId;
         private final String solverTerm;
         private final String nullnessSolverTerm;
 
-        private RootInput(PortInfo port, String solverTerm,
+        private RootInput(PortInfo port, String regionInstanceId,
+                          String solverTerm,
                           String nullnessSolverTerm) {
             this.port = port;
+            this.regionInstanceId = firstNonBlank(regionInstanceId);
             this.solverTerm = solverTerm;
             this.nullnessSolverTerm = firstNonBlank(nullnessSolverTerm);
         }
@@ -392,6 +412,7 @@ public final class BooleanReachConditionExtractor {
         private JsonObject toJson() {
             JsonObject result = new JsonObject();
             result.addProperty("portId", port.id);
+            result.addProperty("regionInstanceId", regionInstanceId);
             result.addProperty("javaTypeDescriptor", port.descriptor);
             result.addProperty("solverTerm", solverTerm);
             if (!nullnessSolverTerm.isEmpty()) {
@@ -403,45 +424,40 @@ public final class BooleanReachConditionExtractor {
     }
 
     private enum ScalarEncoding {
-        BOOL("Bool", "bool", "VBool"),
-        INT("Int", "int", "VInt"),
-        FLOAT32("(_ FloatingPoint 8 24)", "float32", "VFloat"),
-        FLOAT64("(_ FloatingPoint 11 53)", "float64", "VDouble"),
-        STRING("String", "string", "VString");
+        BOOL("BOOL", "Bool", "Z"),
+        BYTE("INT", "Int", "B"),
+        CHAR("INT", "Int", "C"),
+        SHORT("INT", "Int", "S"),
+        INT("INT", "Int", "I"),
+        LONG("INT", "Int", "J"),
+        FLOAT32("FLOAT32", "(_ FloatingPoint 8 24)", "F"),
+        FLOAT64("FLOAT64", "(_ FloatingPoint 11 53)", "D"),
+        STRING("STRING", "String", "Ljava/lang/String;");
 
+        private final String occurrenceSort;
         private final String solverSort;
-        private final String suffix;
-        private final String valueConstructor;
+        private final String javaDescriptor;
 
-        ScalarEncoding(String solverSort, String suffix,
-                       String valueConstructor) {
+        ScalarEncoding(String occurrenceSort, String solverSort,
+                       String javaDescriptor) {
+            this.occurrenceSort = occurrenceSort;
             this.solverSort = solverSort;
-            this.suffix = suffix;
-            this.valueConstructor = valueConstructor;
-        }
-
-        private String solverTerm(String port) {
-            return "sym__port__" + smtName(port) + "__" + suffix;
+            this.javaDescriptor = javaDescriptor;
         }
 
         private static ScalarEncoding of(String descriptor) {
-            String value = firstNonBlank(descriptor);
+            String declared = firstNonBlank(descriptor);
+            String value = JavaPrimitiveBoxing.primitiveDescriptor(declared);
+            if (value.isEmpty()) value = javaTypeDescriptor(declared);
             if ("Z".equals(value)
                     || "Ljava/lang/Boolean;".equals(value)) return BOOL;
-            if ("B".equals(value) || "C".equals(value)
-                    || "S".equals(value) || "I".equals(value)
-                    || "J".equals(value)
-                    || "Ljava/lang/Byte;".equals(value)
-                    || "Ljava/lang/Character;".equals(value)
-                    || "Ljava/lang/Short;".equals(value)
-                    || "Ljava/lang/Integer;".equals(value)
-                    || "Ljava/lang/Long;".equals(value)) {
-                return INT;
-            }
-            if ("F".equals(value)
-                    || "Ljava/lang/Float;".equals(value)) return FLOAT32;
-            if ("D".equals(value)
-                    || "Ljava/lang/Double;".equals(value)) return FLOAT64;
+            if ("B".equals(value)) return BYTE;
+            if ("C".equals(value)) return CHAR;
+            if ("S".equals(value)) return SHORT;
+            if ("I".equals(value)) return INT;
+            if ("J".equals(value)) return LONG;
+            if ("F".equals(value)) return FLOAT32;
+            if ("D".equals(value)) return FLOAT64;
             if ("Ljava/lang/String;".equals(value)) return STRING;
             return null;
         }
@@ -499,10 +515,70 @@ public final class BooleanReachConditionExtractor {
             return result;
         }
 
-        private List<PortInfo> sortedInputs() {
-            List<PortInfo> result = new ArrayList<>(inputs.values());
-            Collections.sort(result, Comparator.comparing(value -> value.id));
+        private PortInfo input(String id) {
+            return inputs.get(firstNonBlank(id));
+        }
+    }
+
+    private static final class PortOccurrenceCatalog {
+        private final List<PortOccurrenceInfo> occurrences =
+                new ArrayList<>();
+
+        private static PortOccurrenceCatalog from(JsonObject manifest) {
+            PortOccurrenceCatalog result = new PortOccurrenceCatalog();
+            for (JsonElement element : array(manifest,
+                    "canonicalPortOccurrences")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                PortOccurrenceInfo occurrence = new PortOccurrenceInfo(
+                        string(row, "portId"),
+                        string(row, "regionInstanceId"),
+                        string(row, "sort"),
+                        string(row, "portTerm"),
+                        string(row, "solverTerm"),
+                        string(row, "nullnessSolverTerm"));
+                if (occurrence.complete()) {
+                    result.occurrences.add(occurrence);
+                }
+            }
             return result;
+        }
+
+        private List<PortOccurrenceInfo> sorted() {
+            List<PortOccurrenceInfo> result = new ArrayList<>(occurrences);
+            result.sort(Comparator
+                    .comparing((PortOccurrenceInfo value) -> value.portId)
+                    .thenComparing(value -> value.regionInstanceId)
+                    .thenComparing(value -> value.sort));
+            return result;
+        }
+    }
+
+    private static final class PortOccurrenceInfo {
+        private final String portId;
+        private final String regionInstanceId;
+        private final String sort;
+        private final String portTerm;
+        private final String solverTerm;
+        private final String nullnessSolverTerm;
+
+        private PortOccurrenceInfo(String portId, String regionInstanceId,
+                                   String sort, String portTerm,
+                                   String solverTerm,
+                                   String nullnessSolverTerm) {
+            this.portId = firstNonBlank(portId);
+            this.regionInstanceId = firstNonBlank(regionInstanceId);
+            this.sort = firstNonBlank(sort);
+            this.portTerm = firstNonBlank(portTerm);
+            this.solverTerm = firstNonBlank(solverTerm);
+            this.nullnessSolverTerm =
+                    firstNonBlank(nullnessSolverTerm);
+        }
+
+        private boolean complete() {
+            return !portId.isEmpty() && !regionInstanceId.isEmpty()
+                    && !sort.isEmpty() && !portTerm.isEmpty()
+                    && !solverTerm.isEmpty();
         }
     }
 
@@ -615,16 +691,6 @@ public final class BooleanReachConditionExtractor {
     private static String normalizedPath(String value) {
         if (firstNonBlank(value).isEmpty()) return "";
         return Paths.get(value).toAbsolutePath().normalize().toString();
-    }
-
-    private static String smtName(String value) {
-        String normalized = firstNonBlank(value, "anonymous")
-                .replaceAll("[^A-Za-z0-9_]", "_");
-        if (normalized.isEmpty()) normalized = "anonymous";
-        if (Character.isDigit(normalized.charAt(0))) {
-            normalized = "n_" + normalized;
-        }
-        return normalized;
     }
 
     private static long positiveLong(String value, long fallback) {

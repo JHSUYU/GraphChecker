@@ -143,6 +143,28 @@ case C0:
 Composer 只能原子选择整个 case，不能把不同 replay、不同输入或不同 producer instance
 的 `outX` 与 `outY` 拼接。任一 member 不完整则整个 joint demand fail closed。
 
+### Field-sensitive object flow
+
+对象作为方法参数传递时不降级成一个不透明 reference。静态 slice 保留精确字段路径，
+例如：
+
+```text
+compute()
+  -> resolve(envelope)
+  -> envelope.state.flag.enabled
+  -> envelope.state.enabledValue
+```
+
+参数别名仍由 receiver identity 关联，字段由真实声明签名关联。继承引用
+`<Derived: int base>` 会规范成实际声明它的 `<Base: int base>`；静态 edge、插桩选择、
+runtime materialization 和 native exact-field API 全部使用这个 canonical identity。
+同名隐藏字段则保持两个不同 identity，不能因为 Java 字段名相同而合并。
+
+构造函数和初始化方法若位于 target 的动态 provenance 中，会产生普通 upstream output
+relation。因此 `producer.field = 0`、嵌套对象叶子和初始 container state 不再成为任意
+existential input。它们与 producer relation 一起组合；这会排除只靠伪造初始化值才能
+成立的 SAT。
+
 ## Region-end output semantics
 
 字段 OUT 不绑定某个赋值 site，也不绑定 seed trace 的 occurrence。所有候选路径在 region
@@ -267,18 +289,19 @@ V2 不构造全量 container snapshot。
 
 - array：length、load、store；
 - List：get、set、add、insert、remove(index)、contains、size、isEmpty、clear、
-  iterator/next；
+  iterator/hasNext/next/remove；
 - Queue：offer、poll、peek、element、remove()；
 - Set：add、remove、contains、size、isEmpty、clear、iterator；
 - Map：get、put、remove(key)、containsKey、size、isEmpty、clear；
-- Map view：entrySet、keySet、values、iterator、next、getKey、getValue。
+- Map view：entrySet、keySet、values、iterator、hasNext、next、getKey、getValue、
+  iterator remove、backed-view clear。
 
 暂不支持并 fail closed：
 
 - `Map.putAll/putIfAbsent/replace/replaceAll/compute*/merge`；
 - `Map.remove(key,value)`；
 - `List.remove(object)`、`listIterator(int)`；
-- `Iterator.remove`、view mutation；
+- `ListIterator` 的额外 mutation 和其他 view mutation；
 - reflection、native container API、direct/off-heap buffer；
 - 依赖具体 HashMap bucket、TreeMap comparator 或 JVM 内部布局的语义。
 
@@ -292,12 +315,21 @@ region-end capture 对 primitive field、普通 object field 和 container field
 
 ```text
 read exact field path at normal exit
-  -> System.getSymbolicExpression(value)
+  -> System.getSymbolicFieldExpression(owner, field, descriptor, value)
   -> scalar expression or final ContainerRelation
 ```
 
 因此 capture 不关心最后执行了哪个 `put`、array store 或 field assignment。无 mutation
-时得到 pre-state；有多个 mutation 时得到最终 shadow state。
+时直接读取 field shadow 并得到 pre-state；本路径写入 concrete String/null/primitive
+时得到精确常量；有多个 mutation 时得到最终 shadow state。这里查询 field shadow 而不是
+只查询 `value` 对象 identity，因而不会把 no-write frame condition 错降级为 seed
+concrete value。
+
+VM 将“字段从未获得 shadow”和“字段已被本次 replay 的 concrete `putfield/putstatic`
+覆盖”区分开。后者保留一个 activation-local written marker；普通 `getfield` 和 Zero
+fast accessor 都不会再按需重建入口 `FieldAccessExpression`。因此固定循环或 clamp
+把 symbolic 字段写成 concrete 值后，后续 branch 与 region-end capture 看到的是新值，
+不会产生只能在 SMT 中成立、Java replay 无法执行的伪路径。
 
 ## Parallel concolic exploration
 
@@ -420,3 +452,26 @@ composition is not structurally complete
 
 40K–50K 生产 Java 是合理的代码规模方向，不是验收捷径。若正确、general 的实现确实需要
 更多代码，保留代码；若旧代码已无生产消费者，则删除，不保留“以后也许有用”的 fallback。
+
+## 2026-07-27 final validation
+
+本轮冻结后的生产 Java 为 43,670 行，相对 PR 0 记录的 81,084 行减少 37,414 行
+（约 46%）。`three-thread-rpc/run.sh` 从旧的 1,618 行降为 1,261 行；剩余 Shell
+负责可见的 stage orchestration、artifact lineage 和真实 workflow gate，不再复制
+Planner/Importer/Composer 的 schema 语义。
+
+最终 gate：
+
+```text
+custom-JDK API smoke              23/23 PASS
+Maven contract tests             105/105 PASS
+fixed-RPC stress, 5 x 20         100/100 PASS
+original real workflows           13/13 PASS
+container tricky workflows         5/5 PASS
+```
+
+stress 的每个 `PASS` 同时要求：四行 concrete truth table 正确、真实 custom-JDK/concolic
+流程结束、Z3 SAT/UNSAT 与预期一致、两条 shared-field RPC producer binding 都进入最终
+composition。原 13 个 workflow 的最大并发初跑中有 3 个 JVM 因 fixture 固定 10 秒
+`join` 在系统 load 超过 100 时超时；这 3 个在串行、不修改代码和 fixture 的条件下均
+通过，因此它们被记录为资源调度超时，而不是语义失败。

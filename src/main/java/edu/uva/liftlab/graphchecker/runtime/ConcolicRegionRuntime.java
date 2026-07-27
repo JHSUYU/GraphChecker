@@ -32,6 +32,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
@@ -74,6 +75,10 @@ public final class ConcolicRegionRuntime {
                     + "[0-9a-fA-F]+$");
     private static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
+    private static final int SNAPSHOT_INDEXED = 0;
+    private static final int SNAPSHOT_MAP = 1;
+    private static final int SNAPSHOT_SET = 2;
+    private static final int SNAPSHOT_ARRAY = 3;
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     private static final Object CONFIG_LOCK = new Object();
     private static final Object WRITE_LOCK = new Object();
@@ -102,8 +107,6 @@ public final class ConcolicRegionRuntime {
     private static final Map<String, Integer> ORDINALS = new LinkedHashMap<>();
     private static final Map<String, ReceiverSelectorState>
             RECEIVER_SELECTOR_STATES = new LinkedHashMap<>();
-    private static final Pattern FIELD_SIGNATURE = Pattern.compile(
-            "<[^:]+:\\s+[^()<>]+\\s+([^\\s()>]+)>");
     private static final Pattern BRANCH_OPERATOR = Pattern.compile(
             "(?:^|\\s)(==|!=|<=|>=|<|>)(?:\\s|$)");
     private static volatile Configuration configuration;
@@ -236,44 +239,6 @@ public final class ConcolicRegionRuntime {
         ROOT_INVOCATION_FRAMES.remove();
         CURRENT_ACCESSOR_CALL_CONTEXT.remove();
         ENGINE_BUSY.set(false);
-    }
-
-    static void installEngineApiForTests(Class<?> owner) throws Exception {
-        engineApi = new EngineApi(
-                testEngineMethod(owner, "startRegion",
-                        String.class, String.class),
-                testEngineMethod(owner, "symbolize",
-                        Object.class, String.class),
-                testEngineMethod(owner, "symbolizeField",
-                        Object.class, String.class, String.class),
-                testEngineMethod(owner, "expression", Object.class),
-                testEngineMethod(owner, "finishRegion"),
-                testEngineMethod(owner, "pathCondition"),
-                testEngineMethod(owner, "pausePathCondition"),
-                testEngineMethod(owner, "resumePathCondition"),
-                optionalTestEngineMethod(owner, "markBranch",
-                        String.class, int.class),
-                optionalTestEngineMethod(owner, "branchEvents"),
-                testEngineMethod(owner, "endRegion"));
-    }
-
-    private static Method optionalTestEngineMethod(
-            Class<?> owner, String name, Class<?>... parameters) {
-        try {
-            return testEngineMethod(owner, name, parameters);
-        } catch (NoSuchMethodException ignored) {
-            return null;
-        }
-    }
-
-    private static Method testEngineMethod(Class<?> owner, String name,
-                                           Class<?>... parameters)
-            throws NoSuchMethodException {
-        Method method = owner.getDeclaredMethod(name, parameters);
-        if (!method.isAccessible()) {
-            method.setAccessible(true);
-        }
-        return method;
     }
 
     /**
@@ -490,14 +455,17 @@ public final class ConcolicRegionRuntime {
     }
 
     /** Materializes a reference-valued live-in at its defining Jimple local. */
-    public static Object materializeReference(String method, String local,
-                                              Object value) {
+    public static Object materializeReference(String method, int unitIndex,
+                                              String local, Object value) {
         ActiveRegion active = activeRegion();
         if (active == null) {
             return value;
         }
+        int occurrence = active.nextLocalMaterializationOccurrence(
+                method, unitIndex, local);
         for (SymbolizeAction action : active.activation.symbolize) {
-            if (!action.matchesLocal(method, local)) {
+            if (!action.matchesLocal(method, unitIndex, local)
+                    || !action.acceptsOccurrence(occurrence)) {
                 continue;
             }
             if (!active.materialized.add(action.symbol)) {
@@ -535,14 +503,18 @@ public final class ConcolicRegionRuntime {
      * immediately unboxes this result back into the original local, allowing
      * the VM's symbolic field expression to flow into the actual branch.
      */
-    public static Object materializePrimitive(String method, String local,
+    public static Object materializePrimitive(String method, int unitIndex,
+                                              String local,
                                               Object boxedValue) {
         ActiveRegion active = activeRegion();
         if (active == null || boxedValue == null) {
             return boxedValue;
         }
+        int occurrence = active.nextLocalMaterializationOccurrence(
+                method, unitIndex, local);
         for (SymbolizeAction action : active.activation.symbolize) {
-            if (!action.matchesLocal(method, local)
+            if (!action.matchesLocal(method, unitIndex, local)
+                    || !action.acceptsOccurrence(occurrence)
                     || !action.repeatedPrimitiveAccessor()
                     && !active.materialized.add(action.symbol)) {
                 continue;
@@ -600,6 +572,10 @@ public final class ConcolicRegionRuntime {
                                         String fieldName) {
         ActiveRegion active = activeRegion();
         if (active == null || owner == null) return;
+        if (active.writtenFields.contains(owner, fieldSignature)) {
+            return;
+        }
+        active.snapshotReferenceAliasSources(owner);
         for (SymbolizeAction action : active.activation.symbolize) {
             if (!action.matchesField(method, unitIndex, owner, fieldSignature,
                     fieldName) || !active.materialized.add(action.symbol)) {
@@ -614,36 +590,78 @@ public final class ConcolicRegionRuntime {
             }
             try {
                 boolean assignmentFailed = false;
+                Object materializedContainer = null;
                 for (ModelAssignment assignment
                         : active.fieldAssignments(action)) {
                     List<String> path = assignment.path.isEmpty()
                             ? action.fieldPath : assignment.path;
                     Object modeledOwner = path.equals(action.fieldPath)
                             ? leafOwner : resolveFieldPathLeafOwner(owner, path);
-                    String modeledField = path.isEmpty() ? ""
-                            : path.get(path.size() - 1);
+                    String modeledFieldSignature =
+                            action.exactLeafFieldSignature(path);
+                    Object referenceAlias =
+                            active.referenceAliasValue(assignment, owner);
+                    Object targetContainer = assignment.hasContainerTarget()
+                            ? readExactField(modeledOwner,
+                            modeledFieldSignature)
+                            : null;
+                    boolean sameContainer =
+                            !assignment.hasContainerTarget()
+                            || materializedContainer == null
+                            || materializedContainer == targetContainer;
+                    boolean written = sameContainer
+                            && (assignment.hasContainerTarget()
+                            ? assignment.validContainerTarget()
+                            && writeContainerTarget(
+                                    targetContainer, assignment,
+                                    referenceAlias)
+                            : writeModeledField(modeledOwner,
+                            modeledFieldSignature, assignment,
+                            referenceAlias));
                     if (modeledOwner == null
                             || modeledOwner == MissingValue.INSTANCE
-                            || !writeModeledField(modeledOwner, modeledField,
-                            assignment)) {
+                            || !written
+                            || !sameContainer) {
                         active.addUnresolvedOnce(action.symbol + "."
                                 + joinFieldPath(path)
                                 + ": solver model could not be materialized");
                         assignmentFailed = true;
                         continue;
                     }
+                    if (assignment.hasContainerTarget()) {
+                        materializedContainer = targetContainer;
+                    }
                     active.recordModelAssignment(assignment);
                 }
                 if (assignmentFailed) continue;
 
                 EngineApi api = engine();
-                Object value = readField(leafOwner, action.leafField);
-                if (value != null && value != MissingValue.INSTANCE
-                        && value.getClass().isArray()) {
-                    api.symbolize(value, action.symbol);
+                Field exactField = declaredInstanceField(leafOwner,
+                        action.exactLeafFieldSignature());
+                if (exactField == null) {
+                    active.addUnresolvedOnce(action.symbol
+                            + ": exact field declaration is unavailable");
+                    continue;
+                }
+                Object value = exactField.get(leafOwner);
+                if (materializedContainer != null) {
+                    if (value != materializedContainer) {
+                        active.addUnresolvedOnce(action.symbol
+                                + ": container model target is not the "
+                                + "symbolized field container");
+                        continue;
+                    }
+                    requireTrackedContainer(api, materializedContainer,
+                            action.symbol);
+                    active.recordSymbolizedObject(action.symbol,
+                            materializedContainer);
+                } else if (value != null && value != MissingValue.INSTANCE
+                        && containerValue(value)) {
+                    requireTrackedContainer(api, value, action.symbol);
                     active.recordSymbolizedObject(action.symbol, value);
                 } else {
-                    api.symbolizeField(leafOwner, action.leafField,
+                    api.symbolizeExactField(leafOwner,
+                            exactFieldSignature(exactField),
                             action.symbol);
                 }
                 active.symbolized.add(action.symbol);
@@ -653,6 +671,14 @@ public final class ConcolicRegionRuntime {
                         + safe(method) + "#u" + unitIndex + " failed: "
                         + rootCause(throwable));
             }
+        }
+    }
+
+    public static void recordFieldWrite(Object owner,
+                                        String fieldSignature) {
+        ActiveRegion active = activeRegion();
+        if (active != null) {
+            active.writtenFields.add(owner, fieldSignature);
         }
     }
 
@@ -669,14 +695,6 @@ public final class ConcolicRegionRuntime {
 
     private static String siteId(String method, int unitIndex) {
         return safe(method) + "#u" + unitIndex;
-    }
-
-    private static String appendReason(String previous, String next) {
-        String left = safe(previous);
-        String right = safe(next);
-        if (left.isEmpty()) return right;
-        if (right.isEmpty()) return left;
-        return left + "; " + right;
     }
 
     /** Returns the activation token owned by the current thread, or zero. */
@@ -697,49 +715,99 @@ public final class ConcolicRegionRuntime {
 
     /**
      * Captures one real Jimple field-path read immediately before a normal
-     * region return. The injected code supplies the exact leaf owner and
-     * value; reflection is used only to attest that endpoint, never to
-     * manufacture the symbolic expression.
+     * region return. The injected code supplies the exact leaf owner, field,
+     * and value so the VM can distinguish a preserved pre-state shadow from
+     * a concrete write on this replay path.
      */
     public static void recordRegionExitFieldOutput(
-            String captureBindingId, String outputPort, String outputCell,
-            String fieldSignature, Object fieldOwner, Object fieldValue) {
+            String captureBindingId, Object fieldOwner, Object fieldValue) {
         ActiveRegion active = activeRegion();
         if (active == null) return;
         OutputCaptureSpec request =
                 active.activation.regionExitFieldCapture(
-                        captureBindingId, outputPort, outputCell,
-                        fieldSignature);
+                        captureBindingId);
         if (request == null) return;
 
         JsonObject row = new JsonObject();
         row.addProperty("captureBindingId", request.captureBindingId());
 
         EngineApi api = engine();
-        boolean paused = false;
         try {
-            api.pausePathCondition();
-            paused = true;
-            if (fieldOwner == null) {
-                throw new IllegalStateException(
-                        "normal-exit field endpoint mismatch");
+            JsonElement expression;
+            if (containerValue(fieldValue)) {
+                // Iterating a tracked container merely to observe it would
+                // append READ/NEXT relations and advance symbolic cursors.
+                // Its current ContainerRelation is already the exact output.
+                expression = engineExpression(api.expression(fieldValue));
+                if (!containerRelation(expression)) {
+                    snapshotOutputContainer(fieldValue, api);
+                    expression = engineExpression(
+                            api.expression(fieldValue));
+                }
+            } else {
+                DeclaredField field = FieldPathSpec.declaredField(
+                        request.fieldSignature());
+                if (field == null) {
+                    throw new IllegalStateException(
+                            "normal-exit capture has no exact field");
+                }
+                expression = engineExpression(api.fieldExpression(
+                        fieldOwner, field.owner(), field.name(),
+                        javaTypeDescriptor(field.type()), fieldValue));
             }
-            JsonElement expression = engineExpression(
-                    api.expression(fieldValue));
             if (expression == null || expression.isJsonNull()) {
                 throw new IllegalStateException(
                         "custom VM returned no normal-exit field expression");
             }
             row.add("expression", expression);
         } catch (Throwable throwable) {
-            row.addProperty("expressionError", rootCause(throwable));
             active.addUnresolvedOnce(request.captureBindingId()
                     + ": normal-exit field capture failed: "
                     + rootCause(throwable));
         } finally {
             active.outputCaptures.add(row);
-            if (paused) resumePathCondition(active, api);
         }
+    }
+
+    private static boolean snapshotOutputContainer(
+            Object value, EngineApi api)
+            throws Exception {
+        Object[] keys = null;
+        Object[] values;
+        int kind;
+        if (value != null && value.getClass().isArray()) {
+            int length = Array.getLength(value);
+            values = new Object[length];
+            for (int index = 0; index < length; index++) {
+                values[index] = Array.get(value, index);
+            }
+            kind = SNAPSHOT_ARRAY;
+        } else if (value instanceof Map<?, ?>) {
+            List<Object> snapshotKeys = new ArrayList<>();
+            List<Object> snapshotValues = new ArrayList<>();
+            for (Map.Entry<?, ?> entry
+                    : ((Map<?, ?>) value).entrySet()) {
+                snapshotKeys.add(entry.getKey());
+                snapshotValues.add(entry.getValue());
+            }
+            keys = snapshotKeys.toArray();
+            values = snapshotValues.toArray();
+            kind = SNAPSHOT_MAP;
+        } else if (value instanceof Set<?>) {
+            keys = ((Set<?>) value).toArray();
+            values = new Object[keys.length];
+            kind = SNAPSHOT_SET;
+        } else if (value instanceof Collection<?>) {
+            values = ((Collection<?>) value).toArray();
+            kind = SNAPSHOT_INDEXED;
+        } else {
+            return false;
+        }
+        if (!api.snapshotContainer(value, keys, values, kind)) {
+            throw new IllegalStateException(
+                    "custom VM rejected normal-exit container snapshot");
+        }
+        return true;
     }
 
     /** Normal region exit. */
@@ -944,31 +1012,15 @@ public final class ConcolicRegionRuntime {
         int conditionIndex = vmAttestation.valid
                 && vmAttestation.conditionIndices.size() == 1
                 ? vmAttestation.conditionIndices.get(0) : -1;
-        JsonObject mapping = branchMapping(method, unitIndex, expression,
-                occurrence);
-        mapping.addProperty("observedOutcome", observedOutcome);
+        JsonObject mapping = branchMapping(method, unitIndex, occurrence);
         mapping.addProperty("rawPathConditionSize", conditions.size());
         mapping.addProperty("rawPathConditionBaseline", baseline);
-        mapping.addProperty("rawConditionIndex", conditionIndex);
         if (conditionIndex >= 0) {
-            // Gson 2.2.x exposes its native tree-copy method only at package
-            // scope.
-            // The parsed path-condition tree is immutable after this point, so
-            // retaining this node is safe and compatible with older Gson
-            // versions supplied by concrete workloads.
             JsonElement condition = conditions.get(conditionIndex);
             JsonElement semanticCondition = semanticBranchCondition(
                     expression, observedOutcome, condition);
-            mapping.add("rawCondition", condition);
-            mapping.add("condition", semanticCondition);
-            mapping.addProperty("conditionCodePosition",
-                    conditionCodePosition(condition));
             String rawOperator = binaryOperator(condition);
             String semanticOperator = binaryOperator(semanticCondition);
-            if (!rawOperator.equals(semanticOperator)) {
-                mapping.addProperty("conditionNormalization",
-                        "JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE");
-            }
             if (vmAttestation.valid) {
                 BranchWitness witness = BranchWitness.vmPc(siteId,
                         safe(method), unitIndex, occurrence,
@@ -1025,26 +1077,9 @@ public final class ConcolicRegionRuntime {
         List<Integer> conditionIndices = attestation.valid
                 ? attestation.conditionIndices
                 : Collections.<Integer>emptyList();
-        JsonObject mapping = branchMapping(method, unitIndex, expression,
-                occurrence);
-        mapping.addProperty("branchKind", expected.branchKind);
-        mapping.add("switchCaseKeys", GSON.toJsonTree(expected.caseKeys));
-        mapping.addProperty("defaultSuccessorIndex",
-                expected.defaultSuccessorIndex());
-        mapping.addProperty("observedSuccessorIndex",
-                expected.observedSuccessorIndex);
-        mapping.addProperty("observedOutcome", expected.caseArm());
+        JsonObject mapping = branchMapping(method, unitIndex, occurrence);
         mapping.addProperty("rawPathConditionSize", conditions.size());
         mapping.addProperty("rawPathConditionBaseline", baseline);
-        mapping.addProperty("rawConditionIndex",
-                conditionIndices.size() == 1
-                        ? conditionIndices.get(0) : -1);
-        mapping.add("conditionIndices", GSON.toJsonTree(conditionIndices));
-        JsonArray ownedConditions = new JsonArray();
-        for (Integer conditionIndex : conditionIndices) {
-            ownedConditions.add(conditions.get(conditionIndex));
-        }
-        mapping.add("conditions", ownedConditions);
         if (!attestation.valid) {
             mapping.addProperty("mappingWarning",
                     "VM exact switch event rejected: "
@@ -1070,12 +1105,11 @@ public final class ConcolicRegionRuntime {
     }
 
     private static JsonObject branchMapping(
-            String method, int unitIndex, String expression, int occurrence) {
+            String method, int unitIndex, int occurrence) {
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", siteId(method, unitIndex));
         mapping.addProperty("method", safe(method));
         mapping.addProperty("unitIndex", unitIndex);
-        mapping.addProperty("expression", safe(expression));
         mapping.addProperty("occurrence", occurrence);
         return mapping;
     }
@@ -1405,8 +1439,6 @@ public final class ConcolicRegionRuntime {
         result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
         result.add("symbolizedInputs", GSON.toJsonTree(active.symbolized));
         result.add("branchMappings", GSON.toJsonTree(active.branchMappings));
-        result.add("modelAssignmentsApplied",
-                GSON.toJsonTree(active.modelAssignmentsApplied));
         result.add("outputCaptures", GSON.toJsonTree(active.outputCaptures));
     }
 
@@ -1433,41 +1465,37 @@ public final class ConcolicRegionRuntime {
                         action.fieldPath, api);
                 continue;
             }
-            String fieldName = runtimeFieldName(
-                    action.accessFieldSignature, action.cell);
-            Object value = readField(active.receiver, fieldName);
-            if (value == MissingValue.INSTANCE) {
-                active.unresolved.add(action.symbol + ": field not found: " + fieldName);
-            } else {
-                symbolizeField(active, action, active.receiver, fieldName, api);
+            DeclaredField declared = FieldPathSpec.declaredField(
+                    firstNonBlank(action.accessFieldSignature, action.cell));
+            if (declared == null) {
+                active.unresolved.add(action.symbol
+                        + ": exact receiver field is unavailable");
+                continue;
             }
+            symbolizeField(active, action, active.receiver,
+                    declared.name(), Collections.singletonList(
+                            declared.name()), api);
         }
     }
 
     private static void symbolizeField(ActiveRegion active,
                                        SymbolizeAction action,
-                                       Object owner, String field,
-                                       EngineApi api) {
-        symbolizeField(active, action, owner, field, safe(field),
-                Collections.singletonList(safe(field)), api);
-    }
-
-    private static void symbolizeField(ActiveRegion active,
-                                       SymbolizeAction action,
-                                       Object owner, String field,
-                                       String symbolicPath,
+                                       Object owner, String symbolicPath,
                                        List<String> exactFieldPath,
                                        EngineApi api) {
         String symbol = action.symbol + "." + safe(symbolicPath);
         try {
-            Object value = readField(owner, field);
+            Object value = readExactField(owner,
+                    action.exactLeafFieldSignature(exactFieldPath));
             if (value != null && value != MissingValue.INSTANCE
-                    && value.getClass().isArray()) {
-                api.symbolize(value, action.symbol);
+                    && containerValue(value)) {
+                requireTrackedContainer(api, value, action.symbol);
                 active.recordSymbolizedObject(action.symbol, value);
                 active.symbolized.add(action.symbol);
             } else {
-                api.symbolizeField(owner, field, symbol);
+                api.symbolizeExactField(owner,
+                        action.exactLeafFieldSignature(exactFieldPath),
+                        symbol);
                 active.symbolized.add(symbol);
             }
         } catch (Throwable throwable) {
@@ -1498,8 +1526,7 @@ public final class ConcolicRegionRuntime {
                     + ": projected field owner is null");
             return;
         }
-        symbolizeField(active, action, leafOwner,
-                path.get(path.size() - 1), label, path, api);
+        symbolizeField(active, action, leafOwner, label, path, api);
     }
 
     private static void applyFieldPathModel(ActiveRegion active,
@@ -1514,17 +1541,16 @@ public final class ConcolicRegionRuntime {
                     + ": solver-model field owner is unavailable");
             return;
         }
-        applyFieldModel(active, action, owner,
-                path.get(path.size() - 1), path);
+        applyFieldModel(active, action, owner, path);
     }
 
     private static void applyFieldModel(ActiveRegion active,
                                         SymbolizeAction action,
-                                        Object owner, String field,
-                                        List<String> path) {
+                                        Object owner, List<String> path) {
         ModelAssignment assignment = active.assignment(action, path);
         if (assignment == null) return;
-        if (!writeModeledField(owner, field, assignment)) {
+        if (!writeModeledField(owner,
+                action.exactLeafFieldSignature(path), assignment)) {
             active.unresolved.add(action.symbol + "." + joinFieldPath(path)
                     + ": solver model could not be written to real field");
             return;
@@ -1563,52 +1589,287 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static boolean writeModeledField(Object owner, String name,
-                                             ModelAssignment assignment) {
-        if (owner == null || name == null || name.isEmpty()) return false;
-        Class<?> type = owner.getClass();
-        while (type != null) {
-            try {
-                Field field = type.getDeclaredField(name);
-                if (Modifier.isStatic(field.getModifiers())) return false;
-                if (!field.isAccessible()) field.setAccessible(true);
-                Object value = coerceModelValue(assignment.valueType,
-                        assignment.value, field.getType());
-                if (value == UnsupportedReplayValue.INSTANCE) return false;
-                field.set(owner, value);
+    static boolean writeModeledField(
+            Object owner, String fieldSignature,
+            ModelAssignment assignment) {
+        return writeModeledField(owner, fieldSignature, assignment,
+                MissingValue.INSTANCE);
+    }
+
+    private static boolean writeModeledField(
+            Object owner, String fieldSignature,
+            ModelAssignment assignment,
+            Object referenceAlias) {
+        Field field = declaredInstanceField(owner, fieldSignature);
+        if (field == null) return false;
+        try {
+            Object value = assignment.referenceAlias()
+                    ? referenceAlias
+                    : coerceModelValue(assignment.valueType,
+                    assignment.value, field.getType());
+            if (value == UnsupportedReplayValue.INSTANCE) return false;
+            field.set(owner, value);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    static boolean writeIndexedContainerElement(
+            Object container, int index, String valueType, String value) {
+        if (container == null || container == MissingValue.INSTANCE
+                || index < 0) {
+            return false;
+        }
+        try {
+            if (container.getClass().isArray()) {
+                if (index >= Array.getLength(container)) return false;
+                Object modeled = coerceModelValue(valueType, value,
+                        container.getClass().getComponentType());
+                if (modeled == UnsupportedReplayValue.INSTANCE
+                        || modeled == null
+                        && container.getClass().getComponentType()
+                        .isPrimitive()) {
+                    return false;
+                }
+                Array.set(container, index, modeled);
                 return true;
-            } catch (NoSuchFieldException ignored) {
-                type = type.getSuperclass();
-            } catch (Throwable ignored) {
-                return false;
             }
+            if (container instanceof List) {
+                List<Object> values = (List<Object>) container;
+                if (index >= values.size()) return false;
+                Object current = values.get(index);
+                Object modeled = "NULL".equals(valueType)
+                        ? null : current == null
+                        ? UnsupportedReplayValue.INSTANCE
+                        : coerceModelValue(valueType, value,
+                                current.getClass());
+                if (modeled == UnsupportedReplayValue.INSTANCE) {
+                    return false;
+                }
+                values.set(index, modeled);
+                return true;
+            }
+        } catch (Throwable ignored) {
+            return false;
         }
         return false;
     }
 
-    /** Resolves no subclass-first fallback: owner, type and name are exact. */
-    private static Field exactDeclaredInstanceField(
-            Object owner, String fieldSignature) {
-        DeclaredField declared = FieldPathSpec.declaredField(fieldSignature);
-        if (owner == null || declared == null) return null;
-        Class<?> declaringClass = owner.getClass();
-        while (declaringClass != null
-                && !declared.owner().equals(declaringClass.getName())) {
-            declaringClass = declaringClass.getSuperclass();
-        }
-        if (declaringClass == null) return null;
-        try {
-            Field field = declaringClass.getDeclaredField(declared.name());
-            if (Modifier.isStatic(field.getModifiers())
-                    || !javaTypeDescriptor(declared.type()).equals(
-                    javaTypeDescriptor(field.getType().getTypeName()))) {
-                return null;
+    static boolean writeContainerTarget(
+            Object container, ModelAssignment assignment,
+            Object referenceAlias) {
+        if ("INDEXED".equals(assignment.containerShape)) {
+            if (assignment.containerReferenceAlias()) {
+                return referenceAlias != null
+                        && referenceAlias != MissingValue.INSTANCE
+                        && referenceAlias
+                        != UnsupportedReplayValue.INSTANCE
+                        && writeIndexedReference(container,
+                        assignment.containerIndex, referenceAlias);
             }
-            if (!field.isAccessible()) field.setAccessible(true);
-            return field;
-        } catch (Throwable ignored) {
-            return null;
+            return writeIndexedContainerElement(container,
+                    assignment.containerIndex,
+                    assignment.valueType, assignment.value);
         }
+        if (!"ASSOCIATIVE".equals(assignment.containerShape)) return false;
+        if (assignment.iterationTarget()) {
+            return writeOrderedIterationTarget(container, assignment,
+                    referenceAlias);
+        }
+        if (!(container instanceof Map<?, ?>)) return false;
+        Object key = containerKey(assignment.containerKeyJavaType,
+                assignment.containerKeyValue);
+        if (key == UnsupportedReplayValue.INSTANCE) return false;
+        Map<Object, Object> map = (Map<Object, Object>) container;
+        if (assignment.containerReferenceAlias()) {
+            if (referenceAlias == null
+                    || referenceAlias == MissingValue.INSTANCE
+                    || referenceAlias == UnsupportedReplayValue.INSTANCE
+                    || !map.containsKey(key)) {
+                return false;
+            }
+            map.put(key, referenceAlias);
+            return true;
+        }
+        if (!map.containsKey(key)) {
+            // Map.get on an absent key already yields null.  Replaying that
+            // observation must not turn it into a present-null entry.
+            return "NULL".equals(assignment.valueType);
+        }
+        Object current = map.get(key);
+        Object modeled = "NULL".equals(assignment.valueType)
+                ? null : current == null
+                ? UnsupportedReplayValue.INSTANCE
+                : coerceModelValue(assignment.valueType,
+                        assignment.value, current.getClass());
+        if (modeled == UnsupportedReplayValue.INSTANCE) return false;
+        map.put(key, modeled);
+        return true;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static boolean writeOrderedIterationTarget(
+            Object container, ModelAssignment assignment,
+            Object referenceAlias) {
+        int index = assignment.containerIndex;
+        if (index < 0) return false;
+        try {
+            if (container instanceof LinkedHashSet<?>
+                    && "KEY".equals(assignment.containerProjection)) {
+                List<Object> values = new ArrayList<>(
+                        (Set<Object>) container);
+                if (index >= values.size()) return false;
+                Object current = values.get(index);
+                Object modeled = modeledContainerValue(current, assignment,
+                        referenceAlias);
+                if (modeled == UnsupportedReplayValue.INSTANCE) return false;
+                if (!(current == null ? modeled == null
+                        : current.equals(modeled))
+                        && ((Set<?>) container).contains(modeled)) {
+                    return false;
+                }
+                values.set(index, modeled);
+                LinkedHashSet<Object> target =
+                        (LinkedHashSet<Object>) container;
+                target.clear();
+                target.addAll(values);
+                return target.size() == values.size();
+            }
+            if (!(container instanceof LinkedHashMap<?, ?>)) return false;
+            LinkedHashMap<Object, Object> target =
+                    (LinkedHashMap<Object, Object>) container;
+            List<Map.Entry<Object, Object>> entries = new ArrayList<>(
+                    target.entrySet());
+            if (index >= entries.size()) return false;
+            Map.Entry<Object, Object> selected = entries.get(index);
+            if ("VALUE".equals(assignment.containerProjection)) {
+                Object current = selected.getValue();
+                Object modeled = modeledContainerValue(current, assignment,
+                        referenceAlias);
+                if (modeled == UnsupportedReplayValue.INSTANCE) return false;
+                target.put(selected.getKey(), modeled);
+                return true;
+            }
+            if (!"KEY".equals(assignment.containerProjection)) return false;
+            Object current = selected.getKey();
+            Object modeled = modeledContainerValue(current, assignment,
+                    referenceAlias);
+            if (modeled == UnsupportedReplayValue.INSTANCE) return false;
+            if (!(current == null ? modeled == null
+                    : current.equals(modeled))
+                    && target.containsKey(modeled)) {
+                return false;
+            }
+            target.clear();
+            for (int cursor = 0; cursor < entries.size(); cursor++) {
+                Map.Entry<Object, Object> entry = entries.get(cursor);
+                target.put(cursor == index ? modeled : entry.getKey(),
+                        entry.getValue());
+            }
+            return target.size() == entries.size();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static Object modeledContainerValue(
+            Object current, ModelAssignment assignment,
+            Object referenceAlias) {
+        if (assignment.containerReferenceAlias()) {
+            return referenceAlias == null
+                    || referenceAlias == MissingValue.INSTANCE
+                    || referenceAlias == UnsupportedReplayValue.INSTANCE
+                    ? UnsupportedReplayValue.INSTANCE : referenceAlias;
+        }
+        if ("NULL".equals(assignment.valueType)) return null;
+        return current == null ? UnsupportedReplayValue.INSTANCE
+                : coerceModelValue(assignment.valueType,
+                assignment.value, current.getClass());
+    }
+
+    private static Object indexedContainerElement(
+            Object container, int index) {
+        if (container == null || index < 0) return MissingValue.INSTANCE;
+        try {
+            if (container.getClass().isArray()) {
+                return index < Array.getLength(container)
+                        ? Array.get(container, index)
+                        : MissingValue.INSTANCE;
+            }
+            if (container instanceof List<?>) {
+                List<?> values = (List<?>) container;
+                return index < values.size()
+                        ? values.get(index) : MissingValue.INSTANCE;
+            }
+        } catch (Throwable ignored) {
+            return MissingValue.INSTANCE;
+        }
+        return MissingValue.INSTANCE;
+    }
+
+    private static Object containerSourceElement(
+            Object container, ModelAssignment assignment) {
+        if ("INDEXED".equals(assignment.containerSourceShape)) {
+            return indexedContainerElement(container,
+                    assignment.containerSourceIndex);
+        }
+        if (!"ASSOCIATIVE".equals(assignment.containerSourceShape)
+                || !(container instanceof Map<?, ?>)) {
+            return MissingValue.INSTANCE;
+        }
+        Object key = containerKey(
+                assignment.containerSourceKeyJavaType,
+                assignment.containerSourceKeyValue);
+        Map<?, ?> values = (Map<?, ?>) container;
+        return key != UnsupportedReplayValue.INSTANCE
+                && values.containsKey(key)
+                ? values.get(key) : MissingValue.INSTANCE;
+    }
+
+    private static boolean writeIndexedReference(
+            Object container, int index, Object value) {
+        if (container == null || index < 0) return false;
+        try {
+            if (container.getClass().isArray()) {
+                Class<?> component = container.getClass().getComponentType();
+                if (component.isPrimitive()
+                        || value != null && !component.isInstance(value)
+                        || index >= Array.getLength(container)) {
+                    return false;
+                }
+                Array.set(container, index, value);
+                return true;
+            }
+            if (container instanceof List<?>) {
+                List<Object> values = (List<Object>) container;
+                if (index >= values.size()) return false;
+                values.set(index, value);
+                return true;
+            }
+        } catch (Throwable ignored) {
+            return false;
+        }
+        return false;
+    }
+
+    private static Object containerKey(String javaType, String value) {
+        String descriptor = javaTypeDescriptor(javaType);
+        if ("Z".equals(descriptor)) {
+            return coerceModelValue("BOOL", value, Boolean.class);
+        }
+        if (descriptor.length() == 1
+                && "BCSIJ".contains(descriptor)) {
+            Class<?> target = "B".equals(descriptor) ? Byte.class
+                    : "C".equals(descriptor) ? Character.class
+                    : "S".equals(descriptor) ? Short.class
+                    : "J".equals(descriptor) ? Long.class : Integer.class;
+            return coerceModelValue("INT", value, target);
+        }
+        if ("Ljava/lang/String;".equals(descriptor)) {
+            return unquoteSmtString(value);
+        }
+        return UnsupportedReplayValue.INSTANCE;
     }
 
     static Object coerceModelValue(String valueType, String value,
@@ -1751,10 +2012,12 @@ public final class ConcolicRegionRuntime {
             boolean liveArray = value != null && value.getClass().isArray();
             boolean declaredArray = action.declaresArrayInput(
                     Collections.<String>emptyList());
-            long symbolizationToken = liveArray
-                    ? active.objectToken(value) : 0L;
             if (declaredArray && !liveArray) return;
-            api.symbolize(value, action.symbol);
+            if (containerValue(value)) {
+                requireTrackedContainer(api, value, action.symbol);
+            } else {
+                api.symbolize(value, action.symbol);
+            }
             active.symbolized.add(action.symbol);
             if (value != null && !liveArray) {
                 active.recordSymbolizedObject(action.symbol, value);
@@ -1762,6 +2025,28 @@ public final class ConcolicRegionRuntime {
         } catch (Throwable throwable) {
             active.unresolved.add(action.symbol + ": symbolize failed: "
                     + rootCause(throwable));
+        }
+    }
+
+    private static boolean containerValue(Object value) {
+        return value != null && (value.getClass().isArray()
+                || value instanceof Map<?, ?>
+                || value instanceof Set<?>
+                || value instanceof Collection<?>);
+    }
+
+    private static boolean containerRelation(JsonElement expression) {
+        return expression != null && expression.isJsonObject()
+                && "ContainerRelation".equals(string(
+                expression.getAsJsonObject(), "_type"));
+    }
+
+    private static void requireTrackedContainer(
+            EngineApi api, Object value, String symbol) throws Exception {
+        if (!api.trackContainer(value, symbol)) {
+            throw new UnsupportedOperationException(
+                    "custom VM has no symbolic model for container "
+                            + value.getClass().getName());
         }
     }
 
@@ -1789,8 +2074,49 @@ public final class ConcolicRegionRuntime {
         return MissingValue.INSTANCE;
     }
 
-    private static String normalizeFieldType(String type) {
-        return safe(type).trim().replace('/', '.');
+    private static Object readExactField(
+            Object receiver, String fieldSignature) {
+        Field field = declaredInstanceField(receiver, fieldSignature);
+        if (field == null) return MissingValue.INSTANCE;
+        try {
+            return field.get(receiver);
+        } catch (Throwable ignored) {
+            return MissingValue.INSTANCE;
+        }
+    }
+
+    private static Field declaredInstanceField(
+            Object owner, String fieldSignature) {
+        DeclaredField declared = FieldPathSpec.declaredField(fieldSignature);
+        if (owner == null || declared == null) return null;
+        Class<?> type = owner.getClass();
+        while (type != null && !declared.owner().equals(type.getName())) {
+            type = type.getSuperclass();
+        }
+        if (type == null) return null;
+        while (type != null) {
+            try {
+                Field field = type.getDeclaredField(declared.name());
+                if (Modifier.isStatic(field.getModifiers())
+                        || !javaTypeDescriptor(declared.type()).equals(
+                        javaTypeDescriptor(field.getType().getTypeName()))) {
+                    return null;
+                }
+                if (!field.isAccessible()) field.setAccessible(true);
+                return field;
+            } catch (NoSuchFieldException inherited) {
+                type = type.getSuperclass();
+            } catch (Throwable inaccessible) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static String exactFieldSignature(Field field) {
+        return "<" + field.getDeclaringClass().getName() + ": "
+                + field.getType().getTypeName() + " " + field.getName()
+                + ">";
     }
 
     private static ActiveRegion activeRegion() {
@@ -1858,6 +2184,9 @@ public final class ConcolicRegionRuntime {
         if (value instanceof Double) {
             return new Double(((Double) value).doubleValue());
         }
+        if (value instanceof String) {
+            return new String((String) value);
+        }
         return value;
     }
 
@@ -1874,26 +2203,6 @@ public final class ConcolicRegionRuntime {
             }
         }
         return instanceOfName(type.getSuperclass(), expected);
-    }
-
-    private static String fieldName(String cell) {
-        if (cell == null) {
-            return "";
-        }
-        int projected = cell.indexOf("#field:");
-        if (projected >= 0) {
-            int end = cell.indexOf('#', projected + 7);
-            return cell.substring(projected + 7,
-                    end < 0 ? cell.length() : end).trim();
-        }
-        Matcher matcher = FIELD_SIGNATURE.matcher(cell);
-        return matcher.find() ? matcher.group(1) : "";
-    }
-
-    static String runtimeFieldName(String field, String cell) {
-        String candidate = firstNonBlank(field, cell);
-        String parsed = fieldName(candidate);
-        return parsed.isEmpty() ? safe(candidate) : parsed;
     }
 
     private static String conditionCodePosition(JsonElement condition) {
@@ -2298,10 +2607,6 @@ public final class ConcolicRegionRuntime {
                     observedSuccessorIndex);
         }
 
-        private int defaultSuccessorIndex() {
-            return caseKeys.size();
-        }
-
         private boolean caseArm() {
             return observedSuccessorIndex < caseKeys.size();
         }
@@ -2366,18 +2671,22 @@ public final class ConcolicRegionRuntime {
         private final List<String> unresolved = new ArrayList<>();
         private final Set<String> unresolvedUnique = new LinkedHashSet<>();
         private final List<JsonObject> branchMappings = new ArrayList<>();
-        private final List<JsonObject> modelAssignmentsApplied =
-                new ArrayList<>();
         private final List<JsonObject> outputCaptures = new ArrayList<>();
         private final Set<String> materialized = new LinkedHashSet<>();
         private final Set<String> appliedModelAssignments =
                 new LinkedHashSet<>();
         private final Map<String, Integer> branchOccurrences =
                 new LinkedHashMap<>();
+        private final Map<String, Integer> localMaterializationOccurrences =
+                new LinkedHashMap<>();
         private final Map<Long, PreparedBranch> preparedBranches =
                 new LinkedHashMap<>();
         private final IdentityHashMap<Object, Long> objectTokens =
                 new IdentityHashMap<>();
+        private final IdentityHashMap<Object, Map<String, Object>>
+                referenceAliasSnapshots = new IdentityHashMap<>();
+        private final ReplayFieldWrites writtenFields =
+                new ReplayFieldWrites();
         private final Map<Long, String> symbolizedObjectPorts =
                 new LinkedHashMap<>();
         private long nextObjectToken = 1L;
@@ -2396,6 +2705,16 @@ public final class ConcolicRegionRuntime {
             Integer previous = branchOccurrences.get(siteId);
             int occurrence = previous == null ? 1 : previous + 1;
             branchOccurrences.put(siteId, occurrence);
+            return occurrence;
+        }
+
+        private int nextLocalMaterializationOccurrence(
+                String method, int unitIndex, String local) {
+            String key = safe(method) + "#u" + unitIndex + "::"
+                    + safe(local);
+            int occurrence = localMaterializationOccurrences
+                    .getOrDefault(key, 0) + 1;
+            localMaterializationOccurrences.put(key, occurrence);
             return occurrence;
         }
 
@@ -2473,6 +2792,52 @@ public final class ConcolicRegionRuntime {
                     || previous.equals(symbol) ? symbol : "");
         }
 
+        private void snapshotReferenceAliasSources(Object owner) {
+            if (owner == null || referenceAliasSnapshots.containsKey(owner)) {
+                return;
+            }
+            Map<String, Object> snapshot = new LinkedHashMap<>();
+            for (ModelAssignment assignment
+                    : activation.modelAssignments) {
+                if (!assignment.referenceAlias()) continue;
+                for (SymbolizeAction action : activation.symbolize) {
+                    if (!assignment.referenceSourceInputSymbol.equals(
+                            action.symbol)
+                            || !action.declaresReferenceInput()
+                            || !action.accessOwnerClass.isEmpty()
+                            && !instanceOfName(owner.getClass(),
+                            action.accessOwnerClass)) {
+                        continue;
+                    }
+                    Object sourceOwner = action.leafOwner(owner);
+                    Object value = sourceOwner == null
+                            || sourceOwner == MissingValue.INSTANCE
+                            ? MissingValue.INSTANCE
+                            : readExactField(sourceOwner,
+                            action.exactLeafFieldSignature());
+                    if (value != MissingValue.INSTANCE
+                            && !assignment.containerSourceShape.isEmpty()) {
+                        value = containerSourceElement(value, assignment);
+                    }
+                    snapshot.put(assignment.key, value);
+                }
+            }
+            referenceAliasSnapshots.put(owner, snapshot);
+        }
+
+        private Object referenceAliasValue(
+                ModelAssignment assignment, Object owner) {
+            if (!assignment.referenceAlias()) return MissingValue.INSTANCE;
+            Map<String, Object> snapshot = referenceAliasSnapshots.get(owner);
+            if (snapshot == null
+                    || !snapshot.containsKey(assignment.key)) {
+                return UnsupportedReplayValue.INSTANCE;
+            }
+            Object value = snapshot.get(assignment.key);
+            return value == MissingValue.INSTANCE
+                    ? UnsupportedReplayValue.INSTANCE : value;
+        }
+
         private ModelAssignment assignment(SymbolizeAction action,
                                            List<String> path) {
             ModelAssignment selected = null;
@@ -2521,9 +2886,27 @@ public final class ConcolicRegionRuntime {
         }
 
         private void recordModelAssignment(ModelAssignment assignment) {
-            if (appliedModelAssignments.add(assignment.key)) {
-                modelAssignmentsApplied.add(assignment.appliedJson());
+            appliedModelAssignments.add(assignment.key);
+        }
+    }
+
+    static final class ReplayFieldWrites {
+        private final IdentityHashMap<Object, Set<String>> fields =
+                new IdentityHashMap<>();
+
+        void add(Object owner, String fieldSignature) {
+            if (owner == null || FieldPathSpec.declaredField(
+                    safe(fieldSignature)) == null) {
+                return;
             }
+            fields.computeIfAbsent(owner,
+                    ignored -> new LinkedHashSet<>()).add(fieldSignature);
+        }
+
+        boolean contains(Object owner, String fieldSignature) {
+            Set<String> ownerFields = fields.get(owner);
+            return ownerFields != null
+                    && ownerFields.contains(safe(fieldSignature));
         }
     }
 
@@ -2533,23 +2916,24 @@ public final class ConcolicRegionRuntime {
         private final String cell;
         private final String location;
         private final int index;
+        private final int replayOccurrence;
         private final List<List<String>> fieldPaths;
         private final String bindingMode;
         private final String method;
         private final String local;
         private final String leafField;
-        private final String leafOwnerClass;
         private final String accessField;
         private final String accessOwnerClass;
         private final String accessFieldSignature;
-        private final String accessMethod;
-        private final int accessUnitIndex;
+        private final Set<String> accessSites = new LinkedHashSet<>();
         private final String accessorCallerMethod;
         private final int accessorCallUnitIndex;
         private final String accessorDeclaredCallee;
         private final String accessorImplementationMethod;
         private final List<String> fieldPath;
         private final String javaType;
+        private final Set<Integer> definitionUnitIndices =
+                new LinkedHashSet<>();
         private final Map<String, String> leafFieldSignaturesByPath =
                 new LinkedHashMap<>();
 
@@ -2558,10 +2942,24 @@ public final class ConcolicRegionRuntime {
             this.cell = string(json, "cell");
             this.location = string(json, "location");
             this.index = integer(json, "index", -1);
+            this.replayOccurrence = integer(json,
+                    "replayOccurrence", -1);
             this.bindingMode = string(json, "bindingMode");
             this.javaType = string(json, "javaType");
-            this.method = string(json, "method");
-            this.local = string(json, "local");
+            JsonObject definition = json;
+            this.method = string(definition, "method");
+            this.local = string(definition, "local");
+            int unitIndex = integer(definition, "unitIndex", -1);
+            if (unitIndex >= 0) definitionUnitIndices.add(unitIndex);
+            for (JsonElement element : array(json, "definitionSites")) {
+                if (element.isJsonObject()) {
+                    int definitionIndex = integer(element.getAsJsonObject(),
+                            "unitIndex", -1);
+                    if (definitionIndex >= 0) {
+                        definitionUnitIndices.add(definitionIndex);
+                    }
+                }
+            }
             this.fieldPath = new ArrayList<>(
                     FieldPathSpec.stringArray(json, "fieldPath"));
             this.accessField = this.fieldPath.isEmpty() ? ""
@@ -2572,8 +2970,8 @@ public final class ConcolicRegionRuntime {
                     this.accessFieldSignature);
             this.accessOwnerClass = accessDeclaration == null ? ""
                     : accessDeclaration.owner();
-            this.accessMethod = string(json, "accessMethod");
-            this.accessUnitIndex = integer(json, "accessUnitIndex", -1);
+            this.accessSites.addAll(
+                    FieldPathSpec.stringArray(json, "accessSites"));
             this.accessorCallerMethod = string(json,
                     "accessorCallerMethod");
             this.accessorCallUnitIndex = integer(json,
@@ -2586,10 +2984,6 @@ public final class ConcolicRegionRuntime {
                     : this.fieldPath.get(this.fieldPath.size() - 1);
             String explicitLeafSignature = string(json,
                     "leafFieldSignature");
-            DeclaredField leafDeclaration = FieldPathSpec.declaredField(
-                    explicitLeafSignature);
-            this.leafOwnerClass = leafDeclaration == null ? ""
-                    : leafDeclaration.owner();
             this.fieldPaths = new ArrayList<>(
                     FieldPathSpec.paths(json, "fieldPaths"));
             for (JsonElement declarationElement : array(json,
@@ -2648,15 +3042,19 @@ public final class ConcolicRegionRuntime {
             return descriptor.startsWith("L") || descriptor.startsWith("[");
         }
 
-        private boolean declaresJavaString() {
-            return "Ljava/lang/String;".equals(
-                    javaTypeDescriptor(javaType));
-        }
-
-        private boolean matchesLocal(String actualMethod, String actualLocal) {
+        private boolean matchesLocal(String actualMethod,
+                                     int actualUnitIndex,
+                                     String actualLocal) {
             return "LOCAL_DEFINITION".equals(bindingMode)
                     && method.equals(safe(actualMethod))
+                    && (definitionUnitIndices.isEmpty()
+                    || definitionUnitIndices.contains(actualUnitIndex))
                     && local.equals(safe(actualLocal));
+        }
+
+        private boolean acceptsOccurrence(int actualOccurrence) {
+            return replayOccurrence < 1
+                    || replayOccurrence == actualOccurrence;
         }
 
         private boolean repeatedPrimitiveAccessor() {
@@ -2690,13 +3088,11 @@ public final class ConcolicRegionRuntime {
                     && !accessFieldSignature.equals(exactSignature)) {
                 return false;
             }
-            boolean accessSiteConstrained = !accessMethod.isEmpty()
-                    || accessUnitIndex >= 0;
-            if (!accessSiteConstrained) {
+            if (accessSites.isEmpty()) {
                 return false;
             }
-            return accessMethod.equals(safe(actualMethod))
-                    && accessUnitIndex == actualUnitIndex
+            return accessSites.contains(siteId(actualMethod,
+                    actualUnitIndex))
                     && (cell.contains(exactSignature)
                     || accessFieldSignature.equals(exactSignature));
         }
@@ -2744,11 +3140,10 @@ public final class ConcolicRegionRuntime {
                     || "HEAP_OBJECT_FIELD".equals(location))) {
                 return false;
             }
-            boolean accessSiteConstrained = !accessMethod.isEmpty()
-                    || accessUnitIndex >= 0;
+            boolean accessSiteConstrained = !accessSites.isEmpty();
             if (accessSiteConstrained
-                    && (!accessMethod.equals(safe(actualMethod))
-                    || accessUnitIndex != actualUnitIndex)) {
+                    && !accessSites.contains(siteId(actualMethod,
+                    actualUnitIndex))) {
                 return false;
             }
             boolean accessorConstrained = !accessorCallerMethod.isEmpty()
@@ -2801,17 +3196,7 @@ public final class ConcolicRegionRuntime {
         }
 
         private Object leafOwner(Object accessOwner) {
-            Object current = accessOwner;
-            // The hook runs before the first field read.  Follow every path
-            // component except the leaf; the VM then symbolizes only that
-            // leaf on its actual concrete owner (including inherited fields).
-            for (int index = 0; index + 1 < fieldPath.size(); index++) {
-                current = readField(current, fieldPath.get(index));
-                if (current == null || current == MissingValue.INSTANCE) {
-                    return current;
-                }
-            }
-            return current;
+            return resolveFieldPathLeafOwner(accessOwner, fieldPath);
         }
 
         /**
@@ -2822,15 +3207,21 @@ public final class ConcolicRegionRuntime {
          * a primitive action.
          */
         private String exactLeafFieldSignature() {
+            return exactLeafFieldSignature(fieldPath);
+        }
+
+        private String exactLeafFieldSignature(List<String> actualPath) {
+            String actualLeaf = actualPath == null || actualPath.isEmpty()
+                    ? "" : actualPath.get(actualPath.size() - 1);
             String explicit = leafFieldSignaturesByPath.get(
-                    joinFieldPath(fieldPath));
+                    joinFieldPath(actualPath));
             DeclaredField declaration = FieldPathSpec.declaredField(
                     explicit);
             if (declaration != null
-                    && declaration.name().equals(leafField)) {
+                    && declaration.name().equals(actualLeaf)) {
                 return explicit;
             }
-            if (fieldPath.size() != 1) {
+            if (actualPath == null || actualPath.size() != 1) {
                 return "";
             }
             String selected = "";
@@ -2838,7 +3229,7 @@ public final class ConcolicRegionRuntime {
                     cell}) {
                 declaration = FieldPathSpec.declaredField(candidate);
                 if (declaration == null
-                        || !declaration.name().equals(leafField)) {
+                        || !declaration.name().equals(actualLeaf)) {
                     continue;
                 }
                 if (!selected.isEmpty() && !selected.equals(candidate)) {
@@ -2850,57 +3241,56 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static String exactFieldIdentity(DeclaredField declared) {
-        return declared == null ? ""
-                : declared.owner() + "\u0000"
-                + normalizeFieldType(declared.type())
-                + "\u0000" + declared.name();
-    }
-
-    /**
-     * The frozen JDK API accepts only a field name.  It walks every
-     * non-static field in the runtime hierarchy, so an exact Soot signature
-     * is safe to pass only when that name occurs once in the whole hierarchy.
-     */
-    private static boolean uniqueNameResolvesExactDeclaredField(
-            Object owner, String fieldSignature) {
-        DeclaredField declared = FieldPathSpec.declaredField(fieldSignature);
-        Field exact = exactDeclaredInstanceField(owner, fieldSignature);
-        if (owner == null || declared == null || exact == null) return false;
-        int occurrences = 0;
-        Class<?> current = owner.getClass();
-        while (current != null) {
-            for (Field candidate : current.getDeclaredFields()) {
-                if (!Modifier.isStatic(candidate.getModifiers())
-                        && declared.name().equals(candidate.getName())) {
-                    occurrences++;
-                }
-            }
-            current = current.getSuperclass();
-        }
-        return occurrences == 1
-                && exact.getDeclaringClass().getName().equals(
-                declared.owner());
-    }
-
     /** One scalar or reference assignment returned by a path-flip solve. */
-    private static final class ModelAssignment {
+    static final class ModelAssignment {
         private final String key;
         private final String engineSymbol;
         private final String inputSymbol;
         private final String valueType;
         private final String value;
+        private final String referenceSourceInputSymbol;
         private final boolean modelIsNull;
-        private final JsonObject target;
+        private final boolean containerTargetPresent;
+        private final String containerShape;
+        private final String containerSelectorKind;
+        private final String containerProjection;
+        private final int containerIndex;
+        private final int containerSourceIndex;
+        private final String containerKeyJavaType;
+        private final String containerKeyValue;
+        private final String containerSourceShape;
+        private final String containerSourceKeyJavaType;
+        private final String containerSourceKeyValue;
         private final List<String> path = new ArrayList<>();
 
-        private ModelAssignment(JsonObject json) {
+        ModelAssignment(JsonObject json) {
             this.engineSymbol = string(json, "engineSymbol");
             this.inputSymbol = string(json, "inputSymbol");
             this.valueType = string(json, "valueType");
             this.value = string(json, "value");
+            this.referenceSourceInputSymbol = string(json,
+                    "referenceSourceInputSymbol");
             this.modelIsNull = bool(json, "modelIsNull", false);
-            this.target = copyJsonTree(object(json, "target"));
+            JsonElement encodedContainerTarget = json.get("containerTarget");
+            this.containerTargetPresent = encodedContainerTarget != null;
+            JsonObject containerTarget = object(json, "containerTarget");
+            this.containerShape = string(containerTarget, "shape");
+            this.containerSelectorKind = string(containerTarget,
+                    "selectorKind");
+            this.containerProjection = string(containerTarget,
+                    "projection");
+            this.containerIndex = integer(containerTarget, "index", -1);
+            this.containerSourceIndex = integer(containerTarget,
+                    "sourceIndex", -1);
+            this.containerKeyJavaType = string(containerTarget,
+                    "keyJavaType");
+            this.containerKeyValue = string(containerTarget, "keyValue");
+            this.containerSourceShape = string(containerTarget,
+                    "sourceShape");
+            this.containerSourceKeyJavaType = string(containerTarget,
+                    "sourceKeyJavaType");
+            this.containerSourceKeyValue = string(containerTarget,
+                    "sourceKeyValue");
             for (JsonElement element : array(json,
                     "materializationPath")) {
                 if (element.isJsonPrimitive()) {
@@ -2918,6 +3308,58 @@ public final class ConcolicRegionRuntime {
                     && modelIsNull
                     && ("NULL".equalsIgnoreCase(valueType)
                     || "null".equalsIgnoreCase(value));
+        }
+
+        private boolean referenceAlias() {
+            return ("REFERENCE_ALIAS".equals(valueType)
+                    || "CONTAINER_REFERENCE_ALIAS".equals(valueType))
+                    && !referenceSourceInputSymbol.isEmpty();
+        }
+
+        private boolean hasContainerTarget() {
+            return containerTargetPresent;
+        }
+
+        private boolean containerReferenceAlias() {
+            return "CONTAINER_REFERENCE_ALIAS".equals(valueType);
+        }
+
+        private boolean iterationTarget() {
+            return "ASSOCIATIVE".equals(containerShape)
+                    && "ITERATION_INDEX".equals(containerSelectorKind);
+        }
+
+        private boolean validContainerTarget() {
+            if ("INDEXED".equals(containerShape)) {
+                return containerIndex >= 0
+                        && (!containerReferenceAlias()
+                        || validContainerReferenceSource());
+            }
+            if (iterationTarget()) {
+                return containerIndex >= 0
+                        && ("KEY".equals(containerProjection)
+                        || "VALUE".equals(containerProjection))
+                        && (!containerReferenceAlias()
+                        || validContainerReferenceSource());
+            }
+            if (!"ASSOCIATIVE".equals(containerShape)
+                    || containerKeyJavaType.isEmpty()
+                    || containerKeyValue.isEmpty()) {
+                return false;
+            }
+            return !containerReferenceAlias()
+                    || validContainerReferenceSource();
+        }
+
+        private boolean validContainerReferenceSource() {
+            if (referenceSourceInputSymbol.isEmpty()) return false;
+            if (containerSourceShape.isEmpty()) return true;
+            if ("INDEXED".equals(containerSourceShape)) {
+                return containerSourceIndex >= 0;
+            }
+            return "ASSOCIATIVE".equals(containerSourceShape)
+                    && !containerSourceKeyJavaType.isEmpty()
+                    && !containerSourceKeyValue.isEmpty();
         }
 
         private boolean matches(SymbolizeAction action,
@@ -2953,11 +3395,6 @@ public final class ConcolicRegionRuntime {
             return UnsupportedReplayValue.INSTANCE;
         }
 
-        private JsonObject appliedJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("modelAssignmentKey", key);
-            return result;
-        }
     }
 
 
@@ -3262,42 +3699,6 @@ public final class ConcolicRegionRuntime {
             }
         }
 
-        private int actionCount(String symbol) {
-            int count = 0;
-            for (SymbolizeAction action : symbolize) {
-                if (action.symbol.equals(symbol)) count++;
-            }
-            return count;
-        }
-
-        private SymbolizeAction uniqueAction(String symbol) {
-            SymbolizeAction match = null;
-            for (SymbolizeAction action : symbolize) {
-                if (!action.symbol.equals(symbol)) continue;
-                if (match != null) return null;
-                match = action;
-            }
-            return match;
-        }
-
-        private int declaredActionCount(String symbol) {
-            int count = 0;
-            for (SymbolizeAction action : declaredSymbolize) {
-                if (action.symbol.equals(symbol)) count++;
-            }
-            return count;
-        }
-
-        private SymbolizeAction uniqueDeclaredAction(String symbol) {
-            SymbolizeAction match = null;
-            for (SymbolizeAction action : declaredSymbolize) {
-                if (!action.symbol.equals(symbol)) continue;
-                if (match != null) return null;
-                match = action;
-            }
-            return match;
-        }
-
         private String policy(String siteId) {
             String policy = branchPolicies.get(siteId);
             return validBranchPolicy(policy) ? policy : "EXPLORE";
@@ -3309,12 +3710,11 @@ public final class ConcolicRegionRuntime {
         }
 
         private OutputCaptureSpec regionExitFieldCapture(
-                String captureBindingId, String outputPort,
-                String outputCell, String fieldSignature) {
+                String captureBindingId) {
             OutputCaptureSpec match = null;
             for (OutputCaptureSpec request : outputCaptures) {
-                if (!request.matchesRegionExitField(captureBindingId,
-                        outputPort, outputCell, fieldSignature)) {
+                if (!request.captureBindingId().equals(
+                        safe(captureBindingId))) {
                     continue;
                 }
                 if (match != null) return null;
@@ -3351,8 +3751,9 @@ public final class ConcolicRegionRuntime {
             RootArgumentSelector arguments = task.rootArgumentSelector;
             if (arguments.present
                     && (!arguments.matches(rootArguments)
-                    || !arguments.selects(nextSelectorOccurrence(rootMethod,
-                    arguments, context, receiver)))) {
+                    || !context.present && !arguments.selects(
+                    nextSelectorOccurrence(rootMethod, arguments,
+                            context, receiver)))) {
                 return null;
             }
             return arguments.present || context.present
@@ -3415,7 +3816,11 @@ public final class ConcolicRegionRuntime {
         private final Method startRegion;
         private final Method symbolizeWithPrefix;
         private final Method symbolizeField;
+        private final Method symbolizeExactField;
+        private final Method snapshotContainer;
+        private final Method trackContainer;
         private final Method getExpression;
+        private final Method getFieldExpression;
         private final Method finishRegion;
         private final Method getPathCondition;
         private final Method pausePathCondition;
@@ -3426,7 +3831,11 @@ public final class ConcolicRegionRuntime {
 
         private EngineApi(Method startRegion,
                           Method symbolizeWithPrefix, Method symbolizeField,
+                          Method symbolizeExactField,
+                          Method snapshotContainer,
+                          Method trackContainer,
                           Method getExpression,
+                          Method getFieldExpression,
                           Method finishRegion, Method getPathCondition,
                           Method pausePathCondition,
                           Method resumePathCondition,
@@ -3435,7 +3844,11 @@ public final class ConcolicRegionRuntime {
             this.startRegion = startRegion;
             this.symbolizeWithPrefix = symbolizeWithPrefix;
             this.symbolizeField = symbolizeField;
+            this.symbolizeExactField = symbolizeExactField;
+            this.snapshotContainer = snapshotContainer;
+            this.trackContainer = trackContainer;
             this.getExpression = getExpression;
+            this.getFieldExpression = getFieldExpression;
             this.finishRegion = finishRegion;
             this.getPathCondition = getPathCondition;
             this.pausePathCondition = pausePathCondition;
@@ -3448,7 +3861,10 @@ public final class ConcolicRegionRuntime {
         private boolean available() {
             return startRegion != null
                     && symbolizeWithPrefix != null
+                    && symbolizeExactField != null
+                    && trackContainer != null
                     && getExpression != null
+                    && getFieldExpression != null
                     && finishRegion != null
                     && getPathCondition != null
                     && pausePathCondition != null
@@ -3479,8 +3895,46 @@ public final class ConcolicRegionRuntime {
             symbolizeField.invoke(null, owner, field, prefix);
         }
 
+        private void symbolizeExactField(
+                Object owner, String fieldSignature, String prefix)
+                throws Exception {
+            DeclaredField field = FieldPathSpec.declaredField(
+                    safe(fieldSignature));
+            if (symbolizeExactField == null || field == null) {
+                throw new UnsupportedOperationException(
+                        "custom concolic exact-field API is unavailable");
+            }
+            symbolizeExactField.invoke(null, owner, field.owner(),
+                    field.name(), javaTypeDescriptor(field.type()), prefix);
+        }
+
+        private boolean snapshotContainer(
+                Object value, Object[] keys, Object[] values, int kind)
+                throws Exception {
+            if (snapshotContainer == null) {
+                throw new UnsupportedOperationException(
+                        "custom concolic container-snapshot API is unavailable");
+            }
+            return Boolean.TRUE.equals(snapshotContainer.invoke(
+                    null, value, keys, values, kind));
+        }
+
+        private boolean trackContainer(Object value, String prefix)
+                throws Exception {
+            return Boolean.TRUE.equals(trackContainer.invoke(
+                    null, value, prefix));
+        }
+
         private String expression(Object value) throws Exception {
             return String.valueOf(getExpression.invoke(null, value));
+        }
+
+        private String fieldExpression(
+                Object owner, String declaringClass, String fieldName,
+                String fieldDescriptor, Object value)
+                throws Exception {
+            return String.valueOf(getFieldExpression.invoke(null, owner,
+                    declaringClass, fieldName, fieldDescriptor, value));
         }
 
         private String finish() throws Exception {
@@ -3523,7 +3977,18 @@ public final class ConcolicRegionRuntime {
                     method(system, "symbolize", Object.class, String.class),
                     method(system, "symbolizeField", Object.class,
                             String.class, String.class),
+                    method(system, "symbolizeExactField", Object.class,
+                            String.class, String.class, String.class,
+                            String.class),
+                    method(system, "snapshotContainerExpression",
+                            Object.class, Object[].class, Object[].class,
+                            int.class),
+                    method(system, "trackContainerExpression",
+                            Object.class, String.class),
                     method(system, "getSymbolicExpression", Object.class),
+                    method(system, "getSymbolicFieldExpression",
+                            Object.class, String.class, String.class,
+                            String.class, Object.class),
                     method(system, "finishConcolicRegion"),
                     method(system, "getPathCondition"),
                     method(system, "pauseConcolicPathCondition"),

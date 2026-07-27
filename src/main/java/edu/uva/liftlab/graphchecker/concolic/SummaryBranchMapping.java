@@ -150,8 +150,7 @@ public final class SummaryBranchMapping {
                         "branchMappings[" + ordinal + "]: "
                                 + malformed.getMessage(), malformed);
             }
-            String event = mapping.siteId() + "\u0000"
-                    + mapping.occurrence();
+            String event = mapping.decisionIdentity();
             if (!events.add(event)) {
                 throw new IllegalArgumentException(
                         "duplicate branch event " + mapping.siteId() + "#"
@@ -226,6 +225,16 @@ public final class SummaryBranchMapping {
         return witness != null
                 ? witness.sourceTakenOutcome()
                 : concreteObservation.sourceTakenOutcome();
+    }
+
+    public int decisionOrdinal() {
+        return witness == null ? 0 : witness.decisionOrdinal();
+    }
+
+    public String decisionIdentity() {
+        return witness == null
+                ? siteId() + "\u0000" + occurrence() + "\u0000" + 0
+                : witness.decisionIdentity();
     }
 
     private static JsonArray requiredArray(JsonObject parent, String name) {

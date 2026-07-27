@@ -4,27 +4,21 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
+import java.util.TreeSet;
 
 /**
- * Static field-input materialization selected by one exact analysis site.
+ * Static field-input materialization selected by exact analysis sites.
  *
  * <p>The static artifact stores this value once under {@code materialization}.
  * Runtime planning projects it into an execution action after concrete object
  * identity has been selected.</p>
  */
 public final class MaterializationSpec {
-    private static final Pattern REPEATED_PRIMITIVE_ACCESSOR =
-            Pattern.compile("^<java\\.lang\\.(?:Boolean: boolean booleanValue"
-                    + "|Byte: byte byteValue|Short: short shortValue"
-                    + "|Character: char charValue|Integer: int intValue"
-                    + "|Long: long longValue|Float: float floatValue"
-                    + "|Double: double doubleValue)\\(\\)>\\.return$");
-
     public enum Kind {
         NONE, FIELD_READ, ACCESSOR_RETURN
     }
@@ -35,6 +29,7 @@ public final class MaterializationSpec {
     private final String leafField;
     private final List<String> path;
     private final List<String> proofEdgeIds;
+    private final List<String> accessSites;
     private final String method;
     private final int unitIndex;
     private final String declaredCallee;
@@ -42,8 +37,9 @@ public final class MaterializationSpec {
 
     private MaterializationSpec(
             Kind kind, String javaType, String rootField, String leafField,
-            List<String> path, List<String> proofEdgeIds, String method,
-            int unitIndex, String declaredCallee,
+            List<String> path, List<String> proofEdgeIds,
+            Collection<String> accessSites, String method, int unitIndex,
+            String declaredCallee,
             String implementationMethod) {
         this.kind = kind == null ? Kind.NONE : kind;
         this.javaType = trim(javaType);
@@ -51,25 +47,31 @@ public final class MaterializationSpec {
         this.leafField = trim(leafField);
         this.path = immutable(path);
         this.proofEdgeIds = immutable(proofEdgeIds);
+        this.accessSites = immutableSites(accessSites);
         this.method = trim(method);
         this.unitIndex = unitIndex;
         this.declaredCallee = trim(declaredCallee);
         this.implementationMethod = trim(implementationMethod);
+        if (this.kind == Kind.FIELD_READ && this.accessSites.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "FIELD_READ materialization requires accessSites");
+        }
     }
 
     public static MaterializationSpec none() {
         return new MaterializationSpec(Kind.NONE, "", "", "",
+                Collections.<String>emptyList(),
                 Collections.<String>emptyList(),
                 Collections.<String>emptyList(), "", -1, "", "");
     }
 
     public static MaterializationSpec fieldRead(
             String javaType, String rootField, String leafField,
-            List<String> path, List<String> proofEdgeIds, String method,
-            int unitIndex) {
+            List<String> path, List<String> proofEdgeIds,
+            Collection<String> accessSites) {
         return new MaterializationSpec(Kind.FIELD_READ, javaType,
-                rootField, leafField, path, proofEdgeIds, method,
-                unitIndex, "", "");
+                rootField, leafField, path, proofEdgeIds, accessSites,
+                "", -1, "", "");
     }
 
     public static MaterializationSpec accessorReturn(
@@ -78,7 +80,8 @@ public final class MaterializationSpec {
             String declaredCallee, String implementationMethod) {
         return new MaterializationSpec(Kind.ACCESSOR_RETURN, javaType,
                 field, field, path, Collections.<String>emptyList(),
-                callerMethod, unitIndex, declaredCallee,
+                Collections.<String>emptyList(), callerMethod, unitIndex,
+                declaredCallee,
                 implementationMethod);
     }
 
@@ -102,6 +105,7 @@ public final class MaterializationSpec {
                 text(json, "rootField"), text(json, "leafField"),
                 FieldPathSpec.stringArray(json, "path"),
                 FieldPathSpec.stringArray(json, "proofEdgeIds"),
+                FieldPathSpec.stringArray(json, "accessSites"),
                 text(json, "method"), integer(json, "unitIndex", -1),
                 text(json, "declaredCallee"),
                 text(json, "implementationMethod"));
@@ -115,15 +119,11 @@ public final class MaterializationSpec {
     }
 
     public static boolean repeatedPrimitiveAccessorReturn(String cell) {
-        return REPEATED_PRIMITIVE_ACCESSOR.matcher(trim(cell)).matches();
+        return JavaPrimitiveBoxing.unboxReturn(cell);
     }
 
     public Kind kind() {
         return kind;
-    }
-
-    public String javaType() {
-        return javaType;
     }
 
     public String rootField() {
@@ -136,6 +136,17 @@ public final class MaterializationSpec {
 
     public List<String> path() {
         return path;
+    }
+
+    public List<String> accessSites() {
+        return accessSites;
+    }
+
+    public boolean matchesAccessSite(String actualMethod,
+                                     int actualUnitIndex) {
+        return kind == Kind.FIELD_READ
+                && accessSites.contains(trim(actualMethod)
+                + "#u" + actualUnitIndex);
     }
 
     public String method() {
@@ -175,9 +186,11 @@ public final class MaterializationSpec {
         if (!proofEdgeIds.isEmpty()) {
             result.put("proofEdgeIds", new ArrayList<>(proofEdgeIds));
         }
-        result.put("method", method);
-        result.put("unitIndex", unitIndex);
-        if (kind == Kind.ACCESSOR_RETURN) {
+        if (kind == Kind.FIELD_READ) {
+            result.put("accessSites", new ArrayList<>(accessSites));
+        } else {
+            result.put("method", method);
+            result.put("unitIndex", unitIndex);
             result.put("declaredCallee", declaredCallee);
             result.put("implementationMethod", implementationMethod);
         }
@@ -194,8 +207,7 @@ public final class MaterializationSpec {
         result.put("leafFieldSignature", leafField);
         result.put("fieldPath", new ArrayList<>(path));
         if (kind == Kind.FIELD_READ) {
-            result.put("accessMethod", method);
-            result.put("accessUnitIndex", unitIndex);
+            result.put("accessSites", new ArrayList<>(accessSites));
             if (directFieldPath()) {
                 result.put("fieldPathAuthority",
                         "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
@@ -213,6 +225,19 @@ public final class MaterializationSpec {
     private static List<String> immutable(List<String> values) {
         return Collections.unmodifiableList(new ArrayList<>(
                 values == null ? Collections.<String>emptyList() : values));
+    }
+
+    private static List<String> immutableSites(Collection<String> values) {
+        TreeSet<String> sorted = new TreeSet<>();
+        if (values != null) {
+            for (String value : values) {
+                String site = trim(value);
+                if (!site.isEmpty()) {
+                    sorted.add(site);
+                }
+            }
+        }
+        return Collections.unmodifiableList(new ArrayList<>(sorted));
     }
 
     private static String text(JsonObject json, String member) {

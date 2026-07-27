@@ -21,6 +21,7 @@ std::set<std::string> SymMap::target_class_names = init_target_class_names();
 std::set<std::string> SymMap::init_target_class_names() {
   std::set<std::string> set;
   set.insert("java/util/Map");
+  set.insert("java/util/Map$Entry");
   set.insert("java/util/HashMap");
   set.insert("java/util/LinkedHashMap");
   set.insert("java/util/HashMap$EntrySet");

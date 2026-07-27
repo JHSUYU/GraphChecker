@@ -21,6 +21,8 @@ public final class BranchWitness {
     public static final String IDENTITY_NORMALIZATION = "IDENTITY";
     public static final String CMP_NORMALIZATION =
             "JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE";
+    public static final String PC_PREDICATE_NORMALIZATION =
+            "PC_PREDICATE_IDENTITY";
 
     private final String siteId;
     private final String method;
@@ -30,11 +32,13 @@ public final class BranchWitness {
     private final JsonElement sourceSatisfiedPredicate;
     private final int vmPcIndex;
     private final String predicateNormalization;
+    private final int decisionOrdinal;
 
     private BranchWitness(String siteId, String method, int unitIndex,
                           int occurrence, boolean sourceTakenOutcome,
                           JsonElement sourceSatisfiedPredicate,
-                          int vmPcIndex, String predicateNormalization) {
+                          int vmPcIndex, String predicateNormalization,
+                          int decisionOrdinal) {
         this.siteId = requireText(siteId, "siteId");
         this.method = requireText(method, "method");
         if (unitIndex < 0) {
@@ -52,10 +56,22 @@ public final class BranchWitness {
             throw new IllegalArgumentException("vmPcIndex must be nonnegative");
         }
         if (!IDENTITY_NORMALIZATION.equals(predicateNormalization)
-                && !CMP_NORMALIZATION.equals(predicateNormalization)) {
+                && !CMP_NORMALIZATION.equals(predicateNormalization)
+                && !PC_PREDICATE_NORMALIZATION.equals(
+                predicateNormalization)) {
             throw new IllegalArgumentException(
                     "unsupported predicateNormalization: "
                             + predicateNormalization);
+        }
+        if (decisionOrdinal < 0
+                || decisionOrdinal == 0
+                && PC_PREDICATE_NORMALIZATION.equals(
+                predicateNormalization)
+                || decisionOrdinal > 0
+                && !PC_PREDICATE_NORMALIZATION.equals(
+                predicateNormalization)) {
+            throw new IllegalArgumentException(
+                    "PC predicate decision ordinal and normalization differ");
         }
         this.unitIndex = unitIndex;
         this.occurrence = occurrence;
@@ -64,6 +80,7 @@ public final class BranchWitness {
                 sourceSatisfiedPredicate);
         this.vmPcIndex = vmPcIndex;
         this.predicateNormalization = predicateNormalization;
+        this.decisionOrdinal = decisionOrdinal;
     }
 
     public static BranchWitness vmPc(
@@ -82,7 +99,25 @@ public final class BranchWitness {
         if (normalization.isEmpty()) normalization = IDENTITY_NORMALIZATION;
         return new BranchWitness(siteId, method, unitIndex, occurrence,
                 sourceTakenOutcome, sourceSatisfiedPredicate, vmPcIndex,
-                normalization);
+                normalization, 0);
+    }
+
+    /**
+     * A VM predicate emitted while evaluating one instrumented Jimple branch.
+     * It is a solver decision even when the final Jimple boolean has no
+     * one-to-one VM branch witness.
+     */
+    public static BranchWitness pcPredicate(
+            String siteId, String method, int unitIndex, int occurrence,
+            int decisionOrdinal, JsonElement sourceSatisfiedPredicate,
+            int vmPcIndex) {
+        if (decisionOrdinal <= 0) {
+            throw new IllegalArgumentException(
+                    "decisionOrdinal must be positive");
+        }
+        return new BranchWitness(siteId, method, unitIndex, occurrence,
+                true, sourceSatisfiedPredicate, vmPcIndex,
+                PC_PREDICATE_NORMALIZATION, decisionOrdinal);
     }
 
     public static BranchWitness fromJson(JsonObject json) {
@@ -105,7 +140,8 @@ public final class BranchWitness {
                 primitiveInteger(site, "occurrence", -1),
                 outcome.getAsBoolean(), predicate,
                 primitiveInteger(json, "vmPcIndex", -1),
-                primitiveString(json, "predicateNormalization"));
+                primitiveString(json, "predicateNormalization"),
+                primitiveInteger(json, "decisionOrdinal", 0));
     }
 
     public JsonObject toJson() {
@@ -140,23 +176,23 @@ public final class BranchWitness {
         return vmPcIndex;
     }
 
-    public String predicateNormalization() {
-        return predicateNormalization;
+    public int decisionOrdinal() {
+        return decisionOrdinal;
     }
 
-    public boolean sameContent(BranchWitness other) {
-        return other != null
-                && siteId.equals(other.siteId)
-                && method.equals(other.method)
-                && unitIndex == other.unitIndex
-                && occurrence == other.occurrence
-                && sourceTakenOutcome == other.sourceTakenOutcome
-                && vmPcIndex == other.vmPcIndex
-                && predicateNormalization.equals(
-                other.predicateNormalization)
-                && BranchPredicateAlgebra.equivalent(
-                sourceSatisfiedPredicate,
-                other.sourceSatisfiedPredicate);
+    public boolean isPcPredicateDecision() {
+        return decisionOrdinal > 0;
+    }
+
+    BranchWitness atPcIndex(int pcIndex) {
+        return new BranchWitness(siteId, method, unitIndex, occurrence,
+                sourceTakenOutcome, sourceSatisfiedPredicate, pcIndex,
+                predicateNormalization, decisionOrdinal);
+    }
+
+    public String decisionIdentity() {
+        return siteId + "\u0000" + occurrence + "\u0000"
+                + decisionOrdinal;
     }
 
     private JsonObject coreJson() {
@@ -175,6 +211,9 @@ public final class BranchWitness {
         result.addProperty("vmPcIndex", vmPcIndex);
         result.addProperty("predicateNormalization",
                 predicateNormalization);
+        if (decisionOrdinal > 0) {
+            result.addProperty("decisionOrdinal", decisionOrdinal);
+        }
         return (JsonObject) CanonicalJson.copy(result);
     }
 

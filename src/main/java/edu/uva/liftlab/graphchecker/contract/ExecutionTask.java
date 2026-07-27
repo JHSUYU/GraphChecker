@@ -88,14 +88,6 @@ public final class ExecutionTask {
         return string(encoded, "regionId");
     }
 
-    public String test() {
-        return string(encoded, "test");
-    }
-
-    public String pathQueryKey() {
-        return string(encoded, "pathQueryKey");
-    }
-
     public ClosureGoalKind goalKind() {
         return ClosureGoalKind.fromTask(encoded);
     }

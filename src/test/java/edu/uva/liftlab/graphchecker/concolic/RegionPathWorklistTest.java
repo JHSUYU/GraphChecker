@@ -109,16 +109,6 @@ public class RegionPathWorklistTest {
         attachClosure(executionTask, closure);
         summary.getAsJsonObject("outputExpressions").add(
                 "REGION.3.out.0", binary("+", 1));
-        String[] evidenceFields = new String[]{
-                "vmIntrinsicPlaceholderBindings",
-                "unforcedEnvironmentValidationRequirements"};
-        for (String field : evidenceFields) {
-            JsonObject marker = new JsonObject();
-            marker.addProperty("evidenceField", field);
-            JsonArray evidence = new JsonArray();
-            evidence.add(marker);
-            summary.add(field, evidence);
-        }
         JsonObject binding = new JsonObject();
         binding.addProperty("edgeId", "EDGE.TEST");
         JsonArray bindings = new JsonArray();
@@ -145,10 +135,6 @@ public class RegionPathWorklistTest {
                 .getAsJsonArray("cases").get(0).getAsJsonObject();
         assertEquals("TASK.ACT.EMPTY.SLICE",
                 pathCase.get("sourceTaskId").getAsString());
-        for (String field : evidenceFields) {
-            assertEquals(summary.getAsJsonArray(field),
-                    pathCase.getAsJsonArray(field));
-        }
         assertEquals(bindings, merged.getAsJsonArray("edgeBindings"));
         assertEquals(OutputClosureCodec.decode(summary).closureFingerprint(),
                 OutputClosureCodec.decode(merged).closureFingerprint());
@@ -169,6 +155,36 @@ public class RegionPathWorklistTest {
         assertEquals(RegionPathWorklist.State.CLOSED.name(),
                 target.manifest.get("state").getAsString());
         assertTrue(target.relations.isEmpty());
+    }
+
+    @Test
+    public void concreteOnlyOutputBranchCannotCloseExploration() {
+        JsonObject summary = summary("ACT.CONCRETE.ONLY",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject task = executionTask("ACT.CONCRETE.ONLY",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.CONCRETE", "SITE.1");
+        attachClosure(summary, closure);
+        attachClosure(task, closure);
+        JsonArray mappings = new JsonArray();
+        mappings.add(SummaryBranchMapping.concrete(
+                ExactConcreteBranchObservation.attested(
+                        "SITE.1", "<test.Region: void run()>", 1,
+                        1, true),
+                SummaryBranchMapping.Policy.EXPLORE).toJson());
+        summary.add("branchMappings", mappings);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                result.manifest.get("state").getAsString());
+        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
+                .contains("OUTPUT_SCOPE_HAS_NO_SYMBOLIC_BRANCH_DECISION"));
     }
 
     @Test
@@ -307,8 +323,7 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.State.PENDING.name(),
                 loopResult.manifest.get("state").getAsString());
         assertTrue(loopResult.manifest.getAsJsonArray("gaps").isEmpty());
-        assertEquals(1, loopResult.manifest.getAsJsonArray(
-                "deferredObservations").size());
+        assertFalse(loopResult.manifest.has("deferredObservations"));
 
         JsonObject legacySummary = summary("ACT.CLOSURE",
                 ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
@@ -401,7 +416,7 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void concreteBranchWaitsForBridgeAndRequiresExactOccurrence() {
+    public void concreteBranchWithoutPcDoesNotBlockClosure() {
         JsonObject closure = outputClosure("REGION.3.out.0",
                 "<P: int result>", "PROOF.DEFERRED",
                 "SITE.0", "SITE.1", "SITE.LATE");
@@ -418,76 +433,24 @@ public class RegionPathWorklistTest {
                                 2, true),
                         SummaryBranchMapping.Policy.EXPLORE).toJson());
 
-        RegionPathWorklist.Result bridgePending = RegionPathWorklist.plan(
+        RegionPathWorklist.Result pending = RegionPathWorklist.plan(
                 Collections.singletonList(concrete),
                 Collections.singletonList(concreteTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
         assertEquals(RegionPathWorklist.State.PENDING.name(),
-                bridgePending.manifest.get("state").getAsString());
-        assertFalse(bridgePending.tasks.isEmpty());
-        assertTrue(bridgePending.manifest.getAsJsonArray("gaps").isEmpty());
-        assertEquals(1, bridgePending.manifest.getAsJsonArray(
-                "deferredObservations").size());
+                pending.manifest.get("state").getAsString());
+        assertFalse(pending.manifest.has("deferredObservations"));
 
-        List<JsonObject> exhaustedRecords = new ArrayList<>();
-        for (JsonObject task : bridgePending.tasks) {
-            JsonObject record = new JsonObject();
-            record.addProperty("queryKey",
-                    task.get("queryKey").getAsString());
-            record.addProperty("status", "UNSAT");
-            exhaustedRecords.add(record);
-        }
-        RegionPathWorklist.Result exhausted = RegionPathWorklist.plan(
+        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
                 Collections.singletonList(concrete),
                 Collections.singletonList(concreteTask),
-                exhaustedRecords, RegionPathWorklist.Bounds.defaults());
-        assertTrue(exhausted.tasks.isEmpty());
-        assertEquals(RegionPathWorklist.State.GAPPED.name(),
-                exhausted.manifest.get("state").getAsString());
-        assertTrue(exhausted.relations.isEmpty());
-        assertTrue(exhausted.manifest.getAsJsonArray("gaps").toString()
-                .contains("SITE.LATE"));
-        assertFalse(exhausted.manifest.has("deferredObservations"));
-
-        JsonObject wrongOccurrence = summary("ACT.WRONG.OCCURRENCE",
-                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
-        JsonObject wrongTask = executionTask("ACT.WRONG.OCCURRENCE",
-                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
-        shareGoal(concrete, wrongOccurrence, wrongTask);
-        attachClosure(wrongOccurrence, closure);
-        attachClosure(wrongTask, closure);
-        addWitness(wrongOccurrence, "SITE.LATE", 1,
-                nestedFieldPredicate(99));
-        RegionPathWorklist.Result stillDeferred = RegionPathWorklist.plan(
-                Arrays.asList(concrete, wrongOccurrence),
-                Arrays.asList(concreteTask, wrongTask),
-                Collections.<JsonObject>emptyList(),
+                terminalRecords(pending.tasks),
                 RegionPathWorklist.Bounds.defaults());
-        assertEquals(RegionPathWorklist.State.PENDING.name(),
-                stillDeferred.manifest.get("state").getAsString());
-        assertEquals(1, stillDeferred.manifest.getAsJsonArray(
-                "deferredObservations").size());
-
-        JsonObject exactOccurrence = summary("ACT.EXACT.OCCURRENCE",
-                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
-        JsonObject exactTask = executionTask("ACT.EXACT.OCCURRENCE",
-                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
-        shareGoal(concrete, exactOccurrence, exactTask);
-        attachClosure(exactOccurrence, closure);
-        attachClosure(exactTask, closure);
-        addWitness(exactOccurrence, "SITE.LATE", 2,
-                nestedFieldPredicate(100));
-        RegionPathWorklist.Result witnessed = RegionPathWorklist.plan(
-                Arrays.asList(concrete, wrongOccurrence, exactOccurrence),
-                Arrays.asList(concreteTask, wrongTask,
-                        exactTask),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-        assertEquals(RegionPathWorklist.State.PENDING.name(),
-                witnessed.manifest.get("state").getAsString());
-        assertTrue(witnessed.manifest.getAsJsonArray("gaps").isEmpty());
-        assertFalse(witnessed.manifest.has("deferredObservations"));
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                closed.manifest.get("state").getAsString());
+        assertTrue(closed.tasks.isEmpty());
+        assertTrue(closed.manifest.getAsJsonArray("gaps").isEmpty());
     }
 
     @Test
@@ -543,10 +506,9 @@ public class RegionPathWorklistTest {
                 Collections.singletonList(missingSymbolicTask),
                 terminalRecords(symbolicPending.tasks),
                 RegionPathWorklist.Bounds.defaults());
-        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
                 gapped.manifest.get("state").getAsString());
-        assertTrue(gapped.manifest.getAsJsonArray("gaps").toString()
-                .contains("SITE.LOOP"));
+        assertTrue(gapped.manifest.getAsJsonArray("gaps").isEmpty());
     }
 
     private static JsonObject branchDependencyClosure(

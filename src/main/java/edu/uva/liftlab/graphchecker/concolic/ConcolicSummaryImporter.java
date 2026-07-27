@@ -1,11 +1,8 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
@@ -40,9 +37,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * selectors from concrete runtime snapshots.</p>
  */
 public final class ConcolicSummaryImporter {
-    private static final Gson GSON = new GsonBuilder()
-            .disableHtmlEscaping().create();
-
     private ConcolicSummaryImporter() {
     }
 
@@ -119,13 +113,15 @@ public final class ConcolicSummaryImporter {
                 issues.add("UNRESOLVED_INPUT:" + unresolved);
             }
 
-            JsonArray path = array(engine, "pathCondition").deepCopy();
+            SemanticPath path = SemanticPath.from(
+                    array(engine, "pathCondition"),
+                    array(raw, "branchMappings"));
             JsonArray mappings = branchMappings(raw, task, path, issues);
             JsonElement replayContract = task.replayContract();
             if (replayContract != null) {
                 issues.addAll(BranchReplayObservationValidator
                         .validateEncoded(replayContract,
-                                array(raw, "branchMappings")));
+                                mappings));
             }
             JsonObject outputs = outputExpressions(raw, task, issues);
             JsonArray symbolicInputs = symbolicInputs(raw);
@@ -143,12 +139,9 @@ public final class ConcolicSummaryImporter {
             }
             summary.add("symbolicInputs", symbolicInputs);
             summary.add("edgeBindings", task.edgeBindings());
-            summary.add("pathCondition", path);
+            summary.add("pathCondition", path.expressions);
             summary.add("branchMappings", mappings);
             summary.add("outputExpressions", outputs);
-            summary.add("vmIntrinsicPlaceholderBindings", new JsonArray());
-            summary.add("unforcedEnvironmentValidationRequirements",
-                    new JsonArray());
             summary.addProperty("normalExit",
                     "NORMAL".equals(string(raw, "exitKind")));
             summary.addProperty("exceptionType",
@@ -187,12 +180,13 @@ public final class ConcolicSummaryImporter {
     }
 
     private static JsonArray branchMappings(
-            JsonObject raw, ExecutionTask task, JsonArray path,
+            JsonObject raw, ExecutionTask task, SemanticPath path,
             List<String> issues) {
         Map<String, SummaryBranchMapping.Policy> policies =
                 branchPolicies(task);
         JsonArray result = new JsonArray();
         Set<String> events = new LinkedHashSet<>();
+        Set<Integer> decisionPositions = new LinkedHashSet<>();
         for (JsonElement element : array(raw, "branchMappings")) {
             if (!element.isJsonObject()) {
                 issues.add("MALFORMED_BRANCH_MAPPING");
@@ -211,29 +205,77 @@ public final class ConcolicSummaryImporter {
                 policy = SummaryBranchMapping.Policy.PATH_ASSUMPTION;
             }
             try {
+                BranchWitness direct = null;
+                ExactConcreteBranchObservation concrete = null;
                 if (row.has("witness")
                         && row.get("witness").isJsonObject()) {
-                    BranchWitness witness = BranchWitness.fromJson(
+                    direct = BranchWitness.fromJson(
                             row.getAsJsonObject("witness"));
-                    int pcIndex = witness.vmPcIndex();
-                    if (pcIndex < 0 || pcIndex >= path.size()
+                    int pcIndex = direct.vmPcIndex();
+                    if (pcIndex < 0 || pcIndex >= path.original.size()
                             || !BranchPredicateAlgebra.equivalent(
-                            witness.sourceSatisfiedPredicate(),
-                            path.get(pcIndex))) {
+                            direct.sourceSatisfiedPredicate(),
+                            path.original.get(pcIndex))) {
                         issues.add("BRANCH_PC_MISMATCH:" + site);
                         continue;
                     }
-                    result.add(SummaryBranchMapping.witnessed(witness,
-                            pcIndex, policy).toJson());
                 } else if (row.has("concreteObservation")
                         && row.get("concreteObservation").isJsonObject()) {
-                    ExactConcreteBranchObservation observation =
-                            ExactConcreteBranchObservation.fromJson(
+                    concrete = ExactConcreteBranchObservation.fromJson(
                             row.getAsJsonObject("concreteObservation"));
-                    result.add(SummaryBranchMapping.concrete(observation,
-                            policy).toJson());
                 } else {
                     issues.add("BRANCH_WITHOUT_AUTHORITY:" + site);
+                    continue;
+                }
+
+                int baseline = integer(row,
+                        "rawPathConditionBaseline", -1);
+                int limit = integer(row, "rawPathConditionSize", -1);
+                if (baseline < 0 || limit < baseline
+                        || limit > path.original.size()
+                        || direct != null
+                        && (direct.vmPcIndex() < baseline
+                        || direct.vmPcIndex() >= limit)) {
+                    issues.add("INVALID_BRANCH_PC_WINDOW:" + site);
+                    continue;
+                }
+
+                int derivedOrdinal = 0;
+                boolean emittedDecision = false;
+                for (int pcIndex = baseline; pcIndex < limit; pcIndex++) {
+                    int summaryPcIndex = path.summaryIndex(pcIndex);
+                    if (summaryPcIndex < 0) {
+                        continue;
+                    }
+                    SummaryBranchMapping decision = null;
+                    if (direct != null
+                            && direct.vmPcIndex() == pcIndex) {
+                        decision = SummaryBranchMapping.witnessed(
+                                direct.atPcIndex(summaryPcIndex),
+                                summaryPcIndex, policy);
+                    } else if (pcPredicate(path.original.get(pcIndex))) {
+                        derivedOrdinal++;
+                        decision = SummaryBranchMapping.witnessed(
+                                BranchWitness.pcPredicate(site,
+                                        string(row, "method"),
+                                        integer(row, "unitIndex", -1),
+                                        occurrence, derivedOrdinal,
+                                        path.original.get(pcIndex),
+                                        summaryPcIndex),
+                                summaryPcIndex, policy);
+                    }
+                    if (decision == null) continue;
+                    if (!decisionPositions.add(summaryPcIndex)) {
+                        issues.add("AMBIGUOUS_BRANCH_PC:"
+                                + summaryPcIndex);
+                        continue;
+                    }
+                    result.add(decision.toJson());
+                    emittedDecision = true;
+                }
+                if (!emittedDecision && concrete != null) {
+                    result.add(SummaryBranchMapping.concrete(concrete,
+                            policy).toJson());
                 }
             } catch (IllegalArgumentException malformed) {
                 issues.add("MALFORMED_BRANCH_MAPPING:" + site + ":"
@@ -241,6 +283,29 @@ public final class ConcolicSummaryImporter {
             }
         }
         return result;
+    }
+
+    /**
+     * The raw branch window may contain several primitive predicates used to
+     * compute one synthetic Jimple boolean. Explicit VM relations remain
+     * prefix context; every other complementable binary predicate is a path
+     * decision.
+     */
+    private static boolean pcPredicate(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return false;
+        JsonObject object = expression.getAsJsonObject();
+        if (!"BinaryExpression".equals(string(object, "_type"))
+                || ContainerSmtCodec.handlesFieldBinding(expression)
+                || ContainerSmtCodec.handlesAccessConstraint(expression)) {
+            return false;
+        }
+        try {
+            BranchPredicateAlgebra.complementOperator(
+                    string(object, "_op"));
+            return true;
+        } catch (IllegalArgumentException unsupported) {
+            return false;
+        }
     }
 
     private static Map<String, SummaryBranchMapping.Policy> branchPolicies(
@@ -374,6 +439,85 @@ public final class ConcolicSummaryImporter {
         result.addProperty("taskId", string(raw, "taskId"));
         result.addProperty("line", index + 1);
         return result;
+    }
+
+    /** Removes replay-only container observations and remaps PC ownership. */
+    private static final class SemanticPath {
+        private final JsonArray original;
+        private final JsonArray expressions;
+        private final int[] summaryIndices;
+
+        private SemanticPath(JsonArray original, JsonArray expressions,
+                             int[] summaryIndices) {
+            this.original = original;
+            this.expressions = expressions;
+            this.summaryIndices = summaryIndices;
+        }
+
+        private static SemanticPath from(JsonArray raw,
+                                         JsonArray branchMappings) {
+            JsonArray original = raw == null
+                    ? new JsonArray() : raw.deepCopy();
+            JsonArray expressions = new JsonArray();
+            int[] indices = new int[original.size()];
+            Set<Integer> branchDecisions =
+                    witnessedVmPcIndices(branchMappings);
+            Set<Integer> branchEvaluation =
+                    branchEvaluationIndices(branchMappings, original.size());
+            for (int index = 0; index < original.size(); index++) {
+                JsonElement expression = original.get(index);
+                boolean witnessed = branchDecisions.contains(index);
+                if (!witnessed
+                        && (InitialContainerObservation.isConcreteEquality(
+                        expression)
+                        || !branchEvaluation.contains(index)
+                        && pcPredicate(expression))) {
+                    indices[index] = -1;
+                } else {
+                    indices[index] = expressions.size();
+                    expressions.add(expression.deepCopy());
+                }
+            }
+            return new SemanticPath(original, expressions, indices);
+        }
+
+        private static Set<Integer> witnessedVmPcIndices(
+                JsonArray branchMappings) {
+            Set<Integer> result = new LinkedHashSet<>();
+            for (JsonElement element : branchMappings) {
+                if (!element.isJsonObject()) continue;
+                JsonObject witness = object(
+                        element.getAsJsonObject(), "witness");
+                int index = integer(witness, "vmPcIndex", -1);
+                if (index >= 0) result.add(index);
+            }
+            return result;
+        }
+
+        private static Set<Integer> branchEvaluationIndices(
+                JsonArray branchMappings, int pathSize) {
+            Set<Integer> result = new LinkedHashSet<>();
+            for (JsonElement element : branchMappings) {
+                if (!element.isJsonObject()) continue;
+                JsonObject mapping = element.getAsJsonObject();
+                int start = integer(mapping,
+                        "rawPathConditionBaseline", -1);
+                int limit = integer(mapping,
+                        "rawPathConditionSize", -1);
+                if (start < 0 || limit < start || limit > pathSize) {
+                    continue;
+                }
+                for (int index = start; index < limit; index++) {
+                    result.add(index);
+                }
+            }
+            return result;
+        }
+
+        private int summaryIndex(int vmIndex) {
+            return vmIndex < 0 || vmIndex >= summaryIndices.length
+                    ? -1 : summaryIndices[vmIndex];
+        }
     }
 
     private static Map<String, String> parseArgs(String[] args) {

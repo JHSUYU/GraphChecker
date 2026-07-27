@@ -35,10 +35,6 @@ public class PhaseInfo {
         return help;
     }
 
-    public boolean isWholeProgram() {
-        return whole_program;
-    }
-
     public boolean needCallGraph() {
         return need_call_graph;
     }

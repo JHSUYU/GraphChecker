@@ -130,21 +130,6 @@ public final class OutputClosureContract {
         return result;
     }
 
-    /** Joint execution is deliberately bounded to direct scalars. */
-    public boolean supportedJointCapture() {
-        if (members.size() == 1) return true;
-        for (Member member : members) {
-            if (member.javaTypeDescriptor().length() != 1
-                    || !"ZBCSIJFD".contains(member.javaTypeDescriptor())
-                    || !member.captureRequired()
-                    || !member.captureComplete()
-                    || member.captureBindings().size() != 1) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     private JsonObject demandIdentity() {
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", SCHEMA_VERSION);
@@ -242,16 +227,6 @@ public final class OutputClosureContract {
             return text(output, "javaTypeDescriptor");
         }
 
-        public boolean captureRequired() {
-            return captureBindings().size() > 0;
-        }
-
-        public boolean captureComplete() {
-            return slice.getAsJsonArray("captureBindingIssues").size() == 0;
-        }
-
-        public JsonObject output() { return output.deepCopy(); }
-
         public JsonObject slice() { return slice.deepCopy(); }
 
         public JsonArray captures() { return captureBindings().deepCopy(); }
@@ -284,10 +259,6 @@ public final class OutputClosureContract {
         }
 
         public SortedSet<String> inputPorts() { return inputs; }
-
-        public SortedSet<String> sites() { return sites; }
-
-        public SortedSet<String> staticSites() { return staticSites; }
 
         public SortedSet<String> branchSites() {
             TreeSet<String> result = new TreeSet<>(sites);

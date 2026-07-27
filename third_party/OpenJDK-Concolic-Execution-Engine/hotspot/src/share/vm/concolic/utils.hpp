@@ -23,6 +23,9 @@ bool is_java_string_interned(oop str_obj);
 typeArrayOop java_string_to_char_array(oop str_obj);
 
 Klass* get_fd_by_name(oop obj, const std::string &name, const std::string &signature, fieldDescriptor& ret_fd);
+Klass* get_local_fd_by_name(
+    oop obj, const std::string &declaring_class, const std::string &name,
+    const std::string &signature, fieldDescriptor& ret_fd);
 
 typedef std::pair<const std::string, const std::string> NameSignaturePair;
 #define DECLARE_GET_FIELD_BY_NAME(ret_type, field_type) \

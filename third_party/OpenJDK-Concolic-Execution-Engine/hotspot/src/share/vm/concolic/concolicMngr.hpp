@@ -31,11 +31,21 @@ public:
   static jlong markBranch(const char *site_id, int occurrence);
   static std::string getBranchEvents();
   static std::string getSymbolicExpression(Handle handle);
+  static std::string getSymbolicFieldExpression(
+      Handle owner, const char *declaring_class, const char *field_name,
+      const char *descriptor, Handle concrete_value);
+  static bool trackContainerExpression(Handle container,
+                                       const char *prefix);
+  static bool snapshotContainerExpression(
+      Handle container, Handle keys, Handle values, jint kind);
   static std::string getRegionSummary();
   static void symbolize(Handle handle);
   static void symbolize(Handle handle, const char* prefix);
   static void symbolizeField(Handle handle, const char* field_name,
                              const char* prefix);
+  static void symbolizeExactField(
+      Handle owner, const char *declaring_class, const char *field_name,
+      const char *descriptor, const char *prefix);
   static void symbolizeMethod(Handle holder_name_handle,
                               Handle callee_name_handle);
   static void printSymExp(Handle handle);

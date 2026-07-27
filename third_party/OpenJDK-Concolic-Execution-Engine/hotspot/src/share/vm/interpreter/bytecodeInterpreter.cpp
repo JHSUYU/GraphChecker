@@ -2961,7 +2961,8 @@ run:
               sym_rid_t sym_rid = sym_inst->get_sym_rid();
               Expression* sym_exp = sym_inst->get(field_offset);
               if (sym_exp == NULL
-                  && sym_inst->demand_symbolic_fields_enabled()) {
+                  && sym_inst->demand_symbolic_fields_enabled()
+                  && !sym_inst->field_written(field_offset)) {
                 BasicType field_type = as_BasicType(tos_type);
                 ResourceMark rm;
                 const char *owner_class = obj->klass()->name() == NULL
@@ -3130,15 +3131,14 @@ run:
                 }
               }
             }
-            if (sym_exp && shadow_relevant) {
+            if (shadow_relevant) {
               SymInstance *sym_inst = owner_instance == NULL
                   ? ConcolicMngr::ctx->get_or_alloc_sym_inst(obj)
                   : owner_instance;
               if (sym_inst != NULL) {
+                sym_inst->mark_field_written(field_offset);
                 sym_inst->set_sym_exp(field_offset, sym_exp);
               }
-            } else if (owner_instance != NULL) {
-              owner_instance->set_sym_exp(field_offset, NULL);
             }
             ConcolicMngr::ctx->clear_stack_value(
                 stack_offset - 1, value_slots);

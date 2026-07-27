@@ -25,7 +25,6 @@ import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
@@ -59,7 +58,7 @@ public final class RuntimeWorkflowDiscovery {
             throw new IOException("runtime region plan is empty");
         }
         channels = discoverChannels();
-        demands = groupDemands(channels);
+        demands = discoverDemands();
         target = discoverTarget();
     }
 
@@ -69,23 +68,13 @@ public final class RuntimeWorkflowDiscovery {
         RuntimeWorkflowDiscovery discovery = new RuntimeWorkflowDiscovery(
                 Paths.get(required(args, "region-plan")));
         switch (command) {
-            case "validate":
-                return;
             case "discover":
                 discovery.printDiscovery();
                 return;
             case "producer-channels":
                 for (Demand demand : discovery.demands) {
-                    System.out.println(demand.ownerChannel);
+                    System.out.println(demand.handle);
                 }
-                return;
-            case "resolve-channel":
-                System.out.println(discovery.channel(
-                        required(args, "channel")).name);
-                return;
-            case "owner-channel":
-                System.out.println(discovery.demand(
-                        required(args, "channel")).ownerChannel);
                 return;
             case "producer-binding":
                 Demand demand = discovery.demand(
@@ -135,7 +124,7 @@ public final class RuntimeWorkflowDiscovery {
         }
         String terminalRegion = terminalRegions.iterator().next();
         List<Channel> result = new ArrayList<>();
-        Set<String> edgeIds = new LinkedHashSet<>();
+        Set<String> dynamicEdges = new LinkedHashSet<>();
         for (RegionInstancePlan plan : plans) {
             for (Goal goal : plan.goals()) {
                 if (!goal.kind().capturesOutputRelation()
@@ -162,15 +151,19 @@ public final class RuntimeWorkflowDiscovery {
                             continue;
                         }
                         String edgeId = required(edge, "edgeId");
-                        if (!edgeIds.add(edgeId)) {
+                        String dynamicEdge = edgeId + "\n"
+                                + plan.regionInstanceId() + "\n"
+                                + required(edge, "toRegionInstance") + "\n"
+                                + member.portId() + "\n"
+                                + required(edge, "toInputPort");
+                        if (!dynamicEdges.add(dynamicEdge)) {
                             throw new IOException(
-                                    "duplicate runtime edgeId: " + edgeId);
+                                    "duplicate dynamic runtime edge: "
+                                            + edgeId);
                         }
                         result.add(new Channel(channelName, member.cell(),
-                                required(edge, "toInputCell"),
                                 plan.regionId(), plan.regionInstanceId(),
-                                goal.goalId(), closure.demandKey(),
-                                closure.closureFingerprint(), edgeId,
+                                goal.goalId(), edgeId,
                                 terminalRegion,
                                 required(edge, "toRegionInstance")));
                     }
@@ -179,8 +172,8 @@ public final class RuntimeWorkflowDiscovery {
         }
         result.sort(Comparator.comparing(Channel::sortKey));
         if (result.isEmpty()) {
-            throw new IOException(
-                    "runtime read-from discovery found no channels");
+            throw new IOException("runtime read-from discovery found no "
+                    + "READY channels; output goals=" + outputGoalAdmissions());
         }
         Map<String, Channel> names = new TreeMap<>();
         for (Channel channel : result) {
@@ -203,33 +196,105 @@ public final class RuntimeWorkflowDiscovery {
         return result;
     }
 
-    private static List<Demand> groupDemands(List<Channel> channels)
-            throws IOException {
-        Map<String, List<Channel>> grouped = new TreeMap<>();
-        for (Channel channel : channels) {
-            String key = channel.regionInstanceId + "\n" + channel.goalId
-                    + "\n" + channel.demandKey + "\n"
-                    + channel.closureFingerprint;
-            grouped.computeIfAbsent(key, unused -> new ArrayList<>())
-                    .add(channel);
+    private List<String> outputGoalAdmissions() {
+        List<String> result = new ArrayList<>();
+        for (RegionInstancePlan plan : plans) {
+            for (Goal goal : plan.goals()) {
+                if (!goal.kind().capturesOutputRelation()) continue;
+                result.add(plan.regionInstanceId() + "/" + goal.goalId()
+                        + "=" + goal.admissionState() + ":"
+                        + goal.admissionBlockers());
+            }
         }
-        List<Demand> result = new ArrayList<>();
-        Set<String> claimedChannels = new TreeSet<>(
-                String.CASE_INSENSITIVE_ORDER);
-        for (List<Channel> group : grouped.values()) {
-            TreeSet<String> names = new TreeSet<>();
-            for (Channel channel : group) {
-                names.add(channel.name);
-                if (!claimedChannels.add(channel.name)) {
-                    throw new IOException(
-                            "channel belongs to multiple producer demands: "
-                                    + channel.name);
+        return result;
+    }
+
+    /**
+     * Discovers every output relation on a runtime-proven path to the target.
+     * Terminal producer goals keep their field channel names; constructor and
+     * other upstream state transformers receive deterministic internal
+     * handles.  The shell can therefore execute one generic demand campaign
+     * per goal while the composer receives the complete dependency chain.
+     */
+    private List<Demand> discoverDemands() throws IOException {
+        String targetInstance = unique(channels, false);
+        List<Demand> candidates = new ArrayList<>();
+        for (RegionInstancePlan plan : plans) {
+            for (Goal goal : plan.goals()) {
+                if (!goal.kind().capturesOutputRelation()
+                        || !"READY".equals(goal.admissionState())
+                        || goal.outputClosure() == null) {
+                    continue;
+                }
+                List<JsonObject> edges = new ArrayList<>();
+                for (JsonElement item : goal.edgeBindings()) {
+                    if (item.isJsonObject()
+                            && isReadFrom(item.getAsJsonObject())) {
+                        edges.add(item.getAsJsonObject());
+                    }
+                }
+                if (!edges.isEmpty()) {
+                    candidates.add(new Demand(plan, goal, edges));
                 }
             }
-            result.add(new Demand(group.get(0), names.iterator().next(),
-                    names));
         }
-        result.sort(Comparator.comparing(demand -> demand.ownerChannel));
+
+        Map<String, Set<String>> channelsByInstance = new LinkedHashMap<>();
+        boolean changed;
+        do {
+            changed = false;
+            for (Demand demand : candidates) {
+                Set<String> names = new TreeSet<>();
+                for (JsonObject edge : demand.edges) {
+                    String downstream = string(edge,
+                            "toRegionInstance");
+                    if (targetInstance.equals(downstream)) {
+                        names.add(fieldName(required(edge,
+                                "fromOutputCell")));
+                    } else {
+                        names.addAll(channelsByInstance.getOrDefault(
+                                downstream, java.util.Collections
+                                        .<String>emptySet()));
+                    }
+                }
+                if (demand.channels.addAll(names)) changed = true;
+                Set<String> instanceChannels =
+                        channelsByInstance.computeIfAbsent(
+                                demand.regionInstanceId,
+                                unused -> new TreeSet<>());
+                if (instanceChannels.addAll(names)) changed = true;
+            }
+        } while (changed);
+
+        List<Demand> result = new ArrayList<>();
+        for (Demand candidate : candidates) {
+            if (!candidate.channels.isEmpty()) result.add(candidate);
+        }
+        result.sort(Comparator.comparing(Demand::sortKey));
+        if (result.isEmpty()) {
+            throw new IOException("runtime read-from graph has no executable "
+                    + "output demand path to target");
+        }
+
+        Set<String> terminalNames = new TreeSet<>(
+                String.CASE_INSENSITIVE_ORDER);
+        int upstream = 0;
+        for (Demand demand : result) {
+            if (demand.directlyFeeds(targetInstance)) {
+                demand.handle = demand.channels.iterator().next();
+                if (!terminalNames.add(demand.handle)) {
+                    throw new IOException("channel belongs to multiple "
+                            + "terminal producer demands: " + demand.handle);
+                }
+            }
+        }
+        for (Demand demand : result) {
+            if (demand.handle.isEmpty()) {
+                demand.handle = "UPSTREAM_" + (++upstream) + "_"
+                        + String.join("_", demand.channels);
+            }
+        }
+        result.sort(Comparator.comparing(demand -> demand.handle));
         return result;
     }
 
@@ -261,7 +326,6 @@ public final class RuntimeWorkflowDiscovery {
     private String scheduledProducerTask(String requested, Path taskPlan)
             throws IOException {
         Demand demand = demand(requested);
-        Channel channel = channel(requested);
         List<String> matches = new ArrayList<>();
         for (JsonObject row : ArtifactIO.readJsonl(taskPlan)) {
             ExecutionTask task = ExecutionTask.decode(row);
@@ -273,13 +337,7 @@ public final class RuntimeWorkflowDiscovery {
                     || task.outputClosure() == null) {
                 continue;
             }
-            for (OutputClosureContract.Member member
-                    : task.outputClosure().members()) {
-                if (channel.fromCell.equals(member.cell())) {
-                    matches.add(task.taskId());
-                    break;
-                }
-            }
+            matches.add(task.taskId());
         }
         return only(matches, "scheduled producer task");
     }
@@ -298,31 +356,16 @@ public final class RuntimeWorkflowDiscovery {
         return only(matches, "scheduled target task");
     }
 
-    private Channel channel(String requested) throws IOException {
-        List<Channel> matches = new ArrayList<>();
-        for (Channel channel : channels) {
-            if (channel.name.equalsIgnoreCase(requested)
-                    && matches.stream().noneMatch(existing ->
-                    existing.name.equals(channel.name))) {
-                matches.add(channel);
+    private Demand demand(String requested) throws IOException {
+        List<Demand> matches = new ArrayList<>();
+        for (Demand demand : demands) {
+            if (demand.handle.equalsIgnoreCase(requested)) {
+                matches.add(demand);
             }
         }
         if (matches.size() != 1) {
             throw new IOException(
-                    "channel is not discovered exactly once: " + requested);
-        }
-        return matches.get(0);
-    }
-
-    private Demand demand(String requested) throws IOException {
-        String canonical = channel(requested).name;
-        List<Demand> matches = new ArrayList<>();
-        for (Demand demand : demands) {
-            if (demand.channels.contains(canonical)) matches.add(demand);
-        }
-        if (matches.size() != 1) {
-            throw new IOException(
-                    "channel does not resolve to one producer demand: "
+                    "handle does not resolve to one producer demand: "
                             + requested);
         }
         return matches.get(0);
@@ -331,32 +374,16 @@ public final class RuntimeWorkflowDiscovery {
     private void printDiscovery() {
         System.out.println("kind\tchannel\tregion\tinstance\tgoal");
         for (Demand demand : demands) {
-            for (String channel : demand.channels) {
-                System.out.println("producer\t" + channel + "\t"
-                        + demand.regionId + "\t" + demand.regionInstanceId
-                        + "\t" + demand.goalId);
-            }
+            System.out.println("producer\t" + demand.handle + "\t"
+                    + demand.regionId + "\t" + demand.regionInstanceId
+                    + "\t" + demand.goalId);
         }
         System.out.println("target\t-\t" + target.regionId + "\t"
                 + target.regionInstanceId + "\t" + target.goalId);
     }
 
     private static boolean isReadFrom(JsonObject edge) {
-        String kind = string(edge, "evidenceKind");
-        JsonElement writer = edge.get("writerEventSeq");
-        JsonElement reader = edge.get("readerEventSeq");
-        JsonElement receiver = edge.get("receiverObjectId");
-        return ("FIELD_ASSIGNMENT_READ_FROM_V1".equals(kind)
-                || "CONTAINER_MUTATION_READ_FROM_V1".equals(kind))
-                && writer != null && writer.isJsonPrimitive()
-                && writer.getAsJsonPrimitive().isNumber()
-                && reader != null && reader.isJsonPrimitive()
-                && reader.getAsJsonPrimitive().isNumber()
-                && receiver != null && receiver.isJsonPrimitive()
-                && receiver.getAsJsonPrimitive().isNumber()
-                && longInteger(edge, "writerEventSeq", 0L)
-                < longInteger(edge, "readerEventSeq", 0L)
-                && longInteger(edge, "receiverObjectId", 0L) != 0L;
+        return AutomaticRegionEdge.trustedRuntimeReadFromBinding(edge);
     }
 
     private static String fieldName(String cell) throws IOException {
@@ -434,29 +461,22 @@ public final class RuntimeWorkflowDiscovery {
     private static final class Channel {
         private final String name;
         private final String fromCell;
-        private final String toCell;
         private final String regionId;
         private final String regionInstanceId;
         private final String goalId;
-        private final String demandKey;
-        private final String closureFingerprint;
         private final String edgeId;
         private final String targetRegion;
         private final String targetRegionInstance;
 
-        private Channel(String name, String fromCell, String toCell,
+        private Channel(String name, String fromCell,
                         String regionId, String regionInstanceId,
-                        String goalId, String demandKey,
-                        String closureFingerprint, String edgeId,
+                        String goalId, String edgeId,
                         String targetRegion, String targetRegionInstance) {
             this.name = name;
             this.fromCell = fromCell;
-            this.toCell = toCell;
             this.regionId = regionId;
             this.regionInstanceId = regionInstanceId;
             this.goalId = goalId;
-            this.demandKey = demandKey;
-            this.closureFingerprint = closureFingerprint;
             this.edgeId = edgeId;
             this.targetRegion = targetRegion;
             this.targetRegionInstance = targetRegionInstance;
@@ -466,32 +486,42 @@ public final class RuntimeWorkflowDiscovery {
             return fromCell.equals(other.fromCell)
                     && regionId.equals(other.regionId)
                     && regionInstanceId.equals(other.regionInstanceId)
-                    && goalId.equals(other.goalId)
-                    && demandKey.equals(other.demandKey)
-                    && closureFingerprint.equals(other.closureFingerprint);
+                    && goalId.equals(other.goalId);
         }
 
         private String sortKey() {
-            return regionInstanceId + "\n" + goalId + "\n" + demandKey
-                    + "\n" + closureFingerprint + "\n" + name + "\n"
+            return regionInstanceId + "\n" + goalId + "\n" + name + "\n"
                     + edgeId;
         }
     }
 
     private static final class Demand {
-        private final String ownerChannel;
-        private final Set<String> channels;
+        private String handle = "";
+        private final Set<String> channels = new TreeSet<>();
         private final String regionId;
         private final String regionInstanceId;
         private final String goalId;
+        private final List<JsonObject> edges;
 
-        private Demand(Channel channel, String ownerChannel,
-                       Set<String> channels) {
-            this.ownerChannel = ownerChannel;
-            this.channels = channels;
-            regionId = channel.regionId;
-            regionInstanceId = channel.regionInstanceId;
-            goalId = channel.goalId;
+        private Demand(RegionInstancePlan plan, Goal goal,
+                       List<JsonObject> edges) {
+            regionId = plan.regionId();
+            regionInstanceId = plan.regionInstanceId();
+            goalId = goal.goalId();
+            this.edges = edges;
+        }
+
+        private boolean directlyFeeds(String instance) {
+            for (JsonObject edge : edges) {
+                if (instance.equals(string(edge, "toRegionInstance"))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private String sortKey() {
+            return regionInstanceId + "\n" + goalId;
         }
     }
 

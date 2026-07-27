@@ -1,0 +1,22 @@
+# round=5
+case	class	target	expected	producerA	producerB	consumer
+01	StressRoundFixture01	stress-r05-c01	SAT	map-mutation	scalar-fields	consumer-sat-1
+02	StressRoundFixture02	stress-r05-c02	UNSAT	list-index	compound-guards	consumer-unsat-2
+03	StressRoundFixture03	stress-r05-c03	SAT	list-iterator	cross-method-state	consumer-sat-3
+04	StressRoundFixture04	stress-r05-c04	UNSAT	linked-set	nested-object	consumer-unsat-4
+05	StressRoundFixture05	stress-r05-c05	SAT	queue	inherited-alias	consumer-sat-0
+06	StressRoundFixture06	stress-r05-c06	UNSAT	map-of-array	array-decoy	consumer-unsat-1
+07	StressRoundFixture07	stress-r05-c07	SAT	array-of-map	array-fixed-loop	consumer-sat-2
+08	StressRoundFixture08	stress-r05-c08	UNSAT	boxed-primitives	map-entry	consumer-unsat-3
+09	StressRoundFixture09	stress-r05-c09	SAT	string-flow	map-mutation	consumer-sat-4
+10	StressRoundFixture10	stress-r05-c10	UNSAT	wide-and-narrow	list-index	consumer-unsat-0
+11	StressRoundFixture11	stress-r05-c11	SAT	receiver-alias	list-iterator	consumer-sat-1
+12	StressRoundFixture12	stress-r05-c12	UNSAT	multiple-writes	linked-set	consumer-unsat-2
+13	StressRoundFixture13	stress-r05-c13	SAT	scalar-fields	queue	consumer-sat-3
+14	StressRoundFixture14	stress-r05-c14	UNSAT	compound-guards	map-of-array	consumer-unsat-4
+15	StressRoundFixture15	stress-r05-c15	SAT	cross-method-state	array-of-map	consumer-sat-0
+16	StressRoundFixture16	stress-r05-c16	UNSAT	nested-object	boxed-primitives	consumer-unsat-1
+17	StressRoundFixture17	stress-r05-c17	SAT	inherited-alias	string-flow	consumer-sat-2
+18	StressRoundFixture18	stress-r05-c18	UNSAT	array-decoy	wide-and-narrow	consumer-unsat-3
+19	StressRoundFixture19	stress-r05-c19	SAT	array-fixed-loop	receiver-alias	consumer-sat-4
+20	StressRoundFixture20	stress-r05-c20	UNSAT	map-entry	multiple-writes	consumer-unsat-0

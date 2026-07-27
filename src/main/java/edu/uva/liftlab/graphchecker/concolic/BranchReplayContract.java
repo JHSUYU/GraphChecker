@@ -168,7 +168,7 @@ public final class BranchReplayContract {
     }
 
     private static String eventIdentity(BranchWitness witness) {
-        return witness.siteId() + "\u0000" + witness.occurrence();
+        return witness.decisionIdentity();
     }
 
 }

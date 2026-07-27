@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
+import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -1073,8 +1074,7 @@ final class SymbolicRegionPlanner {
                         "javaType", cellJavaType(input),
                         "sourceKind", sourceKind(input, draft.rootMethod),
                         "projection", projection(input));
-                addRegionInputAccessorMaterializationMetadata(port, input,
-                        draft);
+                addRegionInputMaterializationMetadata(port, input, draft);
                 inputPorts.add(port);
             }
             boolean broadInputPortTruncated =
@@ -1200,6 +1200,13 @@ final class SymbolicRegionPlanner {
                 }
                 InputSelection selection = selectExternalInputs(slice,
                         candidates, produced);
+                // A static region can yield several runtime-rooted
+                // activations.  Keep exact causal formals as dormant ports so
+                // a constructor/helper replay can use its own parameter as
+                // the boundary.  Runtime re-slicing selects only the formals
+                // of the invocation that actually became the root.
+                selection.externalInputs.addAll(
+                        causalActivationParameters(slice));
                 boolean promotionCapacityExceeded = false;
                 Set<String> selectedPorts = new LinkedHashSet<>();
                 List<Map<String, Object>> inputBindings = new ArrayList<>();
@@ -1385,6 +1392,13 @@ final class SymbolicRegionPlanner {
                         frameBinding.put("dependencyMethods",
                                 sorted(frameMethods));
                     }
+                    // The exact frame port is the boundary representation for
+                    // this output cell.  A provisional frontier-resolution
+                    // gap for that same cell is therefore stale, not a second
+                    // unresolved dependency.
+                    unresolvedDetails.removeIf(detail ->
+                            outputCell.equals(string(detail.get(
+                                    "dependencyCell"))));
                 }
 
                 Set<String> sites = new LinkedHashSet<>();
@@ -1455,16 +1469,6 @@ final class SymbolicRegionPlanner {
             }
             exact.put("sourceKind", "HEAP_PRESTATE");
             return exact;
-        }
-
-
-        private boolean exactUnitDefines(Map<String, Object> edge,
-                                         String cell) {
-            String local = exactLocalName(string(edge.get("method")), cell);
-            String unit = string(edge.get("unit")).trim();
-            int assignment = unit.indexOf(" = ");
-            return !local.isEmpty() && assignment > 0
-                    && local.equals(unit.substring(0, assignment).trim());
         }
 
         private boolean exactLocalCell(String method, String cell) {
@@ -1547,8 +1551,27 @@ final class SymbolicRegionPlanner {
         private boolean outputSliceFrontierPromotable(
                 String cell, RegionDraft slice) {
             return materializableOpaqueCallResult(cell, slice)
+                    || causalActivationParameter(cell, slice)
                     || materializableDeclaredFieldPath(cell, slice)
                     || materializableDeclaredFieldAccess(cell, slice) != null;
+        }
+
+        private Set<String> causalActivationParameters(RegionDraft slice) {
+            Set<String> result = new LinkedHashSet<>();
+            for (String cell : slice.causalCells) {
+                if (causalActivationParameter(cell, slice)) {
+                    result.add(cell);
+                }
+            }
+            return result;
+        }
+
+        private boolean causalActivationParameter(
+                String cell, RegionDraft slice) {
+            String method = methodForCell(cell);
+            return slice.methods.contains(method)
+                    && !cell.contains("#")
+                    && exactParameterCell(method, cell);
         }
 
         /**
@@ -1571,6 +1594,13 @@ final class SymbolicRegionPlanner {
             if (access == null) {
                 return;
             }
+            addDeclaredFieldAccessMaterializationMetadata(port, access,
+                    slice);
+        }
+
+        private void addDeclaredFieldAccessMaterializationMetadata(
+                Map<String, Object> port, DeclaredFieldAccess access,
+                RegionDraft slice) {
             if (access.accessorCall) {
                 admitPostSelectionSliceMethod(slice,
                         access.accessorImplementationMethod);
@@ -1583,13 +1613,13 @@ final class SymbolicRegionPlanner {
                                 access.invokedMethod,
                                 access.accessorImplementationMethod)
                         .toMap());
-            } else {
+            } else if (directFieldLeafType(access.field.type())) {
                 port.put("materialization", MaterializationSpec.fieldRead(
                         access.field.type(), access.field.signature(),
                         access.field.signature(),
                         Collections.singletonList(access.field.name()),
-                        Collections.<String>emptyList(), access.method,
-                        access.unitIndex).toMap());
+                        Collections.<String>emptyList(),
+                        access.accessSites).toMap());
             }
         }
 
@@ -1599,25 +1629,18 @@ final class SymbolicRegionPlanner {
             port.put("materialization", MaterializationSpec.fieldRead(
                     access.leafField.type(), access.rootField.signature(),
                     access.leafField.signature(), access.fieldPath,
-                    access.proofEdgeIds, access.method,
-                    access.unitIndex).toMap());
+                    access.proofEdgeIds,
+                    Collections.singletonList(access.siteId())).toMap());
         }
 
         /**
-         * Carries an exact accessor site onto an already-selected canonical
-         * declared-field region input.  Broad exception/guard frontiers are
-         * built before requested-output slices, so relying only on output
-         * promotion metadata leaves a directly selected field without the
-         * site evidence that the runtime trace needs to identify its owner.
-         *
-         * <p>The authority is deliberately narrow: exactly one eligible
-         * {@code accessor_field_return} edge in this region's causal slice
-         * must match the complete declared field tuple, caller, canonical
-         * unit/site, declared callee and Soot-resolved implementation.  A
-         * direct getfield, a duplicate accessor edge, or any malformed tuple
-         * leaves the input unchanged.</p>
+         * Carries the one exact field access selected by the region graph
+         * onto every canonical input, including accesses that occur only
+         * after a future branch flip. Primitive fields use the lazy field
+         * hook; boxed references stay concrete and are symbolized only by an
+         * exact primitive accessor-return projection.
          */
-        private void addRegionInputAccessorMaterializationMetadata(
+        private void addRegionInputMaterializationMetadata(
                 Map<String, Object> port, String cell, RegionDraft region) {
             DeclaredFieldPathAccess pathAccess =
                     materializableDeclaredFieldPathAccess(cell, region);
@@ -1626,38 +1649,12 @@ final class SymbolicRegionPlanner {
                         pathAccess);
                 return;
             }
-            DeclaredField field = declaredField(cell);
-            if (field == null || !closedProtocolScalarType(field.type())) {
-                return;
+            DeclaredFieldAccess access = materializableDeclaredFieldAccess(
+                    cell, region);
+            if (access != null) {
+                addDeclaredFieldAccessMaterializationMetadata(port, access,
+                        region);
             }
-            DeclaredFieldAccess selected = null;
-            for (Map<String, Object> edge : region.causalEdges) {
-                DeclaredFieldAccess access = declaredFieldAccessAtEdge(edge,
-                        field, region);
-                if (access == null || !access.accessorCall
-                        || !field.type().equals(declaredReturnType(
-                        access.invokedMethod))
-                        || !field.type().equals(declaredReturnType(
-                        access.accessorImplementationMethod))
-                        || !methodSubSignature(access.invokedMethod).equals(
-                        methodSubSignature(
-                                access.accessorImplementationMethod))) {
-                    continue;
-                }
-                if (selected != null) {
-                    return;
-                }
-                selected = access;
-            }
-            if (selected == null) {
-                return;
-            }
-            port.put("materialization", MaterializationSpec.accessorReturn(
-                    field.type(), field.signature(),
-                    Collections.singletonList(field.name()),
-                    selected.method, selected.unitIndex,
-                    selected.invokedMethod,
-                    selected.accessorImplementationMethod).toMap());
         }
 
         /**
@@ -1687,9 +1684,8 @@ final class SymbolicRegionPlanner {
                         "rootField")))
                         && access.leafField.signature().equals(string(spec.get(
                         "leafField")))
-                        && access.method.equals(string(spec.get("method")))
-                        && access.unitIndex == integer(spec.get(
-                        "unitIndex"), -1)
+                        && Collections.singletonList(access.siteId()).equals(
+                        strings(spec.get("accessSites")))
                         && access.fieldPath.equals(strings(spec.get("path")));
                 }
             }
@@ -1713,8 +1709,10 @@ final class SymbolicRegionPlanner {
                 InputPortResolution resolution,
                 List<Map<String, Object>> inputPorts) {
             if (resolution == null
-                    || !"UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN".equals(
-                    resolution.authority)) {
+                    || !("UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN".equals(
+                    resolution.authority)
+                    || "UNIQUE_EXACT_DECLARED_FIELD_LEAF".equals(
+                    resolution.authority))) {
                 return false;
             }
             Map<String, Object> port = inputPort(resolution.portId,
@@ -1779,41 +1777,24 @@ final class SymbolicRegionPlanner {
                     "rootField")))) {
                 return null;
             }
-            DeclaredFieldAccess selected = null;
-            for (Map<String, Object> edge : slice.causalEdges) {
-                DeclaredFieldAccess access = declaredFieldAccessAtEdge(
-                        edge, field, slice);
-                if (access == null) {
-                    continue;
-                }
-                boolean matches;
-                if (access.accessorCall) {
-                    matches = "ACCESSOR_RETURN".equals(string(spec.get(
-                            "kind")))
-                            && access.method.equals(string(spec.get("method")))
-                            && access.unitIndex == integer(spec.get(
-                            "unitIndex"), -1)
-                            && access.invokedMethod.equals(string(spec.get(
-                            "declaredCallee")))
-                            && access.accessorImplementationMethod.equals(
-                            string(spec.get("implementationMethod")));
-                } else {
-                    matches = "FIELD_READ".equals(string(spec.get("kind")))
-                            && access.method.equals(string(spec.get("method")))
-                            && access.unitIndex == integer(spec.get(
-                            "unitIndex"), -1);
-                }
-                if (!matches) {
-                    continue;
-                }
-                if (selected != null) {
-                    // Duplicate exact rows make even the port-selected site
-                    // non-unique; retain the fail-closed behavior.
-                    return null;
-                }
-                selected = access;
+            DeclaredFieldAccess selected =
+                    materializableDeclaredFieldAccess(cell, slice);
+            if (selected == null) {
+                return null;
             }
-            return selected;
+            boolean matches = selected.accessorCall
+                    ? "ACCESSOR_RETURN".equals(string(spec.get("kind")))
+                    && selected.method.equals(string(spec.get("method")))
+                    && selected.unitIndex == integer(spec.get(
+                    "unitIndex"), -1)
+                    && selected.invokedMethod.equals(string(spec.get(
+                    "declaredCallee")))
+                    && selected.accessorImplementationMethod.equals(
+                    string(spec.get("implementationMethod")))
+                    : "FIELD_READ".equals(string(spec.get("kind")))
+                    && selected.accessSites.equals(
+                    strings(spec.get("accessSites")));
+            return matches ? selected : null;
         }
 
         private DeclaredFieldAccess declaredFieldAccessAtEdge(
@@ -1844,17 +1825,71 @@ final class SymbolicRegionPlanner {
                     || !accessorCall && !kind.contains("field_read")) {
                 return null;
             }
+            String receiverCell = "";
+            List<String> accessSites = Collections.emptyList();
+            if (!accessorCall) {
+                Object staticness = edge.get("declaredFieldStatic");
+                if (!(staticness instanceof Boolean)) {
+                    return null;
+                }
+                if (!Boolean.TRUE.equals(staticness)) {
+                    Map<String, Object> instance =
+                            pairedInstanceFieldRead(edge, field, slice);
+                    if (instance == null) {
+                        return null;
+                    }
+                    receiverCell = string(instance.get("objectFromCell"));
+                }
+                accessSites = Collections.singletonList(siteId);
+            }
             return new DeclaredFieldAccess(field, method, unitIndex,
-                    accessorCall, invokedMethod, implementation);
+                    accessorCall, invokedMethod, implementation,
+                    receiverCell, accessSites);
         }
 
         /**
-         * A bare canonical field is materializable only when the selected
-         * output slice contains one exact, owner-resolved read of that field.
-         * Requiring one static access site prevents a region-wide action from
-         * silently matching an unrelated read of the same inherited field.
-         * Repeated runtime occurrences at that one site remain valid and are
-         * separated by the runtime object/map-entry identity machinery.
+         * Returns the unique receiver-sensitive row paired with one canonical
+         * declared-field read.  The pair shares the exact bytecode site and
+         * target local; its receiver cell is the stable identity that lets
+         * several control-flow alternatives consume one logical field input.
+         */
+        private Map<String, Object> pairedInstanceFieldRead(
+                Map<String, Object> declaredRead, DeclaredField field,
+                RegionDraft slice) {
+            Map<String, Object> selected = null;
+            for (Map<String, Object> candidate
+                    : analysisGraph(slice).edges()) {
+                String receiver = string(candidate.get("objectFromCell"));
+                if (!"instance_field_read".equals(string(candidate.get(
+                        "kind")))
+                        || !exactStaticValueFlow(candidate)
+                        || !Boolean.TRUE.equals(candidate.get(
+                        "fieldSensitive"))
+                        || receiver.isEmpty()
+                        || !sameExactReadSite(declaredRead, candidate)
+                        || !string(declaredRead.get("toCell")).equals(
+                        string(candidate.get("toCell")))
+                        || !string(declaredRead.get("toCell")).equals(
+                        string(candidate.get("objectToCell")))
+                        || !(receiver + "#field:" + field.name()).equals(
+                        string(candidate.get("fromCell")))
+                        || !declaredMetadataMatches(candidate, field)) {
+                    continue;
+                }
+                if (selected != null) {
+                    return null;
+                }
+                selected = candidate;
+            }
+            return selected;
+        }
+
+        /**
+         * A bare canonical field is one logical materialization even when
+         * control flow reads it at several sites.  Every site must have an
+         * exact receiver-sensitive pair, and all pairs must name the same
+         * receiver cell; otherwise same-declaration fields on distinct
+         * objects would be conflated.
          */
         private DeclaredFieldAccess materializableDeclaredFieldAccess(
                 String cell, RegionDraft slice) {
@@ -1874,17 +1909,9 @@ final class SymbolicRegionPlanner {
                 if (candidate == null) {
                     return null;
                 }
-                if (selected != null
-                        && (!selected.method.equals(candidate.method)
-                        || selected.unitIndex != candidate.unitIndex
-                        || selected.accessorCall != candidate.accessorCall
-                        || !selected.invokedMethod.equals(
-                        candidate.invokedMethod)
-                        || !selected.accessorImplementationMethod.equals(
-                        candidate.accessorImplementationMethod))) {
-                    return null;
-                }
-                selected = candidate;
+                selected = selected == null
+                        ? candidate : selected.merge(candidate);
+                if (selected == null) return null;
             }
             return selected;
         }
@@ -2652,6 +2679,11 @@ final class SymbolicRegionPlanner {
                 if (cell.equals(string(input.get("cell")))
                         && (!cell.contains("#field:")
                         || exactAliasMaterializationPort(input))) {
+                    InputPortResolution leaf =
+                            uniqueDeclaredLeafPort(input, inputPorts);
+                    if (!leaf.portId.isEmpty()) {
+                        return leaf;
+                    }
                     return new InputPortResolution(
                             string(input.get("portId")),
                             "EXACT_CELL_IDENTITY");
@@ -2661,11 +2693,6 @@ final class SymbolicRegionPlanner {
                     exactProjectedValueCarrier(cell, inputPorts, slice);
             if (!projectedCarrier.portId.isEmpty()) {
                 return projectedCarrier;
-            }
-            InputPortResolution projectedAliasCarrier =
-                    exactProjectedAliasCarrier(cell, inputPorts, slice);
-            if (!projectedAliasCarrier.portId.isEmpty()) {
-                return projectedAliasCarrier;
             }
             String semantic = semanticFieldKey(cell, rootMethod);
             if (!semantic.isEmpty()) {
@@ -2718,6 +2745,12 @@ final class SymbolicRegionPlanner {
                     return new InputPortResolution(match,
                             "UNIQUE_DECLARED_PROJECTED_FIELD");
                 }
+            }
+
+            InputPortResolution projectedAliasCarrier =
+                    exactProjectedAliasCarrier(cell, inputPorts, slice);
+            if (!projectedAliasCarrier.portId.isEmpty()) {
+                return projectedAliasCarrier;
             }
 
             // A dependency may be a field projection of an object that enters
@@ -2904,6 +2937,40 @@ final class SymbolicRegionPlanner {
             }
             Collection<String> path = strings(spec.get("path"));
             return path.size() >= 1 && path.size() <= 4;
+        }
+
+        /**
+         * A proven multi-field carrier path and its final declared getfield
+         * are two names for one JVM value. Prefer the unique declared leaf so
+         * static and runtime demand slicing share one port identity.
+         */
+        private InputPortResolution uniqueDeclaredLeafPort(
+                Map<String, Object> projected,
+                List<Map<String, Object>> inputPorts) {
+            Map<String, Object> spec = materialization(projected);
+            Collection<String> path = strings(spec.get("path"));
+            String leaf = string(spec.get("leafField"));
+            if (path.size() < 2 || leaf.isEmpty()
+                    || declaredField(leaf) == null) {
+                return InputPortResolution.unresolved();
+            }
+            String selected = "";
+            for (Map<String, Object> input : inputPorts) {
+                if (!leaf.equals(string(input.get("cell")))
+                        || !exactAliasMaterializationPort(input)) {
+                    continue;
+                }
+                String port = string(input.get("portId"));
+                if (port.isEmpty() || !selected.isEmpty()
+                        && !selected.equals(port)) {
+                    return InputPortResolution.unresolved();
+                }
+                selected = port;
+            }
+            return selected.isEmpty()
+                    ? InputPortResolution.unresolved()
+                    : new InputPortResolution(selected,
+                    "UNIQUE_EXACT_DECLARED_FIELD_LEAF");
         }
 
         private String uniquePort(
@@ -4273,6 +4340,10 @@ final class SymbolicRegionPlanner {
                 if (!candidate.endsWith(">.return")) {
                     continue;
                 }
+                if (JavaPrimitiveBoxing.deterministicValueOfReturn(
+                        candidate)) {
+                    continue;
+                }
                 if (callResultHasCausalAlternative(candidate, draft)) {
                     continue;
                 }
@@ -4450,6 +4521,10 @@ final class SymbolicRegionPlanner {
             }
             if (callResultHasCausalAlternative(candidate, draft)) {
                 return "call result has a tracked in-region operand or field projection";
+            }
+            if (JavaPrimitiveBoxing.deterministicValueOfReturn(candidate)) {
+                return "primitive boxing return is derived by the exact "
+                        + "valueOf operand";
             }
             if (internallyDerivedCallResult(candidate, draft)) {
                 return "return value is derived by a call executed inside the region";
@@ -5626,7 +5701,7 @@ final class SymbolicRegionPlanner {
         }
     }
 
-    /** One exact static site that reads a canonical declared scalar field. */
+    /** Exact static sites that read one receiver-sensitive scalar field. */
     private static final class DeclaredFieldAccess {
         private final DeclaredField field;
         private final String method;
@@ -5634,12 +5709,16 @@ final class SymbolicRegionPlanner {
         private final boolean accessorCall;
         private final String invokedMethod;
         private final String accessorImplementationMethod;
+        private final String receiverCell;
+        private final List<String> accessSites;
 
         private DeclaredFieldAccess(DeclaredField field,
                                     String method, int unitIndex,
                                     boolean accessorCall,
                                     String invokedMethod,
-                                    String accessorImplementationMethod) {
+                                    String accessorImplementationMethod,
+                                    String receiverCell,
+                                    Collection<String> accessSites) {
             this.field = field;
             this.method = method;
             this.unitIndex = unitIndex;
@@ -5647,6 +5726,30 @@ final class SymbolicRegionPlanner {
             this.invokedMethod = invokedMethod;
             this.accessorImplementationMethod =
                     accessorImplementationMethod;
+            this.receiverCell = receiverCell;
+            this.accessSites = sorted(accessSites);
+        }
+
+        private DeclaredFieldAccess merge(DeclaredFieldAccess other) {
+            if (other == null || accessorCall != other.accessorCall) {
+                return null;
+            }
+            if (accessorCall) {
+                return method.equals(other.method)
+                        && unitIndex == other.unitIndex
+                        && invokedMethod.equals(other.invokedMethod)
+                        && accessorImplementationMethod.equals(
+                        other.accessorImplementationMethod)
+                        ? this : null;
+            }
+            if (receiverCell.isEmpty()
+                    || !receiverCell.equals(other.receiverCell)) {
+                return null;
+            }
+            Set<String> sites = new LinkedHashSet<>(accessSites);
+            sites.addAll(other.accessSites);
+            return new DeclaredFieldAccess(field, "", -1,
+                    false, "", "", receiverCell, sites);
         }
 
     }
@@ -5687,6 +5790,7 @@ final class SymbolicRegionPlanner {
         private String siteId() {
             return method + "#u" + unitIndex;
         }
+
     }
 
     private static final class OutputCaptureSelection {

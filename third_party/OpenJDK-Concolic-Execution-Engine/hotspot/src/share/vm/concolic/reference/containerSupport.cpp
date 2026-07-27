@@ -153,6 +153,12 @@ void ContainerSupport::constrain_position(
 void ContainerSupport::attach_result(oop result, Expression *expression,
                                      oop owner) {
   if (result == NULL || expression == NULL) return;
+  if (result->is_array()) {
+    SymArr *array =
+        ConcolicMngr::ctx->get_or_alloc_sym_array((arrayOop)result);
+    if (array != NULL) array->set_ref_exp(expression);
+    return;
+  }
   SymInstance *instance =
       ConcolicMngr::ctx->get_or_alloc_sym_inst(result);
   if (instance == NULL) return;

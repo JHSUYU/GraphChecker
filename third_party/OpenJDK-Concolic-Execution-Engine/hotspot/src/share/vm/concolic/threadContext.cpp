@@ -275,6 +275,26 @@ ThreadContext::~ThreadContext() {
   SymStmt::resetGlobalCounter();
 }
 
+Expression *ThreadContext::track_container(
+    oop container, const char *shape, const std::string &prefix) {
+  if (container == NULL || shape == NULL || prefix.empty()) return NULL;
+  Expression *existing = find_container_state(container);
+  if (existing != NULL) return existing;
+
+  if (container->is_array()) {
+    SymArr *array = get_or_alloc_sym_array((arrayOop)container);
+    if (array == NULL) return NULL;
+    array->set_ref_exp(new FieldSymbolExp(
+        array->get_sym_rid(), prefix, T_ARRAY));
+  } else {
+    SymInstance *instance = get_or_alloc_sym_inst(container);
+    if (instance == NULL) return NULL;
+    instance->set_ref_exp(new FieldSymbolExp(
+        instance->get_sym_rid(), prefix, T_OBJECT));
+  }
+  return container_state(container, shape);
+}
+
 Expression *ThreadContext::container_state(oop container,
                                            const char *shape) {
   if (container == NULL) return NULL;
@@ -617,8 +637,17 @@ void ThreadContext::symbolize_recursive(oop obj, std::string prefix) {
     }
   } else if (obj != NULL) {
     SymInstance *instance = find_sym_inst(obj);
+    ResourceMark rm;
+    BasicType boxed_type = primitive_target(
+        std::string(obj->klass()->name()->as_C_string()));
     if (instance != NULL
-        && obj->klass()->name() != vmSymbols::java_lang_String()) {
+        && obj->klass()->name() != vmSymbols::java_lang_String()
+        && boxed_type == T_ILLEGAL) {
+      // A boxed primitive's SymPrimitive::_exp is its value shadow.  The
+      // recursive field walk above has already assigned that shadow the
+      // wrapper's primitive type; replacing it with an object-typed identity
+      // makes intValue()/booleanValue()/... return a reference expression.
+      // Only ordinary objects need this prefix-based reference identity.
       instance->set_ref_exp(new FieldSymbolExp(
           instance->get_sym_rid(), prefix, T_OBJECT));
     }
@@ -632,6 +661,14 @@ void ThreadContext::symbolize_recursive(oop obj, std::string prefix) {
 void ThreadContext::symbolize_field(Handle handle, std::string field_name,
                                     std::string prefix) {
   FieldSymbolizer field_symbolizer(handle(), *this, prefix, field_name);
+  field_symbolizer.do_once();
+}
+
+void ThreadContext::symbolize_exact_field(
+    Handle owner, std::string declaring_class, std::string field_name,
+    std::string descriptor, std::string prefix) {
+  FieldSymbolizer field_symbolizer(
+      owner(), *this, prefix, declaring_class, field_name, descriptor);
   field_symbolizer.do_once();
 }
 
@@ -666,14 +703,13 @@ std::string ThreadContext::get_current_code_pos() {
   address bcp = istate->bcp();
 
   Method *method = istate->method();
-  int line = -1;
+  int bci = -1;
   if (bcp != NULL) {
-    int bci = method->bci_from(bcp);
-    line = method->line_number_from_bci(bci);
+    bci = method->bci_from(bcp);
   }
 
   method->print_name(&ss);
-  ss.print(":%d", line);
+  ss.print(":%d", bci);
 
   return std::string(buf, ss.size());
 }

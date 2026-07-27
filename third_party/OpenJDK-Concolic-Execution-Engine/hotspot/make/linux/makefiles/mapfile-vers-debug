@@ -260,6 +260,7 @@ SUNWprivate_1.1 {
                 JVM_Symbolize;
                 JVM_Symbolize_prefix;
                 JVM_SymbolizeField;
+                JVM_SymbolizeExactField;
                 JVM_SymbolizeMethod;
                 JVM_PrintSymExp;
                 JVM_RecordStmtObj;
@@ -271,6 +272,9 @@ SUNWprivate_1.1 {
                 JVM_MarkConcolicBranch;
                 JVM_GetConcolicBranchEvents;
                 JVM_GetSymbolicExpression;
+                JVM_GetSymbolicFieldExpression;
+                JVM_TrackContainerExpression;
+                JVM_SnapshotContainerExpression;
                 JVM_GetConcolicRegionSummary;
                 JVM_FinishConcolicRegion;
 

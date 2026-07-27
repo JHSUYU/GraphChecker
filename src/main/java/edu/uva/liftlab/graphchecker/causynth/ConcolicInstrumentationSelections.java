@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import soot.SootClass;
+import soot.SootField;
 import soot.SootFieldRef;
 
 import java.io.BufferedReader;
@@ -73,7 +74,7 @@ final class ConcolicInstrumentationSelections {
         private final String receiverClass;
         private final ConcolicBranchSelection branches;
         private final ConcolicMaterializationSelection materializations;
-        private final List<OutputCaptureSpec> outputCaptures;
+        private final List<RootedOutputCapture> outputCaptures;
         private final Set<String> instrumentationMethods;
         private final boolean boundedOutputClosureCoverageReady;
 
@@ -92,7 +93,8 @@ final class ConcolicInstrumentationSelections {
             JsonArray symbolic = inputActions.symbolic();
             branches = ConcolicBranchSelection.from(task.branches());
             materializations = ConcolicMaterializationSelection.from(symbolic);
-            outputCaptures = task.outputCaptures();
+            outputCaptures = rootedOutputCaptures(task.outputCaptures(),
+                    inputActions.all());
 
             LinkedHashSet<String> methods = new LinkedHashSet<>();
             methods.add(rootMethod);
@@ -173,7 +175,7 @@ final class ConcolicInstrumentationSelections {
             return materializations;
         }
 
-        List<OutputCaptureSpec> outputCaptures() {
+        List<RootedOutputCapture> outputCaptures() {
             return outputCaptures;
         }
 
@@ -183,6 +185,65 @@ final class ConcolicInstrumentationSelections {
 
         boolean boundedOutputClosureCoverageReady() {
             return boundedOutputClosureCoverageReady;
+        }
+
+        private static List<RootedOutputCapture> rootedOutputCaptures(
+                List<OutputCaptureSpec> captures, JsonArray actions)
+                throws IOException {
+            List<RootedOutputCapture> rooted = new ArrayList<>();
+            for (OutputCaptureSpec capture : captures) {
+                JsonObject match = null;
+                for (JsonElement element : actions) {
+                    JsonObject action = element.getAsJsonObject();
+                    if (!capture.accessRootInputPort().equals(
+                            jsonString(action, "symbol"))) {
+                        continue;
+                    }
+                    if (match != null) {
+                        throw new IOException("Output capture "
+                                + capture.captureBindingId()
+                                + " has multiple access-root input actions");
+                    }
+                    match = action;
+                }
+                List<String> path = match == null
+                        ? capture.fieldPath()
+                        : FieldPathSpec.stringArray(match, "fieldPath");
+                if (path.isEmpty()
+                        || capture.fieldPath().size() != 1
+                        || !capture.fieldPath().get(0).equals(
+                        path.get(path.size() - 1))) {
+                    throw new IOException("Output capture "
+                            + capture.captureBindingId()
+                            + " has no exact rooted field path");
+                }
+                rooted.add(new RootedOutputCapture(capture, path));
+            }
+            return Collections.unmodifiableList(rooted);
+        }
+    }
+
+    static final class RootedOutputCapture {
+        private final OutputCaptureSpec capture;
+        private final List<String> fieldPath;
+
+        private RootedOutputCapture(OutputCaptureSpec capture,
+                                    List<String> fieldPath) {
+            this.capture = capture;
+            this.fieldPath = Collections.unmodifiableList(
+                    new ArrayList<>(fieldPath));
+        }
+
+        String captureBindingId() {
+            return capture.captureBindingId();
+        }
+
+        String fieldSignature() {
+            return capture.fieldSignature();
+        }
+
+        List<String> fieldPath() {
+            return fieldPath;
         }
     }
 
@@ -269,11 +330,6 @@ final class ConcolicInstrumentationSelections {
                     local = firstNonBlank(local, matcher.group(2));
                 }
                 if (!method.isEmpty() && !local.isEmpty()) {
-                    Map<String, Set<Integer>> locals =
-                            localsByMethod.computeIfAbsent(method,
-                                    ignored -> new LinkedHashMap<>());
-                    Set<Integer> sites = locals.computeIfAbsent(local,
-                            ignored -> new LinkedHashSet<>());
                     JsonElement definitions = action.get("definitionSites");
                     if (definitions != null && definitions.isJsonArray()) {
                         for (JsonElement element
@@ -282,10 +338,15 @@ final class ConcolicInstrumentationSelections {
                                 int site = intJson(element.getAsJsonObject(),
                                         "unitIndex", -1);
                                 if (site >= 0) {
-                                    sites.add(site);
+                                    addLocal(method, local, site);
                                 }
                             }
                         }
+                    }
+                    if (definitions == null
+                            || !definitions.isJsonArray()
+                            || definitions.getAsJsonArray().size() == 0) {
+                        addLocal(method, local, -1);
                     }
                 }
                 return;
@@ -299,6 +360,15 @@ final class ConcolicInstrumentationSelections {
             if (target != null) {
                 fields.add(target);
             }
+        }
+
+        private void addLocal(String method, String local, int unitIndex) {
+            Map<String, Set<Integer>> locals =
+                    localsByMethod.computeIfAbsent(method,
+                            ignored -> new LinkedHashMap<>());
+            Set<Integer> sites = locals.computeIfAbsent(local,
+                    ignored -> new LinkedHashSet<>());
+            if (unitIndex >= 0) sites.add(unitIndex);
         }
 
         void addAccessorCallTarget(JsonObject action) throws IOException {
@@ -381,10 +451,13 @@ final class ConcolicInstrumentationSelections {
             if (field == null) {
                 return false;
             }
-            SootClass declaringClass = field.declaringClass();
+            SootField declared = CausynthStaticFacts.declaredField(field);
+            SootClass declaringClass = declared == null
+                    ? field.declaringClass() : declared.getDeclaringClass();
             String owner = declaringClass == null ? ""
                     : stringValue(declaringClass.getName());
-            String fieldName = stringValue(field.name());
+            String fieldName = stringValue(declared == null
+                    ? field.name() : declared.getName());
             for (FieldTarget target : fields) {
                 if (target.name.equals(fieldName)
                         && (target.owner.isEmpty()

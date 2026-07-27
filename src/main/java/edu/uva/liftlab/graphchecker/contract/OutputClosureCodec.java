@@ -101,14 +101,7 @@ public final class OutputClosureCodec {
             producer.requireOutputPort(member.portId());
             members.add(member);
         }
-        OutputClosureContract result =
-                new OutputClosureContract(producer, members, causalEdges);
-        if (!result.supportedJointCapture()) {
-            throw new IllegalArgumentException(
-                    "multi-output closure requires one direct primitive capture "
-                            + "per member");
-        }
-        return result;
+        return new OutputClosureContract(producer, members, causalEdges);
     }
 
     /**
@@ -154,14 +147,8 @@ public final class OutputClosureCodec {
                 }
             }
         }
-        OutputClosureContract result =
-                new OutputClosureContract(producer, members.values(),
-                        causalEdges.values());
-        if (!result.supportedJointCapture()) {
-            throw new IllegalArgumentException(
-                    "merged output closure is outside bounded joint scope");
-        }
-        return result;
+        return new OutputClosureContract(producer, members.values(),
+                causalEdges.values());
     }
 
     /**
@@ -312,8 +299,8 @@ public final class OutputClosureCodec {
         String javaType = requireText(binding, "javaType");
         if (field == null || !cell.equals(
                 requireText(binding, "fieldSignature"))
-                || fieldPath.isEmpty()
-                || !field.name().equals(fieldPath.get(fieldPath.size() - 1))
+                || fieldPath.size() != 1
+                || !field.name().equals(fieldPath.get(0))
                 || !field.type().equals(javaType)
                 || !descriptor.equals(javaTypeDescriptor(javaType))) {
             throw new IllegalArgumentException(

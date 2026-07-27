@@ -435,6 +435,33 @@ JVM_ENTRY(void, JVM_SymbolizeField(JNIEnv *env, jclass ignored, jobject obj,
 #endif
 JVM_END
 
+JVM_ENTRY(void, JVM_SymbolizeExactField(
+    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
+    jstring field_name, jstring descriptor, jstring prefix))
+  JVMWrapper("JVM_SymbolizeExactField");
+#ifdef ENABLE_CONCOLIC
+  if (owner == NULL || declaring_class == NULL || field_name == NULL
+      || descriptor == NULL || prefix == NULL) {
+    guarantee(false, "JVM_SymbolizeExactField: arguments must be non-null");
+  }
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle field_owner(THREAD, JNIHandles::resolve_non_null(owner));
+  const char *holder = java_lang_String::as_utf8_string(
+      JNIHandles::resolve_non_null(declaring_class));
+  const char *name = java_lang_String::as_utf8_string(
+      JNIHandles::resolve_non_null(field_name));
+  const char *type = java_lang_String::as_utf8_string(
+      JNIHandles::resolve_non_null(descriptor));
+  const char *symbol_prefix = java_lang_String::as_utf8_string(
+      JNIHandles::resolve_non_null(prefix));
+  ConcolicMngr::symbolizeExactField(
+      field_owner, holder, name, type, symbol_prefix);
+#else
+  return;
+#endif
+JVM_END
+
 JVM_ENTRY(void, JVM_PrintSymExp(JNIEnv *env, jclass ignored, jobject obj))
   JVMWrapper("JVM_PrintSymExp");
 #ifdef ENABLE_CONCOLIC
@@ -661,6 +688,72 @@ JVM_ENTRY(jstring, JVM_GetSymbolicExpression(JNIEnv *env, jclass ignored,
       "{\"schemaVersion\":1,\"active\":false,\"kind\":\"CONCOLIC_DISABLED\",\"symbolic\":false}",
       THREAD);
   return (jstring) JNIHandles::make_local(env, str());
+#endif
+JVM_END
+
+JVM_ENTRY(jstring, JVM_GetSymbolicFieldExpression(
+    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
+    jstring field_name, jstring descriptor, jobject concrete_value))
+  JVMWrapper("JVM_GetSymbolicFieldExpression");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle field_owner(THREAD, JNIHandles::resolve(owner));
+  Handle field_value(THREAD, JNIHandles::resolve(concrete_value));
+  const char *holder = declaring_class == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(declaring_class));
+  const char *name = field_name == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(field_name));
+  const char *type = descriptor == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(descriptor));
+  std::string serialized = ConcolicMngr::getSymbolicFieldExpression(
+      field_owner, holder, name, type, field_value);
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      serialized.c_str(), THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#else
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      "{\"schemaVersion\":1,\"active\":false,"
+      "\"kind\":\"CONCOLIC_DISABLED\",\"symbolic\":false,"
+      "\"expression\":null}", THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#endif
+JVM_END
+
+JVM_ENTRY(jboolean, JVM_TrackContainerExpression(
+    JNIEnv *env, jclass ignored, jobject container, jstring prefix))
+  JVMWrapper("JVM_TrackContainerExpression");
+#ifdef ENABLE_CONCOLIC
+  if (container == NULL || prefix == NULL) return JNI_FALSE;
+  ResourceMark rm(THREAD);
+  Handle target(THREAD, JNIHandles::resolve_non_null(container));
+  const char *canonical_prefix = java_lang_String::as_utf8_string(
+      JNIHandles::resolve_non_null(prefix));
+  return ConcolicMngr::trackContainerExpression(
+      target, canonical_prefix) ? JNI_TRUE : JNI_FALSE;
+#else
+  return JNI_FALSE;
+#endif
+JVM_END
+
+JVM_ENTRY(jboolean, JVM_SnapshotContainerExpression(
+    JNIEnv *env, jclass ignored, jobject container, jobjectArray keys,
+    jobjectArray values, jint kind))
+  JVMWrapper("JVM_SnapshotContainerExpression");
+#ifdef ENABLE_CONCOLIC
+  if (container == NULL || values == NULL) return JNI_FALSE;
+  HandleMark hm;
+  Handle target(THREAD, JNIHandles::resolve_non_null(container));
+  Handle snapshot_keys(THREAD, JNIHandles::resolve(keys));
+  Handle snapshot_values(THREAD, JNIHandles::resolve_non_null(values));
+  return ConcolicMngr::snapshotContainerExpression(
+      target, snapshot_keys, snapshot_values, kind)
+      ? JNI_TRUE : JNI_FALSE;
+#else
+  return JNI_FALSE;
 #endif
 JVM_END
 

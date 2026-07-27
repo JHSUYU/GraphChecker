@@ -95,6 +95,9 @@ public:
   inline void symbolize(Handle handle, std::string prefix) { this->symbolize_recursive(handle(), prefix); }
   void symbolize_field(Handle handle, std::string field_name,
                        std::string prefix);
+  void symbolize_exact_field(
+      Handle owner, std::string declaring_class, std::string field_name,
+      std::string descriptor, std::string prefix);
   inline void symbolize_method(const char *class_name,
                                const char *method_name) {
     _method_symbolizer.add_method(class_name, method_name);
@@ -214,6 +217,8 @@ public:
 
   void write_array_element(arrayOop array, int index,
                            Expression *expression);
+  Expression *track_container(oop container, const char *shape,
+                              const std::string &prefix);
   Expression *container_state(oop container, const char *shape);
   Expression *find_container_state(oop container) const;
   void set_container_state(oop container, Expression *state);

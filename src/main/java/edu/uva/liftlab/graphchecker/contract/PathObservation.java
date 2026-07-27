@@ -30,14 +30,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * Worklist and relation consumers use the typed and canonical fields below.</p>
  */
 public final class PathObservation {
-    private static final String[] RELATION_EVIDENCE_FIELDS = {
-            "vmIntrinsicPlaceholderBindings",
-            "unforcedEnvironmentValidationRequirements"
-    };
-    private static final String[] STABLE_CASE_FIELDS = {
-            "vmIntrinsicPlaceholderBindings",
-            "unforcedEnvironmentValidationRequirements"
-    };
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().create();
 
@@ -47,16 +39,10 @@ public final class PathObservation {
     private final String branchMappingIssue;
     private final AlphaNormalizer alpha;
     private final String pathKey;
-    private final String stableCaseFingerprint;
 
     private PathObservation(JsonObject summary, JsonObject task) {
         this.raw = summary.deepCopy();
         this.scope = Scope.decode(raw, task);
-        JsonObject stableCase = new JsonObject();
-        for (String field : STABLE_CASE_FIELDS) {
-            stableCase.add(field, array(raw, field).deepCopy());
-        }
-        this.stableCaseFingerprint = CanonicalJson.sha256(stableCase);
         List<SummaryBranchMapping> decoded = Collections.emptyList();
         String issue = "";
         try {
@@ -75,10 +61,6 @@ public final class PathObservation {
             throw new IllegalArgumentException("summary is required");
         }
         return new PathObservation(summary, task);
-    }
-
-    public static String stablePathKey(JsonObject summary) {
-        return decode(summary, null).pathKey;
     }
 
     public String regionId() {
@@ -105,16 +87,6 @@ public final class PathObservation {
         return array(raw, "edgeBindings").deepCopy();
     }
 
-    void copyRelationEvidenceTo(JsonObject target) {
-        for (String field : RELATION_EVIDENCE_FIELDS) {
-            target.add(field, array(raw, field).deepCopy());
-        }
-    }
-
-    public String stableCaseFingerprint() {
-        return stableCaseFingerprint;
-    }
-
     public boolean hasExactOutputSet(Set<String> outputPorts) {
         return new TreeSet<>(object(raw, "outputExpressions").keySet())
                 .equals(new TreeSet<>(outputPorts));
@@ -138,6 +110,7 @@ public final class PathObservation {
                 prefixBefore(mapping.summaryPcIndex()), alpha));
         component(value, mapping.siteId());
         component(value, String.valueOf(mapping.occurrence()));
+        component(value, String.valueOf(mapping.decisionOrdinal()));
         component(value, String.valueOf(desiredOutcome));
         return CanonicalJson.sha256(value.toString());
     }
