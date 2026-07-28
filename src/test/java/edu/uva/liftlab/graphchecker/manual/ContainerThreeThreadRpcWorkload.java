@@ -101,14 +101,14 @@ public final class ContainerThreeThreadRpcWorkload {
                 input1=10;
             }
             if(input2<10){
-                if(input2 <5){
-                    input2 =5;
-                }else{
-                    if(input1>10){
-                        input3 = 17;
-                    }
-                    input2=10;
-                }
+//                if(input2 <5){
+//                    input2 =5;
+//                }else{
+//                    if(input1>10){
+//                        input3 = 17;
+//                    }
+//                    input2=10;
+//                }
             }
 
             if(input3>0){
