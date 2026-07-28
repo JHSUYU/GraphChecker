@@ -9,9 +9,8 @@ fi
 
 server=$1
 experiments_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
-graphchecker_dir=$(cd "${experiments_dir}/.." && pwd -P)
-remote_root=target/manual-container-three-thread-rpc
-download_root="${graphchecker_dir}/target/manual-container-three-thread-rpc-json"
+remote_root=/opt/GraphChecker/target/manual-container-three-thread-rpc
+download_root="${experiments_dir}/debug"
 run_id=$(date -u +%Y%m%dT%H%M%SZ)
 
 mkdir -p "${download_root}"
