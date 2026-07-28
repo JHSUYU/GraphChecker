@@ -35,5 +35,23 @@ The final SMT file is:
 target/manual-container-three-thread-rpc/candidate/candidate.smt2
 ```
 
+To download every JSON artifact from a remote GraphChecker server, preserving
+the artifact directory layout and converting each JSONL file to a JSON array:
+
+```bash
+experiments/download-manual-container-json.sh \
+  ZhenyuLi@c220g5-120102.wisc.cloudlab.us
+```
+
+Each download is written below:
+
+```text
+target/manual-container-three-thread-rpc-json/<UTC timestamp>/
+```
+
+The remote SSH session must start in the GraphChecker repository root because
+the artifact source is the relative path
+`target/manual-container-three-thread-rpc`.
+
 This entry point does not run the maintained fixture matrix and does not
 assert a fixed SAT/UNSAT profile.

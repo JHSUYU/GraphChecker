@@ -45,6 +45,24 @@ public final class CompoundTargetThreeThreadRpcWorkload {
         }
     }
 
+    static final class ReceivedValues {
+        int a;
+        int c;
+        int x;
+        int b;
+        int d;
+        int y;
+
+        ReceivedValues(int a, int c, int x, int b, int d, int y) {
+            this.a = a;
+            this.c = c;
+            this.x = x;
+            this.b = b;
+            this.d = d;
+            this.y = y;
+        }
+    }
+
     static final class ProducerA {
         AEnvelope input;
 
@@ -61,7 +79,19 @@ public final class CompoundTargetThreeThreadRpcWorkload {
         }
 
         private int select(AValueLeaf value) {
-            return value.enabled ? 7 : 0;
+            int selected;
+            if (value.enabled && input.value.enabled) {
+                selected = 3;
+            } else if (value.enabled || input.value.enabled) {
+                selected = 2;
+            } else {
+                selected = 0;
+            }
+            if ((value.enabled && selected == 3)
+                    || (!value.enabled && selected > 0)) {
+                selected += 4;
+            }
+            return selected;
         }
     }
 
@@ -97,7 +127,21 @@ public final class CompoundTargetThreeThreadRpcWorkload {
         }
 
         private int select(BValueLeaf value) {
-            return value.enabled ? 6 : 1;
+            int selected;
+            if (value.enabled && input.value.enabled) {
+                selected = 3;
+            } else if (value.enabled || input.value.enabled) {
+                selected = 2;
+            } else {
+                selected = 1;
+            }
+            if ((value.enabled || selected > 2)
+                    && input.value.enabled) {
+                selected *= 2;
+            } else if (!value.enabled && selected > 1) {
+                selected = 1;
+            }
+            return selected;
         }
     }
 
@@ -294,17 +338,26 @@ public final class CompoundTargetThreeThreadRpcWorkload {
             int receivedB = bus.getB();
             int receivedD = bus.getD();
             int receivedY = bus.getY();
+            ReceivedValues values = new ReceivedValues(receivedA,
+                    receivedC, receivedX, receivedB, receivedD, receivedY);
             a = receivedA;
             b = receivedB;
             c = receivedC;
             d = receivedD;
             x = receivedX;
             y = receivedY;
-            if (receivedA < 0 && receivedB < 0) {
+            if ((values.a < 0 && receivedB < 0)
+                    || (receivedX < -10 && values.y > 10)) {
                 return;
             }
-            if ((receivedA > receivedB && receivedC > receivedD)
-                    || receivedX > receivedY) {
+            if (((values.a > receivedB
+                    && receivedC > values.d
+                    && values.c >= receivedD)
+                    || (values.x > receivedY
+                    && (receivedA >= 0 || values.b >= 0)))
+                    && ((receivedA == values.c
+                    && receivedB == values.d)
+                    || receivedX + values.y == 4)) {
                 throw new @CausynthExceptionTarget(
                         "compound-target-reachable")
                         ReachableCompoundTargetException(receivedA,
@@ -328,19 +381,31 @@ public final class CompoundTargetThreeThreadRpcWorkload {
             int receivedB = bus.getB();
             int receivedD = bus.getD();
             int receivedY = bus.getY();
+            ReceivedValues values = new ReceivedValues(receivedA,
+                    receivedC, receivedX, receivedB, receivedD, receivedY);
             a = receivedA;
             b = receivedB;
             c = receivedC;
             d = receivedD;
             x = receivedX;
             y = receivedY;
-            if (receivedA < 0 && receivedB < 0) {
+            if ((values.a < 0 && receivedB < 0)
+                    || (receivedX < -10 && values.y > 10)) {
                 return;
             }
-            if ((receivedA > receivedB && receivedC > receivedD)
-                    || receivedX > receivedY) {
-                if (receivedA <= receivedB
-                        && receivedX <= receivedY) {
+            if (((values.a > receivedB
+                    && receivedC > values.d
+                    && values.c >= receivedD)
+                    || (values.x > receivedY
+                    && (receivedA >= 0 || values.b >= 0)))
+                    && ((receivedA == values.c
+                    && receivedB == values.d)
+                    || receivedX + values.y == 4)) {
+                if ((values.a <= receivedB
+                        && receivedX <= values.y)
+                        || (receivedC < values.d
+                        && values.x > receivedY
+                        && receivedA > values.b)) {
                     throw new @CausynthExceptionTarget(
                             "compound-target-unreachable")
                             UnreachableCompoundTargetException(receivedA,

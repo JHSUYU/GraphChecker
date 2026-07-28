@@ -8,7 +8,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * Small harness shared by the fixed-order three-thread fixture workloads.
  */
 final class FixedOrderRpcFixtureSupport {
-    static final long TIMEOUT_MILLIS = 10_000L;
+    // Hundreds of independent custom-JDK replays may be scheduled at once;
+    // the timeout is only a deadlock guard and must not turn host load into a
+    // semantic fixture failure.
+    static final long TIMEOUT_MILLIS = 60_000L;
 
     private FixedOrderRpcFixtureSupport() {
     }

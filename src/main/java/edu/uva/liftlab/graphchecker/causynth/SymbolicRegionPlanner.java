@@ -1698,18 +1698,19 @@ final class SymbolicRegionPlanner {
         }
 
         /**
-         * A projected dependency may deliberately resolve to a different
-         * canonical cell.  In that case the exact alias walk, rather than a
-         * second direct-access comparison against the original projection,
-         * is the compatibility proof.  Still require the selected terminal
-         * to carry executable leaf metadata so the weaker projected-port
-         * fallback cannot bypass the ordinary materialization checks.
+         * A dependency may resolve either to its exact executable port or to
+         * a different canonical cell through a proven projection chain.  In
+         * both cases that identity proof, rather than a second access-site
+         * comparison against the dependency's local view, establishes
+         * compatibility.  Still require executable leaf metadata so a broad
+         * carrier cannot bypass ordinary materialization checks.
          */
         private boolean exactMaterializableAliasResolution(
                 InputPortResolution resolution,
                 List<Map<String, Object>> inputPorts) {
             if (resolution == null
-                    || !("UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN".equals(
+                    || !("EXACT_CELL_IDENTITY".equals(resolution.authority)
+                    || "UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN".equals(
                     resolution.authority)
                     || "UNIQUE_EXACT_DECLARED_FIELD_LEAF".equals(
                     resolution.authority))) {
@@ -1838,13 +1839,30 @@ final class SymbolicRegionPlanner {
                     if (instance == null) {
                         return null;
                     }
-                    receiverCell = string(instance.get("objectFromCell"));
+                    receiverCell = canonicalFieldReceiver(
+                            string(instance.get("objectFromCell")), slice);
                 }
                 accessSites = Collections.singletonList(siteId);
             }
             return new DeclaredFieldAccess(field, method, unitIndex,
                     accessorCall, invokedMethod, implementation,
                     receiverCell, accessSites);
+        }
+
+        private String canonicalFieldReceiver(
+                String receiver, RegionDraft slice) {
+            Map<String, Object> definition = unique(
+                    analysisGraph(slice).incoming(receiver),
+                    edge -> "instance_field_read".equals(string(edge.get(
+                            "kind")))
+                            && exactStaticValueFlow(edge)
+                            && Boolean.TRUE.equals(edge.get("fieldSensitive"))
+                            && receiver.equals(string(edge.get("toCell")))
+                            && receiver.equals(string(edge.get(
+                            "objectToCell")))
+                            && !string(edge.get("fromCell")).isEmpty());
+            return definition == null ? receiver
+                    : string(definition.get("fromCell"));
         }
 
         /**
@@ -2561,6 +2579,21 @@ final class SymbolicRegionPlanner {
                     slice.methods.add(method);
                 }
             }
+            // Keep each concrete Jimple decision that directly consumes a
+            // value in the output dependency closure.  Short-circuit
+            // lowering can make both successors eventually reach an output
+            // definition, so no path-guard edge exists even though the
+            // decision selects which later definition/return is used.
+            // Omitting that site folds its VM predicate into the next branch
+            // window and makes replay occurrence identity unstable.
+            for (Map<String, Object> edge
+                    : graph.forMethods(slice.methods)) {
+                if ("GUARD".equals(string(edge.get("transferKind")))
+                        && slice.causalCells.contains(
+                        string(edge.get("fromCell")))) {
+                    slice.causalEdges.add(edge);
+                }
+            }
             admitExactAccessorImplementationMethods(slice);
             slice.methodBudgetTruncated = slice.methods.size()
                     > MAX_REQUESTED_OUTPUT_SLICE_METHODS;
@@ -2694,6 +2727,16 @@ final class SymbolicRegionPlanner {
             if (!projectedCarrier.portId.isEmpty()) {
                 return projectedCarrier;
             }
+            InputPortResolution declaredLeaf =
+                    uniquePortForDeclaredLeaf(cell, inputPorts);
+            if (!declaredLeaf.portId.isEmpty()) {
+                return declaredLeaf;
+            }
+            InputPortResolution projectedAliasCarrier =
+                    exactProjectedAliasCarrier(cell, inputPorts, slice);
+            if (!projectedAliasCarrier.portId.isEmpty()) {
+                return projectedAliasCarrier;
+            }
             String semantic = semanticFieldKey(cell, rootMethod);
             if (!semantic.isEmpty()) {
                 String match = "";
@@ -2745,12 +2788,6 @@ final class SymbolicRegionPlanner {
                     return new InputPortResolution(match,
                             "UNIQUE_DECLARED_PROJECTED_FIELD");
                 }
-            }
-
-            InputPortResolution projectedAliasCarrier =
-                    exactProjectedAliasCarrier(cell, inputPorts, slice);
-            if (!projectedAliasCarrier.portId.isEmpty()) {
-                return projectedAliasCarrier;
             }
 
             // A dependency may be a field projection of an object that enters
@@ -2957,6 +2994,31 @@ final class SymbolicRegionPlanner {
             String selected = "";
             for (Map<String, Object> input : inputPorts) {
                 if (!leaf.equals(string(input.get("cell")))
+                        || !exactAliasMaterializationPort(input)) {
+                    continue;
+                }
+                String port = string(input.get("portId"));
+                if (port.isEmpty() || !selected.isEmpty()
+                        && !selected.equals(port)) {
+                    return InputPortResolution.unresolved();
+                }
+                selected = port;
+            }
+            return selected.isEmpty()
+                    ? InputPortResolution.unresolved()
+                    : new InputPortResolution(selected,
+                    "UNIQUE_EXACT_DECLARED_FIELD_LEAF");
+        }
+
+        private InputPortResolution uniquePortForDeclaredLeaf(
+                String cell, List<Map<String, Object>> inputPorts) {
+            if (declaredField(cell) == null) {
+                return InputPortResolution.unresolved();
+            }
+            String selected = "";
+            for (Map<String, Object> input : inputPorts) {
+                Map<String, Object> spec = materialization(input);
+                if (!cell.equals(string(spec.get("leafField")))
                         || !exactAliasMaterializationPort(input)) {
                     continue;
                 }

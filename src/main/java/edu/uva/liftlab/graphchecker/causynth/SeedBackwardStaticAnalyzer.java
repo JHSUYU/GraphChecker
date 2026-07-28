@@ -26,7 +26,6 @@ import soot.jimple.Stmt;
 import soot.jimple.ThisRef;
 import soot.jimple.ThrowStmt;
 import soot.toolkits.graph.BriefUnitGraph;
-import soot.toolkits.graph.MHGDominatorsFinder;
 import soot.toolkits.graph.UnitGraph;
 
 import java.io.IOException;
@@ -487,23 +486,10 @@ final class SeedBackwardStaticAnalyzer {
         if (controlFlow == null || targetFact.unit == null) {
             return Collections.emptyList();
         }
-        Set<Unit> dominators = Collections.emptySet();
-        if (controllingOnly) {
-            dominators = Collections.newSetFromMap(
-                    new IdentityHashMap<Unit, Boolean>());
-            try {
-                dominators.addAll(controlFlow.dominators
-                        .getDominators(targetFact.unit));
-            } catch (RuntimeException ignored) {
-                return Collections.emptyList();
-            }
-        }
         List<ExceptionGuard> guards = new ArrayList<>();
         for (Fact candidate : factsByMethod.getOrDefault(method,
                 Collections.emptyList())) {
-            if (!candidate.isBranch
-                    || controllingOnly
-                    && !dominators.contains(candidate.unit)) {
+            if (!candidate.isBranch) {
                 continue;
             }
             CausynthBranchShape branchShape =
@@ -525,6 +511,14 @@ final class SeedBackwardStaticAnalyzer {
                     reachingIndices.add(successorIndex);
                 }
             }
+            // Control dependence does not require the branch itself to
+            // dominate the target.  In javac's lowering of `a && b || c`,
+            // an earlier short-circuit branch may be bypassed by another
+            // operand while still deciding whether a relevant definition is
+            // reached.  Requiring dominance dropped precisely those guards.
+            // The successor test is the actual bounded criterion: for an
+            // ordinary output definition, at least one but not every
+            // successor reaches it without revisiting the branch.
             boolean relevant = reachingSuccessors > 0
                     && (!controllingOnly
                     || reachingSuccessors < successors.size());
@@ -1214,6 +1208,19 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 String actual = callsite.actuals.get(param.index);
                 if (ignoreNode(actual)) {
+                    MethodSig constructor = parseMethodSig(
+                            param.constructor);
+                    addTypedLiteralCallerArgument(
+                            "constructor_caller_literal_argument",
+                            constructor, param.index, callsite.method,
+                            callsite.fact);
+                    if (constructor != null
+                            && param.index < constructor.params.size()
+                            && isTypedLiteralArgument(callsite.fact,
+                            param.index,
+                            constructor.params.get(param.index))) {
+                        selectedMethods.add(callsite.method);
+                    }
                     continue;
                 }
                 SootMethod callerMethod = methodsBySignature.get(callsite.method);
@@ -1284,8 +1291,9 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 String actual = callsite.actuals.get(index);
                 if (ignoreNode(actual)) {
-                    addTypedLiteralCallerArgument(callee,
-                            index, callsite);
+                    addTypedLiteralCallerArgument(
+                            "method_caller_literal_argument", callee,
+                            index, callsite.method, callsite.fact);
                     if (isTypedLiteralArgument(callsite.fact, index,
                             callee.params.get(index))) {
                         selectedMethods.add(callsite.method);
@@ -1314,11 +1322,11 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    private void addTypedLiteralCallerArgument(MethodSig callee,
-                                               int argumentIndex,
-                                               MethodCallsite callsite) {
-        Value literal = invokeArgument(callsite.fact, argumentIndex);
-        if (!(literal instanceof Constant)
+    private void addTypedLiteralCallerArgument(
+            String kind, MethodSig callee, int argumentIndex,
+            String callerMethod, Fact fact) {
+        Value literal = invokeArgument(fact, argumentIndex);
+        if (callee == null || !(literal instanceof Constant)
                 || argumentIndex < 0
                 || argumentIndex >= callee.params.size()) {
             return;
@@ -1328,11 +1336,17 @@ final class SeedBackwardStaticAnalyzer {
         if (literalValue.isEmpty()) {
             return;
         }
-        String source = factNode(callsite.fact);
+        String source = factNode(fact);
         String target = formalParam(callee, argumentIndex);
-        addEdge("method_caller_literal_argument",
-                source, target, callsite.method, callsite.fact,
+        addEdge(kind, source, target, callerMethod, fact,
                 "exact callsite supplies a typed literal to relevant callee formal");
+        StaticEdge edge = emittedEdgeRows.get(edgeKey(kind, source, target,
+                callerMethod, fact));
+        if (edge != null) {
+            edge.put("argumentIndex", argumentIndex);
+            edge.put("literalType", formalType);
+            edge.put("literalValue", literalValue);
+        }
     }
 
     private boolean isTypedLiteralArgument(Fact fact, int argumentIndex,
@@ -4340,14 +4354,12 @@ final class SeedBackwardStaticAnalyzer {
     private static final class MethodControlFlow {
         private final Body body;
         private final UnitGraph graph;
-        private final MHGDominatorsFinder<Unit> dominators;
         private final Map<Unit, Fact> factsByUnit;
 
         private MethodControlFlow(Body body, UnitGraph graph,
                                   Map<Unit, Fact> factsByUnit) {
             this.body = body;
             this.graph = graph;
-            this.dominators = new MHGDominatorsFinder<>(graph);
             this.factsByUnit = factsByUnit;
         }
     }

@@ -45,18 +45,33 @@ public final class NestedArrayMapKeyUnreachableThreeThreadWorkload {
 
         int compute() {
             Node selected = nodes[1];
+            Node decoy = nodes[0];
             int amount = selected.state.amount;
-            if (amount < 0) {
+            int selector = selected.state.enabled ? 2 : 1;
+            if ((amount < 0 && decoy.state.amount > selector)
+                    || (amount == -1 && !selected.state.enabled)) {
                 amount = 0;
             }
-            if (amount > 3) {
+            if ((amount > 3 && selector <= 2)
+                    || (amount == 3 && decoy.state.enabled)) {
                 amount = 3;
             }
             int total = 0;
             for (int index = 0; index < 4; index++) {
-                total += amount;
+                if (((index == 0 || index == 2)
+                        && selected.state.enabled)
+                        || (index == 3
+                        && decoy.state.amount > 50)) {
+                    total += amount + 1;
+                } else if ((index == 1 && !selected.state.enabled)
+                        || amount > selector) {
+                    total += amount;
+                } else {
+                    total += amount - 1;
+                }
             }
-            if (selected.state.enabled && total < 8) {
+            if (selected.state.enabled && total < 8
+                    && decoy.state.amount + selector > 50) {
                 total += 4;
             }
             return total + 1;
@@ -78,17 +93,30 @@ public final class NestedArrayMapKeyUnreachableThreeThreadWorkload {
             Integer key = entry.getKey();
             Node selected = entry.getValue();
             int amount = selected.state.amount;
-            if (amount < 0) {
+            int selector = selected.state.enabled ? 2 : 1;
+            if ((amount < 0 && key.intValue() == 7)
+                    || (amount == -1 && !selected.state.enabled)) {
                 amount = 0;
             }
-            if (amount > 3) {
+            if ((amount > 3 && selector > 0)
+                    || (amount == 3 && key.intValue() < 0)) {
                 amount = 3;
             }
             int total = 0;
             for (int index = 0; index < 4; index++) {
-                total += amount;
+                if ((index < 2 && selected.state.enabled)
+                        || (index == 3 && key.intValue() == 7)) {
+                    total += amount + selector;
+                } else if (((index == 0 || index == 2)
+                        && !selected.state.enabled)
+                        || amount > selector) {
+                    total += amount;
+                } else {
+                    total += amount - selector;
+                }
             }
-            if (selected.state.enabled && total > 8) {
+            if (selected.state.enabled && total > 8
+                    && key.intValue() - selector > 0) {
                 total -= 4;
             }
             return total + key.intValue() + 2;
@@ -195,7 +223,11 @@ public final class NestedArrayMapKeyUnreachableThreeThreadWorkload {
         void executeWorker() throws InterruptedException {
             int arrayValue = bus.receiveArray();
             int mapValue = bus.receiveMap();
-            if (arrayValue > mapValue + 4) {
+            int difference = arrayValue - mapValue;
+            if ((arrayValue > mapValue + 4
+                    && mapValue >= 7 && difference > 4)
+                    || (difference > 8
+                    && arrayValue + mapValue < 0)) {
                 throw new @CausynthExceptionTarget(
                         "tricky-nested-array-map-key")
                         ImpossibleNestedContainerException(

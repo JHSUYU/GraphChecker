@@ -1,13 +1,11 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -54,44 +52,17 @@ public class BranchReplayContractTest {
     }
 
     @Test
-    public void oneValidatorChecksOrderedPrefixAndRequiredPredicate() {
-        BranchWitness prefix = witness("ROOT#u1", 1, 1, true, "<");
-        BranchWitness source = witness("ROOT#u7", 7, 1, true, ">=");
-        BranchReplayContract contract = BranchReplayContract.flip(
-                Collections.singletonList(prefix), source);
-        BranchWitness replayedPrefix = witness("ROOT#u1", 1, 1, true,
-                "<");
-        BranchWitness replayedTarget = witness("ROOT#u7", 7, 1, false,
-                "<");
-
-        List<String> valid =
-                BranchReplayObservationValidator.validate(contract,
-                        Arrays.asList(replayedPrefix, replayedTarget));
-        assertTrue(valid.toString(), valid.isEmpty());
-
-        List<String> wrong =
-                BranchReplayObservationValidator.validate(contract,
-                        Arrays.asList(replayedTarget, replayedPrefix));
-        assertFalse(wrong.isEmpty());
-        assertTrue(wrong.toString(), wrong.toString().contains(
-                "TARGET_BEFORE_PREFIX"));
-    }
-
-    @Test
-    public void pcPredicateReplayUsesPredicateNotJimpleOutcome() {
+    public void pcPredicateFlipPreservesDecisionIdentity() {
         JsonObject predicate = predicate(">", "REGION.IN.x", "7");
-        BranchWitness source = BranchWitness.pcPredicate(
-                "ROOT#u7", "ROOT", 7, 1, 2, predicate, 5);
         BranchReplayContract contract = BranchReplayContract.flip(
-                Collections.<BranchWitness>emptyList(), source);
-        BranchWitness replayed = BranchWitness.pcPredicate(
-                "ROOT#u7", "ROOT", 7, 1, 2,
-                BranchPredicateAlgebra.complement(predicate), 3);
+                Collections.<BranchWitness>emptyList(),
+                BranchWitness.pcPredicate("ROOT#u7", "ROOT", 7, 1, 2,
+                        predicate, 5));
 
-        assertTrue(BranchReplayObservationValidator.validate(
-                contract, Collections.singletonList(replayed)).isEmpty());
         assertEquals(2, BranchReplayContract.fromJson(contract.toJson())
                 .source().decisionOrdinal());
+        assertEquals(BranchPredicateAlgebra.complement(predicate),
+                contract.requiredSatisfiedPredicate());
     }
 
     @Test

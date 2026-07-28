@@ -117,14 +117,12 @@ public final class ConcolicSummaryImporter {
                     array(engine, "pathCondition"),
                     array(raw, "branchMappings"));
             JsonArray mappings = branchMappings(raw, task, path, issues);
-            JsonElement replayContract = task.replayContract();
-            if (replayContract != null) {
-                issues.addAll(BranchReplayObservationValidator
-                        .validateEncoded(replayContract,
-                                mappings));
-            }
             JsonObject outputs = outputExpressions(raw, task, issues);
             JsonArray symbolicInputs = symbolicInputs(raw);
+            // The flip contract is a worklist hint, not output semantics.
+            // A replay may diverge before the requested branch; its actual PC
+            // and normal-exit output relation remain a valid newly found path.
+            JsonElement replayContract = task.replayContract();
 
             JsonObject summary = new JsonObject();
             summary.addProperty("goalId", task.goalId());

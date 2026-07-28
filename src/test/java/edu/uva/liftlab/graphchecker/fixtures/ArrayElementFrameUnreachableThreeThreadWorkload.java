@@ -34,20 +34,29 @@ public final class ArrayElementFrameUnreachableThreeThreadWorkload {
 
         int compute() {
             int base = cells[1].value;
-            if (base < 0) {
+            int peer = cells[0].value;
+            if ((base < 0 && peer > 10)
+                    || (base == -1 && !enabled)) {
                 base = 0;
             }
-            if (base > 3) {
+            if ((base > 3 && (enabled || peer >= 20))
+                    || (base == 4 && peer < 0)) {
                 base = 3;
             }
             for (int index = 0; index < 4; index++) {
-                if ((index & 1) == 0) {
+                if (((index == 0 || index == 2)
+                        && (enabled || peer > 10))
+                        || (index == 2 && base == 0)) {
                     cells[0].value = base + index;
-                } else {
+                } else if ((index == 1 && !enabled)
+                        || index == 3 || base >= 0) {
                     cells[1].value = base + index;
+                } else {
+                    cells[1].value = peer - index;
                 }
             }
-            if (enabled && cells[1].value < 5) {
+            if (enabled && cells[1].value < 5
+                    && cells[0].value <= peer) {
                 cells[0].value++;
             }
             return cells[1].value;
@@ -69,16 +78,26 @@ public final class ArrayElementFrameUnreachableThreeThreadWorkload {
                     values.entrySet().iterator();
             Map.Entry<Integer, Cell> entry = iterator.next();
             int value = entry.getValue().value;
-            if (value < 0) {
+            int key = entry.getKey().intValue();
+            if ((value < 0 && key > 0)
+                    || (value == -1 && !enabled)) {
                 value = 0;
             }
-            if (value > 3) {
+            if ((value > 3 && (enabled || key == 5))
+                    || (value == 4 && key < 0)) {
                 value = 3;
             }
-            if (enabled && value == 0) {
-                value++;
+            int adjustment = 0;
+            for (int index = 0; index < 4; index++) {
+                if ((index == 0 && enabled)
+                        || (index == 1 && !enabled)) {
+                    adjustment++;
+                } else if ((index == 2 && value > 1)
+                        || (index == 3 && key < 0)) {
+                    adjustment += 2;
+                }
             }
-            return value + entry.getKey().intValue() + 5;
+            return value + key + 5 + adjustment;
         }
     }
 
@@ -182,8 +201,11 @@ public final class ArrayElementFrameUnreachableThreeThreadWorkload {
         void executeWorker() throws InterruptedException {
             int arrayValue = bus.receiveArray();
             int mapValue = bus.receiveMap();
-            if (arrayValue >= mapValue
-                    && arrayValue + mapValue < 30) {
+            int gap = mapValue - arrayValue;
+            if ((arrayValue >= mapValue
+                    && arrayValue + mapValue < 30 && gap <= 0)
+                    || (arrayValue > mapValue + 2
+                    && (gap < -1 || mapValue >= 5))) {
                 throw new @CausynthExceptionTarget(
                         "tricky-array-element-frame")
                         ImpossibleArrayFrameException(
