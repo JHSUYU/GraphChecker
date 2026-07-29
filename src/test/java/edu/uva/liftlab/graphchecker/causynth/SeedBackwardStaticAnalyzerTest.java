@@ -169,7 +169,8 @@ public class SeedBackwardStaticAnalyzerTest {
         StaticProgram program = new SeedBackwardStaticAnalyzer(
                 new CausynthTargetContext(null, null, site.id, site,
                         "TEST")).analyze();
-        SymbolicRegionPlanner.plan(program);
+        SymbolicRegionPlanner.planSelected(program,
+                program.graph().methods());
 
         String projectionEdge = edgeId(program.edges,
                 "container_projection");

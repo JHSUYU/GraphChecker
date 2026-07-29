@@ -204,10 +204,7 @@ case "${1:-prepare}" in
   prepare) [[ $# -le 1 ]] || die "prepare takes no arguments"; do_prepare ;;
   config) [[ $# -eq 1 ]] || die "config takes no arguments"; do_engine_config config ;;
   validate) [[ $# -eq 1 ]] || die "validate takes no arguments"; do_engine_config validate ;;
-  analyze)
-    [[ $# -eq 1 ]] || die "analyze takes no arguments"
-    CAUSYNTH_INSTRUMENT_TRACE=true do_engine_config analyze
-    ;;
+  analyze) [[ $# -eq 1 ]] || die "analyze takes no arguments"; do_engine_config analyze ;;
   traced-workload)
     [[ $# -eq 1 ]] || die "traced-workload takes no arguments"
     do_traced_workload

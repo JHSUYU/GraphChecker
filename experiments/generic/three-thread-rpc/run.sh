@@ -258,8 +258,7 @@ do_prepare() {
 do_analyze() {
   require_directory "isolated fixture classes" \
     "${original_classes}"
-  (cd "${graphchecker_dir}" && CAUSYNTH_INSTRUMENT_TRACE=true \
-    "${runner}" --config "${config}" analyze)
+  (cd "${graphchecker_dir}" && "${runner}" --config "${config}" analyze)
 }
 
 do_trace() {

@@ -586,15 +586,13 @@ public final class CausynthTraceRecorder {
             TraceData trace = loadExistingTrace(new File(directory,
                     "runtime_trace.jsonl"), test);
             trace.sort();
-            if (!regionFile.isFile() || regionFile.length() == 0L) {
-                Set<String> observedMethods = new LinkedHashSet<>();
-                for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
-                    observedMethods.add(event.method);
-                }
-                RuntimeSelectedRegionFinalizer.finalizeRegions(
-                        staticGraph, regionFile, regionEdgeFile,
-                        observedMethods);
+            Set<String> observedMethods = new LinkedHashSet<>();
+            for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
+                observedMethods.add(event.method);
             }
+            RuntimeSelectedRegionFinalizer.finalizeRegions(
+                    staticGraph, regionFile, regionEdgeFile,
+                    observedMethods);
             writeRuntimeRegionPlans(directory, staticGraph, regionFile,
                     regionEdgeFile, trace);
         }

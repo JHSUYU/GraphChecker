@@ -104,7 +104,7 @@ public class SymbolicRegionPlannerTest {
         read.put("declaredFieldSignature", CONSTRUCTOR_FIELD);
         program.edges.add(read);
 
-        SymbolicRegionPlanner.plan(program);
+        planObserved(program);
 
         Map<String, Object> region = region(program, OUTER);
         Map<String, Object> slice = outputSlice(region, CONSTRUCTOR_FIELD);
@@ -154,7 +154,7 @@ public class SymbolicRegionPlannerTest {
                 "<example.Bus: int out> = $i0");
         write.put("declaredFieldSignature", OUTPUT);
         program.edges.add(write);
-        SymbolicRegionPlanner.plan(program);
+        planObserved(program);
 
         Map<String, Object> materialization = map(input(
                 region(program, METHOD), FIELD).get("materialization"));
@@ -183,7 +183,7 @@ public class SymbolicRegionPlannerTest {
         read.put("siteId", CONSUMER + "#u0");
         read.put("declaredFieldSignature", OUTPUT);
         program.edges.add(read);
-        SymbolicRegionPlanner.plan(program);
+        planObserved(program);
         return program;
     }
 
@@ -242,8 +242,13 @@ public class SymbolicRegionPlannerTest {
         read.put("siteId", CONSUMER + "#u0");
         read.put("declaredFieldSignature", OUTPUT);
         program.edges.add(read);
-        SymbolicRegionPlanner.plan(program);
+        planObserved(program);
         return program;
+    }
+
+    private static void planObserved(StaticProgram program) {
+        SymbolicRegionPlanner.planSelected(program,
+                program.graph().methods());
     }
 
     private static List<String> inputCells(StaticProgram program) {

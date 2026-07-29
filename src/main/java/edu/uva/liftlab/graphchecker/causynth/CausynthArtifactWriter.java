@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.List;
 
 /** Writes the stable JSON/JSONL artifact set for one static analysis run. */
@@ -12,15 +13,21 @@ final class CausynthArtifactWriter {
     private CausynthArtifactWriter() {
     }
 
-    static void write(Path outputDir, StaticProgram program)
+    static void writeDiscoveryArtifacts(Path outputDir,
+                                        StaticProgram program)
             throws IOException {
         Files.createDirectories(outputDir);
         writeJson(outputDir.resolve("target_resolved.json"),
                 program.targetResolved);
         writeJsonl(outputDir.resolve("static_dataflow_edges.jsonl"),
                 program.edges);
-        writeRegions(outputDir.resolve("symbolic_regions.jsonl"),
-                outputDir.resolve("symbolic_region_edges.jsonl"), program);
+        // A fresh discovery run invalidates any regions selected by an older
+        // trace. The current trace will repopulate both files during
+        // finalization.
+        writeJsonl(outputDir.resolve("symbolic_regions.jsonl"),
+                Collections.emptyList());
+        writeJsonl(outputDir.resolve("symbolic_region_edges.jsonl"),
+                Collections.emptyList());
     }
 
     static void writeRegions(Path regions, Path regionEdges,

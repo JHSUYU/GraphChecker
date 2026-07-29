@@ -76,7 +76,6 @@ final class ConcolicInstrumentationSelections {
         private final ConcolicMaterializationSelection materializations;
         private final List<RootedOutputCapture> outputCaptures;
         private final Set<String> instrumentationMethods;
-        private final boolean boundedOutputClosureCoverageReady;
 
         private InstrumentationPlan(ExecutionTask task) throws IOException {
             if (!task.executable()) {
@@ -105,7 +104,6 @@ final class ConcolicInstrumentationSelections {
                 methods.addAll(branches.methods());
             }
             instrumentationMethods = Collections.unmodifiableSet(methods);
-            boundedOutputClosureCoverageReady = closure != null;
         }
 
         static InstrumentationPlan from(Path taskPlan, String selectedTask)
@@ -181,10 +179,6 @@ final class ConcolicInstrumentationSelections {
 
         Set<String> instrumentationMethods() {
             return instrumentationMethods;
-        }
-
-        boolean boundedOutputClosureCoverageReady() {
-            return boundedOutputClosureCoverageReady;
         }
 
         private static List<RootedOutputCapture> rootedOutputCaptures(

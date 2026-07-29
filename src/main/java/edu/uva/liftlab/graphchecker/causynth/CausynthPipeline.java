@@ -105,6 +105,12 @@ public final class CausynthPipeline {
     }
 
     public void run() throws IOException {
+        if (concolicInstrumentationEnabled()) {
+            instrumentConcolicRegions();
+            LOG.info("Instrumented the runtime-selected concolic task");
+            return;
+        }
+
         CausynthTargetContext target = CausynthTargetResolver.resolve(options);
         ExceptionTargetSite exceptionTarget =
                 ExceptionTargetAnnotationScanner.select(
@@ -115,72 +121,18 @@ public final class CausynthPipeline {
                 exceptionTarget.stableIdentity());
         StaticProgram result =
                 new SeedBackwardStaticAnalyzer(target).analyze();
-        boolean concolicEnabled = concolicInstrumentationEnabled();
-        boolean traceEnabled = traceInstrumentationEnabled();
-        boolean deferRegionPlanning = traceEnabled || concolicEnabled;
-        if (!deferRegionPlanning) {
-            SymbolicRegionPlanner.plan(result);
-        }
-        instrumentRuntimeTrace(result, concolicEnabled, traceEnabled);
-        boolean boundedOutputClosureCoverageReady =
-                concolicEnabled && instrumentConcolicRegions();
-        if (!concolicEnabled) {
-            CausynthArtifactWriter.write(target.outputDir, result);
-        }
-        if (concolicEnabled && !boundedOutputClosureCoverageReady) {
-            SymbolicRegionPlanner.plan(result);
-        }
-        if (!deferRegionPlanning
-                || (concolicEnabled
-                && !boundedOutputClosureCoverageReady)) {
-            enforceSymbolicCoverage(result,
-                    boundedOutputClosureCoverageReady);
-        }
-        if (concolicEnabled) {
-            LOG.info("Seed backward analysis completed for concolic "
-                    + "instrumentation without duplicating static artifacts");
-        } else if (traceEnabled) {
-            LOG.info("Seed backward analysis wrote the frozen graph to {}; "
-                    + "symbolic regions will be finalized from the runtime "
-                    + "trace", target.outputDir);
-        } else {
-            LOG.info("Seed backward analysis wrote {} edges to {}",
-                    result.edges.size(), target.outputDir);
-        }
+        instrumentRuntimeTrace(result);
+        CausynthArtifactWriter.writeDiscoveryArtifacts(
+                target.outputDir, result);
+        LOG.info("Seed backward analysis wrote the frozen graph to {}; "
+                + "symbolic regions will be finalized from the runtime trace",
+                target.outputDir);
     }
 
-    private void enforceSymbolicCoverage(StaticProgram result,
-                                         boolean boundedOutputClosureCoverageReady) {
-        boolean strictCoverage = Boolean.parseBoolean(firstNonBlank(
-                System.getProperty("causynth.coverage.strict"),
-                System.getenv("CAUSYNTH_COVERAGE_STRICT"),
-                "true"));
-        if (strictCoverage
-                && !result.coverageComplete
-                && !boundedOutputClosureCoverageReady) {
-            throw new IllegalStateException(
-                    "Incomplete symbolic-region coverage");
-        }
-        if (strictCoverage
-                && !result.coverageComplete) {
-            LOG.info("Global symbolic-region coverage is incomplete, but the "
-                            + "exact runtime-selected bounded output closure is "
-                            + "ready; preserving strict coverage outside that "
-                            + "selected activation");
-        }
-    }
-
-    private void instrumentRuntimeTrace(StaticProgram result,
-                                        boolean concolicEnabled,
-                                        boolean traceEnabled) {
-        if (!traceEnabled) {
-            return;
-        }
+    private void instrumentRuntimeTrace(StaticProgram result) {
         SootMethodRef recordRef = traceRecorderMethodRef();
         SootMethodRef recordFieldRef = traceRecorderFieldMethodRef();
         HookCatalog richRefs = HookCatalog.trace();
-        HookCatalog observationIsolation =
-                concolicEnabled ? HookCatalog.concolic() : null;
         TraceSelection traceSelection = traceSelection(result);
         for (String signature : result.traceMethods) {
             try {
@@ -210,23 +162,17 @@ public final class CausynthPipeline {
                 if (traceSelection.relevantMethods.contains(signature)) {
                     instrumentRichMethod(body, method,
                             originalUnits, insertionPoint, lowerBound, receiver,
-                            traceSelection,
-                            richRefs, observationIsolation);
+                            traceSelection, richRefs);
                 } else {
                     Stmt traceCall = Jimple.v().newInvokeStmt(
                             Jimple.v().newStaticInvokeExpr(recordRef,
                                     StringConstant.v(signature), receiver));
                     List<Unit> traceUnits = new ArrayList<>();
-                    beginTraceObservationIsolation(traceUnits,
-                            observationIsolation);
                     traceUnits.add(traceCall);
-                    endTraceObservationIsolation(traceUnits,
-                            observationIsolation);
                     insertBeforeOrAppend(body, insertionPoint, traceUnits);
                 }
                 instrumentFieldTrace(body, method, recordFieldRef,
-                        traceSelection, originalUnits, lowerBound,
-                        observationIsolation);
+                        traceSelection, originalUnits, lowerBound);
             } catch (RuntimeException exception) {
                 LOG.debug("Skipping trace instrumentation for {}", signature, exception);
             }
@@ -238,7 +184,7 @@ public final class CausynthPipeline {
      * Inserts region hooks at the roots selected by the runtime activation
      * plan. Concolic instrumentation without that plan is not executable.
      */
-    private boolean instrumentConcolicRegions() {
+    private void instrumentConcolicRegions() {
         HookCatalog refs = HookCatalog.concolic();
         InstrumentationPlan plan = ConcolicInstrumentationSelections
                 .instrumentationPlanFromEnvironment();
@@ -417,7 +363,6 @@ public final class CausynthPipeline {
         instrumentConcolicBranches(branchSelection, refs);
         LOG.info("Instrumented symbolic-region root {} for concolic replay",
                 signature);
-        return plan.boundedOutputClosureCoverageReady();
     }
 
     /** Records exact heap definitions without enabling the runtime trace. */
@@ -1354,10 +1299,9 @@ public final class CausynthPipeline {
             Body body, SootMethod method, List<Unit> originalUnits,
             Unit insertionPoint, Unit lowerBound, Value receiver,
             TraceSelection sites,
-            HookCatalog refs, HookCatalog observationIsolation) {
+            HookCatalog refs) {
         Local callId = newTraceLocal(body, LongType.v(), "$causynthCallId");
         List<Unit> entryUnits = new ArrayList<>();
-        beginTraceObservationIsolation(entryUnits, observationIsolation);
         // Keep the initialization as a defensive verifier-visible value.  The
         // whole entry probe is inserted without redirecting existing trap
         // boundaries: an original catch/finally must not observe a partially
@@ -1383,7 +1327,6 @@ public final class CausynthPipeline {
                     objectValue,
                     primitiveValue)));
         }
-        endTraceObservationIsolation(entryUnits, observationIsolation);
         insertBeforeOrAppendNoRedirect(body, insertionPoint, entryUnits);
 
         Set<Integer> callUnits = sites.units(sites.callUnits, method.getSignature());
@@ -1404,41 +1347,34 @@ public final class CausynthPipeline {
             if (callUnits.contains(unitIndex) && stmt.containsInvokeExpr()
                     && !isRecorderInvoke(stmt.getInvokeExpr())) {
                 instrumentCallSite(body, method, stmt, unitIndex, callId,
-                        refs, observationIsolation);
+                        refs);
             }
             if (branchUnits.contains(unitIndex)) {
                 if (stmt instanceof IfStmt) {
                     instrumentBranch(body, method, (IfStmt) stmt, unitIndex,
-                            callId, refs, observationIsolation);
+                            callId, refs);
                 } else if (stmt instanceof SwitchStmt) {
                     instrumentSwitchBranch(body, method,
-                            (SwitchStmt) stmt, unitIndex, callId, refs,
-                            observationIsolation);
+                            (SwitchStmt) stmt, unitIndex, callId, refs);
                 }
             }
             if (stmt instanceof ReturnStmt) {
                 insertMethodExit(body, stmt, ((ReturnStmt) stmt).getOp(),
-                        refs.ref(Hook.EXIT_ACTIVE_METHOD), observationIsolation);
+                        refs.ref(Hook.EXIT_ACTIVE_METHOD));
             } else if (stmt instanceof ReturnVoidStmt) {
                 insertMethodExit(body, stmt, NullConstant.v(),
-                        refs.ref(Hook.EXIT_ACTIVE_METHOD), observationIsolation);
+                        refs.ref(Hook.EXIT_ACTIVE_METHOD));
             }
         }
         addActiveThrowHandler(body, insertionPoint,
-                refs.ref(Hook.THROW_ACTIVE_METHOD),
-                observationIsolation == null ? null
-                        : observationIsolation.ref(Hook.PAUSE_OBSERVATION),
-                observationIsolation == null ? null
-                        : observationIsolation.ref(Hook.RESUME_OBSERVATION));
+                refs.ref(Hook.THROW_ACTIVE_METHOD));
     }
 
     private void instrumentCallSite(Body body, SootMethod method, Stmt stmt,
                                     int unitIndex, Local ownerCallId,
-                                    HookCatalog refs,
-                                    HookCatalog observationIsolation) {
+                                    HookCatalog refs) {
         InvokeExpr invoke = stmt.getInvokeExpr();
         List<Unit> before = new ArrayList<>();
-        beginTraceObservationIsolation(before, observationIsolation);
         Value receiverBase = runtimeCallSiteReceiver(invoke);
         Value receiver = receiverBase == null
                 ? NullConstant.v() : objectArg(body, receiverBase, before);
@@ -1464,18 +1400,15 @@ public final class CausynthPipeline {
                     objectValue,
                     primitiveValue)));
         }
-        endTraceObservationIsolation(before, observationIsolation);
         insertBeforeSequence(body, stmt, before);
 
         Value returnValue = runtimeCallSiteReturnValue(stmt, invoke);
         List<Unit> after = new ArrayList<>();
-        beginTraceObservationIsolation(after, observationIsolation);
         Value returnObject = objectArg(body, returnValue, after);
         Value primitiveReturn = primitiveValueString(body, returnValue, after);
         after.add(Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 refs.ref(Hook.END_CALL), invocationId, returnObject,
                 primitiveReturn)));
-        endTraceObservationIsolation(after, observationIsolation);
         insertAfterSequence(body, stmt, after);
     }
 
@@ -1524,12 +1457,10 @@ public final class CausynthPipeline {
 
     private void instrumentBranch(Body body, SootMethod method, IfStmt branch,
                                   int unitIndex, Local callId,
-                                  HookCatalog refs,
-                                  HookCatalog observationIsolation) {
+                                  HookCatalog refs) {
         String expression = branch.getCondition().toString();
         Unit originalTarget = branch.getTarget();
         List<Unit> falsePath = new ArrayList<>();
-        beginTraceObservationIsolation(falsePath, observationIsolation);
         Unit falseRecord = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 refs.ref(Hook.RECORD_BRANCH),
                 callId,
@@ -1538,13 +1469,11 @@ public final class CausynthPipeline {
                 StringConstant.v(expression),
                 IntConstant.v(0)));
         falsePath.add(falseRecord);
-        endTraceObservationIsolation(falsePath, observationIsolation);
         insertAfterSequence(body, branch, falsePath);
 
         Unit trueEntry = Jimple.v().newNopStmt();
         List<Unit> truePath = new ArrayList<>();
         truePath.add(trueEntry);
-        beginTraceObservationIsolation(truePath, observationIsolation);
         Unit trueRecord = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 refs.ref(Hook.RECORD_BRANCH),
                 callId,
@@ -1553,7 +1482,6 @@ public final class CausynthPipeline {
                 StringConstant.v(expression),
                 IntConstant.v(1)));
         truePath.add(trueRecord);
-        endTraceObservationIsolation(truePath, observationIsolation);
         Unit resume = Jimple.v().newGotoStmt(originalTarget);
         truePath.add(resume);
         for (Unit unit : truePath) {
@@ -1564,8 +1492,7 @@ public final class CausynthPipeline {
 
     private void instrumentSwitchBranch(
             Body body, SootMethod method, SwitchStmt branch, int unitIndex,
-            Local callId, HookCatalog refs,
-            HookCatalog observationIsolation) {
+            Local callId, HookCatalog refs) {
         CausynthBranchShape shape = CausynthBranchShape.from(body, branch);
         if (shape == null || !shape.isSwitch()) return;
         String expression = branch.getKey().toString();
@@ -1576,7 +1503,6 @@ public final class CausynthPipeline {
             Unit entry = Jimple.v().newNopStmt();
             List<Unit> path = new ArrayList<>();
             path.add(entry);
-            beginTraceObservationIsolation(path, observationIsolation);
             path.add(Jimple.v().newInvokeStmt(
                     Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.RECORD_SWITCH_BRANCH),
@@ -1587,7 +1513,6 @@ public final class CausynthPipeline {
                             IntConstant.v(successorIndex),
                             StringConstant.v(shape.kind),
                             StringConstant.v(keys))));
-            endTraceObservationIsolation(path, observationIsolation);
             path.add(Jimple.v().newGotoStmt(originalTarget));
             for (Unit unit : path) body.getUnits().add(unit);
             if (successorIndex == shape.defaultSuccessorIndex) {
@@ -1599,38 +1524,17 @@ public final class CausynthPipeline {
     }
 
     private void insertMethodExit(Body body, Stmt returnUnit, Value returnValue,
-                                  SootMethodRef exitRef,
-                                  HookCatalog observationIsolation) {
+                                  SootMethodRef exitRef) {
         List<Unit> units = new ArrayList<>();
-        beginTraceObservationIsolation(units, observationIsolation);
         Value objectValue = objectArg(body, returnValue, units);
         Value primitiveValue = primitiveValueString(body, returnValue, units);
         units.add(Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 exitRef, objectValue, primitiveValue)));
-        endTraceObservationIsolation(units, observationIsolation);
         insertBeforeSequence(body, returnUnit, units);
     }
 
-    private static void beginTraceObservationIsolation(
-            List<Unit> units, HookCatalog isolation) {
-        if (isolation != null) {
-            units.add(Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
-                    isolation.ref(Hook.PAUSE_OBSERVATION))));
-        }
-    }
-
-    private static void endTraceObservationIsolation(
-            List<Unit> units, HookCatalog isolation) {
-        if (isolation != null) {
-            units.add(Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
-                    isolation.ref(Hook.RESUME_OBSERVATION))));
-        }
-    }
-
     private void addActiveThrowHandler(Body body, Unit start,
-                                       SootMethodRef throwRef,
-                                       SootMethodRef pauseObservation,
-                                       SootMethodRef resumeObservation) {
+                                       SootMethodRef throwRef) {
         if (start == null) {
             return;
         }
@@ -1639,23 +1543,11 @@ public final class CausynthPipeline {
                 "$causynthThrown");
         Unit handler = Jimple.v().newIdentityStmt(caught,
                 Jimple.v().newCaughtExceptionRef());
-        Unit pause = pauseObservation == null ? null
-                : Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
-                pauseObservation));
         Unit record = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 throwRef, caught));
-        Unit resume = resumeObservation == null ? null
-                : Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
-                resumeObservation));
         Unit rethrow = Jimple.v().newThrowStmt(caught);
         body.getUnits().add(handler);
-        if (pause != null) {
-            body.getUnits().add(pause);
-        }
         body.getUnits().add(record);
-        if (resume != null) {
-            body.getUnits().add(resume);
-        }
         body.getUnits().add(rethrow);
         Trap trap = Jimple.v().newTrap(throwableClass, start, handler, handler);
         body.getTraps().add(trap);
@@ -1745,8 +1637,7 @@ public final class CausynthPipeline {
                                       SootMethodRef recordFieldRef,
                                       TraceSelection traceFields,
                                       List<Unit> units,
-                                      Unit lowerBound,
-                                      HookCatalog observationIsolation) {
+                                      Unit lowerBound) {
         Value methodReceiver = NullConstant.v();
         if (!method.isStatic()) {
             try {
@@ -1777,14 +1668,12 @@ public final class CausynthPipeline {
                 if (left instanceof FieldRef) {
                     insertFieldTrace(body, unit, recordFieldRef, "FIELD_WRITE",
                             method.getSignature(), unitIndex, (FieldRef) left,
-                            methodReceiver, right, true, traceFields,
-                            observationIsolation);
+                            methodReceiver, right, true, traceFields);
                 }
                 if (right instanceof FieldRef) {
                     insertFieldTrace(body, unit, recordFieldRef, "FIELD_READ",
                             method.getSignature(), unitIndex, (FieldRef) right,
-                            methodReceiver, left, true, traceFields,
-                            observationIsolation);
+                            methodReceiver, left, true, traceFields);
                 }
             } else {
                 for (ValueBox box : stmt.getUseBoxes()) {
@@ -1792,8 +1681,7 @@ public final class CausynthPipeline {
                     if (value instanceof FieldRef) {
                         insertFieldTrace(body, unit, recordFieldRef, "FIELD_READ",
                                 method.getSignature(), unitIndex, (FieldRef) value,
-                                methodReceiver, value, false, traceFields,
-                                observationIsolation);
+                                methodReceiver, value, false, traceFields);
                     }
                 }
             }
@@ -1805,15 +1693,13 @@ public final class CausynthPipeline {
             String kind, String method, int unitIndex,
             FieldRef fieldRef, Value methodReceiverValue, Value value,
             boolean fieldValueIsReadValue,
-            TraceSelection traceFields,
-            HookCatalog observationIsolation) {
+            TraceSelection traceFields) {
         String field = CausynthStaticFacts.declaredFieldSignature(
                 fieldRef.getFieldRef());
         if (!shouldInstrumentField(field, traceFields)) {
             return;
         }
         List<Unit> prefixUnits = new ArrayList<>();
-        beginTraceObservationIsolation(prefixUnits, observationIsolation);
         Value methodReceiver = objectArg(body, methodReceiverValue, prefixUnits);
         // A static field has no Java receiver object.  Its interned canonical
         // signature is a process-local class-state identity token: all
@@ -1836,7 +1722,6 @@ public final class CausynthPipeline {
                 valueObject,
                 primitiveValue));
         prefixUnits.add(traceCall);
-        endTraceObservationIsolation(prefixUnits, observationIsolation);
         if (fieldValueIsReadValue || "FIELD_WRITE".equals(kind)) {
             insertAfterSequence(body, unit, prefixUnits);
         } else {
@@ -2360,13 +2245,6 @@ public final class CausynthPipeline {
         return Boolean.parseBoolean(firstNonBlank(
                 System.getProperty("causynth.instrument.concolic"),
                 System.getenv("CAUSYNTH_INSTRUMENT_CONCOLIC"),
-                "false"));
-    }
-
-    private static boolean traceInstrumentationEnabled() {
-        return Boolean.parseBoolean(firstNonBlank(
-                System.getProperty("causynth.instrument.trace"),
-                System.getenv("CAUSYNTH_INSTRUMENT_TRACE"),
                 "false"));
     }
 

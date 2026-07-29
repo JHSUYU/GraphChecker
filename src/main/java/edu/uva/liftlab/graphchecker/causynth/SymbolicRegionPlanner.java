@@ -96,10 +96,6 @@ final class SymbolicRegionPlanner {
     private SymbolicRegionPlanner() {
     }
 
-    static void plan(StaticProgram program) {
-        new Planner(program.graph()).plan(program);
-    }
-
     static void planSelected(StaticProgram program,
                              Collection<String> observedMethods) {
         new Planner(program.graph()).planSelected(program,
@@ -143,64 +139,6 @@ final class SymbolicRegionPlanner {
         private Planner(StaticGraphIndex graph) {
             this.graph = graph;
             index();
-        }
-
-        private void plan(StaticProgram result) {
-            List<String> anchors = initialAnchors();
-            Set<String> emittedMethodSets = new LinkedHashSet<>();
-            Set<String> queuedAnchorStates = new LinkedHashSet<>();
-            for (String anchor : anchors) {
-                queuedAnchorStates.add(anchor + "\nNORMAL");
-            }
-            Deque<String> anchorQueue = new ArrayDeque<>(anchors);
-            int regionIndex = 0;
-            while (!anchorQueue.isEmpty() && regionIndex < MAX_REGIONS) {
-                String anchor = anchorQueue.removeFirst();
-                for (RegionDraft draft : buildRegions(anchor)) {
-                    if (draft.methods.isEmpty()) {
-                        continue;
-                    }
-                    String dedup = regionDedupKey(draft);
-                    if (!emittedMethodSets.add(dedup)) {
-                        continue;
-                    }
-                    draft.regionId = "REGION." + regionIndex++;
-                    result.regions.add(toRegionRow(draft));
-                }
-                for (String upstream : upstreamAnchors(result.regions)) {
-                    String state = upstream + "\n"
-                            + (overlappingWriterAnchors.contains(upstream)
-                            ? "OVERLAPPING_WRITER" : "NORMAL");
-                    if (queuedAnchorStates.add(state)) {
-                        anchorQueue.addLast(upstream);
-                    }
-                }
-            }
-
-            Set<String> coveredBeforeModels = methodsCovered(result.regions);
-            for (String method : graph.methods()) {
-                if (coveredBeforeModels.contains(method)) {
-                    continue;
-                }
-                if (regionIndex >= MAX_REGIONS) {
-                    continue;
-                }
-                for (RegionDraft draft : buildRegions(method)) {
-                    if (regionIndex >= MAX_REGIONS) {
-                        break;
-                    }
-                    String dedup = regionDedupKey(draft);
-                    if (!emittedMethodSets.add(dedup)) {
-                        continue;
-                    }
-                    draft.regionId = "REGION." + regionIndex++;
-                    result.regions.add(toRegionRow(draft));
-                }
-                coveredBeforeModels = methodsCovered(result.regions);
-            }
-            buildRegionEdges(result);
-            result.coverageComplete = coverageComplete(result);
-
         }
 
         /**
@@ -253,21 +191,14 @@ final class SymbolicRegionPlanner {
             buildRegionEdges(result);
         }
 
-        private List<String> initialAnchors() {
-            return initialAnchors(null);
-        }
-
         private List<String> initialAnchors(Set<String> observedMethods) {
             List<String> anchors = new ArrayList<>(anchorMethods);
-            if (observedMethods != null) {
-                anchors.retainAll(observedMethods);
-            }
+            anchors.retainAll(observedMethods);
             Collections.sort(anchors);
             if (anchors.isEmpty()) {
                 for (String method : graph.methods()) {
                     if (graph.requiresSymbolicExecution(method)
-                            && (observedMethods == null
-                            || observedMethods.contains(method))) {
+                            && observedMethods.contains(method)) {
                         anchors.add(method);
                     }
                 }
@@ -283,93 +214,6 @@ final class SymbolicRegionPlanner {
                     + (overlappingWriterAnchors.contains(
                     draft.anchorMethod) ? draft.anchorMethod : "") + "\n"
                     + joinSorted(draft.methods);
-        }
-
-        private boolean coverageComplete(StaticProgram result) {
-            Map<String, Set<String>> regionsByMethod = new LinkedHashMap<>();
-            Map<String, Set<String>> methodsByRegion = new LinkedHashMap<>();
-            for (Map<String, Object> region : result.regions) {
-                String regionId = string(region.get("regionId"));
-                Set<String> methods = new LinkedHashSet<>(strings(region.get("methods")));
-                methodsByRegion.put(regionId, methods);
-                for (String method : methods) {
-                    regionsByMethod.computeIfAbsent(method,
-                            ignored -> new LinkedHashSet<>()).add(regionId);
-                }
-            }
-            for (String method : graph.methods()) {
-                if (!regionsByMethod.containsKey(method)) {
-                    return false;
-                }
-            }
-
-            Set<String> boundarySites = new LinkedHashSet<>();
-            for (Map<String, Object> regionEdge : result.regionEdges) {
-                String site = string(regionEdge.get("siteId"));
-                if (!site.isEmpty()) {
-                    boundarySites.add(site);
-                }
-            }
-            for (Map<String, Object> edge : graph.edges()) {
-                String method = string(edge.get("method"));
-                String site = string(edge.get("siteId"));
-                if (isBoundary(edge)) {
-                    if (!boundarySites.contains(site)) {
-                        return false;
-                    }
-                    continue;
-                }
-                String callee = string(edge.get("invoke"));
-                if (callee.isEmpty() || !graph.hasMethod(callee)) {
-                    callee = invokedMethodFromCells(edge);
-                }
-                if (!callee.isEmpty() && graph.hasMethod(callee)) {
-                    if (!shareRegion(method, callee, regionsByMethod,
-                            methodsByRegion)
-                            && !alternativeNonCausalEdge(edge,
-                            regionsByMethod)) {
-                        return false;
-                    }
-                } else if (!regionsByMethod.containsKey(method)) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        private boolean alternativeNonCausalEdge(
-                Map<String, Object> edge,
-                Map<String, Set<String>> regionsByMethod) {
-            String edgeId = string(edge.get("id"));
-            if (edgeId.isEmpty()) {
-                return false;
-            }
-            for (String regionId : values(regionsByMethod.get(
-                    string(edge.get("method"))))) {
-                Set<Map<String, Object>> causalEdges =
-                        exceptionCausalEdgesByRegion.get(
-                        regionId);
-                if (causalEdges != null && !causalEdges.contains(edge)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private boolean shareRegion(String first, String second,
-                                    Map<String, Set<String>> regionsByMethod,
-                                    Map<String, Set<String>> methodsByRegion) {
-            Set<String> regions = regionsByMethod.get(first);
-            if (regions == null) {
-                return false;
-            }
-            for (String region : regions) {
-                Set<String> methods = methodsByRegion.get(region);
-                if (methods != null && methods.contains(second)) {
-                    return true;
-                }
-            }
-            return false;
         }
 
         private Set<String> methodsCovered(List<Map<String, Object>> regions) {

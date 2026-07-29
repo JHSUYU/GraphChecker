@@ -11,7 +11,6 @@ final class StaticProgram {
     final List<String> traceMethods = new ArrayList<>();
     final List<Map<String, Object>> regions = new ArrayList<>();
     final List<Map<String, Object>> regionEdges = new ArrayList<>();
-    boolean coverageComplete;
     final Map<String, Object> targetResolved = new LinkedHashMap<>();
     private StaticGraphIndex graph;
 
