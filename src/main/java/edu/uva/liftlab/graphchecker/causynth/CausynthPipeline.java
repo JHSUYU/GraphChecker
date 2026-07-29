@@ -78,10 +78,9 @@ import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.ja
  * Annotation-directed static backward data-flow analysis.
  *
  * <p>The analysis starts from one annotated exception construction and
- * discovers the throw value, exception payload, controlling guards, and their
- * data dependencies automatically. Local Java/Jimple calls, interface
- * dispatches, and explicitly configured protocol bridges all emit edges into
- * the same static data-flow graph.</p>
+ * discovers the control flow required to reach its throw. Local Java/Jimple
+ * calls, interface dispatches, and explicitly configured protocol bridges all
+ * emit edges into the same static data-flow graph.</p>
  */
 public final class CausynthPipeline {
     private static final Logger LOG = LoggerFactory.getLogger(CausynthPipeline.class);
@@ -116,18 +115,34 @@ public final class CausynthPipeline {
                 exceptionTarget.stableIdentity());
         StaticProgram result =
                 new SeedBackwardStaticAnalyzer(target).analyze();
-        SymbolicRegionPlanner.plan(result);
         boolean concolicEnabled = concolicInstrumentationEnabled();
-        instrumentRuntimeTrace(result, concolicEnabled);
+        boolean traceEnabled = traceInstrumentationEnabled();
+        boolean deferRegionPlanning = traceEnabled || concolicEnabled;
+        if (!deferRegionPlanning) {
+            SymbolicRegionPlanner.plan(result);
+        }
+        instrumentRuntimeTrace(result, concolicEnabled, traceEnabled);
         boolean boundedOutputClosureCoverageReady =
                 concolicEnabled && instrumentConcolicRegions();
         if (!concolicEnabled) {
             CausynthArtifactWriter.write(target.outputDir, result);
         }
-        enforceSymbolicCoverage(result, boundedOutputClosureCoverageReady);
+        if (concolicEnabled && !boundedOutputClosureCoverageReady) {
+            SymbolicRegionPlanner.plan(result);
+        }
+        if (!deferRegionPlanning
+                || (concolicEnabled
+                && !boundedOutputClosureCoverageReady)) {
+            enforceSymbolicCoverage(result,
+                    boundedOutputClosureCoverageReady);
+        }
         if (concolicEnabled) {
             LOG.info("Seed backward analysis completed for concolic "
                     + "instrumentation without duplicating static artifacts");
+        } else if (traceEnabled) {
+            LOG.info("Seed backward analysis wrote the frozen graph to {}; "
+                    + "symbolic regions will be finalized from the runtime "
+                    + "trace", target.outputDir);
         } else {
             LOG.info("Seed backward analysis wrote {} edges to {}",
                     result.edges.size(), target.outputDir);
@@ -156,11 +171,9 @@ public final class CausynthPipeline {
     }
 
     private void instrumentRuntimeTrace(StaticProgram result,
-                                        boolean concolicEnabled) {
-        if (!Boolean.parseBoolean(firstNonBlank(
-                System.getProperty("causynth.instrument.trace"),
-                System.getenv("CAUSYNTH_INSTRUMENT_TRACE"),
-                "false"))) {
+                                        boolean concolicEnabled,
+                                        boolean traceEnabled) {
+        if (!traceEnabled) {
             return;
         }
         SootMethodRef recordRef = traceRecorderMethodRef();
@@ -2347,6 +2360,13 @@ public final class CausynthPipeline {
         return Boolean.parseBoolean(firstNonBlank(
                 System.getProperty("causynth.instrument.concolic"),
                 System.getenv("CAUSYNTH_INSTRUMENT_CONCOLIC"),
+                "false"));
+    }
+
+    private static boolean traceInstrumentationEnabled() {
+        return Boolean.parseBoolean(firstNonBlank(
+                System.getProperty("causynth.instrument.trace"),
+                System.getenv("CAUSYNTH_INSTRUMENT_TRACE"),
                 "false"));
     }
 

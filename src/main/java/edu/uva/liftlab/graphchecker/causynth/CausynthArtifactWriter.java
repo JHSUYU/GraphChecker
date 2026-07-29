@@ -19,10 +19,22 @@ final class CausynthArtifactWriter {
                 program.targetResolved);
         writeJsonl(outputDir.resolve("static_dataflow_edges.jsonl"),
                 program.edges);
-        writeJsonl(outputDir.resolve("symbolic_regions.jsonl"),
-                program.regions);
-        writeJsonl(outputDir.resolve("symbolic_region_edges.jsonl"),
-                program.regionEdges);
+        writeRegions(outputDir.resolve("symbolic_regions.jsonl"),
+                outputDir.resolve("symbolic_region_edges.jsonl"), program);
+    }
+
+    static void writeRegions(Path regions, Path regionEdges,
+                             StaticProgram program) throws IOException {
+        Path regionParent = regions.getParent();
+        if (regionParent != null) {
+            Files.createDirectories(regionParent);
+        }
+        Path edgeParent = regionEdges.getParent();
+        if (edgeParent != null) {
+            Files.createDirectories(edgeParent);
+        }
+        writeJsonl(regions, program.regions);
+        writeJsonl(regionEdges, program.regionEdges);
     }
 
     private static void writeJson(Path output, Object value)

@@ -100,6 +100,12 @@ final class SymbolicRegionPlanner {
         new Planner(program.graph()).plan(program);
     }
 
+    static void planSelected(StaticProgram program,
+                             Collection<String> observedMethods) {
+        new Planner(program.graph()).planSelected(program,
+                new LinkedHashSet<>(observedMethods));
+    }
+
     /**
      * Exact static proof that a boundary-local projected endpoint is an alias
      * of one canonical, slice-backed region output.  The raw endpoint remains
@@ -140,19 +146,7 @@ final class SymbolicRegionPlanner {
         }
 
         private void plan(StaticProgram result) {
-            List<String> anchors = new ArrayList<>(anchorMethods);
-            Collections.sort(anchors);
-            if (anchors.isEmpty()) {
-                for (String method : graph.methods()) {
-                    if (graph.requiresSymbolicExecution(method)) {
-                        anchors.add(method);
-                    }
-                }
-            }
-            if (anchors.size() > MAX_ANCHORS) {
-                anchors = new ArrayList<>(anchors.subList(0, MAX_ANCHORS));
-            }
-
+            List<String> anchors = initialAnchors();
             Set<String> emittedMethodSets = new LinkedHashSet<>();
             Set<String> queuedAnchorStates = new LinkedHashSet<>();
             for (String anchor : anchors) {
@@ -207,6 +201,81 @@ final class SymbolicRegionPlanner {
             buildRegionEdges(result);
             result.coverageComplete = coverageComplete(result);
 
+        }
+
+        /**
+         * Finalizes only region roots that occurred in the discovery trace.
+         * Runtime evidence chooses the activation boundary; the complete
+         * static method set inside each selected draft remains intact so
+         * unobserved branch successors are still available to concolic path
+         * exploration.
+         */
+        private void planSelected(StaticProgram result,
+                                  Set<String> observedMethods) {
+            if (observedMethods.isEmpty()) {
+                return;
+            }
+            List<String> anchors = initialAnchors(observedMethods);
+            Set<String> emittedMethodSets = new LinkedHashSet<>();
+            Set<String> queuedAnchorStates = new LinkedHashSet<>();
+            for (String anchor : anchors) {
+                queuedAnchorStates.add(anchor + "\nNORMAL");
+            }
+            Deque<String> anchorQueue = new ArrayDeque<>(anchors);
+            int regionIndex = 0;
+            while (!anchorQueue.isEmpty() && regionIndex < MAX_REGIONS) {
+                String anchor = anchorQueue.removeFirst();
+                for (RegionDraft draft : buildRegions(anchor)) {
+                    if (draft.methods.isEmpty()
+                            || !observedMethods.contains(draft.anchorMethod)
+                            || !observedMethods.contains(draft.rootMethod)) {
+                        continue;
+                    }
+                    String dedup = regionDedupKey(draft);
+                    if (!emittedMethodSets.add(dedup)) {
+                        continue;
+                    }
+                    draft.regionId = "REGION." + regionIndex++;
+                    result.regions.add(toRegionRow(draft));
+                }
+                for (String upstream : upstreamAnchors(result.regions)) {
+                    if (!observedMethods.contains(upstream)) {
+                        continue;
+                    }
+                    String state = upstream + "\n"
+                            + (overlappingWriterAnchors.contains(upstream)
+                            ? "OVERLAPPING_WRITER" : "NORMAL");
+                    if (queuedAnchorStates.add(state)) {
+                        anchorQueue.addLast(upstream);
+                    }
+                }
+            }
+            buildRegionEdges(result);
+        }
+
+        private List<String> initialAnchors() {
+            return initialAnchors(null);
+        }
+
+        private List<String> initialAnchors(Set<String> observedMethods) {
+            List<String> anchors = new ArrayList<>(anchorMethods);
+            if (observedMethods != null) {
+                anchors.retainAll(observedMethods);
+            }
+            Collections.sort(anchors);
+            if (anchors.isEmpty()) {
+                for (String method : graph.methods()) {
+                    if (graph.requiresSymbolicExecution(method)
+                            && (observedMethods == null
+                            || observedMethods.contains(method))) {
+                        anchors.add(method);
+                    }
+                }
+            }
+            if (anchors.size() > MAX_ANCHORS) {
+                return new ArrayList<>(anchors.subList(0, MAX_ANCHORS));
+            }
+            return anchors;
         }
 
         private String regionDedupKey(RegionDraft draft) {
@@ -471,7 +540,8 @@ final class SymbolicRegionPlanner {
                 String transfer = string(edge.get("transferKind"));
                 String kind = string(edge.get("kind"));
                 if (("SEED".equals(transfer)
-                        || lower(kind).contains("seed"))
+                        || lower(kind).contains("seed")
+                        || string(edge.get("toCell")).contains("#exception:"))
                         && graph.hasMethod(method)) {
                     anchorMethods.add(method);
                 }
@@ -560,12 +630,14 @@ final class SymbolicRegionPlanner {
         private CausalSlice exceptionCausalSlice(String anchor) {
             Set<String> seeds = new LinkedHashSet<>();
             for (Map<String, Object> edge : graph.forMethod(anchor)) {
-                if (!"SEED".equals(string(edge.get("transferKind")))) {
+                String target = string(edge.get("toCell"));
+                boolean exceptionTarget = target.contains("#exception:");
+                if (!"SEED".equals(string(edge.get("transferKind")))
+                        && !exceptionTarget) {
                     continue;
                 }
                 String kind = lower(string(edge.get("kind")));
-                String target = string(edge.get("toCell"));
-                if (kind.contains("exception") || target.contains("#exception:")) {
+                if (kind.contains("exception") || exceptionTarget) {
                     seeds.add(target);
                 }
             }

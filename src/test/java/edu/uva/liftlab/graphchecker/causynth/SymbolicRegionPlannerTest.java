@@ -31,6 +31,35 @@ public class SymbolicRegionPlannerTest {
             "<example.Value: int state>";
 
     @Test
+    public void runtimeSelectionKeepsGuardOnlyExceptionTarget() {
+        StaticProgram program = new StaticProgram();
+        Map<String, Object> targetGuard = edge("DF.0",
+                "exception_guard", "GUARD", "taint_depends_on",
+                VALUE, METHOD + "#u9#exception:example.Failure",
+                9, "if $i0 == 0 goto return");
+        program.edges.add(targetGuard);
+
+        String unobservedMethod = "<example.Unused: void run()>";
+        Map<String, Object> unobservedGuard = edge("DF.1",
+                "exception_guard", "GUARD", "taint_depends_on",
+                unobservedMethod + "::$i0",
+                unobservedMethod + "#u2#exception:example.Failure",
+                2, "if $i0 == 0 goto return");
+        unobservedGuard.put("method", unobservedMethod);
+        unobservedGuard.put("siteId", unobservedMethod + "#u2");
+        program.edges.add(unobservedGuard);
+
+        SymbolicRegionPlanner.planSelected(program,
+                Collections.singleton(METHOD));
+
+        assertEquals(1, program.regions.size());
+        Map<String, Object> region = program.regions.get(0);
+        assertEquals(METHOD, region.get("rootMethod"));
+        assertEquals("EXCEPTION_BACKWARD_CAUSAL_CLOSURE",
+                region.get("selection"));
+    }
+
+    @Test
     public void onlyFreshReceiverFieldsAreRemovedFromLiveIns() {
         StaticProgram fresh = plan(true);
         assertFalse(String.valueOf(fresh.regions),
