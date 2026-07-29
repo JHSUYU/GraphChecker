@@ -197,7 +197,13 @@ final class SeedBackwardStaticAnalyzer {
         result.targetResolved.put("constructionOrdinal",
                 target.exceptionTargetSite.exceptionConstructionOrdinal);
         result.targetResolved.put("analysisScope", target.analysisScope);
-        loadClass(target.exceptionTargetSite.className);
+        String targetMethod = target.exceptionTargetSite.methodSignature;
+        SootMethod sootTarget = methodsBySignature.get(targetMethod);
+        if (sootTarget == null || !loadMethod(sootTarget)) {
+            throw new IllegalStateException(
+                    "Could not load annotated target method: "
+                            + targetMethod);
+        }
         initializeExceptionSeedAnchors();
         runWorklist();
         if (discoveredExceptionSeedCount != 1) {
@@ -213,16 +219,6 @@ final class SeedBackwardStaticAnalyzer {
         result.traceMethods.addAll(selectedMethods);
         Collections.sort(result.traceMethods);
         return result;
-    }
-
-    private void loadClass(String className) {
-        SootClass sootClass = classesByName.get(className);
-        if (sootClass != null) {
-            for (SootMethod method : sootClass.getMethods()) {
-                loadMethod(method);
-            }
-        }
-        LOG.info("Loaded {} seed-candidate methods", factsByMethod.size());
     }
 
     private boolean loadMethod(SootMethod method) {
@@ -248,56 +244,55 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void initializeExceptionSeedAnchors() {
-        for (Map.Entry<String, List<Fact>> entry : factsByMethod.entrySet()) {
-            String method = entry.getKey();
-            if (!target.exceptionTargetSite.methodSignature.equals(method)) {
+        String method = target.exceptionTargetSite.methodSignature;
+        List<Fact> facts = factsByMethod.get(method);
+        if (facts == null) {
+            throw new IllegalStateException(
+                    "Annotated target has no loaded Jimple body: " + method);
+        }
+        for (int throwIndex = 0; throwIndex < facts.size(); throwIndex++) {
+            Fact throwFact = facts.get(throwIndex);
+            if (annotatedExceptionAllocation(facts,
+                    throwIndex) == null) {
                 continue;
             }
-            List<Fact> facts = entry.getValue();
-            for (int throwIndex = 0; throwIndex < facts.size(); throwIndex++) {
-                Fact throwFact = facts.get(throwIndex);
-                if (annotatedExceptionAllocation(facts,
-                        throwIndex) == null) {
-                    continue;
-                }
 
-                String exceptionNode = factNode(throwFact) + "#exception:"
-                        + target.seedException;
-                Set<String> methodRelevant = relevant(method);
-                for (ExceptionGuard guard : targetPathBranches(method,
-                        throwFact)) {
-                    for (String use : causalGuardUses(guard.fact)) {
-                        String node = canonical(method, use);
-                        if (ignoreNode(node)) {
-                            continue;
-                        }
-                        methodRelevant.add(node);
-                        addEdge("exception_guard", node, exceptionNode,
-                                method, guard.fact,
-                                "dominating branch requires Jimple outcome "
-                                        + guard.requiredOutcome
-                                        + " to reach target throw");
-                        StaticEdge edge = emittedEdgeRows.get(
-                                edgeKey("exception_guard", node,
-                                        exceptionNode, method,
-                                        guard.fact));
-                        if (edge != null) {
-                            ControlDependenceEdgeSupport
-                                    .annotatePathGuard(edge.row, method,
-                                            guard.fact.unitIndex,
-                                            throwFact.unitIndex,
-                                            throwFact.unitText,
-                                            guard.requiredOutcome,
-                                            guard.reachingSuccessorIndices,
-                                            node, exceptionNode);
-                            guard.branchShape.annotate(edge.row);
-                        }
+            String exceptionNode = factNode(throwFact) + "#exception:"
+                    + target.seedException;
+            Set<String> methodRelevant = relevant(method);
+            for (ExceptionGuard guard : targetPathBranches(method,
+                    throwFact)) {
+                for (String use : causalGuardUses(guard.fact)) {
+                    String node = canonical(method, use);
+                    if (ignoreNode(node)) {
+                        continue;
+                    }
+                    methodRelevant.add(node);
+                    addEdge("exception_guard", node, exceptionNode,
+                            method, guard.fact,
+                            "dominating branch requires Jimple outcome "
+                                    + guard.requiredOutcome
+                                    + " to reach target throw");
+                    StaticEdge edge = emittedEdgeRows.get(
+                            edgeKey("exception_guard", node,
+                                    exceptionNode, method,
+                                    guard.fact));
+                    if (edge != null) {
+                        ControlDependenceEdgeSupport
+                                .annotatePathGuard(edge.row, method,
+                                        guard.fact.unitIndex,
+                                        throwFact.unitIndex,
+                                        throwFact.unitText,
+                                        guard.requiredOutcome,
+                                        guard.reachingSuccessorIndices,
+                                        node, exceptionNode);
+                        guard.branchShape.annotate(edge.row);
                     }
                 }
-
-                selectedMethods.add(method);
-                discoveredExceptionSeedCount++;
             }
+
+            selectedMethods.add(method);
+            discoveredExceptionSeedCount++;
         }
         LOG.info("Discovered {} direct throw sites for {} in {} methods",
                 discoveredExceptionSeedCount, target.seedException,
