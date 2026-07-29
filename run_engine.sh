@@ -54,7 +54,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|static_regions|static_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_region_instance_id|schedule_target_site|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|static_regions|static_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_region_instance_id|schedule_target_site|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -81,6 +81,7 @@ reset_config() {
   causynth_target_spec=""
   causynth_analysis_scope=""
   causynth_process_dirs=""
+  causynth_protocol_stubs=""
   custom_jdk_home=""
   z3_bin=""
   workload_work_dir=""
@@ -162,6 +163,7 @@ apply_environment_overrides() {
   apply_env_override causynth_target_spec CAUSYNTH_TARGET_SPEC
   apply_env_override causynth_analysis_scope CAUSYNTH_ANALYSIS_SCOPE
   apply_env_override causynth_process_dirs CAUSYNTH_PROCESS_DIRS
+  apply_env_override causynth_protocol_stubs CAUSYNTH_PROTOCOL_STUBS
   apply_env_override custom_jdk_home CAUSYNTH_CUSTOM_JDK_HOME
   apply_env_override z3_bin CAUSYNTH_Z3
   apply_env_override workload_work_dir CAUSYNTH_WORKLOAD_WORK_DIR
@@ -327,6 +329,9 @@ initialize_config() {
   if [[ -n "${causynth_process_dirs}" ]]; then
     causynth_process_dirs=$(resolve_path_list "${causynth_process_dirs}")
   fi
+  if [[ -n "${causynth_protocol_stubs}" ]]; then
+    causynth_protocol_stubs=$(resolve_path "${causynth_protocol_stubs}")
+  fi
 
   static_regions=${static_regions:-${causynth_output_dir}/symbolic_regions.jsonl}
   static_graph=${static_graph:-${causynth_output_dir}/static_dataflow_edges.jsonl}
@@ -408,7 +413,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command trace_test static_regions static_graph runtime_region_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_task_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs causynth_protocol_stubs custom_jdk_home z3_bin workload_work_dir workload_command trace_test static_regions static_graph runtime_region_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_task_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -423,6 +428,9 @@ validate_config() {
     fi
   done
   [[ ${missing} -eq 0 ]] || return 1
+  if [[ -n "${causynth_protocol_stubs}" ]]; then
+    require_file "protocol stub mapping" "${causynth_protocol_stubs}"
+  fi
   case "${solver_timeout_ms}" in
     ''|*[!0-9]*) die "solver_timeout_ms must be a positive integer" ;;
     0) die "solver_timeout_ms must be greater than zero" ;;
@@ -469,6 +477,12 @@ do_analyze() {
   fi
   if [[ -n "${causynth_process_dirs}" ]]; then
     system_properties+=("-Dcausynth.process.dirs=${causynth_process_dirs}")
+  fi
+  if [[ -n "${causynth_protocol_stubs}" ]]; then
+    require_file "protocol stub mapping" "${causynth_protocol_stubs}"
+    system_properties+=(
+      "-Dcausynth.protocol.stubs=${causynth_protocol_stubs}"
+    )
   fi
   if [[ -n "${CAUSYNTH_CONCOLIC_TASK_PLAN:-}" ]]; then
     system_properties+=(

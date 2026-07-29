@@ -20,6 +20,7 @@ import soot.jimple.IdentityStmt;
 import soot.jimple.IfStmt;
 import soot.jimple.InstanceFieldRef;
 import soot.jimple.IntConstant;
+import soot.jimple.NewExpr;
 import soot.jimple.ParameterRef;
 import soot.jimple.ReturnStmt;
 import soot.jimple.Stmt;
@@ -49,7 +50,6 @@ import java.util.stream.Collectors;
 
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorCallsite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorParam;
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ExceptionConstruction;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ExceptionGuard;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Fact;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.FieldWrite;
@@ -89,15 +89,13 @@ final class SeedBackwardStaticAnalyzer {
     private final int maxMethods;
     private final int maxEdges;
     private final Map<String, SootClass> classesByName = new LinkedHashMap<>();
+    private final Map<String, SootMethod> allMethodsBySignature =
+            new LinkedHashMap<>();
     private final Map<String, SootMethod> methodsBySignature = new LinkedHashMap<>();
     private final Map<String, List<SootMethod>> concreteMethodsBySubSignature =
             new LinkedHashMap<>();
     private final Map<String, List<Fact>> factsByMethod = new LinkedHashMap<>();
     private final Map<String, MethodControlFlow> controlFlowByMethod =
-            new LinkedHashMap<>();
-    private final Map<String, List<String>> rpcTargetsBySource =
-            new LinkedHashMap<>();
-    private final Map<String, List<String>> rpcSourcesByTarget =
             new LinkedHashMap<>();
     private final Map<String, List<FieldWrite>> fieldWritersByField =
             new LinkedHashMap<>();
@@ -134,6 +132,7 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, List<ExceptionGuard>> requiredPathGuardsByFact =
             new LinkedHashMap<>();
     private final RuntimeDispatchEvidence runtimeDispatchEvidence;
+    private final ConfiguredProtocolStubs protocolStubs;
     private final Set<String> runtimeRecursiveMethods =
             new LinkedHashSet<>();
     private final List<StaticEdge> edges = new ArrayList<>();
@@ -156,6 +155,7 @@ final class SeedBackwardStaticAnalyzer {
         for (SootClass sootClass : Scene.v().getApplicationClasses()) {
             classesByName.put(sootClass.getName(), sootClass);
             for (SootMethod method : sootClass.getMethods()) {
+                allMethodsBySignature.put(method.getSignature(), method);
                 if (method.isConcrete()) {
                     methodsBySignature.put(method.getSignature(), method);
                     concreteMethodsBySubSignature
@@ -165,59 +165,18 @@ final class SeedBackwardStaticAnalyzer {
                 }
             }
         }
-        buildRpcMappings();
+        try {
+            this.protocolStubs = ConfiguredProtocolStubs.fromConfiguration(
+                    allMethodsBySignature);
+        } catch (IOException exception) {
+            throw new IllegalStateException(
+                    "Could not load configured protocol stubs", exception);
+        }
     }
 
     private static int positiveSystemProperty(String property, int fallback) {
         Integer value = Integer.getInteger(property);
         return value != null && value > 0 ? value : fallback;
-    }
-
-    private void buildRpcMappings() {
-        for (SootClass protocolClass : classesByName.values()) {
-            String className = protocolClass.getName();
-            if (!protocolClass.isInterface()
-                    || !(className.contains("Protocol")
-                    || className.contains("protocolPB")
-                    || className.endsWith("PB"))) {
-                continue;
-            }
-            for (SootMethod protocolMethod : protocolClass.getMethods()) {
-                if (protocolMethod.isConcrete()
-                        || "<init>".equals(protocolMethod.getName())
-                        || "<clinit>".equals(protocolMethod.getName())) {
-                    continue;
-                }
-                List<SootMethod> concreteMethods = concreteMethodsBySubSignature
-                        .get(protocolMethod.getSubSignature());
-                if (concreteMethods == null) {
-                    continue;
-                }
-                for (SootMethod concreteMethod : concreteMethods) {
-                    SootClass concreteClass = concreteMethod.getDeclaringClass();
-                    if (concreteMethod.getSignature().equals(protocolMethod.getSignature())
-                            || !concreteClass.isApplicationClass()
-                            || !classImplementsOrExtends(concreteClass,
-                            protocolClass.getName())) {
-                        continue;
-                    }
-                    addRpcMapping(protocolMethod, concreteMethod);
-                }
-            }
-        }
-    }
-
-    private void addRpcMapping(SootMethod source, SootMethod targetMethod) {
-        String sourceSignature = source.getSignature();
-        String targetSignature = targetMethod.getSignature();
-        List<String> targets = rpcTargetsBySource.computeIfAbsent(
-                sourceSignature, ignored -> new ArrayList<>());
-        if (targets.contains(targetSignature)) {
-            return;
-        }
-        targets.add(targetSignature);
-        rpcSourcesByTarget.computeIfAbsent(targetSignature,
-                ignored -> new ArrayList<>()).add(sourceSignature);
     }
 
     private boolean classImplementsOrExtends(SootClass candidate, String targetClassName) {
@@ -297,35 +256,14 @@ final class SeedBackwardStaticAnalyzer {
             List<Fact> facts = entry.getValue();
             for (int throwIndex = 0; throwIndex < facts.size(); throwIndex++) {
                 Fact throwFact = facts.get(throwIndex);
-                ExceptionConstruction construction =
-                        annotatedExceptionConstruction(facts, throwIndex);
-                if (construction == null) {
+                if (annotatedExceptionAllocation(facts,
+                        throwIndex) == null) {
                     continue;
                 }
 
                 String exceptionNode = factNode(throwFact) + "#exception:"
                         + target.seedException;
                 Set<String> methodRelevant = relevant(method);
-                ThrowStmt throwStmt = (ThrowStmt) throwFact.unit;
-                String thrownValue = canonical(method, throwStmt.getOp().toString());
-                if (!ignoreNode(thrownValue)) {
-                    methodRelevant.add(thrownValue);
-                    addEdge("seed_exception_throw", thrownValue, exceptionNode,
-                            method, throwFact,
-                            "direct throw at annotated exception target");
-                }
-
-                for (String actual : construction.actuals) {
-                    String node = canonical(method, actual);
-                    if (ignoreNode(node)) {
-                        continue;
-                    }
-                    methodRelevant.add(node);
-                    addEdge("exception_payload_argument", node, exceptionNode,
-                            method, construction.fact,
-                            "exception constructor payload contributes to thrown value");
-                }
-
                 for (ExceptionGuard guard : targetPathBranches(method,
                         throwFact)) {
                     for (String use : causalGuardUses(guard.fact)) {
@@ -366,46 +304,35 @@ final class SeedBackwardStaticAnalyzer {
                 discoveredExceptionSeedCount == 0 ? 0 : 1);
     }
 
-    private ExceptionConstruction annotatedExceptionConstruction(
+    private Fact annotatedExceptionAllocation(
             List<Fact> facts, int throwIndex) {
         Fact fact = facts.get(throwIndex);
         if (!(fact.unit instanceof ThrowStmt)) {
             return null;
         }
         ThrowStmt stmt = (ThrowStmt) fact.unit;
-        ExceptionConstruction construction = findExceptionConstruction(facts,
+        Fact allocation = findExceptionAllocation(facts,
                 throwIndex, stmt.getOp().toString());
-        if (construction == null) {
+        if (allocation == null) {
             return null;
         }
         int ordinal = 0;
         for (Fact candidate : facts) {
-            MethodSig invoked = parseMethodSig(candidate.invoke);
-            if (invoked == null || !"<init>".equals(invoked.name)
-                    || !target.seedException.equals(invoked.owner)) {
+            if (!target.seedException.equals(
+                    allocatedExceptionType(candidate))) {
                 continue;
             }
-            if (candidate == construction.fact) {
-                if (ordinal != target.exceptionTargetSite
-                        .exceptionConstructionOrdinal) {
-                    return null;
-                }
-                int annotatedLine = target.exceptionTargetSite.sourceLine;
-                if (annotatedLine > 0 && construction.fact.line > 0
-                        && annotatedLine != construction.fact.line
-                        && annotatedLine != fact.line) {
-                    return null;
-                }
-                return construction;
+            if (candidate == allocation) {
+                return ordinal == target.exceptionTargetSite
+                        .exceptionConstructionOrdinal ? allocation : null;
             }
             ordinal++;
         }
         return null;
     }
 
-    private ExceptionConstruction findExceptionConstruction(List<Fact> facts,
-                                                            int throwIndex,
-                                                            String thrownValue) {
+    private Fact findExceptionAllocation(List<Fact> facts, int throwIndex,
+                                         String thrownValue) {
         Set<String> work = new LinkedHashSet<>();
         String initial = localName(thrownValue);
         if (initial != null) {
@@ -413,22 +340,26 @@ final class SeedBackwardStaticAnalyzer {
         }
         for (int i = throwIndex - 1; i >= 0 && !work.isEmpty(); i--) {
             Fact fact = facts.get(i);
-            MethodSig invoked = parseMethodSig(fact.invoke);
-            String receiver = invokeBaseLocal(fact.unitText);
-            if (invoked != null && "<init>".equals(invoked.name)
-                    && exceptionTypeMatches(invoked.owner)
-                    && receiver != null && work.contains(receiver)) {
-                return new ExceptionConstruction(fact,
-                        actualInvokeArgs(fact.unitText));
-            }
             Set<String> defs = localNames(fact.defs);
             if (!intersectsLocal(work, defs)) {
                 continue;
             }
+            if (target.seedException.equals(allocatedExceptionType(fact))) {
+                return fact;
+            }
+            work.removeAll(defs);
             work.addAll(localNames(nonInvokeUses(fact)));
-            work.addAll(localNames(actualInvokeArgs(fact.unitText)));
         }
         return null;
+    }
+
+    private String allocatedExceptionType(Fact fact) {
+        if (fact == null || !(fact.unit instanceof AssignStmt)) {
+            return "";
+        }
+        Value value = ((AssignStmt) fact.unit).getRightOp();
+        return value instanceof NewExpr
+                ? ((NewExpr) value).getBaseType().getClassName() : "";
     }
 
     private List<String> causalGuardUses(Fact guard) {
@@ -604,42 +535,6 @@ final class SeedBackwardStaticAnalyzer {
             work.addAll(graph.getSuccsOf(current));
         }
         return false;
-    }
-
-    private boolean exceptionTypeMatches(String candidateType) {
-        if (candidateType == null) {
-            return false;
-        }
-        String candidate = candidateType.trim();
-        String configured = target.seedException.trim();
-        if (configured.equals(candidate)
-                || (!configured.contains(".")
-                && configured.equals(simpleClassName(candidate)))) {
-            return true;
-        }
-        SootClass current = classesByName.get(candidate);
-        Set<String> seen = new LinkedHashSet<>();
-        while (current != null && seen.add(current.getName())) {
-            if (configured.equals(current.getName())
-                    || (!configured.contains(".")
-                    && configured.equals(simpleClassName(current.getName())))) {
-                return true;
-            }
-            try {
-                current = current.hasSuperclass() ? current.getSuperclass() : null;
-            } catch (RuntimeException ignored) {
-                return false;
-            }
-        }
-        return false;
-    }
-
-    private String simpleClassName(String className) {
-        if (className == null) {
-            return "";
-        }
-        int dot = className.lastIndexOf('.');
-        return dot < 0 ? className : className.substring(dot + 1);
     }
 
     private boolean intersectsLocal(Set<String> left, Set<String> right) {
@@ -2766,13 +2661,14 @@ final class SeedBackwardStaticAnalyzer {
                                   MethodSig callee, List<String> defs,
                                   List<String> actuals,
                                   Set<String> callerRelevant) {
-        List<String> targets = rpcTargetsBySource.getOrDefault(callee.raw,
-                Collections.emptyList());
-        if (targets.isEmpty()) {
+        List<ProtocolStubMapping> mappings =
+                protocolStubs.targets(callee.raw);
+        if (mappings.isEmpty()) {
             return;
         }
         int count = 0;
-        for (String target : targets) {
+        for (ProtocolStubMapping mapping : mappings) {
+            String target = mapping.serverStub;
             if (target.equals(callee.raw)) {
                 continue;
             }
@@ -2791,14 +2687,74 @@ final class SeedBackwardStaticAnalyzer {
                 continue;
             }
             Set<String> targetRelevant = relevant(target);
-            propagateCallArguments("rpc_argument",
-                    "RPC actual flows to discovered server-side formal",
+            propagateProtocolArguments(mapping, "rpc_argument",
                     callerMethod, fact, target, targetSig, actuals,
-                    callerRelevant, targetRelevant, true);
-            propagateCallReturns("rpc_return",
-                    "discovered server-side RPC return flows to caller",
-                    callerMethod, fact, target, defs,
-                    callerRelevant, targetRelevant, true, false);
+                    callerRelevant, targetRelevant);
+            if (mapping.response) {
+                propagateProtocolReturn(mapping, "rpc_return",
+                        callerMethod, fact, target, defs, callerRelevant,
+                        targetRelevant, false);
+            }
+        }
+    }
+
+    private boolean propagateProtocolArguments(
+            ProtocolStubMapping mapping, String kind, String callerMethod,
+            Fact fact, String targetMethod, MethodSig target,
+            List<String> actuals, Set<String> callerRelevant,
+            Set<String> targetRelevant) {
+        boolean relevantFlow = false;
+        for (ProtocolPortMapping port : mapping.request) {
+            String actual = actuals.get(port.clientArgument);
+            if (ignoreNode(actual)) {
+                continue;
+            }
+            String formal = formalParam(target, port.serverParameter);
+            boolean formalExact = targetRelevant.contains(formal);
+            boolean formalProjected =
+                    containsProjection(targetRelevant, formal);
+            boolean actualHit = callerRelevant.contains(actual)
+                    || containsProjection(callerRelevant, actual);
+            if (!formalExact && !formalProjected && !actualHit) {
+                continue;
+            }
+            relevantFlow = true;
+            addProtocolEdge(kind, actual, formal, callerMethod, fact,
+                    "configured protocol request flows to server formal",
+                    mapping, port.name);
+            if (formalExact) {
+                callerRelevant.add(actual);
+            }
+            if (actualHit) {
+                targetRelevant.add(formal);
+                selectedMethods.add(targetMethod);
+            }
+        }
+        return relevantFlow;
+    }
+
+    private void propagateProtocolReturn(
+            ProtocolStubMapping mapping, String kind, String callerMethod,
+            Fact fact, String targetMethod, List<String> defs,
+            Set<String> callerRelevant, Set<String> targetRelevant,
+            boolean forceExpansion) {
+        String returnNode = targetMethod + ".return";
+        for (String def : defs) {
+            boolean callerHit = callerRelevant.contains(def)
+                    || containsProjection(callerRelevant, def);
+            if (!callerHit && !forceExpansion) {
+                continue;
+            }
+            addProtocolEdge(kind, returnNode, def, callerMethod, fact,
+                    "configured protocol response flows to caller",
+                    mapping, "response");
+            if (callerHit || forceExpansion) {
+                targetRelevant.add(returnNode);
+                selectedMethods.add(targetMethod);
+            }
+            if (forceExpansion) {
+                callerRelevant.add(def);
+            }
         }
     }
 
@@ -2932,7 +2888,7 @@ final class SeedBackwardStaticAnalyzer {
 
     private List<String> resolveDispatchTargets(MethodSig callee) {
         if (callee == null || skipDispatchOwner(callee.owner)
-                || isRpcProtocolName(callee.owner)) {
+                || protocolStubs.isClientOwner(callee.owner)) {
             return Collections.emptyList();
         }
         SootClass owner = classesByName.get(callee.owner);
@@ -2973,26 +2929,95 @@ final class SeedBackwardStaticAnalyzer {
                 || owner.startsWith("org.slf4j.");
     }
 
-    private boolean isRpcProtocolName(String className) {
-        return className != null
-                && (className.contains("Protocol")
-                || className.contains("protocolPB")
-                || className.endsWith("PB"));
+    private void expandRpcCallers(String targetMethod) {
+        List<ProtocolStubMapping> mappings =
+                protocolStubs.sources(targetMethod);
+        if (mappings.isEmpty()) {
+            return;
+        }
+        MethodSig targetSig = parseMethodSig(targetMethod);
+        if (targetSig == null) {
+            return;
+        }
+        Set<String> targetRelevant = relevant(targetMethod);
+        String returnNode = targetMethod + ".return";
+        boolean returnRelevant = targetRelevant.contains(returnNode)
+                || containsProjection(targetRelevant, returnNode);
+        buildGlobalStaticIndex();
+        int mappingCount = 0;
+        for (ProtocolStubMapping mapping : mappings) {
+            if (mappingCount++ >= MAX_RPC_TARGETS_PER_CALL) {
+                break;
+            }
+            List<MethodCallsite> callsites =
+                    methodCallersByCallee.get(mapping.clientStub);
+            if (callsites == null) {
+                continue;
+            }
+            for (MethodCallsite callsite : callsites) {
+                if (selectedMethods.size() >= maxMethods) {
+                    break;
+                }
+                SootMethod callerMethod =
+                        methodsBySignature.get(callsite.method);
+                if (callerMethod != null) {
+                    loadMethod(callerMethod);
+                }
+                Set<String> callerRelevant = relevant(callsite.method);
+                expandProtocolCallerArguments(mapping, targetMethod,
+                        targetSig, targetRelevant, callsite,
+                        callerRelevant);
+                if (mapping.response && returnRelevant
+                        && expandOnce("RPC_CALLER_RETURN", targetMethod,
+                        mapping.clientStub, callsite.method,
+                        callsite.fact.unitIndex)) {
+                    for (String def : callsite.defs) {
+                        if (ignoreNode(def)) {
+                            continue;
+                        }
+                        addProtocolEdge("rpc_caller_return", returnNode,
+                                def, callsite.method, callsite.fact,
+                                "configured protocol caller receives "
+                                        + "server response",
+                                mapping, "response");
+                        callerRelevant.add(def);
+                        selectedMethods.add(callsite.method);
+                    }
+                }
+            }
+        }
     }
 
-    private void expandRpcCallers(String targetMethod) {
-        List<String> sources = rpcSourcesByTarget.get(targetMethod);
-        expandPolymorphicCallers(targetMethod, sources, false);
+    private void expandProtocolCallerArguments(
+            ProtocolStubMapping mapping, String targetMethod,
+            MethodSig target, Set<String> targetRelevant,
+            MethodCallsite callsite, Set<String> callerRelevant) {
+        for (ProtocolPortMapping port : mapping.request) {
+            String formal = formalParam(target, port.serverParameter);
+            if (!targetRelevant.contains(formal)
+                    && !containsProjection(targetRelevant, formal)
+                    || !expandOnce("RPC_CALLER_PARAM", targetMethod,
+                    mapping.clientStub, port.clientArgument,
+                    port.serverParameter, callsite.method,
+                    callsite.fact.unitIndex)) {
+                continue;
+            }
+            String actual = callsite.actuals.get(port.clientArgument);
+            if (ignoreNode(actual)) {
+                continue;
+            }
+            addProtocolEdge("rpc_caller_argument", actual, formal,
+                    callsite.method, callsite.fact,
+                    "configured protocol caller actual reaches "
+                            + "server formal",
+                    mapping, port.name);
+            callerRelevant.add(actual);
+            selectedMethods.add(callsite.method);
+        }
     }
 
     private void expandDispatchCallers(String targetMethod) {
-        expandPolymorphicCallers(targetMethod,
-                resolveDispatchSources(targetMethod), true);
-    }
-
-    private void expandPolymorphicCallers(String targetMethod,
-                                          List<String> sourceMethods,
-                                          boolean dispatch) {
+        List<String> sourceMethods = resolveDispatchSources(targetMethod);
         if (sourceMethods == null || sourceMethods.isEmpty()) {
             return;
         }
@@ -3007,7 +3032,7 @@ final class SeedBackwardStaticAnalyzer {
         String targetThis = methodThisNode(targetMethod);
         Set<String> targetThisProjectionSuffixes =
                 projectionSuffixesForBase(targetThis);
-        boolean targetThisRelevant = dispatch && targetThis != null
+        boolean targetThisRelevant = targetThis != null
                 && (targetRelevant.contains(targetThis)
                 || !targetThisProjectionSuffixes.isEmpty());
         buildGlobalStaticIndex();
@@ -3018,49 +3043,39 @@ final class SeedBackwardStaticAnalyzer {
             }
             for (MethodCallsite callsite : callsites) {
                 if (selectedMethods.size() >= maxMethods
-                        && (!dispatch || !runtimeRecursiveMethods.contains(
-                        targetMethod))) {
+                        && !runtimeRecursiveMethods.contains(targetMethod)) {
                     break;
                 }
-                if (dispatch) {
-                    MethodSig sourceSig = parseMethodSig(sourceMethod);
-                    RuntimeDispatchSelection selection =
-                            runtimeDispatchSelection(callsite.method,
-                                    callsite.fact, sourceSig,
-                                    resolveDispatchTargets(sourceSig));
-                    if (selection.blocked()
-                            || selection.unique()
-                            && !selection.targets.contains(targetMethod)
-                            || selection.unique()
-                            && !admitRuntimeRecursiveMethod(targetMethod)) {
-                        continue;
-                    }
+                MethodSig sourceSig = parseMethodSig(sourceMethod);
+                RuntimeDispatchSelection selection =
+                        runtimeDispatchSelection(callsite.method,
+                                callsite.fact, sourceSig,
+                                resolveDispatchTargets(sourceSig));
+                if (selection.blocked()
+                        || selection.unique()
+                        && !selection.targets.contains(targetMethod)
+                        || selection.unique()
+                        && !admitRuntimeRecursiveMethod(targetMethod)) {
+                    continue;
                 }
                 SootMethod callerMethod = methodsBySignature.get(callsite.method);
                 if (callerMethod != null) {
                     loadMethod(callerMethod);
                 }
                 Set<String> callerRelevant = relevant(callsite.method);
-                String prefix = dispatch ? "DISPATCH" : "RPC";
-                expandCallerArguments(prefix + "_CALLER_PARAM",
-                        dispatch ? "dispatch_caller_argument"
-                                : "rpc_caller_argument",
-                        dispatch
-                                ? "interface/virtual caller actual reaches concrete formal"
-                                : "RPC caller actual reaches discovered server-side formal",
+                expandCallerArguments("DISPATCH_CALLER_PARAM",
+                        "dispatch_caller_argument",
+                        "interface/virtual caller actual reaches concrete formal",
                         targetMethod, sourceMethod, targetSig, targetRelevant,
                         callsite, callerRelevant);
-                if (returnRelevant && expandOnce(prefix + "_CALLER_RETURN",
+                if (returnRelevant && expandOnce("DISPATCH_CALLER_RETURN",
                         targetMethod, sourceMethod, callsite.method,
                         callsite.fact.unitIndex)) {
-                    expandCallerReturn(dispatch
-                                    ? "dispatch_caller_return"
-                                    : "rpc_caller_return",
+                    expandCallerReturn("dispatch_caller_return",
                             returnNode, callsite.defs, callsite.method,
                             callsite.fact, callerRelevant,
-                            dispatch
-                                    ? "interface/virtual caller receives relevant concrete return"
-                                    : "RPC caller receives relevant server-side return");
+                            "interface/virtual caller receives relevant "
+                                    + "concrete return");
                 }
                 if (targetThisRelevant) {
                     expandCallerReceiverFields(true, targetMethod,
@@ -3172,7 +3187,7 @@ final class SeedBackwardStaticAnalyzer {
         for (SootClass candidate : classesByName.values()) {
             if (!candidate.isApplicationClass()
                     || skipDispatchOwner(candidate.getName())
-                    || isRpcProtocolName(candidate.getName())
+                    || protocolStubs.isClientOwner(candidate.getName())
                     || (!candidate.isInterface() && !candidate.isAbstract())
                     || !classImplementsOrExtends(targetClass, candidate.getName())) {
                 continue;
@@ -3924,6 +3939,20 @@ final class SeedBackwardStaticAnalyzer {
     private void addEdge(String kind, Object from, Object to, String method,
                          Fact fact, String evidence) {
         addEdgeInternal(kind, from, to, method, fact, evidence, true);
+    }
+
+    private void addProtocolEdge(
+            String kind, Object from, Object to, String method, Fact fact,
+            String evidence, ProtocolStubMapping mapping, String port) {
+        addEdge(kind, from, to, method, fact, evidence);
+        StaticEdge edge = emittedEdgeRows.get(
+                edgeKey(kind, from, to, method, fact));
+        if (edge == null) {
+            return;
+        }
+        edge.put("protocolStubMappingId", mapping.id);
+        edge.put("protocolTransport", mapping.transport);
+        edge.put("protocolPort", port);
     }
 
     private void addEdgeInternal(String kind, Object from, Object to,

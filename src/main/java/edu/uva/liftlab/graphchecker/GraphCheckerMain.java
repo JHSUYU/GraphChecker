@@ -229,8 +229,12 @@ public class GraphCheckerMain {
         }
 
         Properties config = loadGraphCheckerConfig();
-        addConfiguredProcessDirs(dirs,
-                config.getProperty("causynth_process_dirs"));
+        String configuredDirs = System.getProperty(
+                "causynth.process.dirs");
+        if (configuredDirs == null || configuredDirs.trim().isEmpty()) {
+            configuredDirs = config.getProperty("causynth_process_dirs");
+        }
+        addConfiguredProcessDirs(dirs, configuredDirs);
 
         if (dirs.size() > inputDirs.size()) {
             LOG.info("Expanded Soot process dirs to {}", dirs);

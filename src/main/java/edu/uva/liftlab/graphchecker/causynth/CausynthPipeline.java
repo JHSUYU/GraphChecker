@@ -79,9 +79,9 @@ import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.ja
  *
  * <p>The analysis starts from one annotated exception construction and
  * discovers the throw value, exception payload, controlling guards, and their
- * data dependencies automatically. Local Java/Jimple calls, discovered RPC
- * dispatches, interface dispatches, and explicitly enabled protocol bridges
- * all emit edges into the same static data-flow graph.</p>
+ * data dependencies automatically. Local Java/Jimple calls, interface
+ * dispatches, and explicitly configured protocol bridges all emit edges into
+ * the same static data-flow graph.</p>
  */
 public final class CausynthPipeline {
     private static final Logger LOG = LoggerFactory.getLogger(CausynthPipeline.class);

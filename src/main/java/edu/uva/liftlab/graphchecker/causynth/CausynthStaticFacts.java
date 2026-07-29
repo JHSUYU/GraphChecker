@@ -125,16 +125,6 @@ final class CausynthStaticFacts {
         }
     }
 
-    static final class ExceptionConstruction {
-        final Fact fact;
-        final List<String> actuals;
-
-        ExceptionConstruction(Fact fact, List<String> actuals) {
-            this.fact = fact;
-            this.actuals = actuals;
-        }
-    }
-
     static final class ExceptionGuard {
         final Fact fact;
         final Boolean requiredOutcome;
