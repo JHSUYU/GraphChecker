@@ -57,6 +57,22 @@ public final class JavaContainerTypes {
                     "boolean isEmpty()",
                     "boolean remove(java.lang.Object)", "int size()",
                     "java.util.Iterator iterator()")));
+    private static final Set<String> INDEXED_MUTATORS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "boolean add(java.lang.Object)",
+                    "boolean offer(java.lang.Object)",
+                    "java.lang.Object poll()",
+                    "java.lang.Object remove()",
+                    "java.lang.Object remove(int)",
+                    "java.lang.Object set(int,java.lang.Object)")));
+    private static final Set<String> MAP_MUTATORS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "java.lang.Object put(java.lang.Object,java.lang.Object)",
+                    "java.lang.Object remove(java.lang.Object)")));
+    private static final Set<String> SET_MUTATORS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "boolean add(java.lang.Object)",
+                    "boolean remove(java.lang.Object)")));
     private static final Set<String> ITERATOR_RESULTS =
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
                     "boolean hasNext()", "java.lang.Object next()")));
@@ -98,15 +114,7 @@ public final class JavaContainerTypes {
     public static boolean symbolicResultOperation(String signature) {
         MethodSignature method = MethodSignature.parse(signature);
         if (method == null) return false;
-        if (INDEXED.contains(method.owner)) {
-            return INDEXED_RESULTS.contains(method.subsignature);
-        }
-        if (MAPS.contains(method.owner)) {
-            return MAP_RESULTS.contains(method.subsignature);
-        }
-        if (SETS.contains(method.owner)) {
-            return SET_RESULTS.contains(method.subsignature);
-        }
+        if (modeledContainerOperation(method)) return true;
         if ("java.util.Iterator".equals(method.owner)
                 || "java.util.ListIterator".equals(method.owner)) {
             return ITERATOR_RESULTS.contains(method.subsignature);
@@ -114,6 +122,39 @@ public final class JavaContainerTypes {
         return ("java.util.Map$Entry".equals(method.owner)
                 || "java.util.Map.Entry".equals(method.owner))
                 && ENTRY_RESULTS.contains(method.subsignature);
+    }
+
+    /** Exact Map/List/Set operation already modeled by the container algebra. */
+    public static boolean modeledContainerOperation(String signature) {
+        MethodSignature method = MethodSignature.parse(signature);
+        return method != null && modeledContainerOperation(method);
+    }
+
+    private static boolean modeledContainerOperation(MethodSignature method) {
+        if (INDEXED.contains(method.owner)) {
+            return INDEXED_RESULTS.contains(method.subsignature);
+        }
+        if (MAPS.contains(method.owner)) {
+            return MAP_RESULTS.contains(method.subsignature);
+        }
+        return SETS.contains(method.owner)
+                && SET_RESULTS.contains(method.subsignature);
+    }
+
+    /** Exact state-changing operation already modeled by the container algebra. */
+    public static boolean modeledContainerMutator(String signature) {
+        MethodSignature method = MethodSignature.parse(signature);
+        if (method == null) {
+            return false;
+        }
+        if (INDEXED.contains(method.owner)) {
+            return INDEXED_MUTATORS.contains(method.subsignature);
+        }
+        if (MAPS.contains(method.owner)) {
+            return MAP_MUTATORS.contains(method.subsignature);
+        }
+        return SETS.contains(method.owner)
+                && SET_MUTATORS.contains(method.subsignature);
     }
 
     public static boolean symbolicResultReturn(String cell) {

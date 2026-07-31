@@ -5,7 +5,9 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.C
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.RootedOutputCapture;
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
+import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.ArrayType;
@@ -111,6 +113,18 @@ public final class CausynthPipeline {
             return;
         }
 
+        RuntimeTraceMode traceMode = RuntimeTraceMode.configured();
+        if (traceMode == RuntimeTraceMode.REGION_STATE) {
+            StaticProgram selected = new StaticProgram();
+            selected.traceMethods.addAll(
+                    RegionSkeletonInstrumentationSelection
+                            .methodsFromEnvironment());
+            instrumentLiteRuntimeTrace(selected, traceMode);
+            LOG.info("REGION_STATE reused runtime-selected skeletons; "
+                    + "static seed analysis was not rerun");
+            return;
+        }
+
         CausynthTargetContext target = CausynthTargetResolver.resolve(options);
         ExceptionTargetSite exceptionTarget =
                 ExceptionTargetAnnotationScanner.select(
@@ -119,25 +133,61 @@ public final class CausynthPipeline {
 
         LOG.info("Seed backward analysis starts at annotated exception {}",
                 exceptionTarget.stableIdentity());
+        long seedAnalysisStart = System.nanoTime();
         StaticProgram result =
                 new SeedBackwardStaticAnalyzer(target).analyze();
+        long seedAnalysisMillis = elapsedMillis(seedAnalysisStart);
+        long skeletonPlanningStart = System.nanoTime();
+        if (traceMode == RuntimeTraceMode.REGION_SKELETON) {
+            // The graph is already resident here.  Persist broad candidate
+            // skeletons now so the offline runtime phase never has to load
+            // the large static graph merely to rediscover region boundaries.
+            SymbolicRegionPlanner.planSelectedSkeleton(result,
+                    result.traceMethods);
+        }
+        long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
+        long instrumentationStart = System.nanoTime();
         instrumentRuntimeTrace(result);
+        long instrumentationMillis = elapsedMillis(instrumentationStart);
+        long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
                 target.outputDir, result);
+        long artifactWriteMillis = elapsedMillis(artifactWriteStart);
+        LOG.info("Discovery phase timing: seedAnalysis={} ms, "
+                        + "skeletonPlanning={} ms, instrumentation={} ms, "
+                        + "artifactWrite={} ms",
+                seedAnalysisMillis, skeletonPlanningMillis,
+                instrumentationMillis, artifactWriteMillis);
         LOG.info("Seed backward analysis wrote the frozen graph to {}; "
                 + "symbolic regions will be finalized from the runtime trace",
                 target.outputDir);
     }
 
+    private static long elapsedMillis(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000L;
+    }
+
     private void instrumentRuntimeTrace(StaticProgram result) {
+        RuntimeTraceMode mode = RuntimeTraceMode.configured();
+        if (mode != RuntimeTraceMode.FULL) {
+            instrumentLiteRuntimeTrace(result, mode);
+            return;
+        }
         SootMethodRef recordRef = traceRecorderMethodRef();
         SootMethodRef recordFieldRef = traceRecorderFieldMethodRef();
         HookCatalog richRefs = HookCatalog.trace();
         TraceSelection traceSelection = traceSelection(result);
+        Set<String> skippedClasses = traceSkipClasses();
+        int skippedMethods = 0;
         for (String signature : result.traceMethods) {
             try {
                 SootMethod method = Scene.v().getMethod(signature);
                 if (method == null || !method.isConcrete()) {
+                    continue;
+                }
+                if (isTraceSkippedClass(method.getDeclaringClass().getName(),
+                        skippedClasses)) {
+                    skippedMethods++;
                     continue;
                 }
                 Body body = method.retrieveActiveBody();
@@ -177,7 +227,97 @@ public final class CausynthPipeline {
                 LOG.debug("Skipping trace instrumentation for {}", signature, exception);
             }
         }
+        if (skippedMethods > 0) {
+            LOG.info("Skipped runtime-trace instrumentation for {} "
+                    + "configured methods", skippedMethods);
+        }
         LOG.info("Instrumented selected methods for runtime trace");
+    }
+
+    /**
+     * Region discovery records only the balanced activation tree.  Once that
+     * tree selects concrete regions, the state pass adds exact field events
+     * only inside those methods.  Neither pass computes rich call/argument or
+     * branch payloads; those remain a final, region-local operation.
+     */
+    private void instrumentLiteRuntimeTrace(
+            StaticProgram result, RuntimeTraceMode mode) {
+        Set<String> selectedMethods = new LinkedHashSet<>(
+                result.traceMethods);
+        TraceSelection traceSelection = mode == RuntimeTraceMode.REGION_STATE
+                ? null : new TraceSelection();
+        HookCatalog refs = HookCatalog.trace();
+        Set<String> skippedClasses = traceSkipClasses();
+        Set<String> instrumented = new LinkedHashSet<>();
+        int instrumentedMethods = 0;
+        int skippedMethods = 0;
+        for (String signature : result.traceMethods) {
+            if (!selectedMethods.contains(signature)) {
+                continue;
+            }
+            try {
+                SootMethod method = Scene.v().getMethod(signature);
+                if (method == null || !method.isConcrete()) {
+                    continue;
+                }
+                if (isTraceSkippedClass(method.getDeclaringClass().getName(),
+                        skippedClasses)) {
+                    skippedMethods++;
+                    continue;
+                }
+                Body body = method.retrieveActiveBody();
+                List<Unit> originalUnits = snapshotUnits(body);
+                tagOriginalUnits(originalUnits);
+                Unit insertionPoint = safeInstrumentationEntry(body, method);
+                if (method.isConstructor() && insertionPoint == null) {
+                    continue;
+                }
+                Unit lowerBound = method.isConstructor()
+                        ? insertionPoint : null;
+                Value receiver = NullConstant.v();
+                if (!method.isStatic()) {
+                    try {
+                        receiver = body.getThisLocal();
+                    } catch (RuntimeException ignored) {
+                    }
+                }
+                Local liteCallId = instrumentLiteMethod(
+                        body, method, originalUnits,
+                        insertionPoint, lowerBound, receiver, refs);
+                if (mode == RuntimeTraceMode.REGION_STATE) {
+                    instrumentLiteFieldTrace(body, originalUnits, lowerBound,
+                            traceSelection, refs);
+                    instrumentLiteContainerCalls(body, method, originalUnits,
+                            lowerBound, liteCallId, refs);
+                }
+                instrumentedMethods++;
+                instrumented.add(signature);
+            } catch (RuntimeException exception) {
+                LOG.debug("Skipping {} trace instrumentation for {}",
+                        mode, signature, exception);
+            }
+        }
+        Set<String> missing = new LinkedHashSet<>(selectedMethods);
+        missing.removeAll(instrumented);
+        if (mode == RuntimeTraceMode.REGION_STATE && !missing.isEmpty()) {
+            throw new IllegalStateException(
+                    "REGION_STATE could not instrument all runtime-region "
+                            + "methods; missing " + boundedValues(missing));
+        }
+        LOG.info("Instrumented {} methods for {} runtime trace ({} skipped)",
+                instrumentedMethods, mode, skippedMethods);
+    }
+
+    private static List<String> boundedValues(Collection<String> values) {
+        List<String> result = new ArrayList<>();
+        for (String value : values) {
+            if (result.size() == 20) {
+                result.add("... (" + values.size() + " total)");
+                break;
+            }
+            result.add(value);
+        }
+        return result;
     }
 
     /**
@@ -1295,6 +1435,193 @@ public final class CausynthPipeline {
         return selection;
     }
 
+    private static Set<String> traceSkipClasses() {
+        String configured = firstNonBlank(
+                System.getProperty("causynth.trace.skip.classes"),
+                System.getenv("CAUSYNTH_TRACE_SKIP_CLASSES"),
+                System.getProperty("causynth.trace.summary.classes"),
+                System.getenv("CAUSYNTH_TRACE_SUMMARY_CLASSES"), "");
+        Set<String> result = new LinkedHashSet<>();
+        if (configured == null) {
+            return result;
+        }
+        for (String value : configured.split("[,\\s]+")) {
+            if (!value.isEmpty()) {
+                result.add(value);
+            }
+        }
+        return result;
+    }
+
+    private static boolean isTraceSkippedClass(
+            String className, Set<String> skippedClasses) {
+        for (String skippedClass : skippedClasses) {
+            if (className.equals(skippedClass)
+                    || className.startsWith(skippedClass + "$")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Local instrumentLiteMethod(
+            Body body, SootMethod method, List<Unit> originalUnits,
+            Unit insertionPoint, Unit lowerBound, Value receiver,
+            HookCatalog refs) {
+        Local callId = newTraceLocal(body, LongType.v(),
+                "$causynthLiteCallId");
+        List<Unit> entry = new ArrayList<>();
+        entry.add(Jimple.v().newAssignStmt(callId, LongConstant.v(0L)));
+        entry.add(Jimple.v().newAssignStmt(callId,
+                Jimple.v().newStaticInvokeExpr(
+                        refs.ref(Hook.ENTER_METHOD_LITE),
+                        StringConstant.v(method.getSignature()), receiver)));
+        insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+
+        boolean instrumentationSafe = lowerBound == null;
+        for (Unit unit : originalUnits) {
+            if (!instrumentationSafe) {
+                if (unit != lowerBound) {
+                    continue;
+                }
+                instrumentationSafe = true;
+            }
+            if (unit instanceof ReturnStmt
+                    || unit instanceof ReturnVoidStmt) {
+                Stmt exit = Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.EXIT_ACTIVE_METHOD_LITE)));
+                body.getUnits().insertBefore(exit, unit);
+            }
+        }
+        addActiveThrowHandler(body, insertionPoint,
+                refs.ref(Hook.THROW_ACTIVE_METHOD_LITE));
+        return callId;
+    }
+
+    private void instrumentLiteFieldTrace(
+            Body body, List<Unit> units, Unit lowerBound,
+            TraceSelection selectedFields, HookCatalog refs) {
+        boolean instrumentationSafe = lowerBound == null;
+        for (Unit unit : units) {
+            if (!instrumentationSafe) {
+                if (unit != lowerBound) {
+                    continue;
+                }
+                instrumentationSafe = true;
+            }
+            if (!(unit instanceof Stmt)) {
+                continue;
+            }
+            Stmt stmt = (Stmt) unit;
+            if (stmt instanceof AssignStmt) {
+                AssignStmt assign = (AssignStmt) stmt;
+                if (assign.getLeftOp() instanceof FieldRef) {
+                    insertLiteFieldEvent(body, unit,
+                            (FieldRef) assign.getLeftOp(),
+                            assign.getRightOp(),
+                            refs.ref(Hook.RECORD_FIELD_WRITE_LITE), true,
+                            selectedFields);
+                }
+                if (assign.getRightOp() instanceof FieldRef) {
+                    insertLiteFieldEvent(body, unit,
+                            (FieldRef) assign.getRightOp(),
+                            assign.getLeftOp(),
+                            refs.ref(Hook.RECORD_FIELD_READ_LITE), true,
+                            selectedFields);
+                }
+                continue;
+            }
+            Set<String> seen = new LinkedHashSet<>();
+            for (ValueBox box : stmt.getUseBoxes()) {
+                if (!(box.getValue() instanceof FieldRef)) {
+                    continue;
+                }
+                FieldRef field = (FieldRef) box.getValue();
+                String signature = CausynthStaticFacts
+                        .declaredFieldSignature(field.getFieldRef());
+                if (seen.add(signature)) {
+                    insertLiteFieldEvent(body, unit, field,
+                            null,
+                            refs.ref(Hook.RECORD_FIELD_READ_LITE), true,
+                            selectedFields);
+                }
+            }
+        }
+    }
+
+    private static void insertLiteFieldEvent(
+            Body body, Unit unit, FieldRef field, Value referenceValue,
+            SootMethodRef hook,
+            boolean after, TraceSelection selectedFields) {
+        String signature = CausynthStaticFacts.declaredFieldSignature(
+                field.getFieldRef());
+        if (selectedFields != null
+                && !selectedFields.signatures.contains(signature)) {
+            return;
+        }
+        List<Unit> events = new ArrayList<>();
+        Value owner = field instanceof InstanceFieldRef
+                ? ((InstanceFieldRef) field).getBase()
+                : StringConstant.v(signature);
+        Value ownerObject = objectArg(body, owner, events);
+        Value valueObject = objectArg(body, referenceValue, events);
+        events.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(hook,
+                        StringConstant.v(signature), ownerObject,
+                        valueObject)));
+        if (after) {
+            insertAfterSequence(body, unit, events);
+        } else {
+            insertBeforeSequence(body, unit, events);
+        }
+    }
+
+    private void instrumentLiteContainerCalls(
+            Body body, SootMethod method, List<Unit> units, Unit lowerBound,
+            Local ownerCallId, HookCatalog refs) {
+        boolean instrumentationSafe = lowerBound == null;
+        for (int unitIndex = 0; unitIndex < units.size(); unitIndex++) {
+            Unit unit = units.get(unitIndex);
+            if (!instrumentationSafe) {
+                if (unit != lowerBound) {
+                    continue;
+                }
+                instrumentationSafe = true;
+            }
+            if (!(unit instanceof Stmt)
+                    || !((Stmt) unit).containsInvokeExpr()) {
+                continue;
+            }
+            Stmt stmt = (Stmt) unit;
+            InvokeExpr invoke = stmt.getInvokeExpr();
+            String callee = invoke.getMethodRef().getSignature();
+            if (!(invoke instanceof InstanceInvokeExpr)
+                    || !JavaContainerTypes
+                    .modeledContainerMutator(callee)) {
+                continue;
+            }
+            List<Unit> before = new ArrayList<>();
+            Value receiver = objectArg(body,
+                    ((InstanceInvokeExpr) invoke).getBase(), before);
+            Local invocationId = newTraceLocal(body, LongType.v(),
+                    "$causynthLiteInvocation");
+            before.add(Jimple.v().newAssignStmt(invocationId,
+                    Jimple.v().newStaticInvokeExpr(refs.ref(Hook.BEGIN_CALL),
+                            ownerCallId,
+                            StringConstant.v(method.getSignature()),
+                            IntConstant.v(unitIndex),
+                            StringConstant.v(callee), receiver)));
+            insertBeforeSequence(body, stmt, before);
+
+            List<Unit> after = new ArrayList<>();
+            after.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.END_CALL_LITE), invocationId)));
+            insertAfterSequence(body, stmt, after);
+        }
+    }
+
     private void instrumentRichMethod(
             Body body, SootMethod method, List<Unit> originalUnits,
             Unit insertionPoint, Unit lowerBound, Value receiver,
@@ -1999,11 +2326,17 @@ public final class CausynthPipeline {
     }
 
     private enum Hook {
+        ENTER_METHOD_LITE,
+        RECORD_FIELD_READ_LITE,
+        RECORD_FIELD_WRITE_LITE,
+        EXIT_ACTIVE_METHOD_LITE,
+        THROW_ACTIVE_METHOD_LITE,
         ENTER_METHOD,
         RECORD_METHOD_ARGUMENT,
         BEGIN_CALL,
         RECORD_CALL_ARGUMENT,
         END_CALL,
+        END_CALL_LITE,
         RECORD_BRANCH,
         RECORD_SWITCH_BRANCH,
         EXIT_ACTIVE_METHOD,
@@ -2052,6 +2385,19 @@ public final class CausynthPipeline {
             Type string = RefType.v("java.lang.String");
             Type object = RefType.v("java.lang.Object");
             return new HookCatalog()
+                    .add(Hook.ENTER_METHOD_LITE, recorder,
+                            "enterMethodLite", LongType.v(), string, object)
+                    .add(Hook.RECORD_FIELD_READ_LITE, recorder,
+                            "recordFieldReadLite", VoidType.v(), string,
+                            object, object)
+                    .add(Hook.RECORD_FIELD_WRITE_LITE, recorder,
+                            "recordFieldWriteLite", VoidType.v(), string,
+                            object, object)
+                    .add(Hook.EXIT_ACTIVE_METHOD_LITE, recorder,
+                            "exitActiveMethodLite", VoidType.v())
+                    .add(Hook.THROW_ACTIVE_METHOD_LITE, recorder,
+                            "throwActiveMethodLite", VoidType.v(),
+                            RefType.v("java.lang.Throwable"))
                     .add(Hook.ENTER_METHOD, recorder, "enterMethod",
                             LongType.v(), string, object)
                     .add(Hook.RECORD_METHOD_ARGUMENT, recorder,
@@ -2064,6 +2410,8 @@ public final class CausynthPipeline {
                             IntType.v(), string, object, string)
                     .add(Hook.END_CALL, recorder, "endCall", VoidType.v(),
                             LongType.v(), object, string)
+                    .add(Hook.END_CALL_LITE, recorder, "endCallLite",
+                            VoidType.v(), LongType.v())
                     .add(Hook.RECORD_BRANCH, recorder, "recordBranch",
                             VoidType.v(), LongType.v(), string, IntType.v(),
                             string, BooleanType.v())

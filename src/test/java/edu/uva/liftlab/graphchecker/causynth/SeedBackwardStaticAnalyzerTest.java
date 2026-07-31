@@ -169,6 +169,14 @@ public class SeedBackwardStaticAnalyzerTest {
         StaticProgram program = new SeedBackwardStaticAnalyzer(
                 new CausynthTargetContext(null, null, site.id, site,
                         "TEST")).analyze();
+        assertFalse(program.edges.stream().anyMatch(edge ->
+                String.valueOf(edge.get("kind")).startsWith("projected_")));
+        assertEquals("CHEAP_BACKWARD_ACCESS_PATH_DEMAND_V1",
+                program.targetResolved.get("candidateDiscoveryMode"));
+        assertEquals(0,
+                program.targetResolved.get("projectedEdgesPersisted"));
+        assertEquals(false, program.targetResolved.get(
+                "recursiveReceiverEffectClosure"));
         SymbolicRegionPlanner.planSelected(program,
                 program.graph().methods());
 

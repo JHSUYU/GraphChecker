@@ -25,7 +25,9 @@ import soot.jimple.InvokeExpr;
 import soot.jimple.Jimple;
 import soot.jimple.NullConstant;
 import soot.jimple.Stmt;
+import soot.jimple.StringConstant;
 
+import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -37,6 +39,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.GZIPOutputStream;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -49,6 +52,8 @@ public class CausynthPipelineTest {
     private String previousConcolicInstrumentation;
     private String previousTaskPlan;
     private String previousTaskId;
+    private String previousTraceMode;
+    private String previousRegionSkeletons;
 
     @Test
     public void derivesOutputSliceCompletenessWithoutWireMirror() {
@@ -72,6 +77,9 @@ public class CausynthPipelineTest {
                 System.getProperty("causynth.concolic.task.plan");
         previousTaskId =
                 System.getProperty("causynth.concolic.task.id");
+        previousTraceMode = System.getProperty("causynth.trace.mode");
+        previousRegionSkeletons =
+                System.getProperty("causynth.region.skeletons");
     }
 
     @After
@@ -80,7 +88,275 @@ public class CausynthPipelineTest {
                 previousConcolicInstrumentation);
         restoreProperty("causynth.concolic.task.plan", previousTaskPlan);
         restoreProperty("causynth.concolic.task.id", previousTaskId);
+        restoreProperty("causynth.trace.mode", previousTraceMode);
+        restoreProperty("causynth.region.skeletons",
+                previousRegionSkeletons);
         G.reset();
+    }
+
+    @Test
+    public void regionSkeletonUsesOnlyBalancedLiteHooks()
+            throws Exception {
+        SootMethod method = liteTraceTarget();
+        StaticProgram program = liteTraceProgram(method);
+        System.setProperty("causynth.trace.mode", "region-skeleton");
+
+        invokeRuntimeInstrumentation(program);
+
+        List<String> hooks = invokedMethods(method.getActiveBody());
+        assertTrue(hooks.contains("enterMethodLite"));
+        assertTrue(hooks.contains("exitActiveMethodLite"));
+        assertTrue(hooks.contains("throwActiveMethodLite"));
+        assertFalse(hooks.contains("enterMethod"));
+        assertFalse(hooks.contains("recordMethodArgument"));
+        assertFalse(hooks.contains("beginCall"));
+        assertFalse(hooks.contains("recordBranch"));
+        assertFalse(hooks.contains("recordFieldReadLite"));
+        assertFalse(hooks.contains("recordFieldWriteLite"));
+    }
+
+    @Test
+    public void regionStateTracesExactFieldsOnlyInsideSelectedMethods()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            SootMethod method = liteTraceTarget();
+            JsonObject skeleton = new JsonObject();
+            skeleton.addProperty("schemaVersion", 2);
+            skeleton.addProperty("kind", "REGION_SKELETON");
+            skeleton.addProperty("regionId", "REGION.0");
+            skeleton.addProperty("rootMethod", method.getSignature());
+            skeleton.addProperty("anchorMethod", method.getSignature());
+            skeleton.add("methods", singletonJsonArray(
+                    method.getSignature()));
+            Path skeletons = folder.getRoot().toPath().resolve(
+                    "region_skeletons.jsonl.gz");
+            try (OutputStream output = new GZIPOutputStream(
+                    Files.newOutputStream(skeletons))) {
+                output.write((skeleton + "\n").getBytes(
+                        StandardCharsets.UTF_8));
+            }
+            System.setProperty("causynth.trace.mode", "region-state");
+            System.setProperty("causynth.region.skeletons",
+                    skeletons.toString());
+
+            new CausynthPipeline(null).run();
+
+            List<String> hooks = invokedMethods(method.getActiveBody());
+            assertEquals(2, count(hooks, "recordFieldReadLite"));
+            assertEquals(2, count(hooks, "recordFieldWriteLite"));
+            assertEquals(1, count(hooks, "beginCall"));
+            assertEquals(1, count(hooks, "endCallLite"));
+            assertEquals(0, count(hooks, "endCall"));
+            assertTrue(hooks.contains("enterMethodLite"));
+            assertFalse(hooks.contains("recordField"));
+
+            List<InvokeExpr> reads = invocationsNamed(
+                    method.getActiveBody(), "recordFieldReadLite");
+            List<InvokeExpr> writes = invocationsNamed(
+                    method.getActiveBody(), "recordFieldWriteLite");
+            for (InvokeExpr hook : reads) {
+                assertEquals(3, hook.getArgCount());
+            }
+            for (InvokeExpr hook : writes) {
+                assertEquals(3, hook.getArgCount());
+            }
+            List<InvokeExpr> calls = invocationsNamed(
+                    method.getActiveBody(), "beginCall");
+            assertEquals("<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>",
+                    ((StringConstant) calls.get(0).getArg(3)).value);
+            assertEquals("map", calls.get(0).getArg(4).toString());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void regionStateSelectionRejectsMalformedSkeletonRows()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String root = "<example.Selected: void root()>";
+            String anchor = "<example.Selected: void anchor()>";
+            JsonObject valid = skeletonRow("REGION.0", root, anchor,
+                    Arrays.asList(root, anchor));
+            JsonObject emptyId = skeletonRow("", root, anchor,
+                    Arrays.asList(root, anchor));
+            JsonObject emptyMethods = skeletonRow("REGION.0", root,
+                    anchor, Collections.<String>emptyList());
+            JsonObject missingRoot = skeletonRow("REGION.0", root,
+                    anchor, Collections.singletonList(anchor));
+            JsonObject missingAnchor = skeletonRow("REGION.0", root,
+                    anchor, Collections.singletonList(root));
+            JsonObject emptyAnchor = skeletonRow("REGION.0", root, "",
+                    Collections.singletonList(root));
+            JsonObject emptyMethod = skeletonRow("REGION.0", root,
+                    anchor, Arrays.asList(root, anchor, ""));
+            JsonObject nonArrayMethods = valid.deepCopy();
+            nonArrayMethods.addProperty("methods", "not-an-array");
+            List<String> malformed = Arrays.asList(
+                    emptyId.toString(), emptyMethods.toString(),
+                    missingRoot.toString(), missingAnchor.toString(),
+                    emptyAnchor.toString(), emptyMethod.toString(),
+                    nonArrayMethods.toString(),
+                    valid + "\n" + valid);
+
+            for (int index = 0; index < malformed.size(); index++) {
+                Path skeletons = folder.getRoot().toPath().resolve(
+                        "malformed-" + index + ".jsonl");
+                Files.write(skeletons,
+                        malformed.get(index).getBytes(
+                                StandardCharsets.UTF_8));
+                System.setProperty("causynth.region.skeletons",
+                        skeletons.toString());
+                try {
+                    RegionSkeletonInstrumentationSelection
+                            .methodsFromEnvironment();
+                    throw new AssertionError(
+                            "malformed skeleton selection was accepted: "
+                                    + malformed.get(index));
+                } catch (IllegalStateException expected) {
+                    assertTrue(expected.getCause()
+                            instanceof IllegalArgumentException);
+                }
+            }
+        } finally {
+            folder.delete();
+        }
+    }
+
+    private static SootMethod liteTraceTarget() {
+        G.reset();
+        Scene.v().addClass(new SootClass("java.lang.Throwable",
+                Modifier.PUBLIC));
+        SootClass mapOwner = new SootClass("java.util.Map",
+                Modifier.PUBLIC | Modifier.INTERFACE);
+        Scene.v().addClass(mapOwner);
+        SootMethod get = new SootMethod("get",
+                Collections.singletonList(RefType.v("java.lang.Object")),
+                RefType.v("java.lang.Object"),
+                Modifier.PUBLIC | Modifier.ABSTRACT);
+        SootMethod put = new SootMethod("put", Arrays.asList(
+                RefType.v("java.lang.Object"),
+                RefType.v("java.lang.Object")),
+                RefType.v("java.lang.Object"),
+                Modifier.PUBLIC | Modifier.ABSTRACT);
+        mapOwner.addMethod(get);
+        mapOwner.addMethod(put);
+        SootClass selectedOwner = new SootClass("example.SelectedState",
+                Modifier.PUBLIC);
+        SootClass sameNameOwner = new SootClass("example.OtherState",
+                Modifier.PUBLIC);
+        Scene.v().addClass(selectedOwner);
+        Scene.v().addClass(sameNameOwner);
+        selectedOwner.setApplicationClass();
+        sameNameOwner.setApplicationClass();
+        SootField selected = new SootField("value", soot.IntType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        SootField sameName = new SootField("value", soot.IntType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        selectedOwner.addField(selected);
+        sameNameOwner.addField(sameName);
+        SootMethod method = new SootMethod("run", Collections.emptyList(),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        selectedOwner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local selectedValue = Jimple.v().newLocal("selectedValue",
+                soot.IntType.v());
+        Local otherValue = Jimple.v().newLocal("otherValue",
+                soot.IntType.v());
+        Local map = Jimple.v().newLocal("map", RefType.v("java.util.Map"));
+        Local key = Jimple.v().newLocal("key",
+                RefType.v("java.lang.Object"));
+        Local value = Jimple.v().newLocal("value",
+                RefType.v("java.lang.Object"));
+        body.getLocals().add(selectedValue);
+        body.getLocals().add(otherValue);
+        body.getLocals().add(map);
+        body.getLocals().add(key);
+        body.getLocals().add(value);
+        body.getUnits().add(Jimple.v().newAssignStmt(map, NullConstant.v()));
+        body.getUnits().add(Jimple.v().newAssignStmt(key, NullConstant.v()));
+        body.getUnits().add(Jimple.v().newAssignStmt(value,
+                NullConstant.v()));
+        body.getUnits().add(Jimple.v().newAssignStmt(selectedValue,
+                Jimple.v().newStaticFieldRef(selected.makeRef())));
+        body.getUnits().add(Jimple.v().newAssignStmt(otherValue,
+                Jimple.v().newStaticFieldRef(sameName.makeRef())));
+        body.getUnits().add(Jimple.v().newAssignStmt(
+                Jimple.v().newStaticFieldRef(selected.makeRef()),
+                selectedValue));
+        body.getUnits().add(Jimple.v().newAssignStmt(
+                Jimple.v().newStaticFieldRef(sameName.makeRef()),
+                otherValue));
+        body.getUnits().add(Jimple.v().newAssignStmt(value,
+                Jimple.v().newInterfaceInvokeExpr(map, get.makeRef(), key)));
+        body.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newInterfaceInvokeExpr(map, put.makeRef(),
+                        key, value)));
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+        return method;
+    }
+
+    private static StaticProgram liteTraceProgram(SootMethod method) {
+        StaticProgram program = new StaticProgram();
+        program.traceMethods.add(method.getSignature());
+        Map<String, Object> selectedField = new LinkedHashMap<>();
+        selectedField.put("method", method.getSignature());
+        selectedField.put("fromCell",
+                "<example.SelectedState: int value>");
+        selectedField.put("toCell", "target");
+        program.edges.add(selectedField);
+        return program;
+    }
+
+    private static void invokeRuntimeInstrumentation(StaticProgram program)
+            throws Exception {
+        Method instrument = CausynthPipeline.class.getDeclaredMethod(
+                "instrumentRuntimeTrace", StaticProgram.class);
+        instrument.setAccessible(true);
+        instrument.invoke(new CausynthPipeline(null), program);
+    }
+
+    private static List<String> invokedMethods(Body body) {
+        List<String> result = new ArrayList<>();
+        for (Unit unit : body.getUnits()) {
+            if (unit instanceof Stmt
+                    && ((Stmt) unit).containsInvokeExpr()) {
+                result.add(((Stmt) unit).getInvokeExpr()
+                        .getMethodRef().name());
+            }
+        }
+        return result;
+    }
+
+    private static List<InvokeExpr> invocationsNamed(
+            Body body, String methodName) {
+        List<InvokeExpr> result = new ArrayList<>();
+        for (Unit unit : body.getUnits()) {
+            if (!(unit instanceof Stmt)
+                    || !((Stmt) unit).containsInvokeExpr()) {
+                continue;
+            }
+            InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
+            if (methodName.equals(invoke.getMethodRef().name())) {
+                result.add(invoke);
+            }
+        }
+        return result;
+    }
+
+    private static int count(List<String> values, String expected) {
+        int result = 0;
+        for (String value : values) {
+            if (expected.equals(value)) {
+                result++;
+            }
+        }
+        return result;
     }
 
     private static JsonArray singletonJsonArray(JsonObject value) {
@@ -93,6 +369,23 @@ public class CausynthPipelineTest {
         JsonArray result = new JsonArray();
         result.add(value);
         return result;
+    }
+
+    private static JsonObject skeletonRow(
+            String id, String root, String anchor,
+            Collection<String> methods) {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 2);
+        row.addProperty("kind", "REGION_SKELETON");
+        row.addProperty("regionId", id);
+        row.addProperty("rootMethod", root);
+        row.addProperty("anchorMethod", anchor);
+        JsonArray encodedMethods = new JsonArray();
+        for (String method : methods) {
+            encodedMethods.add(method);
+        }
+        row.add("methods", encodedMethods);
+        return row;
     }
 
     private static void attachDirectOutputClosure(

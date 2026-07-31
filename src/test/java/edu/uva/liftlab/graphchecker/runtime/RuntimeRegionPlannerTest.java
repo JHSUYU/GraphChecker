@@ -8,14 +8,17 @@ import org.junit.Test;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 public class RuntimeRegionPlannerTest {
@@ -71,6 +74,358 @@ public class RuntimeRegionPlannerTest {
                 symbolize.get(0).get("sourceKind"));
         assertEquals("ARGUMENT", symbolize.get(0).get("location"));
         assertCanonicalInputAction(symbolize.get(0));
+    }
+
+    @Test
+    public void inventoryModeSlicesInputsAfterRuntimeRootSelection()
+            throws Exception {
+        Path directory = Files.createTempDirectory(
+                "runtime-region-input-inventory");
+        Path regions = directory.resolve("symbolic_regions.jsonl");
+        Files.write(regions, Collections.singleton(inventoryRegionJson()),
+                StandardCharsets.UTF_8);
+        RuntimeRegionPlanner.MethodEvent main =
+                new RuntimeRegionPlanner.MethodEvent(
+                        1L, "inventory-root", "test-process", "main",
+                        1L, MAIN, 0, "", 1L, 0L, 0L);
+        RuntimeRegionPlanner.MethodEvent constructor =
+                new RuntimeRegionPlanner.MethodEvent(
+                        2L, "inventory-root", "test-process", "main",
+                        1L, CONSTRUCTOR, RECEIVER,
+                        "test.ConstructorProducer$Value",
+                        2L, 1L, 1L);
+
+        RuntimeRegionPlanner.Result result =
+                RuntimeRegionPlanner.planInventory(regions.toFile(),
+                        Arrays.asList(main, constructor),
+                        Collections.<RuntimeRegionPlanner.RuntimeEvent>
+                                emptyList(),
+                        Arrays.asList(fieldWrite(4, FIELD, RECEIVER),
+                                fieldRead(5, FIELD, RECEIVER)));
+
+        assertTrue(result.regionPlans.isEmpty());
+        assertTrue(result.edgeValidations.isEmpty());
+        assertEquals(1, result.runtimeInstances.size());
+        assertEquals(3, result.staticInputCandidateCount);
+        assertEquals(3, result.runtimeInputCandidateOccurrenceCount);
+        assertEquals(2, result.runtimeRegionInputCount);
+        assertEquals(1, result.runtimePrunedInputCandidateCount);
+        Map<String, Object> inventory = result.runtimeInstances.get(0);
+        assertEquals(true, inventory.get("inventoryOnly"));
+        assertEquals(false, inventory.get("executable"));
+        assertEquals(CONSTRUCTOR, inventory.get("concreteRootMethod"));
+        assertEquals("POST_RUNTIME_SELECTION",
+                inventory.get("regionInputAnalysisPhase"));
+        assertEquals(3, inventory.get("staticInputCandidateCount"));
+        assertEquals(1, inventory.get("runtimeRootArgumentInputCount"));
+        assertEquals(1, inventory.get("runtimeObservedFieldInputCount"));
+        assertEquals(1, inventory.get(
+                "runtimePrunedInputCandidateCount"));
+        assertEquals(2, inventory.get("regionInCount"));
+        assertEquals(1, inventory.get("staticMethodCount"));
+        assertEquals(1, inventory.get("observedMethodCount"));
+        assertFalse(inventory.containsKey("staticMethods"));
+        assertFalse(inventory.containsKey("observedMethods"));
+        assertEquals(CONSTRUCTOR_PARAMETER,
+                rows(inventory.get("regionInputs")).get(0).get("cell"));
+        assertEquals(FIELD,
+                rows(inventory.get("regionInputs")).get(1).get("cell"));
+        assertEquals("NOT_COMPUTED_IN_INVENTORY_MODE",
+                inventory.get("materializationStatus"));
+    }
+
+    @Test
+    public void skeletonGraphUsesNearestSameThreadRegionAncestor()
+            throws Exception {
+        Path directory = Files.createTempDirectory(
+                "runtime-region-skeleton");
+        Path regions = directory.resolve("symbolic_regions.jsonl");
+        Files.write(regions, Arrays.asList(
+                skeletonRegionJson("REGION.MAIN", MAIN),
+                skeletonRegionJson("REGION.OUTER", OUTER),
+                skeletonRegionJson("REGION.CTOR", CONSTRUCTOR),
+                skeletonRegionJson("REGION.CTOR.ALIAS", CONSTRUCTOR),
+                skeletonRegionJson("REGION.LOOP", MAIN, CONSTRUCTOR,
+                        Arrays.asList(MAIN, OUTER, CONSTRUCTOR))),
+                StandardCharsets.UTF_8);
+        String helper = "<test.Helper: void bridge()>";
+        RuntimeRegionPlanner.MethodEvent main =
+                new RuntimeRegionPlanner.MethodEvent(
+                        1L, "skeleton", "process", "main", 1L,
+                        MAIN, 0, "", 1L, 0L, 0L);
+        RuntimeRegionPlanner.MethodEvent helperCall =
+                new RuntimeRegionPlanner.MethodEvent(
+                        2L, "skeleton", "process", "main", 1L,
+                        helper, 0, "", 2L, 1L, 0L);
+        RuntimeRegionPlanner.MethodEvent outer =
+                new RuntimeRegionPlanner.MethodEvent(
+                        3L, "skeleton", "process", "main", 1L,
+                        OUTER, 0, "", 3L, 2L, 0L);
+        RuntimeRegionPlanner.MethodEvent constructor =
+                new RuntimeRegionPlanner.MethodEvent(
+                        4L, "skeleton", "process", "main", 1L,
+                        CONSTRUCTOR, RECEIVER,
+                        "test.ConstructorProducer$Value",
+                        4L, 3L, 0L);
+        RuntimeRegionPlanner.MethodEvent crossThread =
+                new RuntimeRegionPlanner.MethodEvent(
+                        5L, "skeleton", "process", "worker", 2L,
+                        CONSTRUCTOR, RECEIVER,
+                        "test.ConstructorProducer$Value",
+                        5L, 4L, 0L);
+        RuntimeRegionPlanner.MethodEvent secondEpoch =
+                new RuntimeRegionPlanner.MethodEvent(
+                        6L, "skeleton", "process", "main", 1L,
+                        CONSTRUCTOR, RECEIVER,
+                        "test.ConstructorProducer$Value",
+                        6L, 3L, 0L);
+
+        RuntimeRegionPlanner.Result result =
+                RuntimeRegionPlanner.planSkeletonGraph(regions.toFile(),
+                        Arrays.asList(main, helperCall, outer, constructor,
+                                crossThread, secondEpoch));
+
+        assertEquals(5, result.runtimeInstances.size());
+        assertEquals(3, result.runtimeGraphEdges.size());
+        Map<String, Object> activation = result.runtimeInstances.get(0);
+        assertEquals("RUNTIME_PHYSICAL_REGION_ACTIVATION",
+                activation.get("kind"));
+        assertEquals(Arrays.asList("REGION.LOOP", "REGION.MAIN"),
+                activation.get("regionIds"));
+        assertEquals(Arrays.asList("CARRIER", "STEP"),
+                activation.get("roles"));
+        assertEquals("DEFERRED",
+                activation.get("regionInputAnalysisPhase"));
+        assertFalse(activation.containsKey("regionInputs"));
+        assertFalse(activation.containsKey("regionOutputs"));
+
+        Map<String, Object> first = result.runtimeGraphEdges.get(0);
+        assertEquals("SAME_THREAD_CALL_ANCESTRY", first.get("kind"));
+        assertEquals(1L, first.get("fromRootCallId"));
+        assertEquals(3L, first.get("toRootCallId"));
+        Map<String, Object> second = result.runtimeGraphEdges.get(1);
+        assertEquals(3L, second.get("fromRootCallId"));
+        assertEquals(4L, second.get("toRootCallId"));
+        Map<String, Object> epoch = result.runtimeInstances.get(2);
+        assertEquals(Arrays.asList("REGION.CTOR", "REGION.CTOR.ALIAS",
+                        "REGION.LOOP"), epoch.get("regionIds"));
+        assertEquals(Arrays.asList("REGION.CTOR", "REGION.CTOR.ALIAS"),
+                epoch.get("carrierRegionIds"));
+        assertEquals(Arrays.asList("REGION.CTOR", "REGION.CTOR.ALIAS",
+                        "REGION.LOOP"), epoch.get("stepRegionIds"));
+        List<?> epochRoots = (List<?>) epoch.get("staticRootMethods");
+        List<?> crossThreadRoots = (List<?>) result.runtimeInstances.get(3)
+                .get("staticRootMethods");
+        assertSame(epochRoots.get(0), crossThreadRoots.get(0));
+        for (Map<String, Object> edge : result.runtimeGraphEdges) {
+            assertFalse(edge.get("fromActivationId").equals(
+                    edge.get("toActivationId")));
+            assertFalse(Long.valueOf(5L).equals(edge.get("toRootCallId")));
+        }
+    }
+
+    @Test
+    public void skeletonAuthorityCacheMatchesUncachedRootSelection()
+            throws Exception {
+        Path directory = Files.createTempDirectory(
+                "runtime-region-skeleton-authority-cache");
+        Path regions = directory.resolve("symbolic_regions.jsonl");
+        Path fullRegions = directory.resolve("full_regions.jsonl");
+        String anchor = "<test.Cache: void anchor()>";
+        String exactRoot = "<test.Cache: void exactRoot()>";
+        String exclusiveRoot = "<test.Cache: void unobservedRoot()>";
+        String exclusiveBridge = "<test.Cache: void exclusiveBridge()>";
+        List<String> rows = new ArrayList<>();
+        List<String> fullRows = new ArrayList<>();
+        String exactRow = skeletonRegionJson("REGION.EXACT", exactRoot,
+                anchor, Arrays.asList(exactRoot, anchor));
+        rows.add(exactRow);
+        fullRows.add(fullRegionJson(exactRow));
+        String exclusiveRow = skeletonRegionJson(
+                "REGION.EXCLUSIVE", exclusiveRoot,
+                anchor, Arrays.asList(exclusiveRoot, exclusiveBridge,
+                        anchor));
+        rows.add(exclusiveRow);
+        fullRows.add(fullRegionJson(exclusiveRow));
+        for (int index = 0; index < 256; index++) {
+            String decoy = "<test.Cache: void decoy" + index + "()>";
+            String decoyRow = skeletonRegionJson(
+                    "REGION.DECOY." + index, decoy, anchor,
+                    Arrays.asList(decoy, anchor));
+            rows.add(decoyRow);
+            fullRows.add(fullRegionJson(decoyRow));
+        }
+        Files.write(regions, rows, StandardCharsets.UTF_8);
+        Files.write(fullRegions, fullRows, StandardCharsets.UTF_8);
+
+        RuntimeRegionPlanner.MethodEvent main =
+                new RuntimeRegionPlanner.MethodEvent(
+                        1L, "authority-cache", "process", "main", 1L,
+                        MAIN, 0, "", 1L, 0L, 0L);
+        RuntimeRegionPlanner.MethodEvent exact =
+                new RuntimeRegionPlanner.MethodEvent(
+                        2L, "authority-cache", "process", "main", 1L,
+                        exactRoot, 0, "", 2L, 1L, 0L);
+        RuntimeRegionPlanner.MethodEvent exactAnchor =
+                new RuntimeRegionPlanner.MethodEvent(
+                        3L, "authority-cache", "process", "main", 1L,
+                        anchor, 0, "", 3L, 2L, 0L);
+        RuntimeRegionPlanner.MethodEvent bridge =
+                new RuntimeRegionPlanner.MethodEvent(
+                        4L, "authority-cache", "process", "main", 1L,
+                        exclusiveBridge, 0, "", 4L, 1L, 0L);
+        RuntimeRegionPlanner.MethodEvent exclusiveAnchor =
+                new RuntimeRegionPlanner.MethodEvent(
+                        5L, "authority-cache", "process", "main", 1L,
+                        anchor, 0, "", 5L, 4L, 0L);
+        List<RuntimeRegionPlanner.MethodEvent> trace = Arrays.asList(
+                main, exact, exactAnchor, bridge, exclusiveAnchor);
+
+        RuntimeRegionPlanner.Result uncached =
+                RuntimeRegionPlanner.planInventory(fullRegions.toFile(),
+                        trace,
+                        Collections.<RuntimeRegionPlanner.RuntimeEvent>
+                                emptyList(),
+                        Collections.<RuntimeRegionPlanner.FieldAccessEvent>
+                                emptyList());
+        RuntimeRegionPlanner.Result cached =
+                RuntimeRegionPlanner.planSkeletonGraph(
+                        regions.toFile(), trace);
+
+        Map<String, Long> uncachedRoots = new LinkedHashMap<>();
+        for (Map<String, Object> instance : uncached.runtimeInstances) {
+            uncachedRoots.put(String.valueOf(instance.get("regionId")),
+                    ((Number) instance.get("rootCallId")).longValue());
+        }
+        Map<String, Long> cachedRoots = new LinkedHashMap<>();
+        for (Map<String, Object> activation : cached.runtimeInstances) {
+            for (Object region : (List<?>) activation.get(
+                    "carrierRegionIds")) {
+                cachedRoots.put(String.valueOf(region),
+                        ((Number) activation.get("rootCallId")).longValue());
+            }
+        }
+        assertEquals(uncachedRoots, cachedRoots);
+        assertEquals(Long.valueOf(2L), cachedRoots.get("REGION.EXACT"));
+        assertEquals(Long.valueOf(4L),
+                cachedRoots.get("REGION.EXCLUSIVE"));
+        assertEquals(2, cachedRoots.size());
+    }
+
+    @Test
+    public void malformedUnobservedSkeletonRowsFailClosed()
+            throws Exception {
+        Path directory = Files.createTempDirectory(
+                "runtime-region-malformed-skeleton");
+        Path regions = directory.resolve("symbolic_regions.jsonl");
+        String unobserved = "<test.Unobserved: void run()>";
+        String valid = skeletonRegionJson("REGION.BAD", unobserved);
+        List<String> malformed = Arrays.asList(
+                valid.replace("\"kind\":\"REGION_SKELETON\"",
+                        "\"kind\":\"WRONG\""),
+                valid.replace("\"regionId\":\"REGION.BAD\"",
+                        "\"regionId\":\"\""),
+                valid.replace("\"rootMethod\":\"" + unobserved + "\"",
+                        "\"rootMethod\":\"\""),
+                valid.replace("\"anchorMethod\":\"" + unobserved + "\"",
+                        "\"anchorMethod\":\"\""),
+                valid.replace("\"methods\":[\"" + unobserved + "\"]",
+                        "\"methods\":[]"),
+                skeletonRegionJson("REGION.BAD", unobserved, MAIN,
+                        Collections.singletonList(MAIN)),
+                skeletonRegionJson("REGION.BAD", MAIN, unobserved,
+                        Collections.singletonList(MAIN)));
+        RuntimeRegionPlanner.MethodEvent observed =
+                new RuntimeRegionPlanner.MethodEvent(
+                        1L, "malformed", "process", "main", 1L,
+                        MAIN, 0, "", 1L, 0L, 0L);
+
+        for (String row : malformed) {
+            Files.write(regions, Collections.singleton(row),
+                    StandardCharsets.UTF_8);
+            try {
+                RuntimeRegionPlanner.planSkeletonGraph(regions.toFile(),
+                        Collections.singletonList(observed));
+                throw new AssertionError(
+                        "malformed unobserved row was silently skipped: "
+                                + row);
+            } catch (IllegalArgumentException expected) {
+                assertTrue(expected.getMessage().contains("symbolic region"));
+            }
+        }
+
+        Files.write(regions, Arrays.asList(valid, valid),
+                StandardCharsets.UTF_8);
+        try {
+            RuntimeRegionPlanner.planSkeletonGraph(regions.toFile(),
+                    Collections.singletonList(observed));
+            throw new AssertionError(
+                    "duplicate unobserved region id was silently skipped");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains(
+                    "duplicate symbolic region id"));
+        }
+    }
+
+    @Test
+    public void regionReadersRejectTheOtherArtifactKind() throws Exception {
+        Path directory = Files.createTempDirectory(
+                "runtime-region-artifact-kind");
+        Path regions = directory.resolve("symbolic_regions.jsonl");
+        RuntimeRegionPlanner.MethodEvent observed =
+                new RuntimeRegionPlanner.MethodEvent(
+                        1L, "kind", "process", "main", 1L,
+                        MAIN, 0, "", 1L, 0L, 0L);
+
+        Files.write(regions, Collections.singleton(
+                skeletonRegionJson("REGION.SKELETON", MAIN)),
+                StandardCharsets.UTF_8);
+        try {
+            RuntimeRegionPlanner.planInventory(regions.toFile(),
+                    Collections.singletonList(observed),
+                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
+                    Collections.<RuntimeRegionPlanner.FieldAccessEvent>
+                            emptyList());
+            throw new AssertionError(
+                    "normal reader accepted a skeleton artifact");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains(
+                    "unsupported symbolic region kind"));
+        }
+
+        Files.write(regions, Collections.singleton(regionJson()),
+                StandardCharsets.UTF_8);
+        try {
+            RuntimeRegionPlanner.planSkeletonGraph(regions.toFile(),
+                    Collections.singletonList(observed));
+            throw new AssertionError(
+                    "skeleton reader accepted a full artifact");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains(
+                    "unsupported symbolic region kind"));
+        }
+    }
+
+    @Test
+    public void fullSchemaTwoRegionKeepsOptionalAnchorCompatibility()
+            throws Exception {
+        Path directory = Files.createTempDirectory(
+                "runtime-region-optional-anchor");
+        Path regions = directory.resolve("symbolic_regions.jsonl");
+        Files.write(regions, Collections.singleton(regionJson().replace(
+                "\"anchorMethod\":\"" + CONSTRUCTOR + "\"",
+                "\"anchorMethod\":\"\"")), StandardCharsets.UTF_8);
+
+        RuntimeRegionPlanner.Result result =
+                RuntimeRegionPlanner.planInventory(regions.toFile(),
+                        Collections.<RuntimeRegionPlanner.MethodEvent>
+                                emptyList(),
+                        Collections.<RuntimeRegionPlanner.RuntimeEvent>
+                                emptyList(),
+                        Collections.<RuntimeRegionPlanner.FieldAccessEvent>
+                                emptyList());
+
+        assertEquals(1, result.staticRegionCount);
     }
 
     @Test
@@ -358,6 +713,83 @@ public class RuntimeRegionPlannerTest {
         return new RuntimeRegionPlanner.FieldAccessEvent(
                 3L, "FIELD_WRITE", CONSTRUCTOR, 2L, unitIndex, "",
                 field, receiver, 0, "7", "", false);
+    }
+
+    private static RuntimeRegionPlanner.FieldAccessEvent fieldRead(
+            int unitIndex, String field, int receiver) {
+        return new RuntimeRegionPlanner.FieldAccessEvent(
+                4L, "FIELD_READ", CONSTRUCTOR, 2L, unitIndex, "",
+                field, receiver, 0, "7", "", false);
+    }
+
+    private static String inventoryRegionJson() {
+        return "{"
+                + "\"schemaVersion\":2,"
+                + "\"regionId\":\"REGION.CTOR\","
+                + "\"rootMethod\":\"" + CONSTRUCTOR + "\","
+                + "\"anchorMethod\":\"" + CONSTRUCTOR + "\","
+                + "\"selection\":\"INVENTORY_SEED_ONLY_STATIC_FRONTIER\","
+                + "\"methods\":[\"" + CONSTRUCTOR + "\"],"
+                + "\"symbolicInputs\":[{"
+                + "\"portId\":\"REGION.CTOR.in.0\","
+                + "\"cell\":\"" + CONSTRUCTOR_PARAMETER + "\","
+                + "\"javaType\":\"int\","
+                + "\"sourceKind\":\"REGION_LIVE_IN\","
+                + "\"projection\":\"value\"},{"
+                + "\"portId\":\"REGION.CTOR.in.1\","
+                + "\"cell\":\"" + FIELD + "\","
+                + "\"javaType\":\"int\","
+                + "\"sourceKind\":\"SHARED_HEAP\","
+                + "\"projection\":\"value\"},{"
+                + "\"portId\":\"REGION.CTOR.in.2\","
+                + "\"cell\":\"" + OTHER_FIELD + "\","
+                + "\"javaType\":\"int\","
+                + "\"sourceKind\":\"SHARED_HEAP\","
+                + "\"projection\":\"value\"}],"
+                + "\"inputSelectionComplete\":false,"
+                + "\"unresolvedInputs\":[{\"reason\":\"CHEAP\"}],"
+                + "\"outputs\":[{"
+                + "\"portId\":\"REGION.CTOR.out.0\","
+                + "\"cell\":\"" + FIELD + "\","
+                + "\"javaType\":\"int\","
+                + "\"kind\":\"HEAP_STATE\"}],"
+                + "\"outputSlices\":[],"
+                + "\"branchPolicies\":[]"
+                + "}";
+    }
+
+    private static String skeletonRegionJson(String id, String method) {
+        return skeletonRegionJson(id, method, method,
+                Collections.singletonList(method));
+    }
+
+    private static String skeletonRegionJson(
+            String id, String root, String anchor, List<String> methods) {
+        StringBuilder encodedMethods = new StringBuilder();
+        for (String method : methods) {
+            if (encodedMethods.length() > 0) encodedMethods.append(',');
+            encodedMethods.append('\"').append(method).append('\"');
+        }
+        return "{"
+                + "\"schemaVersion\":2,"
+                + "\"kind\":\"REGION_SKELETON\","
+                + "\"regionId\":\"" + id + "\","
+                + "\"rootMethod\":\"" + root + "\","
+                + "\"anchorMethod\":\"" + anchor + "\","
+                + "\"selection\":\"REGION_SKELETON_ONLY\","
+                + "\"methods\":[" + encodedMethods + "],"
+                + "\"symbolicInputs\":[],"
+                + "\"outputs\":[],"
+                + "\"outputSlices\":[],"
+                + "\"branchPolicies\":[]"
+                + "}";
+    }
+
+    private static String fullRegionJson(String skeletonRow) {
+        return skeletonRow.replace(
+                "\"kind\":\"REGION_SKELETON\",", "")
+                .replace("\"selection\":\"REGION_SKELETON_ONLY\",",
+                        "\"selection\":\"STATIC_OVER_APPROXIMATION\",");
     }
 
     private static String regionJson() {

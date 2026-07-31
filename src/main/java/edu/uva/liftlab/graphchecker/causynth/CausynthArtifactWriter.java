@@ -2,11 +2,13 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
+import java.util.zip.GZIPOutputStream;
 
 /** Writes the stable JSON/JSONL artifact set for one static analysis run. */
 final class CausynthArtifactWriter {
@@ -21,6 +23,9 @@ final class CausynthArtifactWriter {
                 program.targetResolved);
         writeJsonl(outputDir.resolve("static_dataflow_edges.jsonl"),
                 program.edges);
+        Files.deleteIfExists(outputDir.resolve("region_skeletons.jsonl"));
+        writeGzipJsonl(outputDir.resolve("region_skeletons.jsonl.gz"),
+                program.regions);
         // A fresh discovery run invalidates any regions selected by an older
         // trace. The current trace will repopulate both files during
         // finalization.
@@ -58,6 +63,19 @@ final class CausynthArtifactWriter {
             for (Object value : values) {
                 writer.write(CausynthJson.write(value));
                 // Keep artifact hashes stable across host platforms.
+                writer.write('\n');
+            }
+        }
+    }
+
+    private static void writeGzipJsonl(Path output, List<?> values)
+            throws IOException {
+        try (BufferedWriter writer = new BufferedWriter(
+                new OutputStreamWriter(new GZIPOutputStream(
+                        Files.newOutputStream(output)),
+                        StandardCharsets.UTF_8))) {
+            for (Object value : values) {
+                writer.write(CausynthJson.write(value));
                 writer.write('\n');
             }
         }

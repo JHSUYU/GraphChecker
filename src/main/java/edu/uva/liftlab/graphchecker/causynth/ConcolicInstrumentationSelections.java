@@ -523,6 +523,10 @@ final class ConcolicInstrumentationSelections {
         if (value instanceof Number) {
             return ((Number) value).intValue();
         }
+        if (value == null || String.valueOf(value).trim().isEmpty()
+                || "null".equals(String.valueOf(value))) {
+            return fallback;
+        }
         try {
             return Integer.parseInt(String.valueOf(value));
         } catch (RuntimeException ignored) {

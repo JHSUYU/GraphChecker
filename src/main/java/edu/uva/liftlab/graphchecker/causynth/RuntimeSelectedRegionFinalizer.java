@@ -33,9 +33,53 @@ public final class RuntimeSelectedRegionFinalizer {
     public static void finalizeRegions(
             File staticGraph, File regions, File regionEdges,
             Collection<String> observedMethods) throws IOException {
+        finalizeRegions(staticGraph, regions, regionEdges, observedMethods,
+                false, false);
+    }
+
+    /**
+     * Emits runtime-selectable regions with cheap, incomplete REGION.IN
+     * candidates, without constructing concolic output slices or
+     * materialization metadata.
+     */
+    public static void finalizeInventory(
+            File staticGraph, File regions, File regionEdges,
+            Collection<String> observedMethods) throws IOException {
+        finalizeRegions(staticGraph, regions, regionEdges, observedMethods,
+                true, false);
+    }
+
+    /**
+     * Emits only selected region roots and member methods.  REGION.IN/OUT and
+     * region edges are deferred until concrete runtime activations are known.
+     */
+    public static void finalizeSkeletons(
+            File staticGraph, File regions, File regionEdges,
+            Collection<String> observedMethods) throws IOException {
+        finalizeRegions(staticGraph, regions, regionEdges, observedMethods,
+                true, true);
+    }
+
+    private static void finalizeRegions(
+            File staticGraph, File regions, File regionEdges,
+            Collection<String> observedMethods,
+            boolean inventoryOnly, boolean skeletonOnly) throws IOException {
         StaticProgram program = new StaticProgram();
         program.edges.addAll(readJsonl(staticGraph));
-        SymbolicRegionPlanner.planSelected(program, observedMethods);
+        try {
+            if (skeletonOnly) {
+                SymbolicRegionPlanner.planSelectedSkeleton(program,
+                        observedMethods);
+            } else if (inventoryOnly) {
+                SymbolicRegionPlanner.planSelectedInventory(program,
+                        observedMethods);
+            } else {
+                SymbolicRegionPlanner.planSelected(program, observedMethods);
+            }
+        } catch (IllegalArgumentException invalidPlan) {
+            throw new IOException("Invalid runtime-selected region plan",
+                    invalidPlan);
+        }
         CausynthArtifactWriter.writeRegions(regions.toPath(),
                 regionEdges.toPath(), program);
     }

@@ -3,13 +3,16 @@ package edu.uva.liftlab.graphchecker.runtime;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.ConcurrentModificationException;
 import java.util.LinkedHashMap;
@@ -19,6 +22,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.zip.GZIPOutputStream;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -36,11 +40,16 @@ public class CausynthTraceRecorderTest {
             resetRecorder();
             System.setProperty("causynth.trace.output.dir", output.toString());
             System.setProperty("causynth.trace.test", "rich-recorder-test");
+            Path manifestPath = output.resolve(
+                    "streaming_trace_manifest.json");
+            Files.write(manifestPath, "{\"status\":\"CLOSED\"}".getBytes(
+                    StandardCharsets.UTF_8));
 
             Object receiver = new Object();
             Object argument = new Object();
             long parent = CausynthTraceRecorder.enterMethod("<test.Parent: void run()>",
                     receiver);
+            assertFalse(Files.exists(manifestPath));
             long invocation = CausynthTraceRecorder.beginCall(parent,
                     "<test.Parent: void run()>", 7,
                     "<test.Child: java.lang.Object pass(java.lang.Object)>", receiver);
@@ -72,8 +81,7 @@ public class CausynthTraceRecorderTest {
             List<String> lines = Files.readAllLines(
                     output.resolve("runtime_trace.jsonl"), StandardCharsets.UTF_8);
             String trace = String.join("\n", lines);
-            String manifest = new String(Files.readAllBytes(output.resolve(
-                    "streaming_trace_manifest.json")),
+            String manifest = new String(Files.readAllBytes(manifestPath),
                     StandardCharsets.UTF_8);
             assertTrue(manifest.contains("\"status\":\"CLOSED\""));
             assertTrue(trace.contains("\"event\":\"METHOD_ENTER\""));
@@ -112,6 +120,286 @@ public class CausynthTraceRecorderTest {
                 System.setProperty("causynth.trace.test", previousTest);
             }
             folder.delete();
+        }
+    }
+
+    @Test
+    public void liteTraceKeepsActivationTreeAndExactFieldOnly() throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path output = folder.getRoot().toPath();
+        String previousOutput = System.getProperty("causynth.trace.output.dir");
+        String previousTest = System.getProperty("causynth.trace.test");
+        try {
+            resetRecorder();
+            System.setProperty("causynth.trace.output.dir", output.toString());
+            System.setProperty("causynth.trace.test", "lite-recorder-test");
+
+            String parentMethod = "<test.Parent: void run()>";
+            String childMethod = "<test.Child: void read()>";
+            String throwingMethod = "<test.Child: void fail()>";
+            String field = "<test.State: java.util.Map keys>";
+            Object fieldOwner = new Object();
+            Object fieldValue = new Object();
+            long parent = CausynthTraceRecorder.enterMethodLite(
+                    parentMethod, new Object());
+            long child = CausynthTraceRecorder.enterMethodLite(
+                    childMethod, new Object());
+            CausynthTraceRecorder.recordFieldReadLite(
+                    field, fieldOwner, fieldValue);
+            CausynthTraceRecorder.recordFieldWriteLite(
+                    field, fieldOwner, fieldValue);
+            CausynthTraceRecorder.exitActiveMethodLite();
+            CausynthTraceRecorder.recordFieldReadLite(field);
+            long returned = CausynthTraceRecorder.beginCall(
+                    parent, parentMethod, 6,
+                    "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>",
+                    fieldOwner);
+            CausynthTraceRecorder.endCallLite(returned);
+            long throwing = CausynthTraceRecorder.enterMethodLite(
+                    throwingMethod, new Object());
+            long invocation = CausynthTraceRecorder.beginCall(
+                    throwing, throwingMethod, 7,
+                    "<java.util.Map: java.lang.Object get(java.lang.Object)>",
+                    fieldOwner);
+            CausynthTraceRecorder.throwActiveMethodLite(
+                    new IllegalStateException("expected"));
+            CausynthTraceRecorder.recordFieldReadLite(field);
+            shutdownRecorder();
+
+            List<String> lines = Files.readAllLines(
+                    output.resolve("runtime_trace.jsonl"),
+                    StandardCharsets.UTF_8);
+            List<String> entries = new ArrayList<>();
+            List<String> reads = new ArrayList<>();
+            List<String> writes = new ArrayList<>();
+            for (String line : lines) {
+                if (line.contains("\"event\":\"METHOD_ENTER\"")) {
+                    entries.add(line);
+                } else if (line.contains("\"event\":\"FIELD_READ\"")) {
+                    reads.add(line);
+                } else if (line.contains("\"event\":\"FIELD_WRITE\"")) {
+                    writes.add(line);
+                }
+            }
+            assertEquals(3, entries.size());
+            assertEquals(3, reads.size());
+            assertEquals(1, writes.size());
+            assertTrue(entries.stream().anyMatch(line ->
+                    line.contains("\"method\":\"" + childMethod + "\"")
+                            && line.contains("\"parentCallId\":" + parent)));
+            assertTrue(reads.get(0).contains("\"callId\":" + child));
+            assertTrue(reads.get(0).contains(
+                    "\"fieldReceiverObjectId\":"
+                            + System.identityHashCode(fieldOwner)));
+            assertTrue(reads.get(0).contains(
+                    "\"valueObjectId\":"
+                            + System.identityHashCode(fieldValue)));
+            assertTrue(reads.get(1).contains("\"callId\":" + parent));
+            assertTrue(reads.get(2).contains("\"callId\":" + parent));
+            assertTrue(writes.get(0).contains("\"callId\":" + child));
+            assertTrue(writes.get(0).contains(
+                    "\"fieldReceiverObjectId\":"
+                            + System.identityHashCode(fieldOwner)));
+            assertTrue(writes.get(0).contains(
+                    "\"valueObjectId\":"
+                            + System.identityHashCode(fieldValue)));
+            List<String> fields = new ArrayList<>(reads);
+            fields.addAll(writes);
+            for (String fieldEvent : fields) {
+                assertTrue(fieldEvent.contains(
+                        "\"field\":\"" + field + "\""));
+                assertFalse(fieldEvent.contains("valueFingerprint"));
+                assertFalse(fieldEvent.contains("primitiveValue"));
+                assertFalse(fieldEvent.contains("siteId"));
+                assertFalse(fieldEvent.contains("unitIndex"));
+                assertFalse(fieldEvent.contains("\"method\""));
+            }
+            String trace = String.join("\n", lines);
+            assertFalse(trace.contains("\"event\":\"METHOD_EXIT_"));
+            assertTrue(trace.contains(
+                    "\"event\":\"CALL_SITE_ENTER\""));
+            assertTrue(trace.contains(
+                    "\"event\":\"CALL_SITE_THROW\""));
+            assertTrue(trace.contains(
+                    "\"invocationId\":" + invocation));
+            assertTrue(trace.contains(
+                    "\"objectId\":"
+                            + System.identityHashCode(fieldOwner)));
+            String liteReturn = lines.stream().filter(line ->
+                    line.contains("\"event\":\"CALL_SITE_RETURN\"")
+                            && line.contains(
+                            "\"invocationId\":" + returned))
+                    .findFirst().orElse("");
+            assertFalse(liteReturn.isEmpty());
+            assertFalse(liteReturn.contains("valueFingerprint"));
+            assertFalse(liteReturn.contains("runtimeType"));
+            assertFalse(liteReturn.contains("objectId"));
+        } finally {
+            resetRecorder();
+            restoreProperty("causynth.trace.output.dir", previousOutput);
+            restoreProperty("causynth.trace.test", previousTest);
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void skeletonCliWritesOnlySkeletonAndRuntimeGraph() throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path root = folder.getRoot().toPath();
+            Path trace = root.resolve("trace");
+            Path output = root.resolve("output");
+            Files.createDirectories(trace);
+            Files.write(trace.resolve("streaming_trace_manifest.json"),
+                    ("{\"schemaVersion\":1,"
+                            + "\"kind\":\"STREAMING_RUNTIME_TRACE\","
+                            + "\"status\":\"CLOSED\"}").getBytes(
+                            StandardCharsets.UTF_8));
+            String method = "<test.Root: void run()>";
+            Files.write(trace.resolve("runtime_trace.jsonl"), (
+                    "{\"schemaVersion\":2,\"event\":\"METHOD_ENTER\","
+                            + "\"seq\":1,\"process\":\"test\","
+                            + "\"threadName\":\"main\",\"tid\":1,"
+                            + "\"method\":\"" + method + "\","
+                            + "\"receiverType\":\"test.Root\","
+                            + "\"callId\":1,\"parentCallId\":0}\n"
+                            + "{\"schemaVersion\":2,"
+                            + "\"event\":\"FIELD_READ\",\"seq\":2,"
+                            + "\"callId\":1,"
+                            + "\"field\":\"<test.Root: int ignored>\"}\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            Path candidates = root.resolve("candidate_skeletons.jsonl.gz");
+            writeGzip(candidates, ("{\"schemaVersion\":2,"
+                            + "\"kind\":\"REGION_SKELETON\","
+                            + "\"regionId\":\"REGION.0\","
+                            + "\"rootMethod\":\"" + method + "\","
+                            + "\"anchorMethod\":\"" + method + "\","
+                            + "\"methods\":[\"" + method + "\"],"
+                            + "\"planningMode\":"
+                            + "\"REGION_SKELETON_ONLY\"}\n"));
+
+            CausynthTraceRecorder.main(new String[]{
+                    "--trace-dir", trace.toString(),
+                    "--region-skeletons", candidates.toString(),
+                    "--test", "skeleton-cli-test",
+                    "--output-dir", output.toString(),
+                    "--region-skeleton-only"});
+
+            Path skeletons = output.resolve("region_skeletons.jsonl");
+            Path runtimeGraph = output.resolve("runtime_region_graph.jsonl");
+            assertTrue(Files.isRegularFile(skeletons));
+            assertTrue(Files.isRegularFile(runtimeGraph));
+            String staticOutput = new String(Files.readAllBytes(skeletons),
+                    StandardCharsets.UTF_8);
+            String runtimeOutput = new String(Files.readAllBytes(runtimeGraph),
+                    StandardCharsets.UTF_8);
+            assertTrue(staticOutput.contains("\"kind\":\"REGION_SKELETON\""));
+            assertFalse(staticOutput.contains("symbolicInputs"));
+            assertTrue(runtimeOutput.contains(
+                    "\"kind\":\"RUNTIME_REGION_GRAPH_METADATA\""));
+            assertTrue(runtimeOutput.contains(
+                    "\"kind\":\"RUNTIME_PHYSICAL_REGION_ACTIVATION\""));
+            assertFalse(runtimeOutput.contains("regionInputs"));
+            assertFalse(Files.exists(output.resolve(
+                    "concolic_region_plan.jsonl")));
+            assertFalse(Files.exists(output.resolve(
+                    "runtime_region_instances.jsonl")));
+            assertFalse(Files.exists(output.resolve(
+                    "runtime_region_inventory_manifest.json")));
+            assertFalse(Files.exists(output.resolve(
+                    "runtime_region_edge_validation.jsonl")));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void skeletonAggregateRejectsEmptyCandidatesAndActivations()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path root = folder.getRoot().toPath();
+            Path trace = root.resolve("trace");
+            Files.createDirectories(trace);
+            Files.write(trace.resolve("streaming_trace_manifest.json"),
+                    ("{\"schemaVersion\":1,"
+                            + "\"kind\":\"STREAMING_RUNTIME_TRACE\","
+                            + "\"status\":\"CLOSED\"}").getBytes(
+                            StandardCharsets.UTF_8));
+            String anchor = "<test.Anchor: void step()>";
+            Files.write(trace.resolve("runtime_trace.jsonl"),
+                    ("{\"schemaVersion\":2,"
+                            + "\"event\":\"METHOD_ENTER\",\"seq\":1,"
+                            + "\"process\":\"test\","
+                            + "\"threadName\":\"main\",\"tid\":1,"
+                            + "\"method\":\"" + anchor + "\","
+                            + "\"callId\":1,\"parentCallId\":0}\n")
+                            .getBytes(StandardCharsets.UTF_8));
+
+            Path empty = root.resolve("empty.jsonl.gz");
+            writeGzip(empty, "");
+            IOException noCandidates = skeletonAggregationFailure(
+                    trace, empty, root.resolve("no-candidates"));
+            assertTrue(noCandidates.getMessage().contains(
+                    "no static regions"));
+
+            String firstRoot = "<test.First: void run()>";
+            String secondRoot = "<test.Second: void run()>";
+            Path ambiguous = root.resolve("ambiguous.jsonl.gz");
+            writeGzip(ambiguous,
+                    skeletonCandidate("REGION.FIRST", firstRoot, anchor)
+                            + skeletonCandidate("REGION.SECOND", secondRoot,
+                            anchor));
+            IOException noActivations = skeletonAggregationFailure(
+                    trace, ambiguous, root.resolve("no-activations"));
+            assertTrue(noActivations.getMessage().contains(
+                    "no runtime activations"));
+            assertFalse(Files.exists(root.resolve("no-candidates")
+                    .resolve("runtime_region_graph.jsonl")));
+            assertFalse(Files.exists(root.resolve("no-activations")
+                    .resolve("runtime_region_graph.jsonl")));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    private static IOException skeletonAggregationFailure(
+            Path trace, Path candidates, Path output) throws Exception {
+        Method aggregate = CausynthTraceRecorder.class.getDeclaredMethod(
+                "aggregateSkeletonTrace", java.io.File.class,
+                java.io.File.class, java.io.File.class, String.class,
+                java.io.File.class);
+        aggregate.setAccessible(true);
+        try {
+            aggregate.invoke(null, trace.toFile(), null,
+                    candidates.toFile(), "skeleton-fail-closed-test",
+                    output.toFile());
+        } catch (InvocationTargetException failure) {
+            assertTrue(failure.getCause() instanceof IOException);
+            return (IOException) failure.getCause();
+        }
+        throw new AssertionError("skeleton aggregation unexpectedly passed");
+    }
+
+    private static String skeletonCandidate(
+            String id, String root, String anchor) {
+        return "{\"schemaVersion\":2,"
+                + "\"kind\":\"REGION_SKELETON\","
+                + "\"regionId\":\"" + id + "\","
+                + "\"rootMethod\":\"" + root + "\","
+                + "\"anchorMethod\":\"" + anchor + "\","
+                + "\"methods\":[\"" + root + "\",\"" + anchor
+                + "\"],\"planningMode\":\"REGION_SKELETON_ONLY\"}\n";
+    }
+
+    private static void writeGzip(Path output, String value)
+            throws Exception {
+        try (GZIPOutputStream stream = new GZIPOutputStream(
+                Files.newOutputStream(output))) {
+            stream.write(value.getBytes(StandardCharsets.UTF_8));
         }
     }
 

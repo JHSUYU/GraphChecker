@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import org.junit.Test;
 
+import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.Arrays;
 import java.util.Collections;
@@ -15,6 +16,8 @@ import static org.junit.Assert.assertTrue;
 public class SymbolicRegionPlannerTest {
     private static final String METHOD = "<example.Box: int compute()>";
     private static final String FIELD = "<example.Box: int value>";
+    private static final String MAP_FIELD =
+            "<example.Box: java.util.Map allKeys>";
     private static final String OUTPUT = "<example.Bus: int out>";
     private static final String CONSUMER = "<example.Consumer: int read()>";
     private static final String RECEIVER = METHOD + "::$r0";
@@ -29,6 +32,91 @@ public class SymbolicRegionPlannerTest {
     private static final String CONSTRUCTOR_LOCAL = CONSTRUCTOR + "::$i0";
     private static final String CONSTRUCTOR_FIELD =
             "<example.Value: int state>";
+
+    @Test
+    public void missingIntegerMetadataUsesFallback() throws Exception {
+        Method integer = SymbolicRegionPlanner.class.getDeclaredMethod(
+                "integer", Object.class, int.class);
+        integer.setAccessible(true);
+
+        assertEquals(7, integer.invoke(null, null, 7));
+        assertEquals(7, integer.invoke(null, "", 7));
+        assertEquals(7, integer.invoke(null, "null", 7));
+        assertEquals(42, integer.invoke(null, "42", 7));
+        assertEquals(7, integer.invoke(null, "invalid", 7));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void causalEdgeLookupUsesSourceIndexAndInvalidates() throws Exception {
+        Class<?> draftClass = Class.forName(
+                SymbolicRegionPlanner.class.getName() + "$RegionDraft");
+        java.lang.reflect.Constructor<?> constructor =
+                draftClass.getDeclaredConstructor(String.class);
+        constructor.setAccessible(true);
+        Object draft = constructor.newInstance(METHOD);
+        java.lang.reflect.Field edgesField =
+                draftClass.getDeclaredField("causalEdges");
+        edgesField.setAccessible(true);
+        java.util.Set<Map<String, Object>> edges =
+                (java.util.Set<Map<String, Object>>) edgesField.get(draft);
+        Map<String, Object> first = edge("DF.INDEX.0", "local_def_use",
+                "COMPUTE", "value_flow", VALUE, OUTPUT, 1,
+                "out = value");
+        Map<String, Object> other = edge("DF.INDEX.1", "local_def_use",
+                "COMPUTE", "value_flow", RECEIVER, OUTPUT, 2,
+                "out = receiver");
+        edges.add(first);
+        edges.add(other);
+
+        Method lookup = draftClass.getDeclaredMethod(
+                "causalEdgesFrom", String.class);
+        lookup.setAccessible(true);
+        assertEquals(Collections.singletonList(first),
+                lookup.invoke(draft, VALUE));
+        assertTrue(((List<Map<String, Object>>) lookup.invoke(
+                draft, "missing")).isEmpty());
+
+        Map<String, Object> second = edge("DF.INDEX.2", "local_def_use",
+                "COMPUTE", "value_flow", VALUE, OUTPUT, 3,
+                "out = value2");
+        edges.add(second);
+        Method clear = draftClass.getDeclaredMethod("clearAnalysisCache");
+        clear.setAccessible(true);
+        clear.invoke(draft);
+        assertEquals(Arrays.asList(first, second),
+                lookup.invoke(draft, VALUE));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void inputPortIndexPreservesAllPortsForCell() throws Exception {
+        Map<String, Object> first = new LinkedHashMap<>();
+        first.put("cell", VALUE);
+        first.put("portId", "REGION.0.in.0");
+        Map<String, Object> second = new LinkedHashMap<>();
+        second.put("cell", VALUE);
+        second.put("portId", "REGION.0.in.1");
+        Map<String, Object> other = new LinkedHashMap<>();
+        other.put("cell", RECEIVER);
+        other.put("portId", "REGION.0.in.2");
+
+        Class<?> indexClass = Class.forName(
+                SymbolicRegionPlanner.class.getName() + "$InputPortIndex");
+        java.lang.reflect.Constructor<?> constructor =
+                indexClass.getDeclaredConstructor(List.class);
+        constructor.setAccessible(true);
+        Object index = constructor.newInstance(
+                Arrays.asList(first, second, other));
+        Method lookup = indexClass.getDeclaredMethod(
+                "forCell", String.class);
+        lookup.setAccessible(true);
+
+        assertEquals(Arrays.asList(first, second),
+                lookup.invoke(index, VALUE));
+        assertTrue(((List<Map<String, Object>>) lookup.invoke(
+                index, "missing")).isEmpty());
+    }
 
     @Test
     public void runtimeSelectionKeepsGuardOnlyExceptionTarget() {
@@ -57,6 +145,136 @@ public class SymbolicRegionPlannerTest {
         assertEquals(METHOD, region.get("rootMethod"));
         assertEquals("EXCEPTION_BACKWARD_CAUSAL_CLOSURE",
                 region.get("selection"));
+    }
+
+    @Test
+    public void directExceptionGuardLiveInSurvivesBroadPortCap() {
+        StaticProgram program = new StaticProgram();
+        String exception = METHOD + "#u9#exception:example.Failure";
+        String liveIn = METHOD + ".param999:int";
+        program.edges.add(edge("DF.GUARD", "exception_guard", "GUARD",
+                "taint_depends_on", liveIn, exception, 9,
+                "if p999 == 0 goto return"));
+        for (int index = 0; index < 128; index++) {
+            String noise = METHOD + ".param"
+                    + String.format("%03d", index) + ":int";
+            program.edges.add(edge("DF.NOISE." + index, "local_def_use",
+                    "COMPUTE", "taint_depends_on", noise, exception,
+                    100 + index, "exception metadata"));
+        }
+
+        SymbolicRegionPlanner.planSelected(program,
+                Collections.singleton(METHOD));
+
+        assertFalse("direct guard live-in was crowded out",
+                inputPort(region(program, METHOD), liveIn).isEmpty());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void inventoryModeUsesCheapIncompleteRootArgsAndDeclaredFields() {
+        StaticProgram program = new StaticProgram();
+        String exception = METHOD + "#u9#exception:example.Failure";
+        String liveIn = METHOD + ".param0:int";
+        program.edges.add(edge("DF.INVENTORY", "exception_guard", "GUARD",
+                "taint_depends_on", liveIn, exception, 9,
+                "if p0 == 0 goto return"));
+        program.edges.add(edge("DF.INVENTORY.FIELD", "field_read",
+                "HEAP_READ", "value_flow", FIELD, VALUE, 4,
+                "$i0 = $r0.<example.Box: int value>"));
+        Map<String, Object> projected = edge(
+                "DF.INVENTORY.PROJECTED", "instance_field_read",
+                "HEAP_READ", "value_flow",
+                RECEIVER + "#field:value", VALUE, 4,
+                "$i0 = $r0.<example.Box: int value>");
+        projected.put("fieldSensitive", true);
+        projected.put("objectFromCell", RECEIVER);
+        projected.put("objectToCell", VALUE);
+        projected.put("fieldPath", "#field:value");
+        projected.put("declaredFieldSignature", FIELD);
+        program.edges.add(projected);
+        program.edges.add(edge("DF.INVENTORY.RECEIVER_EFFECT",
+                "receiver_field_effect_path_guard", "GUARD",
+                "control_depends_on", OUTER_PARAMETER, FIELD, 5,
+                "if update goto receiverEffect()"));
+
+        SymbolicRegionPlanner.planSelectedInventory(program,
+                Collections.singleton(METHOD));
+
+        Map<String, Object> region = region(program, METHOD);
+        assertEquals(true, region.get("inventoryOnly"));
+        assertEquals(false, region.get("inputSelectionComplete"));
+        assertEquals(
+                "CHEAP_INCOMPLETE_ROOT_ARGS_DIRECT_DECLARED_FIELDS_V1",
+                region.get("inputFrontierMode"));
+        assertEquals("SEED_ONLY_NO_RECURSIVE_DERIVATION_V1",
+                region.get("causalClosureMode"));
+        assertEquals("INVENTORY_SEED_ONLY_STATIC_FRONTIER",
+                region.get("selection"));
+        assertEquals(1, region.get("rootArgumentInputCount"));
+        assertEquals(1, region.get("directDeclaredFieldInputCount"));
+        assertTrue(((Number) region.get(
+                "skippedProjectedCandidateCount")).intValue() > 0);
+        assertTrue(((Number) region.get(
+                "skippedOtherCandidateCount")).intValue() > 0);
+        assertEquals(true, region.get("recursiveExpansionSkipped"));
+        assertTrue(((List<Map<String, Object>>) region.get("outputs"))
+                .isEmpty());
+        assertTrue(inputCells(program).contains(liveIn));
+        assertTrue(inputCells(program).contains(FIELD));
+        assertFalse(inputCells(program).contains(
+                RECEIVER + "#field:value"));
+        assertFalse(inputCells(program).contains(OUTER_PARAMETER));
+        assertTrue(((List<?>) region.get("outputSlices")).isEmpty());
+        assertTrue(((List<?>) region.get("branchPolicies")).isEmpty());
+        for (Map<String, Object> input
+                : (List<Map<String, Object>>) region.get(
+                "symbolicInputs")) {
+            assertFalse(input.containsKey("materialization"));
+        }
+        List<Map<String, Object>> unresolved =
+                (List<Map<String, Object>>) region.get("unresolvedInputs");
+        assertEquals(1, unresolved.size());
+        assertEquals(
+                "CHEAP_INVENTORY_FRONTIER_SKIPS_RECURSIVE_DERIVATION_V1",
+                unresolved.get(0).get("reason"));
+        assertTrue(program.regionEdges.isEmpty());
+    }
+
+    @Test
+    public void skeletonModeStopsBeforeRegionStatePlanning() {
+        StaticProgram program = new StaticProgram();
+        String exception = METHOD + "#u9#exception:example.Failure";
+        program.edges.add(edge("DF.SKELETON", "exception_guard", "GUARD",
+                "taint_depends_on", METHOD + ".param0:int", exception, 9,
+                "if p0 == 0 goto return"));
+        Map<String, Object> staleRegion = new LinkedHashMap<>();
+        staleRegion.put("regionId", "STALE");
+        program.regions.add(staleRegion);
+        program.regionEdges.add(new LinkedHashMap<String, Object>());
+
+        SymbolicRegionPlanner.planSelectedSkeleton(program,
+                Collections.singleton(METHOD));
+        int plannedRegionCount = program.regions.size();
+        SymbolicRegionPlanner.planSelectedSkeleton(program,
+                Collections.singleton(METHOD));
+
+        Map<String, Object> region = region(program, METHOD);
+        assertEquals(1, plannedRegionCount);
+        assertEquals(plannedRegionCount, program.regions.size());
+        assertEquals("REGION_SKELETON", region.get("kind"));
+        assertEquals("REGION_SKELETON_ONLY", region.get("planningMode"));
+        assertEquals("DEFERRED_UNTIL_RUNTIME_REGION_SELECTION",
+                region.get("regionInStatus"));
+        assertEquals("DEFERRED_UNTIL_RUNTIME_REGION_SELECTION",
+                region.get("regionOutStatus"));
+        assertEquals(Collections.singletonList(METHOD),
+                region.get("methods"));
+        assertFalse(region.containsKey("symbolicInputs"));
+        assertFalse(region.containsKey("outputs"));
+        assertFalse(region.containsKey("outputSlices"));
+        assertFalse(region.containsKey("branchPolicies"));
+        assertTrue(program.regionEdges.isEmpty());
     }
 
     @Test
@@ -161,6 +379,63 @@ public class SymbolicRegionPlannerTest {
         assertEquals("FIELD_READ", materialization.get("kind"));
         assertEquals(Collections.singletonList(METHOD + "#u1"),
                 materialization.get("accessSites"));
+    }
+
+    @Test
+    public void exactInstanceMapFieldUsesFieldReadMaterialization() {
+        StaticProgram program = containerFieldReadPlan(false);
+        Map<String, Object> materialization = map(input(
+                region(program, METHOD), MAP_FIELD).get("materialization"));
+
+        assertEquals("FIELD_READ", materialization.get("kind"));
+        assertEquals(Collections.singletonList(METHOD + "#u5"),
+                materialization.get("accessSites"));
+    }
+
+    @Test
+    public void staticMapFieldDoesNotClaimInstanceMaterialization() {
+        StaticProgram program = containerFieldReadPlan(true);
+
+        assertFalse(input(region(program, METHOD), MAP_FIELD)
+                .containsKey("materialization"));
+    }
+
+    private static StaticProgram containerFieldReadPlan(boolean isStatic) {
+        StaticProgram program = new StaticProgram();
+        String target = METHOD + "::$r5";
+        Map<String, Object> read = edge("DF.MAP", "field_read",
+                "HEAP_READ", "value_flow", MAP_FIELD, target, 5,
+                "$r5 = $r0.<example.Box: java.util.Map allKeys>");
+        read.put("declaredFieldSignature", MAP_FIELD);
+        read.put("declaredFieldStatic", isStatic);
+        program.edges.add(read);
+        if (!isStatic) {
+            Map<String, Object> instance = edge("DF.MAP.INSTANCE",
+                    "instance_field_read", "HEAP_READ", "value_flow",
+                    RECEIVER + "#field:allKeys", target, 5,
+                    "$r5 = $r0.<example.Box: java.util.Map allKeys>");
+            instance.put("fieldSensitive", true);
+            instance.put("objectFromCell", RECEIVER);
+            instance.put("objectToCell", target);
+            instance.put("fieldPath", "#field:allKeys");
+            instance.put("declaredFieldSignature", MAP_FIELD);
+            program.edges.add(instance);
+        }
+        Map<String, Object> write = edge("DF.MAP.WRITE", "field_write",
+                "HEAP_WRITE", "value_flow", target, OUTPUT, 8,
+                "<example.Bus: int out> = $r5");
+        write.put("declaredFieldSignature", OUTPUT);
+        program.edges.add(write);
+        Map<String, Object> consume = edge("DF.MAP.CONSUME", "field_read",
+                "HEAP_READ", "value_flow", OUTPUT,
+                CONSUMER + "::$i0", 0,
+                "$i0 = <example.Bus: int out>");
+        consume.put("method", CONSUMER);
+        consume.put("siteId", CONSUMER + "#u0");
+        consume.put("declaredFieldSignature", OUTPUT);
+        program.edges.add(consume);
+        planObserved(program);
+        return program;
     }
 
     private static StaticProgram multipleFieldReadPlan(

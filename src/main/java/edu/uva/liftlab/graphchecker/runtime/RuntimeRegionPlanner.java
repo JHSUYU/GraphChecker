@@ -11,10 +11,13 @@ import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
@@ -33,6 +36,7 @@ import java.util.Set;
 import java.util.function.ToLongFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.zip.GZIPInputStream;
 
 /**
  * Instantiates static symbolic regions with invocation-specific unit-test
@@ -45,9 +49,13 @@ import java.util.regex.Pattern;
  */
 final class RuntimeRegionPlanner {
     private static final Gson GSON = new Gson();
-    private static final int MAX_INSTANCES = 10000;
-    private static final int MAX_CALLS_PER_INSTANCE = 10000;
-    private static final int MAX_PATH_SIGNATURE_EVENTS = 512;
+    /*
+     * Keep the counters as overflow guards, but do not impose a semantic
+     * cutoff. Invocation/call discovery and graph walks retain cycle checks.
+     */
+    private static final int MAX_INSTANCES = Integer.MAX_VALUE;
+    private static final int MAX_CALLS_PER_INSTANCE = Integer.MAX_VALUE;
+    private static final int MAX_PATH_SIGNATURE_EVENTS = Integer.MAX_VALUE;
     private static final Pattern PARAMETER = Pattern.compile("\\.param(\\d+):");
     private static final Pattern PARAMETER_TYPE = Pattern.compile(
             "\\.param\\d+:([^#]+)");
@@ -74,6 +82,8 @@ final class RuntimeRegionPlanner {
             "EXACT_RUNTIME_TYPE";
     private static final int STATIC_DATAFLOW_EDGE_SCHEMA_VERSION = 2;
     private static final int STATIC_REGION_SCHEMA_VERSION = 2;
+    private static final String STATIC_REGION_SKELETON_KIND =
+            "REGION_SKELETON";
     private static final String STATIC_DATAFLOW_ASSERTABLE = "ASSERTABLE";
     private RuntimeRegionPlanner() {
     }
@@ -200,6 +210,404 @@ final class RuntimeRegionPlanner {
     }
 
     /**
+     * Joins static region roots to the discovery trace and filters cheap,
+     * incomplete static REGION.IN candidates after concrete root selection.
+     * It deliberately does not construct replay, materialization,
+     * output-slice, or inter-region binding state.
+     */
+    static Result planInventory(File regionFile, List<MethodEvent> methods,
+                                List<RuntimeEvent> runtimeEvents,
+                                List<FieldAccessEvent> fieldEvents) {
+        long inventoryStart = System.nanoTime();
+        Result result = new Result();
+        List<StaticRegion> regions = readRegions(regionFile);
+        result.staticRegionCount = regions.size();
+        Map<String, List<StaticRegion>> regionsByAnchor =
+                new LinkedHashMap<>();
+        for (StaticRegion region : regions) {
+            add(regionsByAnchor, region.anchorMethod, region);
+            result.staticInputCandidateCount += region.inputs.size();
+        }
+        List<MethodEvent> methodEvents = sorted(methods,
+                value -> value.seq);
+        RuntimeTraceIndex trace = RuntimeTraceIndex.buildInventory(
+                methodEvents, sorted(fieldEvents, value -> value.seq));
+        int instanceIndex = 0;
+        outer:
+        for (StaticRegion region : regions) {
+            for (MethodEvent root : rootCandidates(region,
+                    values(regionsByAnchor.get(region.anchorMethod)), trace)) {
+                if (instanceIndex++ >= MAX_INSTANCES) {
+                    break outer;
+                }
+                ContainedCallSelection contained =
+                        trace.containedCalls(root);
+                Set<String> observedMethods =
+                        trace.methodSignatures(contained);
+                InventoryInputSlice inputSlice =
+                        timedRuntimeInventoryInputs(result, region, root,
+                                trace, contained);
+                result.runtimeInputCandidateOccurrenceCount +=
+                        inputSlice.candidateCount;
+                result.runtimeRegionInputCount += inputSlice.inputs.size();
+                result.runtimePrunedInputCandidateCount +=
+                        inputSlice.prunedCandidateCount;
+                result.runtimeInstances.add(inventoryOnlyMap(region, root,
+                        trace, observedMethods, contained.truncated,
+                        inputSlice));
+            }
+        }
+        result.runtimeInventoryTotalNanos =
+                System.nanoTime() - inventoryStart;
+        return result;
+    }
+
+    /**
+     * Instantiates only the concrete region activation graph.  This phase
+     * consumes the static region skeleton and METHOD_ENTER ancestry; it does
+     * not inspect fields or derive REGION.IN/REGION.OUT state.
+     */
+    static Result planSkeletonGraph(File regionFile,
+                                    List<MethodEvent> methods) {
+        Result result = new Result();
+        Set<String> observedMethods = new LinkedHashSet<>();
+        for (MethodEvent method : values(methods)) {
+            observedMethods.add(method.method);
+        }
+        List<StaticRegion> regions = readRegions(regionFile,
+                observedMethods);
+        result.staticRegionCount = regions.size();
+        Map<String, List<StaticRegion>> regionsByAnchor =
+                new LinkedHashMap<>();
+        for (StaticRegion region : regions) {
+            add(regionsByAnchor, region.anchorMethod, region);
+        }
+
+        RuntimeTraceIndex trace = RuntimeTraceIndex.buildInventory(
+                sorted(methods, value -> value.seq),
+                Collections.<FieldAccessEvent>emptyList());
+        Map<String, SkeletonActivation> activationsByKey =
+                new LinkedHashMap<>();
+        Map<String, List<MethodEvent>> stepsByCarrierAnchor =
+                new LinkedHashMap<>();
+        Map<String, List<MethodEvent>> containedMethodsByCarrier =
+                new LinkedHashMap<>();
+        Map<String, SkeletonAnchorAuthority> authorityByAnchor =
+                new LinkedHashMap<>();
+        int instanceIndex = 0;
+        outer:
+        for (StaticRegion region : regions) {
+            for (MethodEvent root : rootCandidates(region,
+                    values(regionsByAnchor.get(region.anchorMethod)), trace,
+                    authorityByAnchor)) {
+                if (instanceIndex++ >= MAX_INSTANCES) {
+                    break outer;
+                }
+                String key = physicalCallKey(root, root.callId);
+                SkeletonActivation activation = activationsByKey.get(key);
+                if (activation == null) {
+                    activation = new SkeletonActivation(key, root);
+                    activationsByKey.put(key, activation);
+                }
+                activation.addCarrier(region);
+                String stepCacheKey = key
+                        + lengthPrefixed(region.anchorMethod);
+                List<MethodEvent> steps =
+                        stepsByCarrierAnchor.get(stepCacheKey);
+                if (steps == null) {
+                    steps = new ArrayList<>();
+                    List<MethodEvent> containedMethods =
+                            containedMethodsByCarrier.get(key);
+                    if (containedMethods == null) {
+                        ContainedCallSelection contained =
+                                trace.containedCalls(root);
+                        containedMethods = trace.methods(contained.calls);
+                        containedMethodsByCarrier.put(key, containedMethods);
+                    }
+                    for (MethodEvent event : containedMethods) {
+                        if (region.anchorMethod.equals(event.method)) {
+                            steps.add(event);
+                        }
+                    }
+                    stepsByCarrierAnchor.put(stepCacheKey, steps);
+                }
+                for (MethodEvent step : steps) {
+                    String stepKey = physicalCallKey(step, step.callId);
+                    SkeletonActivation stepActivation =
+                            activationsByKey.get(stepKey);
+                    if (stepActivation == null) {
+                        stepActivation = new SkeletonActivation(stepKey, step);
+                        activationsByKey.put(stepKey, stepActivation);
+                    }
+                    stepActivation.addStep(region);
+                }
+            }
+        }
+        List<SkeletonActivation> activations =
+                new ArrayList<>(activationsByKey.values());
+        activations.sort(Comparator
+                .comparingLong((SkeletonActivation value) -> value.root.seq)
+                .thenComparing(value -> value.activationId));
+        for (SkeletonActivation activation : activations) {
+            ContainedCallSelection contained =
+                    trace.containedCalls(activation.root);
+            result.runtimeInstances.add(skeletonActivationMap(
+                    activation, trace, trace.methodSignatures(contained),
+                    contained.truncated));
+        }
+        addSkeletonAncestryEdges(result, activations, methods);
+        return result;
+    }
+
+    private static Map<String, Object> skeletonActivationMap(
+            SkeletonActivation activation, RuntimeTraceIndex trace,
+            Set<String> observedMethods, boolean containedCallsTruncated) {
+        MethodEvent root = activation.root;
+        return object(
+                "schemaVersion", 1,
+                "kind", "RUNTIME_PHYSICAL_REGION_ACTIVATION",
+                "skeletonOnly", true,
+                "executable", false,
+                "activationId", activation.activationId,
+                "regionIds", sorted(activation.regionIds),
+                "roles", activation.roles(),
+                "carrierRegionIds", sorted(activation.carrierRegionIds),
+                "stepRegionIds", sorted(activation.stepRegionIds),
+                "staticRootMethods", sorted(activation.staticRootMethods),
+                "anchorMethods", sorted(activation.anchorMethods),
+                "concreteRootMethod", root.method,
+                "rootEventSeq", root.seq,
+                "rootCallId", root.callId,
+                "rootParentCallId", root.parentCallId,
+                "rootThread", root.threadName,
+                "rootThreadId", root.tid,
+                "rootProcess", root.process,
+                "rootSelector", rootSelector(root,
+                        trace.invocationOrdinal(root),
+                        trace.invocationOrdinalWithinContext(root),
+                        Collections.<String, Object>emptyMap()),
+                "candidateRegionMembershipCount",
+                activation.regionIds.size(),
+                "staticMethodCount", activation.staticMethods.size(),
+                "observedMethodCount", observedMethods.size(),
+                "containedCallTreeComplete", !containedCallsTruncated,
+                "regionInputAnalysisPhase", "DEFERRED",
+                "regionOutputAnalysisPhase", "DEFERRED",
+                "sharedStateAnalysisPhase", "DEFERRED");
+    }
+
+    private static void addSkeletonAncestryEdges(
+            Result result, List<SkeletonActivation> activations,
+            List<MethodEvent> methods) {
+        Map<String, SkeletonActivation> byRootCall =
+                new LinkedHashMap<>();
+        for (SkeletonActivation activation : activations) {
+            byRootCall.put(physicalCallKey(activation.root,
+                    activation.root.callId), activation);
+        }
+        Map<String, MethodEvent> calls = new LinkedHashMap<>();
+        for (MethodEvent method : values(methods)) {
+            calls.put(physicalCallKey(method, method.callId), method);
+        }
+        for (SkeletonActivation child : activations) {
+            long ancestorCallId = child.root.parentCallId;
+            Set<Long> seen = new LinkedHashSet<>();
+            while (ancestorCallId > 0L && seen.add(ancestorCallId)) {
+                String ancestorKey = physicalCallKey(child.root,
+                        ancestorCallId);
+                MethodEvent ancestorCall = calls.get(ancestorKey);
+                if (ancestorCall == null) {
+                    break;
+                }
+                SkeletonActivation parent = byRootCall.get(ancestorKey);
+                if (parent != null
+                        && !parent.activationId.equals(child.activationId)) {
+                    result.runtimeGraphEdges.add(object(
+                            "schemaVersion", 1,
+                            "kind", "SAME_THREAD_CALL_ANCESTRY",
+                            "fromActivationId", parent.activationId,
+                            "toActivationId", child.activationId,
+                            "fromRootCallId", parent.root.callId,
+                            "toRootCallId", child.root.callId,
+                            "authority",
+                            "EXACT_METHOD_ENTER_PARENT_CALL_ID"));
+                    break;
+                }
+                ancestorCallId = ancestorCall.parentCallId;
+            }
+        }
+    }
+
+    private static String physicalCallKey(MethodEvent context, long callId) {
+        return lengthPrefixed(context.test)
+                + lengthPrefixed(context.process)
+                + context.tid + ':'
+                + lengthPrefixed(context.threadName)
+                + callId;
+    }
+
+    private static String lengthPrefixed(String value) {
+        String text = safe(value);
+        return text.length() + ":" + text;
+    }
+
+    private static final class SkeletonActivation {
+        private final String activationId;
+        private final MethodEvent root;
+        private final Set<String> regionIds = new LinkedHashSet<>();
+        private final Set<String> carrierRegionIds = new LinkedHashSet<>();
+        private final Set<String> stepRegionIds = new LinkedHashSet<>();
+        private final Set<String> staticRootMethods = new LinkedHashSet<>();
+        private final Set<String> anchorMethods = new LinkedHashSet<>();
+        private final Set<String> staticMethods = new LinkedHashSet<>();
+
+        private SkeletonActivation(String key, MethodEvent root) {
+            this.activationId = "ACTIVATION." + stableId(key);
+            this.root = root;
+        }
+
+        private void addCarrier(StaticRegion region) {
+            add(region);
+            carrierRegionIds.add(region.regionId);
+        }
+
+        private void addStep(StaticRegion region) {
+            add(region);
+            stepRegionIds.add(region.regionId);
+        }
+
+        private void add(StaticRegion region) {
+            regionIds.add(region.regionId);
+            staticRootMethods.add(region.rootMethod);
+            anchorMethods.add(region.anchorMethod);
+            staticMethods.addAll(region.methods);
+        }
+
+        private List<String> roles() {
+            List<String> result = new ArrayList<>();
+            if (!carrierRegionIds.isEmpty()) result.add("CARRIER");
+            if (!stepRegionIds.isEmpty()) result.add("STEP");
+            return result;
+        }
+    }
+
+    private static InventoryInputSlice timedRuntimeInventoryInputs(
+            Result result, StaticRegion region, MethodEvent root,
+            RuntimeTraceIndex trace, ContainedCallSelection contained) {
+        long start = System.nanoTime();
+        Set<String> readFields = trace.readDeclaredFields(contained);
+        InventoryInputSlice slice = selectRuntimeInventoryInputs(
+                region, root, readFields);
+        result.regionInputSlicingNanos += System.nanoTime() - start;
+        return slice;
+    }
+
+    /**
+     * Computes the cheap REGION.IN frontier only after a concrete activation
+     * has been selected.  Root formals are invocation inputs; a declared
+     * field is retained only when that exact call subtree actually read it.
+     */
+    private static InventoryInputSlice selectRuntimeInventoryInputs(
+            StaticRegion region, MethodEvent root,
+            Set<String> readFields) {
+        InventoryInputSlice result = new InventoryInputSlice(
+                region.inputs.size());
+        for (StaticPort port : region.inputs) {
+            if (exactRootParameter(root.method, port.cell)) {
+                result.inputs.add(port);
+                result.rootArgumentCount++;
+            } else if (exactDeclaredFieldCell(port.cell)
+                    && readFields.contains(port.cell)) {
+                result.inputs.add(port);
+                result.observedFieldCount++;
+            } else {
+                result.prunedCandidateCount++;
+            }
+        }
+        return result;
+    }
+
+    private static Map<String, Object> inventoryOnlyMap(
+            StaticRegion region, MethodEvent root, RuntimeTraceIndex trace,
+            Set<String> observedMethods, boolean containedCallsTruncated,
+            InventoryInputSlice inputSlice) {
+        List<Map<String, Object>> inputs = new ArrayList<>();
+        Map<String, Integer> javaTypes = new LinkedHashMap<>();
+        Map<String, Integer> sourceKinds = new LinkedHashMap<>();
+        for (StaticPort port : inputSlice.inputs) {
+            inputs.add(object(
+                    "symbol", port.portId,
+                    "cell", port.cell,
+                    "javaType", port.javaType,
+                    "sourceKind", port.sourceKind,
+                    "projection", port.projection));
+            incrementCount(javaTypes,
+                    firstNonBlank(port.javaType, "<unknown>"));
+            incrementCount(sourceKinds,
+                    firstNonBlank(port.sourceKind, "<unknown>"));
+        }
+        String instanceId = region.regionId + "@" + safeToken(root.test)
+                + "#call" + root.callId;
+        return object(
+                "schemaVersion", 1,
+                "kind", "RUNTIME_REGION_INSTANCE_INVENTORY",
+                "inventoryOnly", true,
+                "executable", false,
+                "materializationStatus", "NOT_COMPUTED_IN_INVENTORY_MODE",
+                "regionInstanceId", instanceId,
+                "regionId", region.regionId,
+                "staticRootMethod", region.rootMethod,
+                "concreteRootMethod", root.method,
+                "targetMethod", region.anchorMethod,
+                "rootEventSeq", root.seq,
+                "rootCallId", root.callId,
+                "rootThread", root.threadName,
+                "rootThreadId", root.tid,
+                "rootProcess", root.process,
+                "rootSelector", rootSelector(root,
+                        trace.invocationOrdinal(root),
+                        trace.invocationOrdinalWithinContext(root),
+                        Collections.<String, Object>emptyMap()),
+                "staticMethodCount", region.methods.size(),
+                "observedMethodCount", observedMethods.size(),
+                "containedCallTreeComplete", !containedCallsTruncated,
+                "regionInputAnalysisPhase", "POST_RUNTIME_SELECTION",
+                "regionInputSliceMode",
+                "CHEAP_INCOMPLETE_ROOT_ARGS_OBSERVED_DECLARED_FIELDS_V1",
+                "staticInputCandidateCount", inputSlice.candidateCount,
+                "runtimeRootArgumentInputCount",
+                inputSlice.rootArgumentCount,
+                "runtimeObservedFieldInputCount",
+                inputSlice.observedFieldCount,
+                "runtimePrunedInputCandidateCount",
+                inputSlice.prunedCandidateCount,
+                "regionInCount", inputs.size(),
+                "regionInputs", inputs,
+                "javaTypeCounts", javaTypes,
+                "sourceKindCounts", sourceKinds,
+                "inputSelectionComplete", region.inputSelectionComplete,
+                "unresolvedInputCount", region.unresolvedInputCount);
+    }
+
+    private static final class InventoryInputSlice {
+        private final List<StaticPort> inputs = new ArrayList<>();
+        private final int candidateCount;
+        private int rootArgumentCount;
+        private int observedFieldCount;
+        private int prunedCandidateCount;
+
+        private InventoryInputSlice(int candidateCount) {
+            this.candidateCount = candidateCount;
+        }
+    }
+
+    private static void incrementCount(Map<String, Integer> counts,
+                                       String key) {
+        Integer previous = counts.get(key);
+        counts.put(key, previous == null ? 1 : previous + 1);
+    }
+
+    /**
      * Keeps only runtime read-from edges on a backward path to a selected
      * target activation. A concrete invocation can match an overlapping
      * static candidate that has inputs but no demanded output; allowing that
@@ -294,6 +702,14 @@ final class RuntimeRegionPlanner {
             StaticRegion region,
             List<StaticRegion> anchorPeers,
             RuntimeTraceIndex trace) {
+        return rootCandidates(region, anchorPeers, trace, null);
+    }
+
+    private static List<MethodEvent> rootCandidates(
+            StaticRegion region,
+            List<StaticRegion> anchorPeers,
+            RuntimeTraceIndex trace,
+            Map<String, SkeletonAnchorAuthority> authorityByAnchor) {
         if (constructorHeapOutput(region)) {
             return exactConstructorWriterRoots(region, trace);
         }
@@ -313,16 +729,35 @@ final class RuntimeRegionPlanner {
         // shared suffix is ambiguous and must not manufacture one activation
         // per static region.
         for (MethodEvent anchor : anchors) {
-            List<MethodEvent> lineage = concreteLineage(anchor,
-                    trace.methodsByCall);
-            Set<String> exactRootOwners = exactRootOwners(lineage, anchorPeers);
+            List<MethodEvent> lineage;
+            Set<String> exactRootOwners;
+            Set<String> exclusiveLineageOwners = null;
+            if (authorityByAnchor == null) {
+                lineage = concreteLineage(anchor, trace.methodsByCall);
+                exactRootOwners = exactRootOwners(lineage, anchorPeers);
+            } else {
+                String key = physicalCallKey(anchor, anchor.callId);
+                SkeletonAnchorAuthority authority =
+                        authorityByAnchor.get(key);
+                if (authority == null) {
+                    authority = SkeletonAnchorAuthority.compute(
+                            anchor, anchorPeers, trace.methodsByCall);
+                    authorityByAnchor.put(key, authority);
+                }
+                lineage = authority.lineage;
+                exactRootOwners = authority.exactRootOwnerRegionIds;
+                exclusiveLineageOwners =
+                        authority.exclusiveLineageOwnerRegionIds;
+            }
             if (!exactRootOwners.isEmpty()
                     && !exactRootOwners.contains(region.regionId)) {
                 continue;
             }
             if (exactRootOwners.isEmpty() && anchorPeers.size() > 1
-                    && !hasRegionExclusiveLineage(
-                    lineage, region, anchorPeers)) {
+                    && (exclusiveLineageOwners == null
+                    ? !hasRegionExclusiveLineage(
+                    lineage, region, anchorPeers)
+                    : !exclusiveLineageOwners.contains(region.regionId))) {
                 continue;
             }
 
@@ -348,6 +783,31 @@ final class RuntimeRegionPlanner {
             if (selectedCalls.add(event.callId)) roots.add(event);
         }
         return roots;
+    }
+
+    private static final class SkeletonAnchorAuthority {
+        private final List<MethodEvent> lineage;
+        private final Set<String> exactRootOwnerRegionIds;
+        private final Set<String> exclusiveLineageOwnerRegionIds;
+
+        private SkeletonAnchorAuthority(
+                List<MethodEvent> lineage,
+                Set<String> exactRootOwnerRegionIds,
+                Set<String> exclusiveLineageOwnerRegionIds) {
+            this.lineage = lineage;
+            this.exactRootOwnerRegionIds = exactRootOwnerRegionIds;
+            this.exclusiveLineageOwnerRegionIds =
+                    exclusiveLineageOwnerRegionIds;
+        }
+
+        private static SkeletonAnchorAuthority compute(
+                MethodEvent anchor, List<StaticRegion> peers,
+                Map<Long, MethodEvent> calls) {
+            List<MethodEvent> lineage = concreteLineage(anchor, calls);
+            return new SkeletonAnchorAuthority(lineage,
+                    exactRootOwners(lineage, peers),
+                    exclusiveLineageOwners(lineage, peers));
+        }
     }
 
     private static boolean constructorHeapOutput(StaticRegion region) {
@@ -463,6 +923,25 @@ final class RuntimeRegionPlanner {
             }
         }
         return false;
+    }
+
+    private static Set<String> exclusiveLineageOwners(
+            List<MethodEvent> lineage, List<StaticRegion> anchorPeers) {
+        Set<String> result = new LinkedHashSet<>();
+        for (MethodEvent event : lineage) {
+            StaticRegion owner = null;
+            int owners = 0;
+            for (StaticRegion peer : anchorPeers) {
+                if (peer.methods.contains(event.method)) {
+                    owner = peer;
+                    owners++;
+                }
+            }
+            if (owners == 1) {
+                result.add(owner.regionId);
+            }
+        }
+        return result;
     }
 
     private static Map<String, Object> rootSelector(
@@ -789,7 +1268,7 @@ final class RuntimeRegionPlanner {
     /**
      * Resolves the requested field's concrete owner back to the selected
      * region receiver.  Discovery already records reference-valued getfield
-     * edges and the exact putfield receiver; one unique bounded path is
+     * edges and the exact putfield receiver; one unique acyclic path is
      * sufficient to materialize the entry value before any region code runs.
      */
     private static FramePrestatePath framePrestatePath(
@@ -838,9 +1317,6 @@ final class RuntimeRegionPlanner {
         List<String> selected = null;
         for (int cursor = 0; cursor < queue.size(); cursor++) {
             ObjectPathState state = queue.get(cursor);
-            if (state.path.size() >= 4) {
-                continue;
-            }
             for (FieldAccessEvent event : values(fields)) {
                 FieldCell field = fieldCell(event.field);
                 if (!"FIELD_READ".equals(event.kind)
@@ -1071,7 +1547,7 @@ final class RuntimeRegionPlanner {
         List<String> path = spec.path();
         FieldCell staticRoot = fieldCell(port.cell);
         FieldCell leaf = fieldCell(spec.leafField());
-        if (path.size() < 2 || path.size() > 4
+        if (path.size() < 2
                 || !path.equals(dependencyFieldPath(port.cell))
                 || !staticRoot.declaredSignature
                 || !observedRoot.signature().equals(
@@ -2500,22 +2976,6 @@ final class RuntimeRegionPlanner {
         return selected;
     }
 
-    private static boolean isContainerMutator(String signature) {
-        String value = safe(signature);
-        return value.contains(" put(")
-                || value.contains(" putAll(")
-                || value.contains(" remove(")
-                || value.contains(" clear(")
-                || value.contains(" replace(")
-                || value.contains(" compute(")
-                || value.contains(" computeIfAbsent(")
-                || value.contains(" computeIfPresent(")
-                || value.contains(" merge(")
-                || value.contains(" add(")
-                || value.contains(" addAll(")
-                || value.contains(" set(");
-    }
-
     private static void addNonBlank(Set<String> values, String value) {
         String normalized = safe(value);
         if (!normalized.isEmpty()) {
@@ -2560,22 +3020,118 @@ final class RuntimeRegionPlanner {
     }
 
     private static List<StaticRegion> readRegions(File file) {
+        return readRegions(file, null);
+    }
+
+    private static List<StaticRegion> readRegions(
+            File file, Set<String> observedMethods) {
+        if (file == null || !file.isFile()) {
+            throw new IllegalArgumentException(
+                    "symbolic region artifact is missing: " + file);
+        }
         List<StaticRegion> result = new ArrayList<>();
-        for (JsonObject row : readArtifactRows(file,
-                "symbolic region artifact", true)) {
-            if (jsonInt(row, "schemaVersion", -1)
-                    != STATIC_REGION_SCHEMA_VERSION) {
-                throw new IllegalArgumentException(
-                        "unsupported symbolic region schema");
+        Map<String, String> canonicalMethods = new LinkedHashMap<>();
+        Set<String> regionIds = new LinkedHashSet<>();
+        try (BufferedReader reader = artifactReader(file)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.trim().isEmpty()) {
+                    continue;
+                }
+                JsonObject row = GSON.fromJson(line, JsonObject.class);
+                StaticRegion region = StaticRegion.fromJson(row);
+                validateStaticRegion(row, region,
+                        observedMethods != null);
+                if (!regionIds.add(region.regionId)) {
+                    throw new IllegalArgumentException(
+                            "duplicate symbolic region id: "
+                                    + region.regionId);
+                }
+                if (observedMethods != null
+                        && (!observedMethods.contains(region.rootMethod)
+                        && !observedMethods.contains(
+                        region.anchorMethod))) {
+                    continue;
+                }
+                canonicalizeRegionMethods(region, canonicalMethods);
+                result.add(region);
             }
-            StaticRegion region = StaticRegion.fromJson(row);
-            if (region.regionId.isEmpty() || region.rootMethod.isEmpty()) {
-                throw new IllegalArgumentException(
-                        "malformed symbolic region row");
-            }
-            result.add(region);
+        } catch (IOException exception) {
+            throw new IllegalStateException(
+                    "failed to read symbolic region artifact: " + file,
+                    exception);
         }
         return result;
+    }
+
+    private static void validateStaticRegion(
+            JsonObject row, StaticRegion region, boolean skeletonArtifact) {
+        if (row == null || jsonInt(row, "schemaVersion", -1)
+                != STATIC_REGION_SCHEMA_VERSION) {
+            throw new IllegalArgumentException(
+                    "unsupported symbolic region schema");
+        }
+        boolean skeletonKind = STATIC_REGION_SKELETON_KIND.equals(
+                region.kind);
+        if (skeletonArtifact != skeletonKind) {
+            throw new IllegalArgumentException(
+                    "unsupported symbolic region kind: " + region.kind);
+        }
+        if (region.regionId.isEmpty() || region.rootMethod.isEmpty()
+                || skeletonKind
+                && jsonString(row, "anchorMethod").isEmpty()) {
+            throw new IllegalArgumentException(
+                    "malformed symbolic region row");
+        }
+        Set<String> methods = new LinkedHashSet<>(
+                jsonStringArray(row, "methods"));
+        methods.remove("");
+        if (methods.isEmpty() || !methods.contains(region.rootMethod)
+                || !region.anchorMethod.isEmpty()
+                && !methods.contains(region.anchorMethod)) {
+            throw new IllegalArgumentException(
+                    "malformed symbolic region methods");
+        }
+    }
+
+    private static void canonicalizeRegionMethods(
+            StaticRegion region, Map<String, String> canonicalMethods) {
+        region.rootMethod = canonicalMethod(region.rootMethod,
+                canonicalMethods);
+        region.anchorMethod = canonicalMethod(region.anchorMethod,
+                canonicalMethods);
+        Set<String> methods = new LinkedHashSet<>();
+        for (String method : region.methods) {
+            methods.add(canonicalMethod(method, canonicalMethods));
+        }
+        region.methods.clear();
+        region.methods.addAll(methods);
+    }
+
+    private static String canonicalMethod(
+            String method, Map<String, String> canonicalMethods) {
+        String value = safe(method);
+        String canonical = canonicalMethods.get(value);
+        if (canonical != null) {
+            return canonical;
+        }
+        canonicalMethods.put(value, value);
+        return value;
+    }
+
+    private static BufferedReader artifactReader(File file)
+            throws IOException {
+        InputStream input = Files.newInputStream(file.toPath());
+        try {
+            if (file.getName().endsWith(".gz")) {
+                input = new GZIPInputStream(input);
+            }
+            return new BufferedReader(new InputStreamReader(input,
+                    StandardCharsets.UTF_8));
+        } catch (IOException exception) {
+            input.close();
+            throw exception;
+        }
     }
 
     private static List<StaticRegionEdge> readRegionEdges(File file) {
@@ -2630,6 +3186,15 @@ final class RuntimeRegionPlanner {
     static final class Result {
         final List<Map<String, Object>> regionPlans = new ArrayList<>();
         final List<Map<String, Object>> edgeValidations = new ArrayList<>();
+        final List<Map<String, Object>> runtimeInstances = new ArrayList<>();
+        final List<Map<String, Object>> runtimeGraphEdges = new ArrayList<>();
+        int staticRegionCount;
+        int staticInputCandidateCount;
+        int runtimeInputCandidateOccurrenceCount;
+        int runtimeRegionInputCount;
+        int runtimePrunedInputCandidateCount;
+        long runtimeInventoryTotalNanos;
+        long regionInputSlicingNanos;
 
         String regionPlansJsonl() {
             return jsonl(regionPlans);
@@ -2637,6 +3202,14 @@ final class RuntimeRegionPlanner {
 
         String edgeValidationsJsonl() {
             return jsonl(edgeValidations);
+        }
+
+        String runtimeInstancesJsonl() {
+            return jsonl(runtimeInstances);
+        }
+
+        String runtimeGraphEdgesJsonl() {
+            return jsonl(runtimeGraphEdges);
         }
 
     }
@@ -2716,6 +3289,8 @@ final class RuntimeRegionPlanner {
     private static final class ContainedCallSelection {
         private final Set<Long> calls;
         private final boolean truncated;
+        private Set<String> methodSignatures;
+        private Set<String> readDeclaredFields;
 
         private ContainedCallSelection(Set<Long> calls, boolean truncated) {
             this.calls = calls;
@@ -2938,10 +3513,24 @@ final class RuntimeRegionPlanner {
                 new LinkedHashMap<>();
         private final Map<Long, Integer> contextOrdinals =
                 new LinkedHashMap<>();
+        private final Map<Long, ContainedCallSelection>
+                containedCallsByRoot = new LinkedHashMap<>();
 
         private static RuntimeTraceIndex build(
                 List<MethodEvent> methods, List<RuntimeEvent> runtime,
                 List<FieldAccessEvent> fields) {
+            return build(methods, runtime, fields, false);
+        }
+
+        private static RuntimeTraceIndex buildInventory(
+                List<MethodEvent> methods, List<FieldAccessEvent> fields) {
+            return build(methods, Collections.<RuntimeEvent>emptyList(),
+                    fields, true);
+        }
+
+        private static RuntimeTraceIndex build(
+                List<MethodEvent> methods, List<RuntimeEvent> runtime,
+                List<FieldAccessEvent> fields, boolean inventoryOnly) {
             RuntimeTraceIndex result = new RuntimeTraceIndex();
             Map<String, Integer> globalCounts = new LinkedHashMap<>();
             Map<String, Integer> contextCounts = new LinkedHashMap<>();
@@ -2973,7 +3562,8 @@ final class RuntimeRegionPlanner {
                     result.callSitesByInvocation.putIfAbsent(
                             event.invocationId, event);
                     if (event.objectId != 0
-                            && isContainerMutator(event.declaredCallee)) {
+                            && JavaContainerTypes.modeledContainerMutator(
+                            event.declaredCallee)) {
                         result.mutatorsByObject.computeIfAbsent(
                                 event.objectId,
                                 ignored -> new ArrayList<>()).add(event);
@@ -2998,6 +3588,9 @@ final class RuntimeRegionPlanner {
                         && invocation != null
                         && constructorMethod(invocation.method)) {
                     result.constructorWrites.add(event);
+                }
+                if (inventoryOnly) {
+                    continue;
                 }
                 String field = exactFieldKey(event.field);
                 if (!field.isEmpty() && event.receiverObjectId != 0) {
@@ -3041,6 +3634,11 @@ final class RuntimeRegionPlanner {
         }
 
         private ContainedCallSelection containedCalls(MethodEvent root) {
+            ContainedCallSelection cached =
+                    containedCallsByRoot.get(root.callId);
+            if (cached != null) {
+                return cached;
+            }
             Set<Long> calls = new LinkedHashSet<>();
             Deque<Long> pending = new ArrayDeque<>();
             calls.add(root.callId);
@@ -3061,7 +3659,41 @@ final class RuntimeRegionPlanner {
                     pending.addLast(child.callId);
                 }
             }
-            return new ContainedCallSelection(calls, truncated);
+            ContainedCallSelection result =
+                    new ContainedCallSelection(calls, truncated);
+            containedCallsByRoot.put(root.callId, result);
+            return result;
+        }
+
+        private Set<String> methodSignatures(
+                ContainedCallSelection contained) {
+            if (contained.methodSignatures == null) {
+                contained.methodSignatures = new LinkedHashSet<>();
+                for (long call : contained.calls) {
+                    MethodEvent event = methodsByCall.get(call);
+                    if (event != null) {
+                        contained.methodSignatures.add(event.method);
+                    }
+                }
+            }
+            return contained.methodSignatures;
+        }
+
+        private Set<String> readDeclaredFields(
+                ContainedCallSelection contained) {
+            if (contained.readDeclaredFields == null) {
+                contained.readDeclaredFields = new LinkedHashSet<>();
+                for (long call : contained.calls) {
+                    for (FieldAccessEvent event
+                            : values(fieldsByCall.get(call))) {
+                        if ("FIELD_READ".equals(event.kind)
+                                && exactDeclaredFieldCell(event.field)) {
+                            contained.readDeclaredFields.add(event.field);
+                        }
+                    }
+                }
+            }
+            return contained.readDeclaredFields;
         }
 
         private List<MethodEvent> methods(Set<Long> calls) {
@@ -3265,6 +3897,7 @@ final class RuntimeRegionPlanner {
     }
 
     private static final class StaticRegion {
+        private String kind = "";
         private String regionId = "";
         private String rootMethod = "";
         private String anchorMethod = "";
@@ -3276,6 +3909,7 @@ final class RuntimeRegionPlanner {
                 new LinkedHashMap<>();
         private final List<BranchPolicy> branches = new ArrayList<>();
         private boolean inputSelectionComplete = true;
+        private int unresolvedInputCount;
         private StaticPort outputFor(String endpoint) {
             return portFor(outputs, endpoint, true);
         }
@@ -3420,10 +4054,16 @@ final class RuntimeRegionPlanner {
 
         private static StaticRegion fromJson(JsonObject json) {
             StaticRegion region = new StaticRegion();
+            if (json == null) {
+                return region;
+            }
+            region.kind = jsonString(json, "kind");
             region.regionId = jsonString(json, "regionId");
             region.rootMethod = jsonString(json, "rootMethod");
-            region.anchorMethod = firstNonBlank(jsonString(json, "anchorMethod"),
-                    region.rootMethod);
+            String declaredAnchor = jsonString(json, "anchorMethod");
+            region.anchorMethod = STATIC_REGION_SKELETON_KIND.equals(
+                    region.kind) ? declaredAnchor
+                    : firstNonBlank(declaredAnchor, region.rootMethod);
             region.selection = jsonString(json, "selection");
             region.methods.addAll(jsonStringArray(json, "methods"));
             region.methods.add(region.rootMethod);
@@ -3467,6 +4107,8 @@ final class RuntimeRegionPlanner {
             }
             region.inputSelectionComplete = jsonBoolean(json,
                     "inputSelectionComplete", true);
+            region.unresolvedInputCount = jsonObjectArray(json,
+                    "unresolvedInputs").size();
             return region;
         }
     }
@@ -3599,10 +4241,6 @@ final class RuntimeRegionPlanner {
                 if (cell.isEmpty() || !visited.add(cell)) {
                     continue;
                 }
-                if (visited.size() > 20000) {
-                    break;
-                }
-
                 StaticPort frontier = region.uniqueDemandFrontierPort(cell,
                         observedMethods, runtimeRootMethod);
                 if (frontier != null) {
@@ -3667,7 +4305,7 @@ final class RuntimeRegionPlanner {
             String cell = safe(initialCell);
             MethodEvent invocation = initialInvocation;
             Set<String> visited = new LinkedHashSet<>();
-            for (int depth = 0; depth < 32 && invocation != null; depth++) {
+            while (invocation != null) {
                 String visit = invocation.callId + "\n" + cell;
                 if (!visited.add(visit)) {
                     return false;

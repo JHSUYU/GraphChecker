@@ -11,6 +11,8 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -20,6 +22,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
@@ -33,6 +36,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
+import java.util.zip.GZIPInputStream;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
@@ -84,18 +88,64 @@ public final class CausynthTraceRecorder {
     public static void main(String[] args) {
         Map<String, String> params = parseArgs(args);
         File directory = new File(requiredArg(params, "trace-dir"));
-        File graph = new File(requiredArg(params, "static-graph"));
-        File regions = new File(requiredArg(params, "regions"));
-        File regionEdges = new File(requiredArg(params, "region-edges"));
         String test = requiredArg(params, "test");
+        boolean inventoryOnly = Boolean.parseBoolean(
+                params.get("inventory-only"));
+        boolean skeletonOnly = Boolean.parseBoolean(
+                params.get("region-skeleton-only"));
+        if (inventoryOnly && skeletonOnly) {
+            throw new IllegalArgumentException("--inventory-only and "
+                    + "--region-skeleton-only are mutually exclusive");
+        }
+        String configuredSkeletons = params.get("region-skeletons");
+        File candidateSkeletons = configuredSkeletons == null
+                || configuredSkeletons.trim().isEmpty()
+                ? null : new File(configuredSkeletons.trim());
+        File graph = skeletonOnly && candidateSkeletons != null ? null
+                : new File(requiredArg(params, "static-graph"));
+        File regions = skeletonOnly ? null
+                : new File(requiredArg(params, "regions"));
+        File regionEdges = skeletonOnly ? null
+                : new File(requiredArg(params, "region-edges"));
+        String configuredOutput = params.get("output-dir");
+        File planOutputDirectory = configuredOutput == null
+                || configuredOutput.trim().isEmpty()
+                ? directory : new File(configuredOutput.trim());
         try {
-            aggregateExistingTrace(directory, graph, regions, regionEdges,
-                    test);
+            if (skeletonOnly) {
+                aggregateSkeletonTrace(directory, graph, candidateSkeletons,
+                        test, planOutputDirectory);
+            } else {
+                aggregateExistingTrace(directory, graph, regions, regionEdges,
+                        test, planOutputDirectory, inventoryOnly);
+            }
         } catch (Throwable throwable) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
                     + throwable);
             throwable.printStackTrace(System.err);
             System.exit(1);
+        }
+    }
+
+    /** Records a method observation when rich call-frame evidence is unnecessary. */
+    public static void record(String method, Object receiver) {
+        if (method == null) {
+            return;
+        }
+        initialize();
+        long id = EVENT_COUNTER.incrementAndGet();
+        if (id > maxEvents || contextOnlyConcolicReplay) {
+            return;
+        }
+        Thread thread = Thread.currentThread();
+        RuntimeRegionPlanner.MethodEvent event =
+                new RuntimeRegionPlanner.MethodEvent(id, testName,
+                        inferProcessName(method, thread.getName()),
+                        thread.getName(), thread.getId(), method,
+                        identity(receiver), runtimeType(receiver),
+                        id, 0L, 0L);
+        synchronized (LOCK) {
+            writeTraceLine(event);
         }
     }
 
@@ -130,6 +180,40 @@ public final class CausynthTraceRecorder {
         }
         synchronized (LOCK) {
             writeTraceLine(event);
+        }
+        return id;
+    }
+
+    /**
+     * Records the activation metadata needed by inventory planning without
+     * collecting arguments, call sites, branches, or return values.
+     */
+    public static long enterMethodLite(String method, Object receiver) {
+        if (method == null) {
+            return 0L;
+        }
+        initialize();
+        long id = EVENT_COUNTER.incrementAndGet();
+        Deque<ActiveCall> calls = ACTIVE_CALLS.get();
+        ActiveCall parent = calls.peek();
+        long parentCallId = parent == null ? 0L : parent.callId;
+        // Keep the nesting stack balanced even after the trace budget has
+        // been exhausted; the silent exit hook must not pop the parent.
+        calls.push(new ActiveCall(id, 0L, method));
+        if (id > maxEvents) {
+            return id;
+        }
+        Thread thread = Thread.currentThread();
+        String threadName = thread.getName();
+        RuntimeRegionPlanner.MethodEvent event =
+                new RuntimeRegionPlanner.MethodEvent(id, testName,
+                        inferProcessName(method, threadName), threadName,
+                        thread.getId(), method, 0, runtimeType(receiver), id,
+                        parentCallId, 0L);
+        if (!contextOnlyConcolicReplay) {
+            synchronized (LOCK) {
+                writeTraceLine(event);
+            }
         }
         return id;
     }
@@ -199,6 +283,28 @@ public final class CausynthTraceRecorder {
         event.primitiveValue = safe(primitiveValue);
         event.captureValueFingerprint(returnValue, primitiveValue);
         emitExecutionEvent(event);
+        removeCallSite(invocationId);
+    }
+
+    /** Completes a lite container call without inspecting its return value. */
+    public static void endCallLite(long invocationId) {
+        initialize();
+        ActiveCallSite site = activeCallSite(invocationId);
+        long id = EVENT_COUNTER.incrementAndGet();
+        if (id <= maxEvents && !contextOnlyConcolicReplay) {
+            synchronized (LOCK) {
+                writeTraceRow(
+                        "schemaVersion", 2,
+                        "event", "CALL_SITE_RETURN",
+                        "seq", id,
+                        "method", site == null ? "" : site.caller,
+                        "callId", site == null ? 0L : site.ownerCallId,
+                        "invocationId", invocationId,
+                        "siteId", site == null ? "" : site.siteId,
+                        "declaredCallee",
+                        site == null ? "" : site.declaredCallee);
+            }
+        }
         removeCallSite(invocationId);
     }
 
@@ -278,6 +384,84 @@ public final class CausynthTraceRecorder {
      */
     public static void throwActiveMethod(Throwable throwable) {
         throwMethod(0L, throwable);
+    }
+
+    /** Removes the current lite activation without emitting an exit row. */
+    public static void exitActiveMethodLite() {
+        exitActiveMethodLite("CALL_SITE_INCOMPLETE");
+    }
+
+    private static void exitActiveMethodLite(String callSiteExit) {
+        ActiveCall call = ACTIVE_CALLS.get().peek();
+        if (call != null) {
+            closeCallSites(call.callId, callSiteExit);
+            removeCall(call.callId);
+        }
+    }
+
+    /** Removes an exceptionally exiting lite activation without trace output. */
+    public static void throwActiveMethodLite() {
+        throwActiveMethodLite(null);
+    }
+
+    /** Throwable-shaped overload used by the existing catch-all instrumenter. */
+    public static void throwActiveMethodLite(Throwable ignored) {
+        exitActiveMethodLite("CALL_SITE_THROW");
+    }
+
+    /**
+     * Records only the exact declared field and owning activation required by
+     * the post-runtime inventory input slice.
+     */
+    public static void recordFieldReadLite(String field) {
+        recordFieldReadLite(field, null, null);
+    }
+
+    public static void recordFieldReadLite(
+            String field, Object fieldOwner, Object referenceValue) {
+        recordFieldLite("FIELD_READ", field, fieldOwner, referenceValue);
+    }
+
+    /** Records a shared-state producer without inspecting its owner or value. */
+    public static void recordFieldWriteLite(String field) {
+        recordFieldWriteLite(field, null, null);
+    }
+
+    public static void recordFieldWriteLite(
+            String field, Object fieldOwner, Object referenceValue) {
+        recordFieldLite("FIELD_WRITE", field, fieldOwner, referenceValue);
+    }
+
+    private static void recordFieldLite(
+            String kind, String field, Object fieldOwner,
+            Object referenceValue) {
+        if (field == null || field.isEmpty()) {
+            return;
+        }
+        initialize();
+        if (contextOnlyConcolicReplay) {
+            return;
+        }
+        ActiveCall call = ACTIVE_CALLS.get().peek();
+        if (call == null) {
+            return;
+        }
+        long id = EVENT_COUNTER.incrementAndGet();
+        if (id > maxEvents) {
+            return;
+        }
+        synchronized (LOCK) {
+            writeTraceRow(
+                    "schemaVersion", 2,
+                    "event", kind,
+                    "seq", id,
+                    "callId", call.callId,
+                    "field", field,
+                    "fieldReceiverObjectId", identity(fieldOwner),
+                    "fieldReceiverRuntimeType", runtimeType(fieldOwner),
+                    "valueObjectId", identity(referenceValue),
+                    "valueRuntimeType", runtimeType(referenceValue));
+        }
     }
 
     public static void recordField(String kind, String method, int unitIndex,
@@ -497,6 +681,10 @@ public final class CausynthTraceRecorder {
                     throw new IOException("Unable to create trace output directory: "
                             + configuredOutputDir);
                 }
+                // A killed replacement run must not inherit CLOSED evidence
+                // from an older trace in the same directory.
+                Files.deleteIfExists(new File(configuredOutputDir,
+                        "streaming_trace_manifest.json").toPath());
                 configuredWriter = new BufferedWriter(new FileWriter(
                         configuredTraceFile, false));
                 ensureShutdownHookRegistered();
@@ -505,7 +693,8 @@ public final class CausynthTraceRecorder {
                 // No recording thread can observe a partially initialized writer
                 // or the JVM default value of an event limit.
                 testName = configuredTestName;
-                maxEvents = DEFAULT_MAX_EVENTS;
+                maxEvents = Integer.getInteger(
+                        "causynth.trace.max.events", DEFAULT_MAX_EVENTS);
                 traceWriteFailure = false;
                 outputDir = configuredOutputDir;
                 traceWriter = configuredWriter;
@@ -579,23 +768,180 @@ public final class CausynthTraceRecorder {
     private static void aggregateExistingTrace(
             File directory, File staticGraph, File regionFile,
             File regionEdgeFile, String test) throws IOException {
+        aggregateExistingTrace(directory, staticGraph, regionFile,
+                regionEdgeFile, test, directory, false);
+    }
+
+    private static void aggregateExistingTrace(
+            File directory, File staticGraph, File regionFile,
+            File regionEdgeFile, String test, File planOutputDirectory,
+            boolean inventoryOnly) throws IOException {
         synchronized (LOCK) {
             clearInMemoryTrace();
             requireClosedTrace(new File(directory,
                     "streaming_trace_manifest.json"));
+            long traceLoadStart = System.nanoTime();
             TraceData trace = loadExistingTrace(new File(directory,
-                    "runtime_trace.jsonl"), test);
+                    "runtime_trace.jsonl"), test, inventoryOnly);
             trace.sort();
+            long traceLoadMillis = elapsedMillis(traceLoadStart);
             Set<String> observedMethods = new LinkedHashSet<>();
             for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
                 observedMethods.add(event.method);
             }
-            RuntimeSelectedRegionFinalizer.finalizeRegions(
-                    staticGraph, regionFile, regionEdgeFile,
-                    observedMethods);
-            writeRuntimeRegionPlans(directory, staticGraph, regionFile,
-                    regionEdgeFile, trace);
+            long candidatePlanningStart = System.nanoTime();
+            if (inventoryOnly) {
+                RuntimeSelectedRegionFinalizer.finalizeInventory(
+                        staticGraph, regionFile, regionEdgeFile,
+                        observedMethods);
+            } else {
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        staticGraph, regionFile, regionEdgeFile,
+                        observedMethods);
+            }
+            long candidatePlanningMillis =
+                    elapsedMillis(candidatePlanningStart);
+            writeRuntimeRegionPlans(planOutputDirectory, staticGraph,
+                    regionFile, regionEdgeFile, trace,
+                    inventoryOnly, traceLoadMillis,
+                    candidatePlanningMillis);
         }
+    }
+
+    /** Emits only static region skeletons and their concrete activation graph. */
+    private static void aggregateSkeletonTrace(
+            File directory, File staticGraph, File candidateSkeletons,
+            String test,
+            File outputDirectory)
+            throws IOException {
+        synchronized (LOCK) {
+            clearInMemoryTrace();
+            requireClosedTrace(new File(directory,
+                    "streaming_trace_manifest.json"));
+            long traceLoadStart = System.nanoTime();
+            TraceData trace = loadExistingTrace(new File(directory,
+                    "runtime_trace.jsonl"), test, false, true);
+            trace.sort();
+            long traceLoadMillis = elapsedMillis(traceLoadStart);
+            File skeletons = new File(outputDirectory,
+                    "region_skeletons.jsonl");
+            File planningSkeletons = candidateSkeletons;
+            long candidatePlanningMillis = 0L;
+            if (planningSkeletons == null) {
+                Set<String> observedMethods = new LinkedHashSet<>();
+                for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
+                    observedMethods.add(event.method);
+                }
+                File discardedRegionEdges = Files.createTempFile(
+                        "causynth-region-skeleton-edges-", ".jsonl").toFile();
+                long candidatePlanningStart = System.nanoTime();
+                try {
+                    RuntimeSelectedRegionFinalizer.finalizeSkeletons(
+                            staticGraph, skeletons, discardedRegionEdges,
+                            observedMethods);
+                } finally {
+                    Files.deleteIfExists(discardedRegionEdges.toPath());
+                }
+                candidatePlanningMillis =
+                        elapsedMillis(candidatePlanningStart);
+                planningSkeletons = skeletons;
+            }
+
+            long runtimeGraphStart = System.nanoTime();
+            RuntimeRegionPlanner.Result graph =
+                    RuntimeRegionPlanner.planSkeletonGraph(planningSkeletons,
+                            trace.methods);
+            long runtimeGraphMillis = elapsedMillis(runtimeGraphStart);
+            if (graph.staticRegionCount == 0) {
+                throw new IOException(
+                        "skeleton aggregation selected no static regions");
+            }
+            if (graph.runtimeInstances.isEmpty()) {
+                throw new IOException(
+                        "skeleton aggregation selected no runtime "
+                                + "activations");
+            }
+            if (candidateSkeletons != null) {
+                writeSelectedSkeletons(candidateSkeletons, skeletons,
+                        graph.runtimeInstances);
+            }
+            StringBuilder encoded = new StringBuilder();
+            encoded.append(CausynthJson.objectWithoutNulls(
+                    "schemaVersion", 1,
+                    "kind", "RUNTIME_REGION_GRAPH_METADATA",
+                    "status", "COMPLETE",
+                    "traceLoadMillis", traceLoadMillis,
+                    "staticCandidateRegionPlanningMillis",
+                    candidatePlanningMillis,
+                    "staticCandidateRegionPlanning",
+                    candidateSkeletons == null
+                            ? "OFFLINE_FROM_STATIC_GRAPH"
+                            : "PRECOMPUTED_DURING_ANALYZE",
+                    "runtimeActivationGraphMillis", runtimeGraphMillis,
+                    "nodeCount", graph.runtimeInstances.size(),
+                    "edgeCount", graph.runtimeGraphEdges.size()))
+                    .append('\n');
+            encoded.append(graph.runtimeInstancesJsonl());
+            encoded.append(graph.runtimeGraphEdgesJsonl());
+            writeFile(new File(outputDirectory,
+                    "runtime_region_graph.jsonl"), encoded.toString());
+        }
+    }
+
+    private static void writeSelectedSkeletons(
+            File candidates, File output,
+            Collection<Map<String, Object>> runtimeInstances)
+            throws IOException {
+        Set<String> selectedIds = new LinkedHashSet<>();
+        for (Map<String, Object> instance : runtimeInstances) {
+            Object memberships = instance.get("regionIds");
+            if (memberships instanceof Collection<?>) {
+                for (Object membership : (Collection<?>) memberships) {
+                    selectedIds.add(String.valueOf(membership));
+                }
+            } else if (instance.containsKey("regionId")) {
+                selectedIds.add(String.valueOf(instance.get("regionId")));
+            }
+        }
+        File parent = output.getParentFile();
+        if (parent != null) {
+            Files.createDirectories(parent.toPath());
+        }
+        try (BufferedReader reader = skeletonReader(candidates);
+             BufferedWriter writer = Files.newBufferedWriter(output.toPath(),
+                     StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.trim().isEmpty()) {
+                    continue;
+                }
+                JsonObject row = JsonParser.parseString(line)
+                        .getAsJsonObject();
+                if (selectedIds.contains(string(row, "regionId"))) {
+                    writer.write(line);
+                    writer.write('\n');
+                }
+            }
+        }
+    }
+
+    private static BufferedReader skeletonReader(File file)
+            throws IOException {
+        InputStream input = Files.newInputStream(file.toPath());
+        try {
+            if (file.getName().endsWith(".gz")) {
+                input = new GZIPInputStream(input);
+            }
+            return new BufferedReader(new InputStreamReader(input,
+                    StandardCharsets.UTF_8));
+        } catch (IOException exception) {
+            input.close();
+            throw exception;
+        }
+    }
+
+    private static long elapsedMillis(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000L;
     }
 
     private static void requireClosedTrace(File manifestFile)
@@ -628,12 +974,22 @@ public final class CausynthTraceRecorder {
         traceWriter = null;
     }
 
-    private static TraceData loadExistingTrace(File file, String test)
+    private static TraceData loadExistingTrace(
+            File file, String test, boolean inventoryOnly)
             throws IOException {
+        return loadExistingTrace(file, test, inventoryOnly, false);
+    }
+
+    private static TraceData loadExistingTrace(
+            File file, String test, boolean inventoryOnly,
+            boolean skeletonOnly) throws IOException {
         if (file == null || !file.isFile()) {
             throw new IOException("Runtime trace not found: " + file);
         }
         TraceData trace = new TraceData();
+        Map<String, String> canonicalFieldNames = inventoryOnly
+                ? new LinkedHashMap<String, String>()
+                : Collections.<String, String>emptyMap();
         try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
                 StandardCharsets.UTF_8)) {
             String line;
@@ -678,24 +1034,48 @@ public final class CausynthTraceRecorder {
                             longInteger(row, "callId", seq),
                             longInteger(row, "parentCallId", 0L),
                             longInteger(row, "parentSiteId", 0L)));
-                } else if ("FIELD_READ".equals(eventKind)
-                        || "FIELD_WRITE".equals(eventKind)) {
+                } else if (!skeletonOnly && ("FIELD_READ".equals(eventKind)
+                        || "FIELD_WRITE".equals(eventKind))) {
                     String method = string(row, "method");
-                    trace.fields.add(
-                            new RuntimeRegionPlanner.FieldAccessEvent(
+                    if (!inventoryOnly
+                            || "FIELD_READ".equals(eventKind)
+                            || "FIELD_WRITE".equals(eventKind)
+                            && method.contains(": void <init>(")) {
+                        String field = string(row, "field");
+                        if (inventoryOnly) {
+                            String canonical =
+                                    canonicalFieldNames.get(field);
+                            if (canonical == null) {
+                                canonicalFieldNames.put(field, field);
+                            } else {
+                                field = canonical;
+                            }
+                        }
+                        boolean compactRead = inventoryOnly
+                                && "FIELD_READ".equals(eventKind);
+                        trace.fields.add(
+                                new RuntimeRegionPlanner.FieldAccessEvent(
                             longInteger(row, "seq", 0L),
                             eventKind,
-                            method,
+                            compactRead ? "" : method,
                             longInteger(row, "callId", 0L),
-                            integer(row, "unitIndex", -1),
-                            string(row, "siteId"),
-                            string(row, "field"),
-                            integer(row, "fieldReceiverObjectId", 0),
-                            integer(row, "valueObjectId", 0),
-                            string(row, "primitiveValue"),
-                            string(row, "valueFingerprint"),
-                            bool(row, "valueFingerprintComplete", false)));
-                } else if (isExecutionEventKind(eventKind)) {
+                            compactRead ? -1
+                                    : integer(row, "unitIndex", -1),
+                            compactRead ? "" : string(row, "siteId"),
+                            field,
+                            compactRead ? 0 : integer(row,
+                                    "fieldReceiverObjectId", 0),
+                            compactRead ? 0 : integer(row,
+                                    "valueObjectId", 0),
+                            compactRead ? "" : string(row,
+                                    "primitiveValue"),
+                            compactRead ? "" : string(row,
+                                    "valueFingerprint"),
+                            !compactRead && bool(row,
+                                    "valueFingerprintComplete", false)));
+                    }
+                } else if (!skeletonOnly && !inventoryOnly
+                        && isExecutionEventKind(eventKind)) {
                     trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
                             longInteger(row, "seq", 0L), eventKind,
                             string(row, "method"),
@@ -802,6 +1182,12 @@ public final class CausynthTraceRecorder {
     }
 
     private static String inferProcessName(String method, String threadName) {
+        String configuredPatterns = firstNonBlank(
+                System.getProperty("causynth.trace.process.patterns"),
+                System.getenv("CAUSYNTH_TRACE_PROCESS_PATTERNS"), "");
+        if (configuredPatterns.isEmpty()) {
+            return "unknown";
+        }
         StringBuilder evidence = new StringBuilder();
         evidence.append(method == null ? "" : method).append(' ')
                 .append(threadName == null ? "" : threadName);
@@ -892,13 +1278,119 @@ public final class CausynthTraceRecorder {
     private static void writeRuntimeRegionPlans(
             File directory, File staticGraph, File regionFile,
             File regionEdgeFile, TraceData trace) throws IOException {
-        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
-                regionFile, regionEdgeFile, staticGraph, trace.methods,
+        writeRuntimeRegionPlans(directory, staticGraph, regionFile,
+                regionEdgeFile, trace, false, 0L, 0L);
+    }
+
+    private static void writeRuntimeRegionPlans(
+            File directory, File staticGraph, File regionFile,
+            File regionEdgeFile, TraceData trace,
+            boolean inventoryOnly, long traceLoadMillis,
+            long candidatePlanningMillis) throws IOException {
+        RuntimeRegionPlanner.Result planned = inventoryOnly
+                ? RuntimeRegionPlanner.planInventory(regionFile,
+                trace.methods, trace.execution, trace.fields)
+                : RuntimeRegionPlanner.plan(regionFile,
+                regionEdgeFile, staticGraph, trace.methods,
                 trace.execution, trace.fields);
-        writeFile(new File(directory, "runtime_region_edge_validation.jsonl"),
-                planned.edgeValidationsJsonl());
-        writeFile(new File(directory, "concolic_region_plan.jsonl"),
-                planned.regionPlansJsonl());
+        writeRuntimePlanArtifacts(directory,
+                planned.edgeValidationsJsonl(), planned.regionPlansJsonl(),
+                planned.runtimeInstances);
+        if (inventoryOnly) {
+            writeFile(new File(directory,
+                            "runtime_region_inventory_manifest.json"),
+                    CausynthJson.objectWithoutNulls(
+                            "schemaVersion", 1,
+                            "kind", "RUNTIME_REGION_INPUT_INVENTORY",
+                            "status", "COMPLETE",
+                            "phaseOrder", Arrays.asList(
+                                    "STATIC_CANDIDATE_REGION_PLANNING",
+                                    "RUNTIME_REGION_INSTANTIATION",
+                                    "POST_RUNTIME_REGION_INPUT_SLICING"),
+                            "traceLoadMillis", traceLoadMillis,
+                            "staticCandidateRegionPlanningMillis",
+                            candidatePlanningMillis,
+                            "runtimeRegionInstantiationMillis",
+                            Math.max(0L,
+                                    planned.runtimeInventoryTotalNanos
+                                            - planned.regionInputSlicingNanos)
+                                    / 1_000_000L,
+                            "postRuntimeRegionInputSlicingMillis",
+                            planned.regionInputSlicingNanos / 1_000_000L,
+                            "concolicPlanning", "NOT_REQUESTED",
+                            "materialization", "NOT_COMPUTED",
+                            "staticRegionCount",
+                            planned.staticRegionCount,
+                            "runtimeInstanceCount",
+                            planned.runtimeInstances.size(),
+                            "staticInputCandidateCount",
+                            planned.staticInputCandidateCount,
+                            "runtimeInputCandidateOccurrenceCount",
+                            planned.runtimeInputCandidateOccurrenceCount,
+                            "runtimeRegionInputCount",
+                            planned.runtimeRegionInputCount,
+                            "runtimePrunedInputCandidateCount",
+                            planned.runtimePrunedInputCandidateCount,
+                            "projectedEdgesUsedByOutputSlices",
+                            "NOT_APPLICABLE_IN_INVENTORY_MODE",
+                            "runtimeSymbolizedProjectedPorts", 0));
+        }
+    }
+
+    private static void writeRuntimePlanArtifacts(
+            File directory,
+            String edgeValidations, String regionPlans) throws IOException {
+        writeRuntimePlanArtifacts(directory, edgeValidations, regionPlans,
+                "");
+    }
+
+    private static void writeRuntimePlanArtifacts(
+            File directory,
+            String edgeValidations, String regionPlans,
+            String runtimeInstances) throws IOException {
+        writeFile(new File(directory,
+                        "runtime_region_edge_validation.jsonl"),
+                edgeValidations);
+        writeFile(new File(directory,
+                        "concolic_region_plan.jsonl"),
+                regionPlans);
+        if (!runtimeInstances.isEmpty()) {
+            writeFile(new File(directory,
+                            "runtime_region_instances.jsonl"),
+                    runtimeInstances);
+        }
+    }
+
+    private static void writeRuntimePlanArtifacts(
+            File directory,
+            String edgeValidations, String regionPlans,
+            Collection<Map<String, Object>> runtimeInstances)
+            throws IOException {
+        writeFile(new File(directory,
+                        "runtime_region_edge_validation.jsonl"),
+                edgeValidations);
+        writeFile(new File(directory,
+                        "concolic_region_plan.jsonl"),
+                regionPlans);
+        writeJsonMapLines(new File(directory,
+                "runtime_region_instances.jsonl"),
+                runtimeInstances);
+    }
+
+    private static void writeJsonMapLines(
+            File file, Collection<Map<String, Object>> rows)
+            throws IOException {
+        File parent = file.getParentFile();
+        if (parent != null) {
+            Files.createDirectories(parent.toPath());
+        }
+        try (BufferedWriter writer = Files.newBufferedWriter(file.toPath(),
+                StandardCharsets.UTF_8)) {
+            for (Map<String, Object> row : rows) {
+                writer.write(CausynthJson.write(row));
+                writer.newLine();
+            }
+        }
     }
 
     private static void writeFile(File file, String value) throws IOException {
@@ -1003,13 +1495,14 @@ public final class CausynthTraceRecorder {
      * relationship.</p>
      */
     private static final class ValueFingerprint {
+        private static final ThreadLocal<Boolean> ACTIVE =
+                ThreadLocal.withInitial(() -> false);
         /*
-         * These are deliberately small, hard ceilings rather than hints.
-         * Fingerprinting runs in the instrumented VM (often the interpreted
-         * custom VM), so walking a service/manager object
-         * graph here can otherwise dominate the workload.  The useful
-         * evidence is the bounded value-shaped prefix: container shape and
-         * entries, array elements, and scalar fields such as keyId/expiry.
+         * These bounds protect the observed execution, not the causal slice:
+         * every static edge and REGION.IN remains available. A value that
+         * exceeds this budget is marked incomplete and is therefore ineligible
+         * for an inferred equality. Unbounded object-graph walks can otherwise
+         * hold system locks long enough to change the execution being observed.
          */
         private static final int MAX_DEPTH = 5;
         private static final int MAX_NODES = 256;
@@ -1033,6 +1526,10 @@ public final class CausynthTraceRecorder {
 
         private static ValueFingerprint capture(Object value,
                                                 String primitiveValue) {
+            if (ACTIVE.get()) {
+                return disabled();
+            }
+            ACTIVE.set(true);
             try {
                 return captureUnchecked(value, primitiveValue);
             } catch (Throwable failure) {
@@ -1043,6 +1540,8 @@ public final class CausynthTraceRecorder {
                 // execution. Incomplete fingerprints are already
                 // ineligible for automatic endpoint equality.
                 return new ValueFingerprint("", false);
+            } finally {
+                ACTIVE.remove();
             }
         }
 
@@ -1077,9 +1576,13 @@ public final class CausynthTraceRecorder {
                 return;
             }
             Class<?> type = value.getClass();
+            if (value instanceof Enum<?>) {
+                appendToken(out, state, type.getName(),
+                        ((Enum<?>) value).name());
+                return;
+            }
             if (value instanceof CharSequence || value instanceof Number
-                    || value instanceof Boolean || value instanceof Character
-                    || value instanceof Enum<?>) {
+                    || value instanceof Boolean || value instanceof Character) {
                 appendToken(out, state, type.getName(), String.valueOf(value));
                 return;
             }
