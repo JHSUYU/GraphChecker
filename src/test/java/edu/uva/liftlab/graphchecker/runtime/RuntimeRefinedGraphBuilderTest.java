@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -58,6 +59,7 @@ public class RuntimeRefinedGraphBuilderTest {
                 RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
                         Collections.singletonList(root),
                         Collections.singletonList(argument), fields,
+                        Collections.emptyList(),
                         output.toPath());
 
         assertEquals(1, result.runtimeBoundEdgeCount);
@@ -81,18 +83,104 @@ public class RuntimeRefinedGraphBuilderTest {
         assertFalse(edge.has("fieldPathDepth"));
     }
 
+    @Test
+    public void configuredWireIdBindsRpcAcrossActivations() throws Exception {
+        String client = "<example.Client: void send(java.lang.String)>";
+        String server = "<example.Server: void receive(java.lang.String)>";
+        File candidate = write("rpc-candidate.jsonl", object(
+                "schemaVersion", 3, "id", "DF.rpc",
+                "kind", "rpc_argument",
+                "transferKind", "PROTOCOL_TRANSFER",
+                "method", client, "unitIndex", 7,
+                "fromCell", client + ".param0:java.lang.String",
+                "toCell", server + ".param0:java.lang.String",
+                "protocolStubMappingId", "example.rpc",
+                "protocolTransport", "TEST_RPC",
+                "protocolPort", "payload",
+                "protocolDirection", "REQUEST",
+                "protocolClientStub", client,
+                "protocolServerStub", server,
+                "protocolClientArgument", 0,
+                "protocolServerParameter", 0));
+        File skeleton = writeRows("rpc-skeleton.jsonl",
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.client",
+                        "rootMethod", client, "anchorMethod", client,
+                        "methods", Collections.singletonList(client)),
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.server",
+                        "rootMethod", server, "anchorMethod", server,
+                        "methods", Collections.singletonList(server)));
+        RuntimeRegionPlanner.MethodEvent clientCall =
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "p", "c",
+                        1, client, 0, "", 11, 0, 0);
+        RuntimeRegionPlanner.MethodEvent serverCall =
+                new RuntimeRegionPlanner.MethodEvent(5, "test", "p", "s",
+                        2, server, 0, "", 22, 0, 0);
+        RuntimeRegionPlanner.ProtocolEvent send =
+                new RuntimeRegionPlanner.ProtocolEvent(2, "SEND", "TEST_RPC",
+                        "wire-9", "Client.send", "p", "c", 1,
+                        client, 11, 0, "");
+        RuntimeRegionPlanner.ProtocolEvent receive =
+                new RuntimeRegionPlanner.ProtocolEvent(4, "RECEIVE",
+                        "TEST_RPC", "wire-9", "Server.receive", "p", "s",
+                        2, server, 22, 0, "");
+        File refined = new File(folder.getRoot(), "rpc-refined.jsonl");
+
+        RuntimeRefinedGraphBuilder.Result refinement =
+                RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                        Arrays.asList(clientCall, serverCall),
+                        Collections.emptyList(), Collections.emptyList(),
+                        Arrays.asList(send, receive), refined.toPath());
+
+        assertEquals(1, refinement.runtimeBoundEdgeCount);
+        JsonObject refinedEdge = GSON.fromJson(Files.readAllLines(
+                refined.toPath(), StandardCharsets.UTF_8).get(0),
+                JsonObject.class);
+        JsonObject binding = refinedEdge
+                .getAsJsonArray("runtimeProtocolBindings")
+                .get(0).getAsJsonObject();
+        assertEquals("REGION.client",
+                binding.get("fromRegionId").getAsString());
+        assertEquals("REGION.server",
+                binding.get("toRegionId").getAsString());
+        assertEquals("CONFIGURED_PROTOCOL_WIRE_ID_V1",
+                binding.get("authority").getAsString());
+
+        File regions = new File(folder.getRoot(), "rpc-regions.jsonl");
+        File edges = new File(folder.getRoot(), "rpc-edges.jsonl");
+        RuntimeSelectedRegionFinalizer.finalizeRegions(refined, skeleton,
+                regions, edges, Arrays.asList(client, server));
+        RuntimeRegionPlanner.Result plan = RuntimeRegionPlanner.plan(regions,
+                edges, refined, Arrays.asList(clientCall, serverCall),
+                Collections.emptyList(), Collections.emptyList());
+        assertEquals(2, plan.regionPlans.size());
+        assertEquals(1, plan.edgeValidations.size());
+        assertEquals("CONFIRMED_RUNTIME_PROTOCOL",
+                plan.edgeValidations.get(0).get("state"));
+    }
+
     private static RuntimeRegionPlanner.FieldAccessEvent field(
             long seq, int unit, String field, int receiver, int value) {
         return new RuntimeRegionPlanner.FieldAccessEvent(seq, "FIELD_READ",
                 METHOD, 11, unit, METHOD + "#u" + unit, field, receiver,
-                value, "", "", false);
+                value, "");
     }
 
     private File write(String name, Map<String, Object> row)
             throws Exception {
+        return writeRows(name, row);
+    }
+
+    @SafeVarargs
+    private final File writeRows(String name, Map<String, Object>... rows)
+            throws Exception {
         File file = new File(folder.getRoot(), name);
-        Files.write(file.toPath(), Collections.singletonList(GSON.toJson(row)),
-                StandardCharsets.UTF_8);
+        List<String> lines = new java.util.ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            lines.add(GSON.toJson(row));
+        }
+        Files.write(file.toPath(), lines, StandardCharsets.UTF_8);
         return file;
     }
 

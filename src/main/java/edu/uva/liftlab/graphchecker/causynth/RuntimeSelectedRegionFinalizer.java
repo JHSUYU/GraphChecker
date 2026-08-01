@@ -86,16 +86,120 @@ public final class RuntimeSelectedRegionFinalizer {
 
             List<Map<String, Object>> regionGraph = edgesByRegion.getOrDefault(
                     regionId, Collections.emptyList());
-            region.put("symbolicInputs", statePorts(regionId, regionGraph,
-                    "HEAP_READ", "IN"));
-            region.put("outputs", statePorts(regionId, regionGraph,
-                    "HEAP_WRITE", "OUT"));
+            List<Map<String, Object>> inputs = statePorts(regionId,
+                    regionGraph, "HEAP_READ", "IN");
+            inputs.addAll(protocolPorts(regionId, regionGraph, "IN"));
+            List<Map<String, Object>> outputs = statePorts(regionId,
+                    regionGraph, "HEAP_WRITE", "OUT");
+            outputs.addAll(protocolPorts(regionId, regionGraph, "OUT"));
+            region.put("symbolicInputs", inputs);
+            region.put("outputs", outputs);
             region.put("branchPolicies", branches(regionGraph));
             result.regions.add(region);
         }
         result.regionEdges.addAll(fieldFlows(result.regions));
+        result.regionEdges.addAll(protocolFlows(graph));
         CausynthArtifactWriter.writeRegions(regions.toPath(),
                 regionEdges.toPath(), result);
+    }
+
+    private static List<Map<String, Object>> protocolPorts(
+            String regionId, List<Map<String, Object>> edges,
+            String direction) {
+        Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
+        for (Map<String, Object> edge : edges) {
+            if (!"PROTOCOL_TRANSFER".equals(
+                    text(edge.get("transferKind")))) {
+                continue;
+            }
+            for (Map<String, Object> binding
+                    : rows(edge.get("runtimeProtocolBindings"))) {
+                String boundRegion = "OUT".equals(direction)
+                        ? text(binding.get("fromRegionId"))
+                        : text(binding.get("toRegionId"));
+                if (!regionId.equals(boundRegion)) {
+                    continue;
+                }
+                String cellKey = "OUT".equals(direction)
+                        ? "fromCell" : "toCell";
+                String key = text(binding.get("mappingId")) + "\n"
+                        + text(binding.get("wireId")) + "\n"
+                        + text(binding.get("port")) + "\n"
+                        + text(binding.get(cellKey)) + "\n"
+                        + text(binding.get("fromRootCallId")) + "\n"
+                        + text(binding.get("toRootCallId"));
+                Map<String, Object> port = new LinkedHashMap<>(binding);
+                port.put("portId", protocolPortId(regionId, direction,
+                        binding));
+                port.put("cell", binding.get(cellKey));
+                port.put("sourceKind", "PROTOCOL_INPUT");
+                port.put("transportKind", binding.get("transport"));
+                port.put("protocolDirection", binding.get("direction"));
+                if ("IN".equals(direction)
+                        && "REQUEST".equals(text(binding.get("direction")))) {
+                    port.put("argumentIndex",
+                            edge.get("protocolServerParameter"));
+                }
+                unique.put(key, port);
+            }
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    private static String protocolPortId(String regionId, String direction,
+                                         Map<String, Object> binding) {
+        String identity = regionId + "\n" + direction + "\n"
+                + text(binding.get("mappingId")) + "\n"
+                + text(binding.get("wireId")) + "\n"
+                + text(binding.get("port")) + "\n"
+                + text(binding.get("fromRootCallId")) + "\n"
+                + text(binding.get("toRootCallId"));
+        return regionId + ("IN".equals(direction) ? ".in." : ".out.")
+                + UUID.nameUUIDFromBytes(identity.getBytes(
+                StandardCharsets.UTF_8));
+    }
+
+    private static List<Map<String, Object>> protocolFlows(
+            List<Map<String, Object>> graph) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (Map<String, Object> edge : graph) {
+            if (!"PROTOCOL_TRANSFER".equals(
+                    text(edge.get("transferKind")))) {
+                continue;
+            }
+            for (Map<String, Object> binding
+                    : rows(edge.get("runtimeProtocolBindings"))) {
+                String fromRegion = text(binding.get("fromRegionId"));
+                String toRegion = text(binding.get("toRegionId"));
+                if (fromRegion.isEmpty() || toRegion.isEmpty()) {
+                    continue;
+                }
+                String identity = text(binding.get("mappingId")) + "\n"
+                        + text(binding.get("wireId")) + "\n"
+                        + text(binding.get("port")) + "\n"
+                        + text(binding.get("fromCell")) + "\n"
+                        + text(binding.get("toCell")) + "\n"
+                        + text(binding.get("fromRootCallId")) + "\n"
+                        + text(binding.get("toRootCallId"));
+                if (!seen.add(identity)) {
+                    continue;
+                }
+                Map<String, Object> flow = new LinkedHashMap<>(binding);
+                flow.put("schemaVersion", 3);
+                flow.put("kind", "RUNTIME_PROTOCOL_FLOW");
+                flow.put("transportKind", binding.get("transport"));
+                flow.put("edgeId", "RP." + UUID.nameUUIDFromBytes(
+                        identity.getBytes(StandardCharsets.UTF_8)));
+                flow.put("fromRegion", fromRegion);
+                flow.put("toRegion", toRegion);
+                flow.put("fromPort", protocolPortId(fromRegion, "OUT",
+                        binding));
+                flow.put("toPort", protocolPortId(toRegion, "IN", binding));
+                result.add(flow);
+            }
+        }
+        return result;
     }
 
     private static List<Map<String, Object>> statePorts(
@@ -108,6 +212,9 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             for (Map<String, Object> binding
                     : rows(edge.get("runtimeFieldBindings"))) {
+                if (!regionId.equals(text(binding.get("regionId")))) {
+                    continue;
+                }
                 String key = text(binding.get("rootCallId")) + "\n"
                         + text(binding.get("rootCell")) + "\n"
                         + strings(binding.get("fieldPath"));
@@ -118,6 +225,7 @@ public final class RuntimeSelectedRegionFinalizer {
                         (regionId + "\n" + key).getBytes(
                                 StandardCharsets.UTF_8)));
                 port.put("cell", binding.get("rootCell"));
+                port.put("transportKind", "HEAP");
                 port.put("sourceKind", "PARAMETER".equals(
                         text(binding.get("rootKind")))
                         ? "ROOT_ARGUMENT" : "RECEIVER_FIELD");
@@ -193,6 +301,9 @@ public final class RuntimeSelectedRegionFinalizer {
     private static void collectPorts(List<BoundPort> target, String region,
                                      List<Map<String, Object>> ports) {
         for (Map<String, Object> port : ports) {
+            if (!"HEAP".equals(text(port.get("transportKind")))) {
+                continue;
+            }
             target.add(new BoundPort(region, text(port.get("portId")),
                     text(port.get("process")),
                     longNumber(port.get("rootCallId"), 0L),

@@ -45,6 +45,40 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
+    public void firstPassRerootsOverApproximateStaticComponent()
+            throws Exception {
+        Map<String, Object> broad = skeleton();
+        broad.put("rootMethod", "<example.Unobserved: void setup()>");
+        File skeletons = jsonl("broad-skeletons.jsonl", broad);
+
+        RuntimeRegionPlanner.Result result =
+                RuntimeRegionPlanner.planSkeletonGraph(skeletons, methods());
+
+        assertEquals(1, result.runtimeInstances.size());
+        assertEquals(ROOT, result.runtimeInstances.get(0).get("rootMethod"));
+        assertEquals(Arrays.asList(ROOT, TARGET),
+                result.runtimeInstances.get(0).get("observedMethods"));
+    }
+
+    @Test
+    public void protocolComponentStartsAtConfiguredAnchor()
+            throws Exception {
+        Map<String, Object> protocol = skeleton();
+        protocol.put("rootMethod", ROOT);
+        protocol.put("selection", "PROTOCOL_COMPONENT");
+        File skeletons = jsonl("protocol-skeletons.jsonl", protocol);
+
+        RuntimeRegionPlanner.Result result =
+                RuntimeRegionPlanner.planSkeletonGraph(skeletons, methods());
+
+        assertEquals(1, result.runtimeInstances.size());
+        assertEquals(TARGET,
+                result.runtimeInstances.get(0).get("rootMethod"));
+        assertEquals(Collections.singletonList(TARGET),
+                result.runtimeInstances.get(0).get("observedMethods"));
+    }
+
+    @Test
     public void fullPlanningConsumesOnlyRefinedGraph() throws Exception {
         File regions = jsonl("regions.jsonl", fullRegion());
         File edges = jsonl("edges.jsonl");

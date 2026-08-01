@@ -38,6 +38,7 @@ final class SymbolicRegionPlanner {
         Map<String, Set<String>> neighbors = new LinkedHashMap<>();
         Map<String, Set<String>> parents = new LinkedHashMap<>();
         Set<String> failureMethods = new LinkedHashSet<>();
+        Set<String> protocolAnchors = new LinkedHashSet<>();
         for (String method : selected) {
             neighbors.put(method, new LinkedHashSet<>());
             parents.put(method, new LinkedHashSet<>());
@@ -49,6 +50,13 @@ final class SymbolicRegionPlanner {
             String target = text(edge.get("toCell"));
             if (target.contains("#exception:") && selected.contains(method)) {
                 failureMethods.add(method);
+            }
+            if (!text(edge.get("protocolStubMappingId")).isEmpty()) {
+                addIfSelected(protocolAnchors, selected, method);
+                addIfSelected(protocolAnchors, selected,
+                        text(edge.get("protocolClientStub")));
+                addIfSelected(protocolAnchors, selected,
+                        text(edge.get("protocolServerStub")));
             }
             if (!selected.contains(method) || !selected.contains(invoke)
                     || method.equals(invoke) || boundary(transfer)) {
@@ -63,27 +71,54 @@ final class SymbolicRegionPlanner {
         program.regions.clear();
         program.regionEdges.clear();
         for (List<String> methods : components) {
-            String anchor = firstIntersection(methods, failureMethods);
-            if (anchor.isEmpty()) {
-                anchor = methods.get(methods.size() - 1);
+            List<String> anchors = intersections(methods, failureMethods,
+                    protocolAnchors);
+            if (anchors.isEmpty()) {
+                anchors.add(methods.get(methods.size() - 1));
             }
-            String root = root(methods, parents, anchor);
-            String identity = String.join("\n", methods) + "\n" + root
-                    + "\n" + anchor;
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("schemaVersion", REGION_SCHEMA_VERSION);
-            row.put("kind", SKELETON_KIND);
-            row.put("regionId", "REGION."
-                    + UUID.nameUUIDFromBytes(identity.getBytes(
-                    StandardCharsets.UTF_8)));
-            row.put("rootMethod", root);
-            row.put("anchorMethod", anchor);
-            row.put("methods", methods);
-            row.put("selection", failureMethods.contains(anchor)
-                    ? "EXCEPTION_COMPONENT" : "CANDIDATE_COMPONENT");
-            row.put("planningMode", "STATIC_SKELETON_ONLY");
-            program.regions.add(row);
+            for (String anchor : anchors) {
+                String root = root(methods, parents, anchor);
+                String identity = String.join("\n", methods) + "\n" + root
+                        + "\n" + anchor;
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("schemaVersion", REGION_SCHEMA_VERSION);
+                row.put("kind", SKELETON_KIND);
+                row.put("regionId", "REGION."
+                        + UUID.nameUUIDFromBytes(identity.getBytes(
+                        StandardCharsets.UTF_8)));
+                row.put("rootMethod", root);
+                row.put("anchorMethod", anchor);
+                row.put("methods", methods);
+                row.put("selection", failureMethods.contains(anchor)
+                        ? "EXCEPTION_COMPONENT"
+                        : protocolAnchors.contains(anchor)
+                        ? "PROTOCOL_COMPONENT" : "CANDIDATE_COMPONENT");
+                row.put("planningMode", "STATIC_SKELETON_ONLY");
+                program.regions.add(row);
+            }
         }
+    }
+
+    private static void addIfSelected(Set<String> target,
+                                      Set<String> selected, String method) {
+        if (selected.contains(method)) {
+            target.add(method);
+        }
+    }
+
+    @SafeVarargs
+    private static List<String> intersections(List<String> ordered,
+                                              Set<String>... candidates) {
+        List<String> result = new ArrayList<>();
+        for (String value : ordered) {
+            for (Set<String> candidate : candidates) {
+                if (candidate.contains(value)) {
+                    result.add(value);
+                    break;
+                }
+            }
+        }
+        return result;
     }
 
     private static boolean boundary(String transfer) {
@@ -132,16 +167,6 @@ final class SymbolicRegionPlanner {
             }
         }
         return fallback;
-    }
-
-    private static String firstIntersection(List<String> ordered,
-                                            Set<String> candidates) {
-        for (String value : ordered) {
-            if (candidates.contains(value)) {
-                return value;
-            }
-        }
-        return "";
     }
 
     private static String text(Object value) {

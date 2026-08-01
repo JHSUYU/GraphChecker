@@ -41,6 +41,8 @@ final class RuntimeRefinedGraphBuilder {
     static final String GRAPH_KIND = "RUNTIME_REFINED_DATAFLOW";
     static final String PATH_AUTHORITY =
             "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1";
+    static final String PROTOCOL_AUTHORITY =
+            "CONFIGURED_PROTOCOL_WIRE_ID_V1";
 
     private static final Type ROW_TYPE =
             new TypeToken<Map<String, Object>>() { }.getType();
@@ -59,6 +61,7 @@ final class RuntimeRefinedGraphBuilder {
                          List<RuntimeRegionPlanner.MethodEvent> methods,
                          List<RuntimeRegionPlanner.RuntimeEvent> runtime,
                          List<RuntimeRegionPlanner.FieldAccessEvent> fields,
+                         List<RuntimeRegionPlanner.ProtocolEvent> protocol,
                          Path output) throws IOException {
         if (candidateGraph == null || !candidateGraph.isFile()) {
             throw new IOException("candidate static graph not found: "
@@ -78,6 +81,8 @@ final class RuntimeRefinedGraphBuilder {
                 runtime);
         List<RuntimeRegionPlanner.FieldAccessEvent> fieldEvents = sortedFields(
                 fields);
+        List<RuntimeRegionPlanner.ProtocolEvent> protocolEvents =
+                sortedProtocol(protocol);
 
         Map<Long, List<Long>> children = new LinkedHashMap<>();
         for (RuntimeRegionPlanner.MethodEvent event : methodEvents) {
@@ -91,12 +96,21 @@ final class RuntimeRefinedGraphBuilder {
 
         Map<StaticSite, List<RuntimeFieldBinding>> bindingsBySite =
                 new LinkedHashMap<>();
+        List<Activation> activations = new ArrayList<>();
         int activationCount = 0;
-        for (RuntimeRegionPlanner.MethodEvent root : methodEvents) {
-            if (!skeletons.roots.contains(root.method)) {
-                continue;
-            }
-            Set<Long> calls = callSubtree(root.callId, children);
+        for (Skeleton skeleton : skeletons.skeletons) {
+            for (RuntimeRegionPlanner.MethodEvent root : methodEvents) {
+                if (!skeleton.rootMethod.equals(root.method)) {
+                    continue;
+                }
+                Set<Long> calls = callSubtree(root.callId, children);
+                if (!containsMethod(calls, methodEvents,
+                        skeleton.anchorMethod)) {
+                    continue;
+                }
+                Activation activation = new Activation(skeleton, root, calls);
+                activations.add(activation);
+                activationCount++;
             List<RuntimeRegionPlanner.FieldAccessEvent> activationFields =
                     eventsForCalls(calls, fieldsByCall);
             if (activationFields.isEmpty()) {
@@ -112,10 +126,11 @@ final class RuntimeRefinedGraphBuilder {
                 for (RuntimeFieldPath path : paths.pathsFor(field)) {
                     bindingsBySite.computeIfAbsent(site,
                             ignored -> new ArrayList<>()).add(
-                            new RuntimeFieldBinding(root, field, path));
+                            new RuntimeFieldBinding(activation.regionId,
+                                    root, field, path));
                 }
             }
-            activationCount++;
+            }
         }
 
         List<Map<String, Object>> refined = new ArrayList<>();
@@ -129,9 +144,17 @@ final class RuntimeRefinedGraphBuilder {
             Map<String, Object> edge = new LinkedHashMap<>(candidate);
             edge.put("refinementSchemaVersion", REFINEMENT_SCHEMA_VERSION);
             edge.put("graphKind", GRAPH_KIND);
-            edge.put("regionIds", skeletons.regionsByMethod.get(method));
 
             String transfer = string(edge.get("transferKind"));
+            List<String> regionIds = new ArrayList<>(values(
+                    skeletons.regionsByMethod.get(method)));
+            if ("PROTOCOL_TRANSFER".equals(transfer)) {
+                addAllUnique(regionIds, skeletons.regionsByMethod.get(
+                        string(edge.get("protocolClientStub"))));
+                addAllUnique(regionIds, skeletons.regionsByMethod.get(
+                        string(edge.get("protocolServerStub"))));
+            }
+            edge.put("regionIds", regionIds);
             if ("HEAP_READ".equals(transfer)
                     || "HEAP_WRITE".equals(transfer)) {
                 StaticSite site = StaticSite.from(edge);
@@ -152,6 +175,17 @@ final class RuntimeRefinedGraphBuilder {
                 } else {
                     edge.put("runtimeObserved", false);
                 }
+            } else if ("PROTOCOL_TRANSFER".equals(transfer)) {
+                List<RuntimeProtocolBinding> bindings = protocolBindings(
+                        edge, activations, methodEvents, protocolEvents);
+                if (bindings.isEmpty()) {
+                    edge.put("runtimeObserved", false);
+                } else {
+                    edge.put("runtimeProtocolBindings",
+                            encodeProtocolBindings(bindings));
+                    edge.put("runtimeObserved", true);
+                    runtimeBoundRows++;
+                }
             } else {
                 edge.put("runtimeObserved", true);
             }
@@ -161,6 +195,138 @@ final class RuntimeRefinedGraphBuilder {
         writeRows(output, refined);
         return new Result(output, refined.size(), runtimeBoundRows,
                 activationCount, selectedMethods.size());
+    }
+
+    private static boolean containsMethod(Set<Long> calls,
+                                          List<RuntimeRegionPlanner.MethodEvent> events,
+                                          String method) {
+        for (RuntimeRegionPlanner.MethodEvent event : events) {
+            if (calls.contains(event.callId) && method.equals(event.method)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void addAllUnique(List<String> target,
+                                     List<String> additions) {
+        for (String addition : values(additions)) {
+            if (!target.contains(addition)) {
+                target.add(addition);
+            }
+        }
+    }
+
+    private static List<RuntimeProtocolBinding> protocolBindings(
+            Map<String, Object> edge, List<Activation> activations,
+            List<RuntimeRegionPlanner.MethodEvent> methods,
+            List<RuntimeRegionPlanner.ProtocolEvent> events) {
+        String transport = string(edge.get("protocolTransport"));
+        String clientStub = string(edge.get("protocolClientStub"));
+        String serverStub = string(edge.get("protocolServerStub"));
+        boolean response = "RESPONSE".equals(
+                string(edge.get("protocolDirection")));
+        List<RuntimeProtocolBinding> result = new ArrayList<>();
+        Set<Long> usedReceives = new LinkedHashSet<>();
+        for (RuntimeRegionPlanner.ProtocolEvent send : events) {
+            if (!"SEND".equals(send.direction)
+                    || !transport.equals(send.transport)
+                    || !endpointMatches(send.endpoint, clientStub)) {
+                continue;
+            }
+            RuntimeRegionPlanner.ProtocolEvent receive = null;
+            for (RuntimeRegionPlanner.ProtocolEvent candidate : events) {
+                if (!"RECEIVE".equals(candidate.direction)
+                        || usedReceives.contains(candidate.seq)
+                        || !transport.equals(candidate.transport)
+                        || !send.wireId.equals(candidate.wireId)
+                        || !endpointMatches(candidate.endpoint, serverStub)) {
+                    continue;
+                }
+                receive = candidate;
+                break;
+            }
+            if (receive == null) {
+                continue;
+            }
+            Activation client = activationForCall(activations, send.callId,
+                    string(edge.get("method")));
+            RuntimeRegionPlanner.MethodEvent serverCall = methodForCall(
+                    methods, receive.callId, serverStub);
+            if (serverCall == null) {
+                serverCall = firstMethodAfter(methods, receive, serverStub);
+            }
+            Activation server = serverCall == null ? null
+                    : activationForCall(activations, serverCall.callId,
+                    serverStub);
+            if (client == null || server == null) {
+                continue;
+            }
+            usedReceives.add(receive.seq);
+            result.add(new RuntimeProtocolBinding(edge, send, receive,
+                    response ? server : client,
+                    response ? client : server));
+        }
+        return result;
+    }
+
+    private static boolean endpointMatches(String endpoint, String stub) {
+        if (endpoint == null || endpoint.isEmpty()) {
+            return true;
+        }
+        Matcher matcher = METHOD.matcher(stub);
+        String name = matcher.matches() ? matcher.group(3) : stub;
+        return endpoint.equals(stub) || endpoint.equals(name)
+                || endpoint.endsWith("." + name)
+                || endpoint.contains("#" + name + "(");
+    }
+
+    private static Activation activationForCall(List<Activation> activations,
+                                                long callId,
+                                                String expectedMethod) {
+        for (Activation activation : activations) {
+            if (activation.calls.contains(callId)
+                    && activation.hasMethod(expectedMethod)) {
+                return activation;
+            }
+        }
+        return null;
+    }
+
+    private static RuntimeRegionPlanner.MethodEvent methodForCall(
+            List<RuntimeRegionPlanner.MethodEvent> methods, long callId,
+            String method) {
+        if (callId == 0) {
+            return null;
+        }
+        for (RuntimeRegionPlanner.MethodEvent candidate : methods) {
+            if (candidate.callId == callId && candidate.method.equals(method)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static RuntimeRegionPlanner.MethodEvent firstMethodAfter(
+            List<RuntimeRegionPlanner.MethodEvent> methods,
+            RuntimeRegionPlanner.ProtocolEvent receive, String method) {
+        for (RuntimeRegionPlanner.MethodEvent candidate : methods) {
+            if (candidate.seq > receive.seq && candidate.tid == receive.tid
+                    && candidate.process.equals(receive.process)
+                    && candidate.method.equals(method)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static List<Map<String, Object>> encodeProtocolBindings(
+            Collection<RuntimeProtocolBinding> bindings) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (RuntimeProtocolBinding binding : bindings) {
+            result.add(binding.toMap());
+        }
+        return result;
     }
 
     private static void requireCandidateEdge(Map<String, Object> edge,
@@ -288,6 +454,14 @@ final class RuntimeRefinedGraphBuilder {
         return result;
     }
 
+    private static List<RuntimeRegionPlanner.ProtocolEvent> sortedProtocol(
+            Collection<RuntimeRegionPlanner.ProtocolEvent> events) {
+        List<RuntimeRegionPlanner.ProtocolEvent> result = new ArrayList<>(
+                events == null ? Collections.emptyList() : events);
+        result.sort(Comparator.comparingLong(value -> value.seq));
+        return result;
+    }
+
     private static List<Map<String, Object>> readRows(File file)
             throws IOException {
         List<Map<String, Object>> result = new ArrayList<>();
@@ -395,6 +569,7 @@ final class RuntimeRefinedGraphBuilder {
     private static final class SkeletonCatalog {
         private final Set<String> methods = new LinkedHashSet<>();
         private final Set<String> roots = new LinkedHashSet<>();
+        private final List<Skeleton> skeletons = new ArrayList<>();
         private final Map<String, List<String>> regionsByMethod =
                 new LinkedHashMap<>();
 
@@ -419,20 +594,101 @@ final class RuntimeRefinedGraphBuilder {
                     throw new IOException("selected skeleton requires methods: "
                             + file);
                 }
+                Set<String> skeletonMethods = new LinkedHashSet<>();
                 for (Object value : (Collection<?>) methods) {
                     String method = string(value);
                     if (method.isEmpty()) {
                         continue;
                     }
                     result.methods.add(method);
+                    skeletonMethods.add(method);
                     result.regionsByMethod.computeIfAbsent(method,
                             ignored -> new ArrayList<>()).add(region);
                 }
+                result.skeletons.add(new Skeleton(region, root,
+                        string(row.get("anchorMethod")), skeletonMethods));
             }
             if (result.methods.isEmpty()) {
                 throw new IOException("selected skeletons contain no methods: "
                         + file);
             }
+            return result;
+        }
+    }
+
+    private static final class Skeleton {
+        private final String regionId;
+        private final String rootMethod;
+        private final String anchorMethod;
+        private final Set<String> methods;
+
+        private Skeleton(String regionId, String rootMethod,
+                         String anchorMethod, Set<String> methods) {
+            this.regionId = regionId;
+            this.rootMethod = rootMethod;
+            this.anchorMethod = anchorMethod;
+            this.methods = methods;
+        }
+    }
+
+    private static final class Activation {
+        private final String regionId;
+        private final RuntimeRegionPlanner.MethodEvent root;
+        private final Set<Long> calls;
+        private final Set<String> methods;
+
+        private Activation(Skeleton skeleton,
+                           RuntimeRegionPlanner.MethodEvent root,
+                           Set<Long> calls) {
+            this.regionId = skeleton.regionId;
+            this.root = root;
+            this.calls = calls;
+            this.methods = skeleton.methods;
+        }
+
+        private boolean hasMethod(String method) {
+            return methods.contains(method);
+        }
+    }
+
+    private static final class RuntimeProtocolBinding {
+        private final Map<String, Object> edge;
+        private final RuntimeRegionPlanner.ProtocolEvent send;
+        private final RuntimeRegionPlanner.ProtocolEvent receive;
+        private final Activation from;
+        private final Activation to;
+
+        private RuntimeProtocolBinding(Map<String, Object> edge,
+                                       RuntimeRegionPlanner.ProtocolEvent send,
+                                       RuntimeRegionPlanner.ProtocolEvent receive,
+                                       Activation from, Activation to) {
+            this.edge = edge;
+            this.send = send;
+            this.receive = receive;
+            this.from = from;
+            this.to = to;
+        }
+
+        private Map<String, Object> toMap() {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("mappingId", edge.get("protocolStubMappingId"));
+            result.put("transport", send.transport);
+            result.put("wireId", send.wireId);
+            result.put("direction", edge.get("protocolDirection"));
+            result.put("port", edge.get("protocolPort"));
+            result.put("fromRegionId", from.regionId);
+            result.put("toRegionId", to.regionId);
+            result.put("fromRootCallId", from.root.callId);
+            result.put("toRootCallId", to.root.callId);
+            result.put("fromCell", edge.get("fromCell"));
+            result.put("toCell", edge.get("toCell"));
+            result.put("sendEventSeq", send.seq);
+            result.put("receiveEventSeq", receive.seq);
+            result.put("clientCallId", send.callId);
+            result.put("serverThreadId", receive.tid);
+            result.put("clientEndpoint", send.endpoint);
+            result.put("serverEndpoint", receive.endpoint);
+            result.put("authority", PROTOCOL_AUTHORITY);
             return result;
         }
     }
@@ -482,13 +738,16 @@ final class RuntimeRefinedGraphBuilder {
     }
 
     private static final class RuntimeFieldBinding {
+        private final String regionId;
         private final RuntimeRegionPlanner.MethodEvent root;
         private final RuntimeRegionPlanner.FieldAccessEvent event;
         private final RuntimeFieldPath path;
 
-        private RuntimeFieldBinding(RuntimeRegionPlanner.MethodEvent root,
+        private RuntimeFieldBinding(String regionId,
+                                    RuntimeRegionPlanner.MethodEvent root,
                                     RuntimeRegionPlanner.FieldAccessEvent event,
                                     RuntimeFieldPath path) {
+            this.regionId = regionId;
             this.root = root;
             this.event = event;
             this.path = path;
@@ -496,6 +755,7 @@ final class RuntimeRefinedGraphBuilder {
 
         private Map<String, Object> toMap() {
             Map<String, Object> result = new LinkedHashMap<>();
+            result.put("regionId", regionId);
             result.put("rootCallId", root.callId);
             result.put("callId", event.callId);
             result.put("siteId", event.siteId);
@@ -511,7 +771,6 @@ final class RuntimeRefinedGraphBuilder {
             result.put("fieldReceiverObjectId", event.receiverObjectId);
             result.put("valueObjectId", event.valueObjectId);
             result.put("primitiveValue", event.primitiveValue);
-            result.put("valueFingerprint", event.valueFingerprint);
             result.put("fieldPath", path.fieldNames());
             result.put("fieldPathDeclarations", path.fieldDeclarations());
             result.put("authority", PATH_AUTHORITY);

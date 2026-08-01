@@ -55,5 +55,12 @@ Run the configured static analysis with:
 experiments/hdfs/hdfs-11741/run.sh analyze
 ```
 
-At this stage `traced-workload` is deliberately disabled: `prepare` performs
-no static analysis, instrumentation, or concolic replay.
+After static analysis, run the two runtime-analysis passes with:
+
+```bash
+experiments/hdfs/hdfs-11741/run.sh workload
+```
+
+The first pass selects concrete region activations. The second pass records
+direct field identities and configured RPC endpoints, then writes the refined
+graph and runtime region plans. This command does not start concolic replay.

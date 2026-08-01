@@ -33,6 +33,7 @@ public class RuntimeSelectedRegionFinalizerTest {
                 "methods", Collections.singletonList(METHOD),
                 "selection", "EXCEPTION_COMPONENT"));
         Map<String, Object> binding = object(
+                "regionId", "REGION.1",
                 "rootCallId", 11, "rootKind", "PARAMETER",
                 "rootCell", METHOD + ".param0:example.A",
                 "rootParameterIndex", 0, "rootObjectId", 10,
@@ -67,11 +68,61 @@ public class RuntimeSelectedRegionFinalizerTest {
         assertFalse(region.has("planningMode"));
     }
 
+    @Test
+    public void fieldBindingIsUsedOnlyByItsConcreteRegionActivation()
+            throws Exception {
+        File skeleton = writeRows("overlap-skeleton.jsonl",
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.1", "rootMethod", METHOD,
+                        "anchorMethod", METHOD,
+                        "methods", Collections.singletonList(METHOD)),
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.2", "rootMethod", METHOD,
+                        "anchorMethod", METHOD,
+                        "methods", Collections.singletonList(METHOD)));
+        Map<String, Object> binding = object(
+                "regionId", "REGION.1", "rootCallId", 11,
+                "rootKind", "RECEIVER", "rootCell", METHOD + ".receiver",
+                "rootObjectId", 10, "fieldReceiverObjectId", 10,
+                "valueObjectId", 20, "eventSeq", 9,
+                "fieldPath", Collections.singletonList("value"),
+                "fieldPathDeclarations", Collections.singletonList(
+                        "<example.Root: example.A value>"));
+        File refined = write("overlap-refined.jsonl", object(
+                "schemaVersion", 3, "refinementSchemaVersion", 1,
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "id", "DF.2", "kind", "field_read",
+                "transferKind", "HEAP_READ", "method", METHOD,
+                "regionIds", Arrays.asList("REGION.1", "REGION.2"),
+                "runtimeFieldBindings", Collections.singletonList(binding)));
+        File regions = new File(folder.getRoot(), "overlap-regions.jsonl");
+        File edges = new File(folder.getRoot(), "overlap-edges.jsonl");
+
+        RuntimeSelectedRegionFinalizer.finalizeRegions(refined, skeleton,
+                regions, edges, Collections.singleton(METHOD));
+
+        java.util.List<String> rows = Files.readAllLines(regions.toPath(),
+                StandardCharsets.UTF_8);
+        JsonObject first = GSON.fromJson(rows.get(0), JsonObject.class);
+        JsonObject second = GSON.fromJson(rows.get(1), JsonObject.class);
+        assertEquals(1, first.getAsJsonArray("symbolicInputs").size());
+        assertEquals(0, second.getAsJsonArray("symbolicInputs").size());
+    }
+
     private File write(String name, Map<String, Object> row)
             throws Exception {
+        return writeRows(name, row);
+    }
+
+    @SafeVarargs
+    private final File writeRows(String name, Map<String, Object>... rows)
+            throws Exception {
         File file = new File(folder.getRoot(), name);
-        Files.write(file.toPath(), Collections.singletonList(GSON.toJson(row)),
-                StandardCharsets.UTF_8);
+        java.util.List<String> encoded = new java.util.ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            encoded.add(GSON.toJson(row));
+        }
+        Files.write(file.toPath(), encoded, StandardCharsets.UTF_8);
         return file;
     }
 

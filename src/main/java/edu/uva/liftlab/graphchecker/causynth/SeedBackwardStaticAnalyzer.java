@@ -3019,6 +3019,21 @@ final class SeedBackwardStaticAnalyzer {
         edge.put("protocolStubMappingId", mapping.id);
         edge.put("protocolTransport", mapping.transport);
         edge.put("protocolPort", port);
+        edge.put("protocolClientStub", mapping.clientStub);
+        edge.put("protocolServerStub", mapping.serverStub);
+        boolean response = "response".equals(port);
+        edge.put("protocolDirection", response ? "RESPONSE" : "REQUEST");
+        if (!response) {
+            for (ProtocolPortMapping requestPort : mapping.request) {
+                if (requestPort.name.equals(port)) {
+                    edge.put("protocolClientArgument",
+                            requestPort.clientArgument);
+                    edge.put("protocolServerParameter",
+                            requestPort.serverParameter);
+                    break;
+                }
+            }
+        }
     }
 
     private void addEdgeInternal(String kind, Object from, Object to,

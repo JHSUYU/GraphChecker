@@ -56,31 +56,39 @@ final class RuntimeRegionPlanner {
         Map<Long, Map<String, Object>> activationByCall =
                 new LinkedHashMap<>();
         for (Map<String, Object> skeleton : skeletons) {
+            if ("PROTOCOL_COMPONENT".equals(text(
+                    skeleton.get("selection")))) {
+                for (MethodEvent anchor : trace.methods(
+                        text(skeleton.get("anchorMethod")))) {
+                    addSkeletonActivation(result, activationByCall, skeleton,
+                            anchor, trace);
+                }
+                continue;
+            }
             String rootMethod = text(skeleton.get("rootMethod"));
+            Set<Long> selectedRoots = new LinkedHashSet<>();
             for (MethodEvent root : trace.methods(rootMethod)) {
-                Set<Long> calls = trace.subtree(root.callId);
-                Set<String> observed = trace.methodNames(calls);
-                if (!observed.contains(text(skeleton.get("anchorMethod")))) {
+                if (!trace.methodNames(trace.subtree(root.callId)).contains(
+                        text(skeleton.get("anchorMethod")))) {
                     continue;
                 }
-                Map<String, Object> activation = new LinkedHashMap<>();
-                activation.put("schemaVersion", 3);
-                activation.put("kind", "RUNTIME_REGION_ACTIVATION");
-                activation.put("activationId", activationId(root));
-                activation.put("regionId", skeleton.get("regionId"));
-                activation.put("regionIds", Collections.singletonList(
-                        skeleton.get("regionId")));
-                activation.put("rootCallId", root.callId);
-                activation.put("rootMethod", root.method);
-                activation.put("anchorMethod", skeleton.get("anchorMethod"));
-                activation.put("test", root.test);
-                activation.put("process", root.process);
-                activation.put("thread", root.threadName);
-                activation.put("threadId", root.tid);
-                activation.put("callIds", new ArrayList<>(calls));
-                activation.put("observedMethods", new ArrayList<>(observed));
-                result.runtimeInstances.add(activation);
-                activationByCall.put(root.callId, activation);
+                addSkeletonActivation(result, activationByCall, skeleton,
+                        root, trace);
+                selectedRoots.add(root.callId);
+            }
+            if (!selectedRoots.isEmpty()) {
+                continue;
+            }
+            Set<String> allowed = new LinkedHashSet<>(
+                    strings(skeleton.get("methods")));
+            for (MethodEvent anchor : trace.methods(
+                    text(skeleton.get("anchorMethod")))) {
+                MethodEvent root = trace.highestObservedAncestor(anchor,
+                        allowed);
+                if (root != null && selectedRoots.add(root.callId)) {
+                    addSkeletonActivation(result, activationByCall, skeleton,
+                            root, trace);
+                }
             }
         }
         for (Map.Entry<Long, Map<String, Object>> entry
@@ -99,6 +107,39 @@ final class RuntimeRegionPlanner {
             result.runtimeGraphEdges.add(edge);
         }
         return result;
+    }
+
+    private static void addSkeletonActivation(
+            Result result,
+            Map<Long, Map<String, Object>> activationByCall,
+            Map<String, Object> skeleton, MethodEvent root,
+            TraceIndex trace) {
+        Set<Long> calls = trace.subtree(root.callId);
+        Set<String> allowed = new LinkedHashSet<>(
+                strings(skeleton.get("methods")));
+        calls.removeIf(call -> {
+            MethodEvent event = trace.methodByCall.get(call);
+            return event == null || !allowed.contains(event.method);
+        });
+        Set<String> observed = trace.methodNames(calls);
+        Map<String, Object> activation = new LinkedHashMap<>();
+        activation.put("schemaVersion", 3);
+        activation.put("kind", "RUNTIME_REGION_ACTIVATION");
+        activation.put("activationId", activationId(root));
+        activation.put("regionId", skeleton.get("regionId"));
+        activation.put("regionIds", Collections.singletonList(
+                skeleton.get("regionId")));
+        activation.put("rootCallId", root.callId);
+        activation.put("rootMethod", root.method);
+        activation.put("anchorMethod", skeleton.get("anchorMethod"));
+        activation.put("test", root.test);
+        activation.put("process", root.process);
+        activation.put("thread", root.threadName);
+        activation.put("threadId", root.tid);
+        activation.put("callIds", new ArrayList<>(calls));
+        activation.put("observedMethods", new ArrayList<>(observed));
+        result.runtimeInstances.add(activation);
+        activationByCall.put(root.callId, activation);
     }
 
     static Result plan(File regionFile, File regionEdgeFile,
@@ -166,7 +207,12 @@ final class RuntimeRegionPlanner {
             }
         }
         for (Map<String, Object> edge : regionEdges) {
-            require(edge, 3, "RUNTIME_FIELD_FLOW", regionEdgeFile);
+            String edgeKind = text(edge.get("kind"));
+            if (!"RUNTIME_FIELD_FLOW".equals(edgeKind)
+                    && !"RUNTIME_PROTOCOL_FLOW".equals(edgeKind)) {
+                throw new IllegalArgumentException("invalid runtime region "
+                        + "flow row in " + regionEdgeFile);
+            }
             String fromInstance = instanceByRegionAndCall.get(instanceKey(
                     text(edge.get("fromRegion")),
                     longNumber(edge.get("fromRootCallId"), -1L)));
@@ -178,9 +224,12 @@ final class RuntimeRegionPlanner {
                         "runtime field flow has no selected activation: "
                                 + text(edge.get("edgeId")));
             }
+            boolean protocol = "RUNTIME_PROTOCOL_FLOW".equals(edgeKind);
             Map<String, Object> binding = object(
                     "schemaVersion", 3,
-                    "evidenceKind", "FIELD_ASSIGNMENT_READ_FROM_V1",
+                    "evidenceKind", protocol
+                            ? "CONFIGURED_PROTOCOL_TRACE_V1"
+                            : "FIELD_ASSIGNMENT_READ_FROM_V1",
                     "fromRegionInstance", fromInstance,
                     "toRegionInstance", toInstance,
                     "fromOutputPort", edge.get("fromPort"),
@@ -188,12 +237,21 @@ final class RuntimeRegionPlanner {
                     "receiverObjectId", edge.get("receiverObjectId"),
                     "writerEventSeq", edge.get("writerEventSeq"),
                     "readerEventSeq", edge.get("readerEventSeq"),
+                    "mappingId", edge.get("mappingId"),
+                    "wireId", edge.get("wireId"),
+                    "sendEventSeq", edge.get("sendEventSeq"),
+                    "receiveEventSeq", edge.get("receiveEventSeq"),
+                    "protocolDirection", edge.get("direction"),
+                    "protocolPort", edge.get("port"),
                     "fieldPathDeclarations",
                     edge.get("fieldPathDeclarations"),
                     "correlationAuthority",
-                    "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
+                    protocol ? "CONFIGURED_PROTOCOL_WIRE_ID_V1"
+                            : "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
             Map<String, Object> evidence = new LinkedHashMap<>(edge);
-            evidence.put("state", "CONFIRMED_RUNTIME_IDENTITY");
+            evidence.put("state", protocol
+                    ? "CONFIRMED_RUNTIME_PROTOCOL"
+                    : "CONFIRMED_RUNTIME_IDENTITY");
             evidence.put("bindings", Collections.singletonList(binding));
             result.edgeValidations.add(evidence);
         }
@@ -218,7 +276,14 @@ final class RuntimeRegionPlanner {
             action.put("objectId", port.get("rootObjectId"));
             action.put("javaType", leafType(
                     strings(port.get("fieldPathDeclarations"))));
-            if ("PARAMETER".equals(text(port.get("rootKind")))) {
+            if ("PROTOCOL_INPUT".equals(text(port.get("sourceKind")))) {
+                if (port.containsKey("argumentIndex")) {
+                    action.put("argumentIndex", port.get("argumentIndex"));
+                }
+                action.put("location", "REQUEST".equals(
+                        text(port.get("protocolDirection")))
+                        ? "PROTOCOL_ARGUMENT" : "PROTOCOL_RETURN");
+            } else if ("PARAMETER".equals(text(port.get("rootKind")))) {
                 action.put("argumentIndex", port.get("rootParameterIndex"));
                 action.put("location", path.isEmpty()
                         ? "ARGUMENT" : "ARGUMENT_FIELD_PATH");
@@ -481,6 +546,39 @@ final class RuntimeRegionPlanner {
         }
     }
 
+    static final class ProtocolEvent {
+        final long seq;
+        final String direction;
+        final String transport;
+        final String wireId;
+        final String endpoint;
+        final String process;
+        final String threadName;
+        final long tid;
+        final String method;
+        final long callId;
+        final long invocationId;
+        final String declaredCallee;
+
+        ProtocolEvent(long seq, String direction, String transport,
+                      String wireId, String endpoint, String process,
+                      String threadName, long tid, String method, long callId,
+                      long invocationId, String declaredCallee) {
+            this.seq = seq;
+            this.direction = safe(direction);
+            this.transport = safe(transport);
+            this.wireId = safe(wireId);
+            this.endpoint = safe(endpoint);
+            this.process = safe(process);
+            this.threadName = safe(threadName);
+            this.tid = tid;
+            this.method = safe(method);
+            this.callId = callId;
+            this.invocationId = invocationId;
+            this.declaredCallee = safe(declaredCallee);
+        }
+    }
+
     static final class RuntimeEvent {
         final long seq;
         final String kind;
@@ -495,8 +593,6 @@ final class RuntimeRegionPlanner {
         final int objectId;
         final String primitiveValue;
         final Boolean outcome;
-        final String valueFingerprint;
-        final boolean valueFingerprintComplete;
         final Integer successorIndex;
         final String branchKind;
         final String switchCaseKeys;
@@ -508,8 +604,8 @@ final class RuntimeRegionPlanner {
                      boolean outcome) {
             this(seq, kind, method, callId, invocationId, parentSiteId,
                     siteId, "", argumentIndex, runtimeType, objectId,
-                    primitiveValue, hasOutcome ? outcome : null, "", false,
-                    null, "", "");
+                    primitiveValue, hasOutcome ? outcome : null, null,
+                    "", "");
         }
 
         RuntimeEvent(long seq, String kind, String method, long callId,
@@ -520,20 +616,6 @@ final class RuntimeRegionPlanner {
             this(seq, kind, method, callId, invocationId, parentSiteId,
                     siteId, declaredCallee, argumentIndex, runtimeType,
                     objectId, primitiveValue, hasOutcome ? outcome : null,
-                    "", false, null, "", "");
-        }
-
-        RuntimeEvent(long seq, String kind, String method, long callId,
-                     long invocationId, long parentSiteId, String siteId,
-                     String declaredCallee, int argumentIndex,
-                     String runtimeType, int objectId, String primitiveValue,
-                     boolean hasOutcome, boolean outcome,
-                     String valueFingerprint,
-                     boolean valueFingerprintComplete) {
-            this(seq, kind, method, callId, invocationId, parentSiteId,
-                    siteId, declaredCallee, argumentIndex, runtimeType,
-                    objectId, primitiveValue, hasOutcome ? outcome : null,
-                    valueFingerprint, valueFingerprintComplete,
                     null, "", "");
         }
 
@@ -541,9 +623,7 @@ final class RuntimeRegionPlanner {
                      long invocationId, long parentSiteId, String siteId,
                      String declaredCallee, int argumentIndex,
                      String runtimeType, int objectId, String primitiveValue,
-                     Boolean outcome, String valueFingerprint,
-                     boolean valueFingerprintComplete,
-                     Integer successorIndex, String branchKind,
+                     Boolean outcome, Integer successorIndex, String branchKind,
                      String switchCaseKeys) {
             this.seq = seq;
             this.kind = safe(kind);
@@ -558,8 +638,6 @@ final class RuntimeRegionPlanner {
             this.objectId = objectId;
             this.primitiveValue = safe(primitiveValue);
             this.outcome = outcome;
-            this.valueFingerprint = safe(valueFingerprint);
-            this.valueFingerprintComplete = valueFingerprintComplete;
             this.successorIndex = successorIndex;
             this.branchKind = safe(branchKind);
             this.switchCaseKeys = safe(switchCaseKeys);
@@ -577,32 +655,18 @@ final class RuntimeRegionPlanner {
         final int receiverObjectId;
         final int valueObjectId;
         final String primitiveValue;
-        final String valueFingerprint;
-        final boolean valueFingerprintComplete;
 
         FieldAccessEvent(long seq, String kind, String method, long callId,
                          String field, int receiverObjectId,
                          int valueObjectId, String primitiveValue) {
             this(seq, kind, method, callId, -1, "", field,
-                    receiverObjectId, valueObjectId, primitiveValue, "",
-                    false);
-        }
-
-        FieldAccessEvent(long seq, String kind, String method, long callId,
-                         String field, int receiverObjectId,
-                         int valueObjectId, String primitiveValue,
-                         String valueFingerprint,
-                         boolean valueFingerprintComplete) {
-            this(seq, kind, method, callId, -1, "", field,
-                    receiverObjectId, valueObjectId, primitiveValue,
-                    valueFingerprint, valueFingerprintComplete);
+                    receiverObjectId, valueObjectId, primitiveValue);
         }
 
         FieldAccessEvent(long seq, String kind, String method, long callId,
                          int unitIndex, String siteId, String field,
                          int receiverObjectId, int valueObjectId,
-                         String primitiveValue, String valueFingerprint,
-                         boolean valueFingerprintComplete) {
+                         String primitiveValue) {
             this.seq = seq;
             this.kind = safe(kind);
             this.method = safe(method);
@@ -614,8 +678,6 @@ final class RuntimeRegionPlanner {
             this.receiverObjectId = receiverObjectId;
             this.valueObjectId = valueObjectId;
             this.primitiveValue = safe(primitiveValue);
-            this.valueFingerprint = safe(valueFingerprint);
-            this.valueFingerprintComplete = valueFingerprintComplete;
         }
     }
 
@@ -696,6 +758,19 @@ final class RuntimeRegionPlanner {
                 current = methodByCall.get(current.parentCallId);
             }
             return 0L;
+        }
+
+        private MethodEvent highestObservedAncestor(MethodEvent start,
+                                                    Set<String> allowed) {
+            MethodEvent current = start;
+            while (current != null) {
+                MethodEvent parent = methodByCall.get(current.parentCallId);
+                if (parent == null || !allowed.contains(parent.method)) {
+                    return current;
+                }
+                current = parent;
+            }
+            return start;
         }
 
         private int ordinal(MethodEvent target) {

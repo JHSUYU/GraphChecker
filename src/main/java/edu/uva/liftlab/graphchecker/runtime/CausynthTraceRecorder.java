@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonElement;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.causynth.CausynthJson;
@@ -13,13 +14,8 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.lang.reflect.Array;
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -30,7 +26,6 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -57,13 +52,7 @@ public final class CausynthTraceRecorder {
     private static final ThreadLocal<Deque<ActiveCallSite>> ACTIVE_CALL_SITES =
             ThreadLocal.withInitial(ArrayDeque::new);
     private static final int DEFAULT_MAX_EVENTS = 200000;
-    /**
-     * A plain concolic replay uses the rich-trace call stacks only as exact
-     * accessor-site context. It does not publish a runtime trace, so hashing
-     * every packet/argument is both semantically unused and prohibitively
-     * expensive on the interpreted custom JVM. Campaign discovery supplies
-     * an explicit trace output directory and therefore keeps fingerprints.
-     */
+    /** A concolic replay keeps call stacks but does not publish a trace. */
     private static volatile boolean contextOnlyConcolicReplay;
 
     private static volatile File outputDir;
@@ -214,7 +203,7 @@ public final class CausynthTraceRecorder {
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
                         inferProcessName(method, threadName), threadName,
-                        thread.getId(), method, 0, runtimeType(receiver), id,
+                        thread.getId(), method, 0, "", id,
                         parentCallId, 0L);
         if (!contextOnlyConcolicReplay) {
             synchronized (LOCK) {
@@ -234,7 +223,6 @@ public final class CausynthTraceRecorder {
         event.runtimeType = runtimeType(value);
         event.objectId = identity(value);
         event.primitiveValue = safe(primitiveValue);
-        event.captureValueFingerprint(value, primitiveValue);
         emitExecutionEvent(event);
     }
 
@@ -271,7 +259,6 @@ public final class CausynthTraceRecorder {
         event.runtimeType = runtimeType(value);
         event.objectId = identity(value);
         event.primitiveValue = safe(primitiveValue);
-        event.captureValueFingerprint(value, primitiveValue);
         emitExecutionEvent(event);
     }
 
@@ -287,7 +274,6 @@ public final class CausynthTraceRecorder {
         event.runtimeType = runtimeType(returnValue);
         event.objectId = identity(returnValue);
         event.primitiveValue = safe(primitiveValue);
-        event.captureValueFingerprint(returnValue, primitiveValue);
         emitExecutionEvent(event);
         removeCallSite(invocationId);
     }
@@ -330,7 +316,6 @@ public final class CausynthTraceRecorder {
         event.runtimeType = runtimeType(returnValue);
         event.objectId = identity(returnValue);
         event.primitiveValue = safe(primitiveValue);
-        event.captureValueFingerprint(returnValue, primitiveValue);
         emitExecutionEvent(event);
         removeCall(resolvedCallId);
     }
@@ -410,17 +395,46 @@ public final class CausynthTraceRecorder {
         }
         int receiverObjectId = identity(fieldReceiver);
         int valueObjectId = identity(valueObject);
-        ValueFingerprint fingerprint =
-                ValueFingerprint.capture(valueObject, primitiveValue);
         ActiveCall activeCall = ACTIVE_CALLS.get().peek();
         RuntimeRegionPlanner.FieldAccessEvent event =
                 new RuntimeRegionPlanner.FieldAccessEvent(id, kind, method,
                         activeCall == null ? 0L : activeCall.callId,
                         unitIndex, siteId(method, unitIndex), field,
-                        receiverObjectId, valueObjectId, primitiveValue,
-                        fingerprint.digest, fingerprint.complete);
+                        receiverObjectId, valueObjectId, primitiveValue);
         synchronized (LOCK) {
             writeFieldTraceLine(event);
+        }
+    }
+
+    /** Records one transport endpoint without inspecting the payload. */
+    public static void recordRpcEndpoint(String direction, String transport,
+                                         String wireId, String endpoint) {
+        if (direction == null || transport == null || wireId == null) {
+            return;
+        }
+        initialize();
+        if (contextOnlyConcolicReplay) {
+            return;
+        }
+        long id = EVENT_COUNTER.incrementAndGet();
+        if (id > maxEvents) {
+            return;
+        }
+        Thread thread = Thread.currentThread();
+        ActiveCall call = ACTIVE_CALLS.get().peek();
+        ActiveCallSite site = ACTIVE_CALL_SITES.get().peek();
+        String method = call == null ? "" : call.method;
+        RuntimeRegionPlanner.ProtocolEvent event =
+                new RuntimeRegionPlanner.ProtocolEvent(id,
+                        safe(direction).toUpperCase(), safe(transport),
+                        safe(wireId), safe(endpoint),
+                        inferProcessName(method, thread.getName()),
+                        thread.getName(), thread.getId(), method,
+                        call == null ? 0L : call.callId,
+                        site == null ? 0L : site.invocationId,
+                        site == null ? "" : site.declaredCallee);
+        synchronized (LOCK) {
+            writeProtocolTraceLine(event);
         }
     }
 
@@ -730,7 +744,8 @@ public final class CausynthTraceRecorder {
             RuntimeRefinedGraphBuilder.Result refinement =
                     RuntimeRefinedGraphBuilder.refine(candidateGraph,
                             selectedSkeletons, trace.methods, trace.execution,
-                            trace.fields, refinedGraph.toPath());
+                            trace.fields, trace.protocol,
+                            refinedGraph.toPath());
             long refinementMillis = elapsedMillis(refinementStart);
             long candidatePlanningStart = System.nanoTime();
             RuntimeSelectedRegionFinalizer.finalizeRegions(
@@ -821,15 +836,23 @@ public final class CausynthTraceRecorder {
             File candidates, File output,
             Collection<Map<String, Object>> runtimeInstances)
             throws IOException {
-        Set<String> selectedIds = new LinkedHashSet<>();
+        Map<String, Map<String, Integer>> rootCounts = new LinkedHashMap<>();
+        Map<String, Map<String, Set<String>>> methodsByRoot =
+                new LinkedHashMap<>();
         for (Map<String, Object> instance : runtimeInstances) {
-            Object memberships = instance.get("regionIds");
-            if (memberships instanceof Collection<?>) {
-                for (Object membership : (Collection<?>) memberships) {
-                    selectedIds.add(String.valueOf(membership));
+            String region = String.valueOf(instance.get("regionId"));
+            String root = String.valueOf(instance.get("rootMethod"));
+            rootCounts.computeIfAbsent(region,
+                    ignored -> new LinkedHashMap<>()).merge(root, 1,
+                    Integer::sum);
+            Set<String> observed = methodsByRoot.computeIfAbsent(region,
+                    ignored -> new LinkedHashMap<>()).computeIfAbsent(root,
+                    ignored -> new LinkedHashSet<>());
+            Object methods = instance.get("observedMethods");
+            if (methods instanceof Collection<?>) {
+                for (Object method : (Collection<?>) methods) {
+                    observed.add(String.valueOf(method));
                 }
-            } else if (instance.containsKey("regionId")) {
-                selectedIds.add(String.valueOf(instance.get("regionId")));
             }
         }
         File parent = output.getParentFile();
@@ -846,10 +869,30 @@ public final class CausynthTraceRecorder {
                 }
                 JsonObject row = JsonParser.parseString(line)
                         .getAsJsonObject();
-                if (selectedIds.contains(string(row, "regionId"))) {
-                    writer.write(line);
-                    writer.write('\n');
+                String region = string(row, "regionId");
+                Map<String, Integer> counts = rootCounts.get(region);
+                if (counts == null || counts.isEmpty()) {
+                    continue;
                 }
+                String selectedRoot = "";
+                int selectedCount = -1;
+                for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+                    if (entry.getValue() > selectedCount) {
+                        selectedRoot = entry.getKey();
+                        selectedCount = entry.getValue();
+                    }
+                }
+                row.addProperty("rootMethod", selectedRoot);
+                JsonArray selectedMethods = new JsonArray();
+                for (String method : methodsByRoot.get(region).get(
+                        selectedRoot)) {
+                    selectedMethods.add(method);
+                }
+                row.add("methods", selectedMethods);
+                row.addProperty("planningMode",
+                        "RUNTIME_SELECTED_ACTIVATION_SKELETON");
+                writer.write(row.toString());
+                writer.write('\n');
             }
         }
     }
@@ -969,9 +1012,23 @@ public final class CausynthTraceRecorder {
                             string(row, "field"),
                             integer(row, "fieldReceiverObjectId", 0),
                             integer(row, "valueObjectId", 0),
-                            string(row, "primitiveValue"),
-                            string(row, "valueFingerprint"),
-                            bool(row, "valueFingerprintComplete", false)));
+                            string(row, "primitiveValue")));
+                } else if (!skeletonOnly && ("RPC_SEND".equals(eventKind)
+                        || "RPC_RECEIVE".equals(eventKind))) {
+                    trace.protocol.add(new RuntimeRegionPlanner.ProtocolEvent(
+                            longInteger(row, "seq", 0L),
+                            "RPC_SEND".equals(eventKind)
+                                    ? "SEND" : "RECEIVE",
+                            string(row, "transport"),
+                            string(row, "wireId"),
+                            string(row, "endpoint"),
+                            string(row, "process"),
+                            string(row, "threadName"),
+                            longInteger(row, "tid", 0L),
+                            string(row, "method"),
+                            longInteger(row, "callId", 0L),
+                            longInteger(row, "invocationId", 0L),
+                            string(row, "declaredCallee")));
                 } else if (!skeletonOnly && isExecutionEventKind(eventKind)) {
                     trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
                             longInteger(row, "seq", 0L), eventKind,
@@ -987,8 +1044,6 @@ public final class CausynthTraceRecorder {
                             string(row, "primitiveValue"),
                             row.has("outcome")
                                     ? bool(row, "outcome", false) : null,
-                            string(row, "valueFingerprint"),
-                            bool(row, "valueFingerprintComplete", false),
                             row.has("successorIndex")
                                     ? integer(row, "successorIndex", -1)
                                     : null,
@@ -1041,9 +1096,26 @@ public final class CausynthTraceRecorder {
                 "field", event.field,
                 "fieldReceiverObjectId", event.receiverObjectId,
                 "valueObjectId", event.valueObjectId,
-                "primitiveValue", event.primitiveValue,
-                "valueFingerprint", event.valueFingerprint,
-                "valueFingerprintComplete", event.valueFingerprintComplete);
+                "primitiveValue", event.primitiveValue);
+    }
+
+    private static void writeProtocolTraceLine(
+            RuntimeRegionPlanner.ProtocolEvent event) {
+        writeTraceRow(
+                "schemaVersion", 3,
+                "event", "SEND".equals(event.direction)
+                        ? "RPC_SEND" : "RPC_RECEIVE",
+                "seq", event.seq,
+                "transport", event.transport,
+                "wireId", event.wireId,
+                "endpoint", event.endpoint,
+                "process", event.process,
+                "threadName", event.threadName,
+                "tid", event.tid,
+                "method", event.method,
+                "callId", event.callId,
+                "invocationId", event.invocationId,
+                "declaredCallee", event.declaredCallee);
     }
 
     private static void writeExecutionTraceLine(ExecutionEvent event) {
@@ -1061,8 +1133,6 @@ public final class CausynthTraceRecorder {
                 "runtimeType", event.runtimeType,
                 "objectId", event.objectId,
                 "primitiveValue", event.primitiveValue,
-                "valueFingerprint", event.valueFingerprint,
-                "valueFingerprintComplete", event.valueFingerprintComplete,
                 "outcome", event.outcome,
                 "branchKind", event.branchKind,
                 "successorIndex", event.successorIndex);
@@ -1269,20 +1339,10 @@ public final class CausynthTraceRecorder {
         private String runtimeType = "";
         private int objectId;
         private String primitiveValue = "";
-        private String valueFingerprint = "";
-        private boolean valueFingerprintComplete;
         private Boolean outcome;
         private String branchKind = "";
         private Integer successorIndex;
 
-        private void captureValueFingerprint(Object value,
-                                             String primitiveValue) {
-            ValueFingerprint fingerprint = contextOnlyConcolicReplay
-                    ? ValueFingerprint.disabled()
-                    : ValueFingerprint.capture(value, primitiveValue);
-            valueFingerprint = fingerprint.digest;
-            valueFingerprintComplete = fingerprint.complete;
-        }
     }
 
     private static final class TraceData {
@@ -1292,12 +1352,15 @@ public final class CausynthTraceRecorder {
                 new ArrayList<>();
         private final List<RuntimeRegionPlanner.RuntimeEvent> execution =
                 new ArrayList<>();
+        private final List<RuntimeRegionPlanner.ProtocolEvent> protocol =
+                new ArrayList<>();
 
         private void sort() {
             methods.sort((left, right) -> Long.compare(left.seq, right.seq));
             fields.sort((left, right) -> Long.compare(left.seq, right.seq));
             execution.sort((left, right) ->
                     Long.compare(left.seq, right.seq));
+            protocol.sort((left, right) -> Long.compare(left.seq, right.seq));
         }
     }
 
@@ -1328,400 +1391,6 @@ public final class CausynthTraceRecorder {
             this.siteId = safe(siteId);
             this.caller = safe(caller);
             this.declaredCallee = safe(declaredCallee);
-        }
-    }
-
-    /**
-     * A bounded, digest-only representation of a concrete runtime value.
-     *
-     * <p>The canonical text never leaves this method.  Only its SHA-256 digest
-     * and completeness metadata are written to the trace.  Consequently a
-     * static port mapping can be promoted to an equality only when both
-     * endpoints were completely observed; reflection failures or bounds
-     * produce an explicit non-composable gap instead of an assumed
-     * relationship.</p>
-     */
-    private static final class ValueFingerprint {
-        private static final ThreadLocal<Boolean> ACTIVE =
-                ThreadLocal.withInitial(() -> false);
-        /*
-         * These bounds protect the observed execution, not the causal slice:
-         * every static edge and REGION.IN remains available. A value that
-         * exceeds this budget is marked incomplete and is therefore ineligible
-         * for an inferred equality. Unbounded object-graph walks can otherwise
-         * hold system locks long enough to change the execution being observed.
-         */
-        private static final int MAX_DEPTH = 5;
-        private static final int MAX_NODES = 256;
-        private static final int MAX_COLLECTION_ELEMENTS = 64;
-        private static final int MAX_TOTAL_ELEMENTS = 128;
-        private static final int MAX_FIELDS_PER_OBJECT = 32;
-        private static final int MAX_TOTAL_FIELDS = 128;
-        private static final int MAX_TEXT_BYTES = 64 * 1024;
-
-        private final String digest;
-        private final boolean complete;
-
-        private ValueFingerprint(String digest, boolean complete) {
-            this.digest = safe(digest);
-            this.complete = complete;
-        }
-
-        private static ValueFingerprint disabled() {
-            return new ValueFingerprint("", false);
-        }
-
-        private static ValueFingerprint capture(Object value,
-                                                String primitiveValue) {
-            if (ACTIVE.get()) {
-                return disabled();
-            }
-            ACTIVE.set(true);
-            try {
-                return captureUnchecked(value, primitiveValue);
-            } catch (Throwable failure) {
-                // Runtime evidence must be observational.  In particular, a
-                // shared Map/Collection may change while it is fingerprinted;
-                // a ConcurrentModificationException (or any reflective
-                // access failure) must never escape into the instrumented
-                // execution. Incomplete fingerprints are already
-                // ineligible for automatic endpoint equality.
-                return new ValueFingerprint("", false);
-            } finally {
-                ACTIVE.remove();
-            }
-        }
-
-        private static ValueFingerprint captureUnchecked(Object value,
-                                                         String primitiveValue) {
-            FingerprintState state = new FingerprintState();
-            StringBuilder canonical = new StringBuilder();
-            if (value == null && primitiveValue != null
-                    && !primitiveValue.isEmpty()) {
-                state.nodes = 1;
-                appendToken(canonical, state, "PRIMITIVE", primitiveValue);
-            } else {
-                appendValue(value, canonical, state, 0);
-            }
-            return new ValueFingerprint(sha256(canonical.toString()),
-                    state.complete);
-        }
-
-        private static void appendValue(Object value, StringBuilder out,
-                                        FingerprintState state, int depth) {
-            if (!state.complete) return;
-            if (depth > MAX_DEPTH) {
-                state.fail();
-                return;
-            }
-            if (++state.nodes > state.nodeBudget) {
-                state.fail();
-                return;
-            }
-            if (value == null) {
-                appendToken(out, state, "NULL", "");
-                return;
-            }
-            Class<?> type = value.getClass();
-            if (value instanceof Enum<?>) {
-                appendToken(out, state, type.getName(),
-                        ((Enum<?>) value).name());
-                return;
-            }
-            if (value instanceof CharSequence || value instanceof Number
-                    || value instanceof Boolean || value instanceof Character) {
-                appendToken(out, state, type.getName(), String.valueOf(value));
-                return;
-            }
-            Integer previous = state.seen.get(value);
-            if (previous != null) {
-                appendToken(out, state, "REF", String.valueOf(previous));
-                return;
-            }
-            state.seen.put(value, state.seen.size());
-            if (type.isArray()) {
-                int length = Array.getLength(value);
-                appendToken(out, state, "ARRAY", type.getName() + ":" + length);
-                int limit = Math.min(length, MAX_COLLECTION_ELEMENTS);
-                for (int index = 0; index < limit; index++) {
-                    if (!state.takeElement()) return;
-                    appendToken(out, state, "INDEX", String.valueOf(index));
-                    appendValue(Array.get(value, index), out, state,
-                            depth + 1);
-                }
-                if (length > limit) state.fail();
-                return;
-            }
-            if (value instanceof Map<?, ?>) {
-                Map<?, ?> map = (Map<?, ?>) value;
-                appendToken(out, state, "MAP", type.getName() + ":" + map.size());
-                List<String> entries = new ArrayList<>();
-                int count = 0;
-                for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    if (count++ >= MAX_COLLECTION_ELEMENTS) {
-                        state.fail();
-                        break;
-                    }
-                    if (!state.takeElement()) break;
-                    FingerprintState entryState = state.childForMapEntry();
-                    StringBuilder item = new StringBuilder();
-                    appendToken(item, entryState, "KEY", "");
-                    appendValue(entry.getKey(), item, entryState, depth + 1);
-                    appendToken(item, entryState, "VALUE", "");
-                    appendValue(entry.getValue(), item, entryState, depth + 1);
-                    if (!entryState.complete) {
-                        state.fail();
-                        break;
-                    }
-                    state.nodes += entryState.nodes;
-                    state.elements += entryState.elements;
-                    state.fields += entryState.fields;
-                    if (state.nodes > state.nodeBudget) {
-                        state.fail();
-                        break;
-                    }
-                    entries.add(item.toString());
-                }
-                Collections.sort(entries);
-                for (String entry : entries) {
-                    appendToken(out, state, "ENTRY", entry);
-                    if (!state.complete) break;
-                }
-                return;
-            }
-            if (value instanceof Collection<?>) {
-                Collection<?> collection = (Collection<?>) value;
-                appendToken(out, state, "COLLECTION",
-                        type.getName() + ":" + collection.size());
-                int index = 0;
-                for (Object item : collection) {
-                    if (index >= MAX_COLLECTION_ELEMENTS) {
-                        state.fail();
-                        break;
-                    }
-                    if (!state.takeElement()) break;
-                    appendToken(out, state, "INDEX", String.valueOf(index++));
-                    appendValue(item, out, state, depth + 1);
-                }
-                return;
-            }
-            if (value instanceof Class<?> || value instanceof ClassLoader
-                    || value instanceof Thread
-                    || type.getName().startsWith("java.lang.reflect.")) {
-                appendToken(out, state, "OPAQUE_ID", type.getName() + ":"
-                        + System.identityHashCode(value));
-                state.fail();
-                return;
-            }
-            /*
-             * JDK implementation objects are usually service graphs (random
-             * providers, executors, class metadata, ...), not serialized data
-             * values.  Reflection through them is both unstable across JDKs
-             * and extremely expensive under the custom interpreter.  Arrays,
-             * collections, strings and boxed primitives were handled above.
-             */
-            if (isOpaquePlatformObject(type)) {
-                appendToken(out, state, "OPAQUE_ID", type.getName() + ":"
-                        + System.identityHashCode(value));
-                state.fail();
-                return;
-            }
-            appendToken(out, state, "OBJECT", type.getName());
-            List<Field> fields = instanceFields(type);
-            if (fields.size() > MAX_FIELDS_PER_OBJECT) {
-                state.fail();
-                return;
-            }
-            for (Field field : fields) {
-                if (!state.takeField()) return;
-                try {
-                    if (!field.isAccessible()) field.setAccessible(true);
-                    appendToken(out, state, "FIELD", field.getDeclaringClass()
-                            .getName() + "#" + field.getName());
-                    appendValue(field.get(value), out, state, depth + 1);
-                } catch (Throwable failure) {
-                    state.fail();
-                    return;
-                }
-            }
-        }
-
-        private static boolean isOpaquePlatformObject(Class<?> type) {
-            String name = type == null ? "" : type.getName();
-            return name.startsWith("java.") || name.startsWith("javax.")
-                    || name.startsWith("sun.")
-                    || name.startsWith("com.sun.")
-                    || name.startsWith("jdk.");
-        }
-
-        private static List<Field> instanceFields(Class<?> type) {
-            List<Field> result = new ArrayList<>();
-            Set<String> seen = new LinkedHashSet<>();
-            for (Class<?> current = type; current != null
-                    && current != Object.class; current = current.getSuperclass()) {
-                for (Field field : current.getDeclaredFields()) {
-                    int modifiers = field.getModifiers();
-                    if (Modifier.isStatic(modifiers)
-                            || Modifier.isTransient(modifiers)
-                            || field.isSynthetic()) continue;
-                    String key = field.getDeclaringClass().getName() + "#"
-                            + field.getName();
-                    if (seen.add(key)) result.add(field);
-                }
-            }
-            Collections.sort(result, (left, right) -> {
-                String leftKey = left.getDeclaringClass().getName() + "#"
-                        + left.getName();
-                String rightKey = right.getDeclaringClass().getName() + "#"
-                        + right.getName();
-                return leftKey.compareTo(rightKey);
-            });
-            return result;
-        }
-
-        private static void appendToken(StringBuilder out,
-                                        FingerprintState state,
-                                        String type, String value) {
-            if (!state.complete) return;
-            String safeType = safe(type);
-            String safeValue = safe(value);
-            int remaining = state.byteBudget - state.bytes;
-            int typeBytes = utf8LengthCapped(safeType, remaining);
-            if (typeBytes > remaining) {
-                state.fail();
-                return;
-            }
-            remaining -= typeBytes;
-            int valueBytes = utf8LengthCapped(safeValue, remaining);
-            int headerBytes = decimalLength(safeType.length())
-                    + decimalLength(safeValue.length()) + 2;
-            long tokenBytes = (long) headerBytes + typeBytes + valueBytes;
-            if (valueBytes > remaining
-                    || tokenBytes > state.byteBudget - state.bytes) {
-                state.fail();
-                return;
-            }
-            out.append(safeType.length()).append(':').append(safeType)
-                    .append(safeValue.length()).append(':').append(safeValue);
-            state.bytes += (int) tokenBytes;
-        }
-
-        private static int decimalLength(int value) {
-            if (value < 10) return 1;
-            if (value < 100) return 2;
-            if (value < 1000) return 3;
-            if (value < 10000) return 4;
-            if (value < 100000) return 5;
-            if (value < 1000000) return 6;
-            if (value < 10000000) return 7;
-            if (value < 100000000) return 8;
-            if (value < 1000000000) return 9;
-            return 10;
-        }
-
-        /** Returns {@code limit + 1} as soon as the UTF-8 budget is exceeded. */
-        private static int utf8LengthCapped(String value, int limit) {
-            if (limit < 0) return 0;
-            int bytes = 0;
-            for (int index = 0; index < value.length(); index++) {
-                char item = value.charAt(index);
-                if (item <= 0x7f) {
-                    bytes++;
-                } else if (item <= 0x7ff) {
-                    bytes += 2;
-                } else if (Character.isHighSurrogate(item)
-                        && index + 1 < value.length()
-                        && Character.isLowSurrogate(value.charAt(index + 1))) {
-                    bytes += 4;
-                    index++;
-                } else {
-                    // Conservatively budget malformed surrogates as a full
-                    // three-byte code unit.  The final canonical text can
-                    // therefore never exceed this ceiling when encoded.
-                    bytes += 3;
-                }
-                if (bytes > limit) return limit + 1;
-            }
-            return bytes;
-        }
-
-        private static String sha256(String value) {
-            try {
-                MessageDigest digest = MessageDigest.getInstance("SHA-256");
-                byte[] bytes = digest.digest(value.getBytes(
-                        StandardCharsets.UTF_8));
-                StringBuilder result = new StringBuilder(bytes.length * 2);
-                for (byte item : bytes) {
-                    result.append(String.format(Locale.ROOT, "%02x",
-                            item & 0xff));
-                }
-                return "sha256:" + result;
-            } catch (NoSuchAlgorithmException impossible) {
-                throw new IllegalStateException(impossible);
-            }
-        }
-    }
-
-    private static final class FingerprintState {
-        private final IdentityHashMap<Object, Integer> seen =
-                new IdentityHashMap<>();
-        private final int byteBudget;
-        private final int nodeBudget;
-        private final int elementBudget;
-        private final int fieldBudget;
-        private boolean complete = true;
-        private int nodes;
-        private int elements;
-        private int fields;
-        private int bytes;
-
-        private FingerprintState() {
-            this(ValueFingerprint.MAX_TEXT_BYTES,
-                    ValueFingerprint.MAX_NODES,
-                    ValueFingerprint.MAX_TOTAL_ELEMENTS,
-                    ValueFingerprint.MAX_TOTAL_FIELDS);
-        }
-
-        private FingerprintState(int byteBudget, int nodeBudget,
-                                 int elementBudget, int fieldBudget) {
-            this.byteBudget = Math.max(0, byteBudget);
-            this.nodeBudget = Math.max(0, nodeBudget);
-            this.elementBudget = Math.max(0, elementBudget);
-            this.fieldBudget = Math.max(0, fieldBudget);
-        }
-
-        private FingerprintState childForMapEntry() {
-            FingerprintState child = new FingerprintState(
-                    Math.max(0, byteBudget - bytes),
-                    Math.max(0, nodeBudget - nodes),
-                    Math.max(0, elementBudget - elements),
-                    Math.max(0, fieldBudget - fields));
-            // Map entries are canonicalized independently so their texts can
-            // be sorted, but seed the ancestor identities.  This makes a map
-            // that contains itself terminate as REF instead of recursively
-            // constructing fresh per-entry states.
-            child.seen.putAll(seen);
-            return child;
-        }
-
-        private boolean takeElement() {
-            if (++elements > elementBudget) {
-                fail();
-                return false;
-            }
-            return true;
-        }
-
-        private boolean takeField() {
-            if (++fields > fieldBudget) {
-                fail();
-                return false;
-            }
-            return true;
-        }
-
-        private void fail() {
-            complete = false;
         }
     }
 

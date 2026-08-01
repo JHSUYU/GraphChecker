@@ -193,7 +193,32 @@ do_engine_config() {
 }
 
 do_traced_workload() {
-  die "traced workload is not wired yet; the current step provides baseline only"
+  [[ -s "${project_classpath}" ]] \
+    || die "project classpath not found; run: $0 classpath"
+  local instrumented="${graphchecker_dir}/target/hdfs-11741/instrumented-classes"
+  local graphchecker_jar="${graphchecker_dir}/target/GraphChecker-1.0-SNAPSHOT.jar"
+  local trace_dir="${graphchecker_dir}/target/hdfs-11741/runtime"
+  local hadoop_log_dir="${graphchecker_dir}/target/hdfs-11741/hadoop-logs"
+  [[ -d "${instrumented}" ]] \
+    || die "instrumented classes not found; run analyze first"
+  [[ -f "${graphchecker_jar}" ]] \
+    || die "GraphChecker jar not found: ${graphchecker_jar}"
+  local maven_repository
+  maven_repository=$(mvn -q help:evaluate \
+    -Dexpression=settings.localRepository -DforceStdout 2>/dev/null)
+  local gson_jar="${maven_repository}/com/google/code/gson/gson/2.10.1/gson-2.10.1.jar"
+  [[ -f "${gson_jar}" ]] || die "GraphChecker Gson jar not found: ${gson_jar}"
+  mkdir -p "${trace_dir}" "${hadoop_log_dir}"
+  local classpath
+  classpath=$(tr -d '\r\n' < "${project_classpath}")
+  java \
+    -Dcausynth.trace.output.dir="${trace_dir}" \
+    -Dcausynth.trace.test="${test_class}.${test_method}" \
+    -Dcausynth.trace.max.events=2000000 \
+    -Dhadoop.log.dir="${hadoop_log_dir}" \
+    -cp "${instrumented}:${gson_jar}:${classpath}:${graphchecker_jar}" \
+    edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
+    "${test_class}" "${test_method}"
 }
 
 case "${1:-prepare}" in
@@ -205,11 +230,12 @@ case "${1:-prepare}" in
   config) [[ $# -eq 1 ]] || die "config takes no arguments"; do_engine_config config ;;
   validate) [[ $# -eq 1 ]] || die "validate takes no arguments"; do_engine_config validate ;;
   analyze) [[ $# -eq 1 ]] || die "analyze takes no arguments"; do_engine_config analyze ;;
+  workload) [[ $# -eq 1 ]] || die "workload takes no arguments"; do_engine_config workload ;;
   traced-workload)
     [[ $# -eq 1 ]] || die "traced-workload takes no arguments"
     do_traced_workload
     ;;
   *)
-    die "usage: $0 [patch|build|classpath|baseline|prepare|config|validate|analyze]"
+    die "usage: $0 [patch|build|classpath|baseline|prepare|config|validate|analyze|workload]"
     ;;
 esac

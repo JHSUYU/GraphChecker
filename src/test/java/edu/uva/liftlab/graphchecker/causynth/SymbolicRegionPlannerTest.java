@@ -45,6 +45,28 @@ public class SymbolicRegionPlannerTest {
         assertTrue(program.regionEdges.isEmpty());
     }
 
+    @Test
+    public void configuredProtocolMethodsBecomeRuntimeSelectionAnchors() {
+        StaticProgram program = new StaticProgram();
+        Map<String, Object> protocol = edge(ROOT, TARGET,
+                "PROTOCOL_TRANSFER", "rpc", "request", "parameter");
+        protocol.put("protocolStubMappingId", "example.rpc");
+        protocol.put("protocolClientStub", ROOT);
+        protocol.put("protocolServerStub", TARGET);
+        program.edges.add(protocol);
+
+        SymbolicRegionPlanner.planSelectedSkeleton(program,
+                Arrays.asList(ROOT, TARGET));
+
+        assertEquals(2, program.regions.size());
+        assertEquals(ROOT, program.regions.get(0).get("anchorMethod"));
+        assertEquals(TARGET, program.regions.get(1).get("anchorMethod"));
+        assertEquals("PROTOCOL_COMPONENT",
+                program.regions.get(0).get("selection"));
+        assertEquals("PROTOCOL_COMPONENT",
+                program.regions.get(1).get("selection"));
+    }
+
     private static Map<String, Object> edge(
             String method, String invoke, String transfer, String kind,
             String from, String to) {

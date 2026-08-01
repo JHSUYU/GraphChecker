@@ -652,19 +652,46 @@ do_workload() {
   fi
 
   # Pass 2: re-instrument only selected region methods, then collect rich
-  # calls, branches, arguments and every direct declared-field access.
-  CAUSYNTH_TRACE_MODE=region-state \
-    CAUSYNTH_REGION_SKELETONS="${selected_skeletons}" \
-    do_analyze
-  run_workload_command
-  run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
-    --trace-dir "${trace_dir}" \
-    --candidate-graph "${candidate_graph}" \
-    --region-skeletons "${selected_skeletons}" \
-    --refined-graph "${refined_graph}" \
-    --regions "${refined_regions}" \
-    --region-edges "$(dirname "${refined_regions}")/symbolic_region_edges.jsonl" \
-    --test "${trace_test}"
+  # calls, branches, arguments and every direct declared-field access. Keep
+  # the lite classes intact so a failed or repeated workload starts from the
+  # same pass-1 instrumentation instead of accidentally tracing REGION_STATE.
+  if [[ "${dry_run}" == true ]]; then
+    CAUSYNTH_TRACE_MODE=region-state \
+      CAUSYNTH_REGION_SKELETONS="${selected_skeletons}" \
+      do_analyze
+    run_workload_command
+    run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
+      --trace-dir "${trace_dir}" \
+      --candidate-graph "${candidate_graph}" \
+      --region-skeletons "${selected_skeletons}" \
+      --refined-graph "${refined_graph}" \
+      --regions "${refined_regions}" \
+      --region-edges "$(dirname "${refined_regions}")/symbolic_region_edges.jsonl" \
+      --test "${trace_test}"
+    return
+  fi
+  local skeleton_class_backup
+  skeleton_class_backup=$(mktemp -d /tmp/graphchecker-skeleton-classes.XXXXXX)
+  cp -a "${analysis_classes_dir}/." "${skeleton_class_backup}/"
+  (
+    restore_skeleton_classes() {
+      cp -a "${skeleton_class_backup}/." "${analysis_classes_dir}/"
+      rm -rf -- "${skeleton_class_backup}"
+    }
+    trap restore_skeleton_classes EXIT
+    CAUSYNTH_TRACE_MODE=region-state \
+      CAUSYNTH_REGION_SKELETONS="${selected_skeletons}" \
+      do_analyze
+    run_workload_command
+    run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
+      --trace-dir "${trace_dir}" \
+      --candidate-graph "${candidate_graph}" \
+      --region-skeletons "${selected_skeletons}" \
+      --refined-graph "${refined_graph}" \
+      --regions "${refined_regions}" \
+      --region-edges "$(dirname "${refined_regions}")/symbolic_region_edges.jsonl" \
+      --test "${trace_test}"
+  )
 }
 
 debug_log() {
