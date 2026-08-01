@@ -98,7 +98,7 @@ public class SeedBackwardStaticAnalyzerTest {
     }
 
     @Test
-    public void typedMapLookupProjectionRetainsReceiverAndMutationGuard()
+    public void typedMapLookupRetainsReceiverWithoutFieldProjection()
             throws Exception {
         SootClass object = libraryClass("java.lang.Object");
         SootClass runtimeException = libraryClass(
@@ -171,14 +171,19 @@ public class SeedBackwardStaticAnalyzerTest {
                         "TEST")).analyze();
         assertFalse(program.edges.stream().anyMatch(edge ->
                 String.valueOf(edge.get("kind")).startsWith("projected_")));
-        assertEquals("CHEAP_BACKWARD_ACCESS_PATH_DEMAND_V1",
+        assertEquals("CHEAP_RECEIVER_DEF_USE_JUMP_V1",
                 program.targetResolved.get("candidateDiscoveryMode"));
-        assertEquals(0,
-                program.targetResolved.get("projectedEdgesPersisted"));
+        assertEquals(false,
+                program.targetResolved.get("accessPathWorklistState"));
+        assertEquals(true,
+                program.targetResolved.get("receiverDefUseEnabled"));
+        assertFalse(program.targetResolved.containsKey("fieldPathDepth"));
         assertEquals(false, program.targetResolved.get(
                 "recursiveReceiverEffectClosure"));
-        SymbolicRegionPlanner.planSelected(program,
-                program.graph().methods());
+        assertFalse(program.edges.stream().anyMatch(edge ->
+                String.valueOf(edge.get("fromCell")).contains("#field:")
+                        || String.valueOf(edge.get("toCell"))
+                        .contains("#field:")));
 
         String projectionEdge = edgeId(program.edges,
                 "container_projection");
@@ -186,11 +191,205 @@ public class SeedBackwardStaticAnalyzerTest {
                 "heap_mutation_path_guard");
         assertNotNull(projectionEdge);
         assertNotNull(mutationGuardEdge);
+        assertTrue(((Number) program.targetResolved.get(
+                "globalFieldWriterIndexSize")).intValue() > 0);
+    }
 
-        Map<String, Object> slice = sliceContaining(program,
-                projectionEdge, mutationGuardEdge);
-        assertNotNull(slice);
-        assertTrue(inputCells(slice).contains(values.getSignature()));
+    @Test
+    public void nestedReceiverChainReachesParameterCallerAndFieldWriters()
+            throws Exception {
+        SootClass object = libraryClass("java.lang.Object");
+        SootClass runtimeException = libraryClass(
+                "java.lang.RuntimeException");
+        runtimeException.setSuperclass(object);
+        SootMethod runtimeConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        runtimeException.addMethod(runtimeConstructor);
+
+        SootClass failure = applicationClass(
+                "example.ReceiverFailure", runtimeException);
+        SootMethod failureConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        failure.addMethod(failureConstructor);
+        constructorBody(failureConstructor, runtimeConstructor);
+
+        SootClass rootType = applicationClass("example.RootState", object);
+        SootClass middleType = applicationClass("example.MiddleState", object);
+        SootClass leafType = applicationClass("example.LeafState", object);
+        SootField rootMiddle = new SootField("middle",
+                RefType.v(middleType.getName()), Modifier.PUBLIC);
+        SootField middleLeaf = new SootField("leaf",
+                RefType.v(leafType.getName()), Modifier.PUBLIC);
+        SootField leafValue = new SootField("value", IntType.v(),
+                Modifier.PUBLIC);
+        rootType.addField(rootMiddle);
+        middleType.addField(middleLeaf);
+        leafType.addField(leafValue);
+
+        SootClass owner = applicationClass("example.ReceiverComponent",
+                object);
+        SootField root = new SootField("root", RefType.v(rootType.getName()),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addField(root);
+
+        SootMethod consume = buildNestedReceiverConsumer(owner, failure,
+                failureConstructor, rootType, middleType, leafType,
+                rootMiddle, middleLeaf, leafValue);
+        SootMethod component = buildNestedReceiverCaller(owner, consume,
+                rootType, root);
+        SootMethod writeMiddle = buildInstanceFieldWriter(owner,
+                "writeMiddle", rootType, middleType, rootMiddle);
+        SootMethod writeLeaf = buildInstanceFieldWriter(owner,
+                "writeLeaf", middleType, leafType, middleLeaf);
+        SootMethod writeValue = buildIntFieldWriter(owner, leafType,
+                leafValue);
+
+        ExceptionTargetSite site = new ExceptionTargetSite(
+                "receiver-def-use", owner.getName(), consume.getName(),
+                "(" + rootType.getName().replace('.', '/') + ")V",
+                consume.getSignature(), failure.getName(), 0, -1);
+        StaticProgram program = new SeedBackwardStaticAnalyzer(
+                new CausynthTargetContext(null, null, site.id, site,
+                        "TEST")).analyze();
+
+        assertTrue(program.traceMethods.contains(component.getSignature()));
+        assertTrue(program.traceMethods.contains(writeMiddle.getSignature()));
+        assertTrue(program.traceMethods.contains(writeLeaf.getSignature()));
+        assertTrue(program.traceMethods.contains(writeValue.getSignature()));
+        assertTrue(hasEdge(program, "local_def_use",
+                consume.getSignature() + "::root",
+                consume.getSignature() + "::middle"));
+        assertTrue(hasEdge(program, "local_def_use",
+                consume.getSignature() + "::middle",
+                consume.getSignature() + "::leaf"));
+        assertTrue(hasEdge(program, "local_def_use",
+                consume.getSignature() + "::leaf",
+                consume.getSignature() + "::value"));
+        assertTrue(hasEdge(program, "caller_argument",
+                component.getSignature() + "::root",
+                consume.getSignature() + ".param0:" + rootType.getName()));
+        assertNotNull(edge(program.edges, "method_activation"));
+        assertTrue(hasEdge(program, "field_read", rootMiddle.getSignature(),
+                consume.getSignature() + "::middle"));
+        assertTrue(hasEdge(program, "field_read", middleLeaf.getSignature(),
+                consume.getSignature() + "::leaf"));
+        assertTrue(hasEdge(program, "field_read", leafValue.getSignature(),
+                consume.getSignature() + "::value"));
+        assertFalse(program.edges.stream().anyMatch(edge ->
+                String.valueOf(edge.get("fromCell")).contains("#field:")
+                        || String.valueOf(edge.get("toCell"))
+                        .contains("#field:")));
+    }
+
+    private static SootMethod buildNestedReceiverConsumer(
+            SootClass owner, SootClass failure,
+            SootMethod failureConstructor, SootClass rootType,
+            SootClass middleType, SootClass leafType,
+            SootField rootMiddle, SootField middleLeaf,
+            SootField leafValue) {
+        SootMethod method = new SootMethod("consumeNested",
+                Collections.singletonList(RefType.v(rootType.getName())),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local root = local(body, "root", RefType.v(rootType.getName()));
+        Local middle = local(body, "middle",
+                RefType.v(middleType.getName()));
+        Local leaf = local(body, "leaf", RefType.v(leafType.getName()));
+        Local value = local(body, "value", IntType.v());
+        Local exception = local(body, "failure", RefType.v(failure.getName()));
+        body.getUnits().add(Jimple.v().newIdentityStmt(root,
+                Jimple.v().newParameterRef((RefType) root.getType(), 0)));
+        body.getUnits().add(Jimple.v().newAssignStmt(middle,
+                Jimple.v().newInstanceFieldRef(root, rootMiddle.makeRef())));
+        body.getUnits().add(Jimple.v().newAssignStmt(leaf,
+                Jimple.v().newInstanceFieldRef(middle, middleLeaf.makeRef())));
+        body.getUnits().add(Jimple.v().newAssignStmt(value,
+                Jimple.v().newInstanceFieldRef(leaf, leafValue.makeRef())));
+        Unit normalReturn = Jimple.v().newReturnVoidStmt();
+        body.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newLeExpr(value, IntConstant.v(0)), normalReturn));
+        body.getUnits().add(Jimple.v().newAssignStmt(exception,
+                Jimple.v().newNewExpr(RefType.v(failure.getName()))));
+        body.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newSpecialInvokeExpr(exception,
+                        failureConstructor.makeRef())));
+        body.getUnits().add(Jimple.v().newThrowStmt(exception));
+        body.getUnits().add(normalReturn);
+        return method;
+    }
+
+    private static SootMethod buildNestedReceiverCaller(
+            SootClass owner, SootMethod consume, SootClass rootType,
+            SootField rootField) {
+        SootMethod method = new SootMethod("componentEntry",
+                Collections.emptyList(), VoidType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local root = local(body, "root", RefType.v(rootType.getName()));
+        body.getUnits().add(Jimple.v().newAssignStmt(root,
+                Jimple.v().newStaticFieldRef(rootField.makeRef())));
+        body.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(consume.makeRef(), root)));
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+        return method;
+    }
+
+    private static SootMethod buildInstanceFieldWriter(
+            SootClass owner, String name, SootClass receiverType,
+            SootClass valueType, SootField field) {
+        SootMethod method = new SootMethod(name,
+                Arrays.asList(RefType.v(receiverType.getName()),
+                        RefType.v(valueType.getName())),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local receiver = local(body, "receiver",
+                RefType.v(receiverType.getName()));
+        Local value = local(body, "value", RefType.v(valueType.getName()));
+        body.getUnits().add(Jimple.v().newIdentityStmt(receiver,
+                Jimple.v().newParameterRef((RefType) receiver.getType(), 0)));
+        body.getUnits().add(Jimple.v().newIdentityStmt(value,
+                Jimple.v().newParameterRef((RefType) value.getType(), 1)));
+        body.getUnits().add(Jimple.v().newAssignStmt(
+                Jimple.v().newInstanceFieldRef(receiver, field.makeRef()),
+                value));
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+        return method;
+    }
+
+    private static SootMethod buildIntFieldWriter(
+            SootClass owner, SootClass receiverType, SootField field) {
+        SootMethod method = new SootMethod("writeValue",
+                Arrays.asList(RefType.v(receiverType.getName()), IntType.v()),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local receiver = local(body, "receiver",
+                RefType.v(receiverType.getName()));
+        Local value = local(body, "input", IntType.v());
+        body.getUnits().add(Jimple.v().newIdentityStmt(receiver,
+                Jimple.v().newParameterRef((RefType) receiver.getType(), 0)));
+        body.getUnits().add(Jimple.v().newIdentityStmt(value,
+                Jimple.v().newParameterRef(IntType.v(), 1)));
+        body.getUnits().add(Jimple.v().newAssignStmt(
+                Jimple.v().newInstanceFieldRef(receiver, field.makeRef()),
+                value));
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+        return method;
+    }
+
+    private static boolean hasEdge(StaticProgram program, String kind,
+                                   String from, String to) {
+        return program.edges.stream().anyMatch(edge ->
+                kind.equals(edge.get("kind"))
+                        && from.equals(edge.get("fromCell"))
+                        && to.equals(edge.get("toCell")));
     }
 
     private static SootMethod buildCompute(
