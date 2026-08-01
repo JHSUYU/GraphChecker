@@ -3183,7 +3183,7 @@ public final class ConcolicRegionRuntime {
                     || !accessFieldSignature.equals(safe(signature)))) {
                 return false;
             }
-            // A projection rooted at a method return/local may not carry a
+            // A path rooted at a method return/local may not carry a
             // statically known access owner.  Matching such an action by the
             // leaf name alone aliases unrelated same-named fields (for
             // example ExportedBlockKeys.allKeys and

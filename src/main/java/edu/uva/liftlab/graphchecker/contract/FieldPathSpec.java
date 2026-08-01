@@ -10,7 +10,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Canonical parser for Soot field declarations and projected field paths.
+ * Canonical parser for Soot field declarations and structured field paths.
  *
  * <p>This is deliberately a value parser, not another admission layer.
  * Static analysis proves the access site; Scheduler and Runtime consume that
@@ -19,43 +19,31 @@ import java.util.regex.Pattern;
 public final class FieldPathSpec {
     private static final Pattern DECLARED_FIELD = Pattern.compile(
             "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
-    private static final Pattern PROJECTION = Pattern.compile(
-            "#field:([^#]+)");
-
     private FieldPathSpec() {
     }
 
-    /** Parses only the canonical field declaration before any projections. */
+    /** Parses one canonical declared field signature. */
     public static DeclaredField declaredField(String cell) {
         String value = trim(cell);
-        int projection = value.indexOf("#field:");
-        String base = projection < 0 ? value
-                : value.substring(0, projection);
-        Matcher matcher = DECLARED_FIELD.matcher(base);
+        Matcher matcher = DECLARED_FIELD.matcher(value);
         return matcher.matches()
                 ? new DeclaredField(matcher.group(1), matcher.group(2),
                 matcher.group(3))
                 : null;
     }
 
-    /** Returns the declared root field followed by every projected segment. */
+    /** Returns the leaf name of one declared-field cell. */
     public static List<String> path(String cell) {
         List<String> result = new ArrayList<>();
         DeclaredField declared = declaredField(cell);
         if (declared != null) result.add(declared.name());
-        Matcher matcher = PROJECTION.matcher(trim(cell));
-        while (matcher.find()) {
-            String segment = trim(matcher.group(1));
-            if (!segment.isEmpty()) result.add(segment);
-        }
         return Collections.unmodifiableList(result);
     }
 
     public static String leafOwner(String cell) {
         DeclaredField declared = declaredField(cell);
         if (declared == null) return "";
-        return trim(cell).contains("#field:")
-                ? declared.type() : declared.owner();
+        return declared.owner();
     }
 
     public static List<String> stringArray(JsonObject object,

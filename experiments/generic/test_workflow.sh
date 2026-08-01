@@ -38,8 +38,10 @@ mkdir -p \
 
 for file in \
   tool/fake.jar tool/env.jar tool/pom.xml target.yaml bin/z3 bin/java \
-  artifacts/symbolic_regions.jsonl artifacts/static_dataflow_edges.jsonl \
+  artifacts/region_skeletons.jsonl.gz \
+  artifacts/symbolic_regions.jsonl artifacts/candidate_dataflow_edges.jsonl \
   artifacts/symbolic_region_edges.jsonl \
+  artifacts/runtime/refined_dataflow_edges.jsonl \
   artifacts/runtime/concolic_region_plan.jsonl \
   artifacts/runtime/runtime_region_edge_validation.jsonl \
   artifacts/schedule/concolic_region_results.jsonl \
@@ -55,20 +57,20 @@ done
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${fixture_root}/bin/java"
 chmod +x "${fixture_root}/bin/java"
 printf '%s\n' \
-  '{"id":"DF.Z","kind":"z-static","fromCell":"z-cell","toCell":"sink","method":"m","siteId":"z"}' \
-  '{"id":"DF.A","kind":"a-static","fromCell":"a-cell","toCell":"sink","method":"m","siteId":"a"}' \
-  > "${fixture_root}/artifacts/static_dataflow_edges.jsonl"
+  '{"schemaVersion":3,"id":"DF.Z","kind":"z-static","fromCell":"z-cell","toCell":"sink","method":"m","siteId":"z"}' \
+  '{"schemaVersion":3,"id":"DF.A","kind":"a-static","fromCell":"a-cell","toCell":"sink","method":"m","siteId":"a"}' \
+  > "${fixture_root}/artifacts/candidate_dataflow_edges.jsonl"
 printf '%s\n' \
-  '{"regionId":"REGION.0","anchorMethod":"m","symbolicInputs":[{"portId":"in.0"}],"outputs":[{"portId":"out.0"}],"truncated":false}' \
+  '{"schemaVersion":3,"kind":"SYMBOLIC_REGION","graphKind":"RUNTIME_REFINED_DATAFLOW","regionId":"REGION.0","rootMethod":"m","anchorMethod":"m","methods":["m"],"symbolicInputs":[{"portId":"REGION.0.in.0"}],"outputs":[{"portId":"REGION.0.out.0"}]}' \
   > "${fixture_root}/artifacts/symbolic_regions.jsonl"
 printf '%s\n' \
-  '{"edgeId":"REGION_EDGE.0","kind":"RPC_RETURN","fromRegion":"REGION.1","fromPort":"out.0","toRegion":"REGION.0","toPort":"in.0"}' \
+  '{"schemaVersion":3,"edgeId":"RF.0","kind":"RUNTIME_FIELD_FLOW","transportKind":"HEAP","fromRegion":"REGION.1","fromPort":"REGION.1.out.0","toRegion":"REGION.0","toPort":"REGION.0.in.0"}' \
   > "${fixture_root}/artifacts/symbolic_region_edges.jsonl"
 printf '%s\n' \
-  '{"schemaVersion":2,"kind":"RUNTIME_REGION_EDGE_EVIDENCE","edgeId":"REGION_EDGE.0","fromRegion":"REGION.1","toRegion":"REGION.0","transportKind":"RPC_RETURN","fromPort":"out.0","toPort":"in.0","requiresOrder":true,"requiresObjectIdentity":false,"state":"UNOBSERVED","bindings":[]}' \
+  '{"schemaVersion":3,"kind":"RUNTIME_FIELD_FLOW","edgeId":"RF.0","fromRegion":"REGION.1","toRegion":"REGION.0","transportKind":"HEAP","fromPort":"REGION.1.out.0","toPort":"REGION.0.in.0","state":"CONFIRMED_RUNTIME_IDENTITY","bindings":[]}' \
   > "${fixture_root}/artifacts/runtime/runtime_region_edge_validation.jsonl"
 printf '%s\n' \
-  '{"regionInstanceId":"REGION.0@fixture#call1","regionId":"REGION.0","rootSelector":{"kind":"GLOBAL_INVOCATION","method":"m","ordinal":1},"closureGoals":[]}' \
+  '{"schemaVersion":3,"kind":"CONCOLIC_REGION_PLAN","regionInstanceId":"REGION.0@fixture#call1","regionId":"REGION.0","rootSelector":{"kind":"GLOBAL_INVOCATION","method":"m","ordinal":1},"closureGoals":[]}' \
   > "${fixture_root}/artifacts/runtime/concolic_region_plan.jsonl"
 printf '%s\n' \
   '{"regionId":"REGION.0","relationallyComplete":true,"outputClosure":{"schemaVersion":2,"kind":"OUTPUT_CLOSURE_CONTRACT","producer":{"regionId":"REGION.0","regionInstanceId":"REGION.0@fixture#call1","rootCallId":1},"causalEdges":[],"members":[{"output":{"portId":"REGION.0.out.0","cell":"out-cell","kind":"RETURN","javaTypeDescriptor":"I"},"slice":{"outputPort":"REGION.0.out.0","outputCell":"out-cell","inputPorts":[],"sites":[],"staticSites":[],"methods":["m"],"causalEdgeIds":[],"captureBindings":[],"captureBindingIssues":[]}}]},"regionRelation":{"kind":"GUARDED_PATH_MERGE","cases":[{"caseId":"CASE.0","guard":{"kind":"PATH_CONDITION","conditions":[{"op":"="}]},"outputExpressions":{"REGION.0.out.0":{"exp":"x"}},"normalExit":true}]}}' \
@@ -165,19 +167,27 @@ GRAPH_CHECKER_DEBUG_MAX_ITEMS=1 \
   >"${debug_stdout}" 2>"${debug_stderr}"
 [[ ! -s "${debug_stdout}" ]] || fail 'analyze debug output leaked to stdout'
 debug_text=$(<"${debug_stderr}")
-assert_contains "${debug_text}" 'artifact=static_graph'
+assert_contains "${debug_text}" 'artifact=candidate_graph'
 assert_contains "${debug_text}" 'total=2 shown=1 truncated=true'
 assert_contains "${debug_text}" 'a-static'
 assert_not_contains "${debug_text}" 'z-static'
 
-"${runner}" --config "${config}" --debug workload \
+workload=$(${runner} --config "${config}" --dry-run workload)
+assert_contains "${workload}" 'workflow'
+assert_contains "${workload}" '--region-skeleton-only true'
+assert_contains "${workload}" '-Dcausynth.trace.mode=region-state'
+assert_contains "${workload}" '--candidate-graph'
+assert_contains "${workload}" '--refined-graph'
+
+"${runner}" --config "${config}" debug-stage workload \
   >"${debug_stdout}" 2>"${debug_stderr}"
-assert_contains "$(<"${debug_stdout}")" 'workflow'
 debug_text=$(<"${debug_stderr}")
+assert_contains "${debug_text}" 'artifact=refined_graph'
 assert_contains "${debug_text}" 'artifact=runtime_region_edge_validation'
 assert_contains "${debug_text}" 'artifact=concolic_region_instance_plan'
 assert_contains "${debug_text}" 'total=1 shown=1 truncated=false'
-assert_contains "${debug_text}" '"regionInstanceId":"REGION_INSTANCE.0"'
+assert_contains "${debug_text}" \
+  '"regionInstanceId":"REGION.0@fixture#call1"'
 assert_contains "${debug_text}" '"goalCount":0'
 assert_not_contains "${debug_text}" 'status=invalid-json'
 

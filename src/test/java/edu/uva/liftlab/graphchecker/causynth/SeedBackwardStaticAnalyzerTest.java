@@ -185,11 +185,11 @@ public class SeedBackwardStaticAnalyzerTest {
                         || String.valueOf(edge.get("toCell"))
                         .contains("#field:")));
 
-        String projectionEdge = edgeId(program.edges,
-                "container_projection");
+        String receiverEdge = edgeId(program.edges,
+                "container_receiver");
         String mutationGuardEdge = edgeId(program.edges,
                 "heap_mutation_path_guard");
-        assertNotNull(projectionEdge);
+        assertNotNull(receiverEdge);
         assertNotNull(mutationGuardEdge);
         assertTrue(((Number) program.targetResolved.get(
                 "globalFieldWriterIndexSize")).intValue() > 0);

@@ -6,27 +6,11 @@ import java.util.regex.Pattern;
 
 /** Default semantics for one versioned static data-flow edge row. */
 final class StaticDataflowEdgeSchema {
-    static final int VERSION = 2;
-    static final String ASSERTABLE = "ASSERTABLE";
-    static final String MAPPING_ONLY = "MAPPING_ONLY";
-    static final String RUNTIME_VALIDATION_REQUIRED =
-            "RUNTIME_VALIDATION_REQUIRED";
+    static final int VERSION = 3;
     private static final Pattern METHOD_SIGNATURE = Pattern.compile(
             "<([^:]+):\\s+(.+)\\s+([^\\s(]+)\\((.*)\\)>");
 
     private StaticDataflowEdgeSchema() {
-    }
-
-    static boolean mappingOnly(Map<String, Object> edge) {
-        return MAPPING_ONLY.equals(semanticMode(edge));
-    }
-
-    static boolean automaticSemantics(Map<String, Object> edge) {
-        return supported(edge) && ASSERTABLE.equals(semanticMode(edge));
-    }
-
-    static String semanticMode(Map<String, Object> edge) {
-        return string(edge, "semanticMode", "");
     }
 
     static String transferKind(String kind, String unit, String invoke,
@@ -88,7 +72,7 @@ final class StaticDataflowEdgeSchema {
         if (normalizedKind.contains("constructor")) return "CONSTRUCT";
         if (normalizedKind.contains("accessor")
                 || normalizedKind.contains("receiver_field")) {
-            return "PROJECTION";
+            return "IDENTITY_BINDING";
         }
         if (normalizedKind.contains("argument")
                 || normalizedKind.endsWith("receiver")
@@ -102,7 +86,6 @@ final class StaticDataflowEdgeSchema {
             }
             return computation(unit) ? "COMPUTE" : "VALUE_PASS";
         }
-        if (normalizedKind.contains("projected")) return "PROJECTION";
         return "UNKNOWN";
     }
 
@@ -152,12 +135,4 @@ final class StaticDataflowEdgeSchema {
                 String.valueOf(value));
     }
 
-    private static String string(Map<String, Object> edge, String field,
-                                 String fallback) {
-        if (edge == null || !edge.containsKey(field)
-                || edge.get(field) == null) {
-            return fallback;
-        }
-        return String.valueOf(edge.get(field));
-    }
 }

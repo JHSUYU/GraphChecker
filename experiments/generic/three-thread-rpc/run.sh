@@ -89,7 +89,7 @@ project_repo=$(configured_value project_repo)
 project_test_classes=$(configured_value project_test_classes_dir)
 original_classes=$(configured_value project_classes_dir)
 instrumented_classes=$(configured_value analysis_classes_dir)
-static_graph=$(configured_value static_graph)
+refined_graph=$(configured_value refined_graph)
 runtime_edge_validations=$(configured_value runtime_edge_validations)
 graphchecker_jar=$(configured_value graphchecker_jar)
 maven_bin=$(configured_value maven_bin)
@@ -172,7 +172,7 @@ workflow_discovery() {
 validate_discovery_inputs() {
   require_file "runtime region plan" "${region_plan}"
   require_file "runtime edge validations" "${runtime_edge_validations}"
-  require_file "static data-flow graph" "${static_graph}"
+  require_file "runtime-refined data-flow graph" "${refined_graph}"
 }
 
 discovered_producer_campaigns() {

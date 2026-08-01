@@ -77,7 +77,7 @@ public final class ConcolicScheduler {
         requireFile(arguments.regions, "symbolic regions");
         requireFile(arguments.regionPlan, "region plan");
         requireFile(arguments.edgeValidations, "runtime edge validation");
-        requireFile(arguments.staticGraph, "static data-flow graph");
+        requireFile(arguments.refinedGraph, "runtime-refined graph");
         Files.createDirectories(arguments.outputDirectory);
 
         List<JsonObject> regions = readJsonl(arguments.regions);
@@ -86,8 +86,9 @@ public final class ConcolicScheduler {
         List<JsonObject> summaries = arguments.summaries == null
                 ? Collections.<JsonObject>emptyList()
                 : readJsonl(arguments.summaries);
-        List<JsonObject> staticGraph = readJsonl(arguments.staticGraph);
-        DefinitionIndex definitions = DefinitionIndex.from(staticGraph);
+        List<JsonObject> refinedGraph = readJsonl(arguments.refinedGraph);
+        requireRefinedGraph(refinedGraph);
+        DefinitionIndex definitions = DefinitionIndex.from(refinedGraph);
 
         Map<String, Region> regionIndex = new LinkedHashMap<>();
         for (JsonObject row : regions) {
@@ -546,24 +547,7 @@ public final class ConcolicScheduler {
     private static Endpoint producerEndpoint(JsonObject edge,
                                              Region region) {
         if (region == null) return null;
-        if (!hasCanonicalOutputMetadata(edge)) {
-            return region.outputEndpoint(string(edge, "fromPort"), "");
-        }
-        String authority = string(edge, "aliasProofAuthority");
-        boolean acceptedAuthority = ("STATIC_EXACT_PROJECTED_RETURN_VALUE_"
-                + "FLOW_AND_DECLARED_RETURN_FIELD").equals(authority)
-                || ("CONFIGURED_RPC_PRODUCER_RETURN_AND_STATIC_EXACT_"
-                + "PUBLISH_VALUE_FLOW_V1").equals(authority);
-        String outputPort = string(edge, "fromOutputPort");
-        String outputCell = string(edge, "fromOutputCell");
-        if (!bool(edge, "aliasProofComplete", false)
-                || !acceptedAuthority || outputPort.isEmpty()
-                || outputCell.isEmpty()
-                || array(edge, "aliasProofEdgeIds").size() == 0
-                || !outputPort.equals(region.uniqueOutputPort(outputCell))) {
-            return null;
-        }
-        return new Endpoint(outputPort, outputCell);
+        return region.outputEndpoint(string(edge, "fromPort"), "");
     }
 
     private static Endpoint consumerEndpoint(JsonObject edge,
@@ -573,14 +557,6 @@ public final class ConcolicScheduler {
                 firstNonBlank(string(edge, "toInputPort"),
                         string(edge, "toPort")),
                 string(edge, "toInputCell"));
-    }
-
-    private static boolean hasCanonicalOutputMetadata(JsonObject edge) {
-        return edge != null && (edge.has("fromOutputPort")
-                || edge.has("fromOutputCell")
-                || edge.has("aliasProofEdgeIds")
-                || edge.has("aliasProofAuthority")
-                || edge.has("aliasProofComplete"));
     }
 
     private static JsonObject branchQuery(Candidate candidate,
@@ -709,6 +685,22 @@ public final class ConcolicScheduler {
     private static void requireFile(Path path, String label) throws IOException {
         if (path == null || !Files.isRegularFile(path)) {
             throw new IOException(label + " not found: " + path);
+        }
+    }
+
+    private static void requireRefinedGraph(List<JsonObject> rows) {
+        if (rows.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "runtime-refined graph must not be empty");
+        }
+        for (JsonObject row : rows) {
+            if (integer(row, "schemaVersion", -1) != 3
+                    || integer(row, "refinementSchemaVersion", -1) != 1
+                    || !"RUNTIME_REFINED_DATAFLOW".equals(
+                    string(row, "graphKind"))) {
+                throw new IllegalArgumentException(
+                        "scheduler accepts only the runtime-refined graph");
+            }
         }
     }
 
@@ -848,7 +840,7 @@ public final class ConcolicScheduler {
     }
 
     private static final class Region {
-        private static final int STATIC_REGION_SCHEMA_VERSION = 2;
+        private static final int STATIC_REGION_SCHEMA_VERSION = 3;
         private final String regionId;
         private final Map<String, List<String>> inputPortsByCell =
                 new LinkedHashMap<>();
@@ -871,10 +863,6 @@ public final class ConcolicScheduler {
                     inputPortsByCell, inputCellByPort);
             collectPorts(array(row, "outputs"),
                     outputPortsByCell, outputCellByPort);
-        }
-
-        private String uniqueOutputPort(String cell) {
-            return uniquePort(outputPortsByCell, cell);
         }
 
         private Endpoint inputEndpoint(String portOrCell, String cellHint) {
@@ -1395,7 +1383,7 @@ public final class ConcolicScheduler {
                 + " artifacts={regions=" + artifact(arguments.regions)
                 + ",regionPlan=" + artifact(arguments.regionPlan)
                 + ",edgeValidations=" + artifact(arguments.edgeValidations)
-                + ",staticGraph=" + artifact(arguments.staticGraph)
+                + ",refinedGraph=" + artifact(arguments.refinedGraph)
                 + ",summaries=" + artifact(arguments.summaries) + "}";
     }
 
@@ -1417,7 +1405,7 @@ public final class ConcolicScheduler {
         public final Path regions;
         public final Path regionPlan;
         public final Path edgeValidations;
-        public final Path staticGraph;
+        public final Path refinedGraph;
         public final Path summaries;
         public final Path outputDirectory;
         public final String regionId;
@@ -1427,14 +1415,14 @@ public final class ConcolicScheduler {
         public final int maxJobs;
 
         private Arguments(Path regions, Path regionPlan,
-                          Path edgeValidations, Path staticGraph,
+                          Path edgeValidations, Path refinedGraph,
                           Path summaries, Path outputDirectory, String regionId,
                           String regionInstanceId, String goalId,
                           String targetSite, int maxJobs) {
             this.regions = regions;
             this.regionPlan = regionPlan;
             this.edgeValidations = edgeValidations;
-            this.staticGraph = staticGraph;
+            this.refinedGraph = refinedGraph;
             this.summaries = summaries;
             this.outputDirectory = outputDirectory;
             this.regionId = safe(regionId);
@@ -1471,9 +1459,9 @@ public final class ConcolicScheduler {
             Path edges = requiredPath(values, "edge-validations");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
                     sibling(regionPlan, "concolic-schedule").toString()));
-            Path staticGraph = requiredPath(values, "static-graph");
+            Path refinedGraph = requiredPath(values, "refined-graph");
             Path summaries = optionalPath(values.get("summaries"));
-            return new Arguments(regions, regionPlan, edges, staticGraph,
+            return new Arguments(regions, regionPlan, edges, refinedGraph,
                     summaries, output,
                     firstNonBlank(values.get("region-id")),
                     firstNonBlank(values.get("region-instance-id")),
@@ -1486,7 +1474,7 @@ public final class ConcolicScheduler {
             return "regions".equals(key)
                     || "region-plan".equals(key)
                     || "edge-validations".equals(key)
-                    || "static-graph".equals(key)
+                    || "refined-graph".equals(key)
                     || "summaries".equals(key)
                     || "output-dir".equals(key)
                     || "region-id".equals(key)

@@ -245,7 +245,7 @@ final class SeedBackwardStaticAnalyzer {
 
     StaticProgram analyze() throws IOException {
         StaticProgram result = new StaticProgram();
-        result.targetResolved.put("schemaVersion", 2);
+        result.targetResolved.put("schemaVersion", 3);
         result.targetResolved.put("kind", "TARGET_ATTESTATION");
         result.targetResolved.put("targetId",
                 target.exceptionTargetSite.id);
@@ -1692,7 +1692,7 @@ final class SeedBackwardStaticAnalyzer {
             List<String> defs, Set<String> callerRelevant) {
         if (callee == null || defs.isEmpty()
                 || !(JavaContainerTypes.symbolicResultOperation(callee.raw)
-                || isSemanticContainerProjection(callee))) {
+                || isSemanticContainerView(callee))) {
             return;
         }
         List<String> relevantDefs = new ArrayList<>();
@@ -1708,7 +1708,7 @@ final class SeedBackwardStaticAnalyzer {
         String receiverNode = canonical(callerMethod, receiver);
         if (ignoreNode(receiverNode)) return;
         for (String def : relevantDefs) {
-            addEdge("container_projection", receiverNode, def,
+            addEdge("container_receiver", receiverNode, def,
                     callerMethod, fact,
                     "modeled Java container result depends on receiver state");
         }
@@ -1726,7 +1726,7 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    private boolean isSemanticContainerProjection(MethodSig method) {
+    private boolean isSemanticContainerView(MethodSig method) {
         if (method == null) return false;
         if (javaMapContractOwner(method.owner)
                 && method.params.isEmpty()) {
@@ -1895,7 +1895,7 @@ final class SeedBackwardStaticAnalyzer {
      * read.  Requested-output planning intentionally refuses to turn a
      * textual {@code <owner: type name>} cell into a replayable field
      * input without this Soot authority: inherited fields, shadowing and
-     * receiver projections would otherwise be indistinguishable.
+     * receiver flows would otherwise be indistinguishable.
      *
      * <p>Both the canonical declared-field row and its receiver-sensitive
      * companion are annotated.  The former is the materializable scalar
@@ -2199,9 +2199,7 @@ final class SeedBackwardStaticAnalyzer {
             Set<String> targetRelevant) {
         boolean relevantFlow = false;
         for (ProtocolPortMapping port : mapping.request) {
-            String actual = protocolProjection(
-                    actuals.get(port.clientArgument),
-                    port.clientProjection);
+            String actual = actuals.get(port.clientArgument);
             if (ignoreNode(actual)) {
                 continue;
             }
@@ -2474,9 +2472,7 @@ final class SeedBackwardStaticAnalyzer {
                     callsite.fact.unitIndex)) {
                 continue;
             }
-            String actual = protocolProjection(
-                    callsite.actuals.get(port.clientArgument),
-                    port.clientProjection);
+            String actual = callsite.actuals.get(port.clientArgument);
             if (ignoreNode(actual)) {
                 continue;
             }
@@ -2488,13 +2484,6 @@ final class SeedBackwardStaticAnalyzer {
             callerRelevant.add(actual);
             selectedMethods.add(callsite.method);
         }
-    }
-
-    private String protocolProjection(String base, String projection) {
-        // Keep the request object as the cheap static dependency. Runtime
-        // evidence resolves any configured message-field projection after
-        // the participating client/server activations are known.
-        return base;
     }
 
     private void expandDispatchCallers(String targetMethod) {
@@ -3050,18 +3039,13 @@ final class SeedBackwardStaticAnalyzer {
         StaticEdge edge = emittedEdgeRows.get(key);
         if (edge == null) {
             String edgeId = "DF." + edgeCounter++;
-            String semanticMode = StaticDataflowEdgeSchema.ASSERTABLE;
-            boolean mappingOnly = StaticDataflowEdgeSchema.MAPPING_ONLY
-                    .equals(semanticMode);
-            boolean assertable = StaticDataflowEdgeSchema.ASSERTABLE
-                    .equals(semanticMode);
             String edgeTransferKind = StaticDataflowEdgeSchema.transferKind(
                     kind,
                     fact == null ? "" : fact.unitText,
                     fact == null ? null : fact.invoke,
                     fromText, toText);
-            boolean exactDirectCopy = assertable
-                    && exactLocalDirectCopy(kind, fromText, toText,
+            boolean exactDirectCopy = exactLocalDirectCopy(kind,
+                    fromText, toText,
                     method, fact, edgeTransferKind);
             String relation = exactDirectCopy
                     ? "value_flow" : relationForKind(kind);
@@ -3071,8 +3055,7 @@ final class SeedBackwardStaticAnalyzer {
                     "id", edgeId,
                     "kind", kind,
                     "transferKind", edgeTransferKind,
-                    "semanticMode", semanticMode,
-                    "relation", mappingOnly ? "" : relation,
+                    "relation", relation,
                     "fromCell", fromText,
                     "toCell", toText,
                     "method", method,

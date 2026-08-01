@@ -17,9 +17,9 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * endpoint order, and domain-specific mapping names never satisfy this gate.</p>
  */
 public final class AutomaticRegionEdge {
-    static final int RUNTIME_EDGE_SCHEMA_VERSION = 2;
+    static final int RUNTIME_EDGE_SCHEMA_VERSION = 3;
     static final String RUNTIME_EDGE_KIND =
-            "RUNTIME_REGION_EDGE_EVIDENCE";
+            "RUNTIME_FIELD_FLOW";
     static final String COMPLETE_VALUE_EQUALITY =
             "COMPLETE_VALUE_EQUALITY_V1";
     static final String FIELD_ASSIGNMENT_READ_FROM =
@@ -47,10 +47,8 @@ public final class AutomaticRegionEdge {
                 || string(edge, "toPort").isEmpty()) {
             return "";
         }
-        String relation = "CONFIRMED_READ_FROM".equals(string(edge, "state"))
-                ? "READ_FROM"
-                : "CONFIRMED_RUNTIME_VALUE_EQUALITY".equals(
-                string(edge, "state")) ? "EQUALITY" : "";
+        String relation = "CONFIRMED_RUNTIME_IDENTITY".equals(
+                string(edge, "state")) ? "READ_FROM" : "";
         JsonElement bindings = edge.get("bindings");
         if (relation.isEmpty() || bindings == null || !bindings.isJsonArray()
                 || bindings.getAsJsonArray().size() == 0) {
@@ -122,7 +120,14 @@ public final class AutomaticRegionEdge {
         if (evidence == null) return false;
         String kind = string(evidence, "evidenceKind");
         if (FIELD_ASSIGNMENT_READ_FROM.equals(kind)) {
-            return longInteger(evidence, "receiverObjectId", 0L) != 0L
+            return integer(evidence, "schemaVersion", -1) == 3
+                    && "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1".equals(
+                    string(evidence, "correlationAuthority"))
+                    && !string(evidence, "fromRegionInstance").isEmpty()
+                    && !string(evidence, "toRegionInstance").isEmpty()
+                    && !string(evidence, "fromOutputPort").isEmpty()
+                    && !string(evidence, "toInputPort").isEmpty()
+                    && longInteger(evidence, "receiverObjectId", 0L) != 0L
                     && ordered(evidence);
         }
         if (!CONTAINER_MUTATION_READ_FROM.equals(kind)

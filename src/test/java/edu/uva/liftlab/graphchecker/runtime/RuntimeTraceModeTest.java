@@ -30,10 +30,11 @@ public class RuntimeTraceModeTest {
     }
 
     @Test
-    public void defaultsToFull() {
+    public void defaultsToSkeleton() {
         String environment = System.getenv("CAUSYNTH_TRACE_MODE");
         Assume.assumeTrue(environment == null || environment.trim().isEmpty());
-        assertEquals(RuntimeTraceMode.FULL, RuntimeTraceMode.configured());
+        assertEquals(RuntimeTraceMode.REGION_SKELETON,
+                RuntimeTraceMode.configured());
     }
 
     @Test
@@ -44,13 +45,9 @@ public class RuntimeTraceModeTest {
     }
 
     @Test
-    public void recognizesAliases() {
-        assertAlias("skeleton", RuntimeTraceMode.REGION_SKELETON);
-        assertAlias("REGION_SKELETON", RuntimeTraceMode.REGION_SKELETON);
-        assertAlias("state", RuntimeTraceMode.REGION_STATE);
-        assertAlias("inventory", RuntimeTraceMode.REGION_STATE);
-        assertAlias("region_state", RuntimeTraceMode.REGION_STATE);
-        assertAlias("rich", RuntimeTraceMode.FULL);
+    public void recognizesCurrentModeNames() {
+        assertMode("REGION_SKELETON", RuntimeTraceMode.REGION_SKELETON);
+        assertMode("region_state", RuntimeTraceMode.REGION_STATE);
     }
 
     @Test
@@ -64,7 +61,7 @@ public class RuntimeTraceModeTest {
         }
     }
 
-    private static void assertAlias(String value, RuntimeTraceMode expected) {
+    private static void assertMode(String value, RuntimeTraceMode expected) {
         System.setProperty(PROPERTY, value);
         assertEquals(expected, RuntimeTraceMode.configured());
     }

@@ -26,7 +26,7 @@ public class CausynthArtifactWriterTest {
         Path output = temporary.newFolder("artifacts").toPath();
         StaticProgram program = new StaticProgram();
         Map<String, Object> skeleton = new LinkedHashMap<>();
-        skeleton.put("schemaVersion", 2);
+        skeleton.put("schemaVersion", 3);
         skeleton.put("kind", "REGION_SKELETON");
         skeleton.put("regionId", "REGION.0");
         program.regions.add(skeleton);
@@ -34,6 +34,8 @@ public class CausynthArtifactWriterTest {
         CausynthArtifactWriter.writeDiscoveryArtifacts(output, program);
 
         Path gzip = output.resolve("region_skeletons.jsonl.gz");
+        assertTrue(Files.isRegularFile(
+                output.resolve("candidate_dataflow_edges.jsonl")));
         assertTrue(Files.isRegularFile(gzip));
         assertFalse(Files.exists(output.resolve("region_skeletons.jsonl")));
         try (BufferedReader reader = new BufferedReader(

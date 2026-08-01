@@ -130,7 +130,7 @@ final class ConfiguredProtocolStubs {
             }
             for (int index = 0; index < client.getParameterCount(); index++) {
                 request.add(port("arg" + index, index, index,
-                        "", client, server));
+                        client, server));
             }
         } else if (requestElement != null && requestElement.isJsonArray()) {
             JsonArray ports = requestElement.getAsJsonArray();
@@ -139,7 +139,6 @@ final class ConfiguredProtocolStubs {
                 request.add(port(string(port, "name"),
                         port.get("clientArgument").getAsInt(),
                         port.get("serverParameter").getAsInt(),
-                        string(port, "clientProjection"),
                         client, server));
             }
         }
@@ -163,7 +162,6 @@ final class ConfiguredProtocolStubs {
 
     private static ProtocolPortMapping port(
             String name, int clientArgument, int serverParameter,
-            String clientProjection,
             SootMethod client, SootMethod server) {
         if (clientArgument < 0
                 || clientArgument >= client.getParameterCount()
@@ -172,14 +170,13 @@ final class ConfiguredProtocolStubs {
             throw new IllegalArgumentException(
                     "protocol request argument index is out of range");
         }
-        if (clientProjection.isEmpty()
-                && !client.getParameterType(clientArgument).equals(
+        if (!client.getParameterType(clientArgument).equals(
                 server.getParameterType(serverParameter))) {
             throw new IllegalArgumentException(
                     "mapped request types differ");
         }
         return new ProtocolPortMapping(name, clientArgument,
-                serverParameter, clientProjection);
+                serverParameter);
     }
 
     private static String string(JsonObject object, String field) {
@@ -228,13 +225,10 @@ final class ProtocolPortMapping {
     final String name;
     final int clientArgument;
     final int serverParameter;
-    final String clientProjection;
-
     ProtocolPortMapping(String name, int clientArgument,
-                        int serverParameter, String clientProjection) {
+                        int serverParameter) {
         this.name = name;
         this.clientArgument = clientArgument;
         this.serverParameter = serverParameter;
-        this.clientProjection = clientProjection;
     }
 }

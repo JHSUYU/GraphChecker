@@ -133,8 +133,8 @@ public final class ConcolicSmtComposer {
 
         ResolvedSummaryGraph resolved = resolveSummaryGraph(fatal,
                 resolutionContext, summaries);
-        // Static projection can expose several aliases for one runtime
-        // writer/read event.  Resolution deliberately admits only aliases
+        // Runtime identity can expose several aliases for one concrete
+        // writer/read event. Resolution deliberately admits only aliases
         // backed by an exact producer summary.  Re-scope the context to that
         // resolved graph before emission: one surviving alternative becomes
         // an ordinary versioned merge, while an entirely concrete alias
@@ -3396,7 +3396,6 @@ public final class ConcolicSmtComposer {
                     || "IDENTITY_BINDING".equals(kind)
                     || "HEAP_READ".equals(kind)
                     || "HEAP_WRITE".equals(kind)
-                    || "PROJECTION".equals(kind)
                     || "PROTOCOL_TRANSFER".equals(kind);
         }
 

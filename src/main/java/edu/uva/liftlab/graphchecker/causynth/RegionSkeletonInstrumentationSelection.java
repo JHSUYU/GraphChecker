@@ -46,11 +46,11 @@ final class RegionSkeletonInstrumentationSelection {
                 JsonElement schema = row.get("schemaVersion");
                 if (schema == null || !schema.isJsonPrimitive()
                         || !schema.getAsJsonPrimitive().isNumber()
-                        || schema.getAsInt() != 2
+                        || schema.getAsInt() != 3
                         || !"REGION_SKELETON".equals(
                         requiredString(row, "kind"))) {
                     throw new IllegalArgumentException(
-                            "not a schema-2 REGION_SKELETON row");
+                            "not a schema-3 REGION_SKELETON row");
                 }
                 String regionId = requiredString(row, "regionId");
                 String root = requiredString(row, "rootMethod");

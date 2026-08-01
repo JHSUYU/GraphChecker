@@ -21,7 +21,7 @@ final class CausynthArtifactWriter {
         Files.createDirectories(outputDir);
         writeJson(outputDir.resolve("target_resolved.json"),
                 program.targetResolved);
-        writeJsonl(outputDir.resolve("static_dataflow_edges.jsonl"),
+        writeJsonl(outputDir.resolve("candidate_dataflow_edges.jsonl"),
                 program.edges);
         Files.deleteIfExists(outputDir.resolve("region_skeletons.jsonl"));
         writeGzipJsonl(outputDir.resolve("region_skeletons.jsonl.gz"),

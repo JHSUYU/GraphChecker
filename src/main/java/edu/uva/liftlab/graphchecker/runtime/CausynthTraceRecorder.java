@@ -48,6 +48,10 @@ public final class CausynthTraceRecorder {
     private static final Object LOCK = new Object();
     private static final AtomicBoolean INITIALIZED = new AtomicBoolean();
     private static final AtomicLong EVENT_COUNTER = new AtomicLong();
+    /** Exact process-local object tokens; identity hash collisions are unsafe. */
+    private static final IdentityHashMap<Object, Integer> OBJECT_IDS =
+            new IdentityHashMap<>();
+    private static int nextObjectId = 1;
     private static final ThreadLocal<Deque<ActiveCall>> ACTIVE_CALLS =
             ThreadLocal.withInitial(ArrayDeque::new);
     private static final ThreadLocal<Deque<ActiveCallSite>> ACTIVE_CALL_SITES =
@@ -89,20 +93,18 @@ public final class CausynthTraceRecorder {
         Map<String, String> params = parseArgs(args);
         File directory = new File(requiredArg(params, "trace-dir"));
         String test = requiredArg(params, "test");
-        boolean inventoryOnly = Boolean.parseBoolean(
-                params.get("inventory-only"));
         boolean skeletonOnly = Boolean.parseBoolean(
                 params.get("region-skeleton-only"));
-        if (inventoryOnly && skeletonOnly) {
-            throw new IllegalArgumentException("--inventory-only and "
-                    + "--region-skeleton-only are mutually exclusive");
-        }
         String configuredSkeletons = params.get("region-skeletons");
         File candidateSkeletons = configuredSkeletons == null
                 || configuredSkeletons.trim().isEmpty()
                 ? null : new File(configuredSkeletons.trim());
-        File graph = skeletonOnly && candidateSkeletons != null ? null
-                : new File(requiredArg(params, "static-graph"));
+        if (candidateSkeletons == null) {
+            throw new IllegalArgumentException(
+                    "--region-skeletons is required");
+        }
+        File graph = skeletonOnly ? null
+                : new File(requiredArg(params, "candidate-graph"));
         File regions = skeletonOnly ? null
                 : new File(requiredArg(params, "regions"));
         File regionEdges = skeletonOnly ? null
@@ -113,11 +115,18 @@ public final class CausynthTraceRecorder {
                 ? directory : new File(configuredOutput.trim());
         try {
             if (skeletonOnly) {
-                aggregateSkeletonTrace(directory, graph, candidateSkeletons,
+                aggregateSkeletonTrace(directory, candidateSkeletons,
                         test, planOutputDirectory);
             } else {
-                aggregateExistingTrace(directory, graph, regions, regionEdges,
-                        test, planOutputDirectory, inventoryOnly);
+                String configuredRefined = params.get("refined-graph");
+                File refinedGraph = configuredRefined == null
+                        || configuredRefined.trim().isEmpty()
+                        ? new File(planOutputDirectory,
+                        "refined_dataflow_edges.jsonl")
+                        : new File(configuredRefined.trim());
+                aggregateStateTrace(directory, graph, candidateSkeletons,
+                        refinedGraph, regions, regionEdges, test,
+                        planOutputDirectory);
             }
         } catch (Throwable throwable) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
@@ -184,10 +193,7 @@ public final class CausynthTraceRecorder {
         return id;
     }
 
-    /**
-     * Records the activation metadata needed by inventory planning without
-     * collecting arguments, call sites, branches, or return values.
-     */
+    /** Records only the balanced activation tree for skeleton selection. */
     public static long enterMethodLite(String method, Object receiver) {
         if (method == null) {
             return 0L;
@@ -283,28 +289,6 @@ public final class CausynthTraceRecorder {
         event.primitiveValue = safe(primitiveValue);
         event.captureValueFingerprint(returnValue, primitiveValue);
         emitExecutionEvent(event);
-        removeCallSite(invocationId);
-    }
-
-    /** Completes a lite container call without inspecting its return value. */
-    public static void endCallLite(long invocationId) {
-        initialize();
-        ActiveCallSite site = activeCallSite(invocationId);
-        long id = EVENT_COUNTER.incrementAndGet();
-        if (id <= maxEvents && !contextOnlyConcolicReplay) {
-            synchronized (LOCK) {
-                writeTraceRow(
-                        "schemaVersion", 2,
-                        "event", "CALL_SITE_RETURN",
-                        "seq", id,
-                        "method", site == null ? "" : site.caller,
-                        "callId", site == null ? 0L : site.ownerCallId,
-                        "invocationId", invocationId,
-                        "siteId", site == null ? "" : site.siteId,
-                        "declaredCallee",
-                        site == null ? "" : site.declaredCallee);
-            }
-        }
         removeCallSite(invocationId);
     }
 
@@ -409,61 +393,6 @@ public final class CausynthTraceRecorder {
         exitActiveMethodLite("CALL_SITE_THROW");
     }
 
-    /**
-     * Records only the exact declared field and owning activation required by
-     * the post-runtime inventory input slice.
-     */
-    public static void recordFieldReadLite(String field) {
-        recordFieldReadLite(field, null, null);
-    }
-
-    public static void recordFieldReadLite(
-            String field, Object fieldOwner, Object referenceValue) {
-        recordFieldLite("FIELD_READ", field, fieldOwner, referenceValue);
-    }
-
-    /** Records a shared-state producer without inspecting its owner or value. */
-    public static void recordFieldWriteLite(String field) {
-        recordFieldWriteLite(field, null, null);
-    }
-
-    public static void recordFieldWriteLite(
-            String field, Object fieldOwner, Object referenceValue) {
-        recordFieldLite("FIELD_WRITE", field, fieldOwner, referenceValue);
-    }
-
-    private static void recordFieldLite(
-            String kind, String field, Object fieldOwner,
-            Object referenceValue) {
-        if (field == null || field.isEmpty()) {
-            return;
-        }
-        initialize();
-        if (contextOnlyConcolicReplay) {
-            return;
-        }
-        ActiveCall call = ACTIVE_CALLS.get().peek();
-        if (call == null) {
-            return;
-        }
-        long id = EVENT_COUNTER.incrementAndGet();
-        if (id > maxEvents) {
-            return;
-        }
-        synchronized (LOCK) {
-            writeTraceRow(
-                    "schemaVersion", 2,
-                    "event", kind,
-                    "seq", id,
-                    "callId", call.callId,
-                    "field", field,
-                    "fieldReceiverObjectId", identity(fieldOwner),
-                    "fieldReceiverRuntimeType", runtimeType(fieldOwner),
-                    "valueObjectId", identity(referenceValue),
-                    "valueRuntimeType", runtimeType(referenceValue));
-        }
-    }
-
     public static void recordField(String kind, String method, int unitIndex,
                                    String field, Object methodReceiver,
                                    Object fieldReceiver, Object valueObject,
@@ -479,8 +408,8 @@ public final class CausynthTraceRecorder {
         if (id > maxEvents) {
             return;
         }
-        int receiverObjectId = fieldReceiver == null ? 0 : System.identityHashCode(fieldReceiver);
-        int valueObjectId = valueObject == null ? 0 : System.identityHashCode(valueObject);
+        int receiverObjectId = identity(fieldReceiver);
+        int valueObjectId = identity(valueObject);
         ValueFingerprint fingerprint =
                 ValueFingerprint.capture(valueObject, primitiveValue);
         ActiveCall activeCall = ACTIVE_CALLS.get().peek();
@@ -623,7 +552,22 @@ public final class CausynthTraceRecorder {
     }
 
     private static int identity(Object value) {
-        return value == null ? 0 : System.identityHashCode(value);
+        if (value == null) {
+            return 0;
+        }
+        synchronized (LOCK) {
+            Integer existing = OBJECT_IDS.get(value);
+            if (existing != null) {
+                return existing;
+            }
+            if (nextObjectId == Integer.MAX_VALUE) {
+                throw new IllegalStateException(
+                        "runtime object identity space exhausted");
+            }
+            int assigned = nextObjectId++;
+            OBJECT_IDS.put(value, assigned);
+            return assigned;
+        }
     }
 
     private static String runtimeType(Object value) {
@@ -765,52 +709,59 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static void aggregateExistingTrace(
-            File directory, File staticGraph, File regionFile,
-            File regionEdgeFile, String test) throws IOException {
-        aggregateExistingTrace(directory, staticGraph, regionFile,
-                regionEdgeFile, test, directory, false);
-    }
-
-    private static void aggregateExistingTrace(
-            File directory, File staticGraph, File regionFile,
-            File regionEdgeFile, String test, File planOutputDirectory,
-            boolean inventoryOnly) throws IOException {
+    private static void aggregateStateTrace(
+            File directory, File candidateGraph, File selectedSkeletons,
+            File refinedGraph, File regionFile, File regionEdgeFile,
+            String test, File planOutputDirectory) throws IOException {
         synchronized (LOCK) {
             clearInMemoryTrace();
             requireClosedTrace(new File(directory,
                     "streaming_trace_manifest.json"));
             long traceLoadStart = System.nanoTime();
             TraceData trace = loadExistingTrace(new File(directory,
-                    "runtime_trace.jsonl"), test, inventoryOnly);
+                    "runtime_trace.jsonl"), test, false);
             trace.sort();
             long traceLoadMillis = elapsedMillis(traceLoadStart);
             Set<String> observedMethods = new LinkedHashSet<>();
             for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
                 observedMethods.add(event.method);
             }
+            long refinementStart = System.nanoTime();
+            RuntimeRefinedGraphBuilder.Result refinement =
+                    RuntimeRefinedGraphBuilder.refine(candidateGraph,
+                            selectedSkeletons, trace.methods, trace.execution,
+                            trace.fields, refinedGraph.toPath());
+            long refinementMillis = elapsedMillis(refinementStart);
             long candidatePlanningStart = System.nanoTime();
-            if (inventoryOnly) {
-                RuntimeSelectedRegionFinalizer.finalizeInventory(
-                        staticGraph, regionFile, regionEdgeFile,
-                        observedMethods);
-            } else {
-                RuntimeSelectedRegionFinalizer.finalizeRegions(
-                        staticGraph, regionFile, regionEdgeFile,
-                        observedMethods);
-            }
+            RuntimeSelectedRegionFinalizer.finalizeRegions(
+                    refinedGraph, selectedSkeletons, regionFile,
+                    regionEdgeFile,
+                    observedMethods);
             long candidatePlanningMillis =
                     elapsedMillis(candidatePlanningStart);
-            writeRuntimeRegionPlans(planOutputDirectory, staticGraph,
-                    regionFile, regionEdgeFile, trace,
-                    inventoryOnly, traceLoadMillis,
-                    candidatePlanningMillis);
+            writeRuntimeRegionPlans(planOutputDirectory, refinedGraph,
+                    regionFile, regionEdgeFile, trace);
+            writeFile(new File(planOutputDirectory,
+                            "runtime_refinement_manifest.json"),
+                    CausynthJson.objectWithoutNulls(
+                            "schemaVersion", 1,
+                            "kind", "RUNTIME_REFINED_GRAPH",
+                            "status", "COMPLETE",
+                            "traceLoadMillis", traceLoadMillis,
+                            "refinementMillis", refinementMillis,
+                            "regionPlanningMillis", candidatePlanningMillis,
+                            "selectedMethodCount",
+                            refinement.selectedMethodCount,
+                            "activationCount", refinement.activationCount,
+                            "edgeCount", refinement.edgeCount,
+                            "runtimeBoundEdgeCount",
+                            refinement.runtimeBoundEdgeCount));
         }
     }
 
     /** Emits only static region skeletons and their concrete activation graph. */
     private static void aggregateSkeletonTrace(
-            File directory, File staticGraph, File candidateSkeletons,
+            File directory, File candidateSkeletons,
             String test,
             File outputDirectory)
             throws IOException {
@@ -820,32 +771,16 @@ public final class CausynthTraceRecorder {
                     "streaming_trace_manifest.json"));
             long traceLoadStart = System.nanoTime();
             TraceData trace = loadExistingTrace(new File(directory,
-                    "runtime_trace.jsonl"), test, false, true);
+                    "runtime_trace.jsonl"), test, true);
             trace.sort();
             long traceLoadMillis = elapsedMillis(traceLoadStart);
             File skeletons = new File(outputDirectory,
                     "region_skeletons.jsonl");
-            File planningSkeletons = candidateSkeletons;
-            long candidatePlanningMillis = 0L;
-            if (planningSkeletons == null) {
-                Set<String> observedMethods = new LinkedHashSet<>();
-                for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
-                    observedMethods.add(event.method);
-                }
-                File discardedRegionEdges = Files.createTempFile(
-                        "causynth-region-skeleton-edges-", ".jsonl").toFile();
-                long candidatePlanningStart = System.nanoTime();
-                try {
-                    RuntimeSelectedRegionFinalizer.finalizeSkeletons(
-                            staticGraph, skeletons, discardedRegionEdges,
-                            observedMethods);
-                } finally {
-                    Files.deleteIfExists(discardedRegionEdges.toPath());
-                }
-                candidatePlanningMillis =
-                        elapsedMillis(candidatePlanningStart);
-                planningSkeletons = skeletons;
+            if (candidateSkeletons == null) {
+                throw new IOException("skeleton aggregation requires the "
+                        + "schema-3 candidate skeleton artifact");
             }
+            File planningSkeletons = candidateSkeletons;
 
             long runtimeGraphStart = System.nanoTime();
             RuntimeRegionPlanner.Result graph =
@@ -861,22 +796,16 @@ public final class CausynthTraceRecorder {
                         "skeleton aggregation selected no runtime "
                                 + "activations");
             }
-            if (candidateSkeletons != null) {
-                writeSelectedSkeletons(candidateSkeletons, skeletons,
-                        graph.runtimeInstances);
-            }
+            writeSelectedSkeletons(candidateSkeletons, skeletons,
+                    graph.runtimeInstances);
             StringBuilder encoded = new StringBuilder();
             encoded.append(CausynthJson.objectWithoutNulls(
                     "schemaVersion", 1,
                     "kind", "RUNTIME_REGION_GRAPH_METADATA",
                     "status", "COMPLETE",
                     "traceLoadMillis", traceLoadMillis,
-                    "staticCandidateRegionPlanningMillis",
-                    candidatePlanningMillis,
                     "staticCandidateRegionPlanning",
-                    candidateSkeletons == null
-                            ? "OFFLINE_FROM_STATIC_GRAPH"
-                            : "PRECOMPUTED_DURING_ANALYZE",
+                    "PRECOMPUTED_DURING_ANALYZE",
                     "runtimeActivationGraphMillis", runtimeGraphMillis,
                     "nodeCount", graph.runtimeInstances.size(),
                     "edgeCount", graph.runtimeGraphEdges.size()))
@@ -969,27 +898,19 @@ public final class CausynthTraceRecorder {
         EVENT_COUNTER.set(0L);
         ACTIVE_CALLS.remove();
         ACTIVE_CALL_SITES.remove();
+        OBJECT_IDS.clear();
+        nextObjectId = 1;
         contextOnlyConcolicReplay = false;
         traceWriteFailure = false;
         traceWriter = null;
     }
 
     private static TraceData loadExistingTrace(
-            File file, String test, boolean inventoryOnly)
-            throws IOException {
-        return loadExistingTrace(file, test, inventoryOnly, false);
-    }
-
-    private static TraceData loadExistingTrace(
-            File file, String test, boolean inventoryOnly,
-            boolean skeletonOnly) throws IOException {
+            File file, String test, boolean skeletonOnly) throws IOException {
         if (file == null || !file.isFile()) {
             throw new IOException("Runtime trace not found: " + file);
         }
         TraceData trace = new TraceData();
-        Map<String, String> canonicalFieldNames = inventoryOnly
-                ? new LinkedHashMap<String, String>()
-                : Collections.<String, String>emptyMap();
         try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
                 StandardCharsets.UTF_8)) {
             String line;
@@ -1008,7 +929,7 @@ public final class CausynthTraceRecorder {
                     throw new IOException("Malformed runtime trace row "
                             + lineNumber + " in " + file, malformed);
                 }
-                if (integer(row, "schemaVersion", -1) != 2) {
+                if (integer(row, "schemaVersion", -1) != 3) {
                     throw new IOException("Unsupported runtime trace row: "
                             + line);
                 }
@@ -1037,45 +958,21 @@ public final class CausynthTraceRecorder {
                 } else if (!skeletonOnly && ("FIELD_READ".equals(eventKind)
                         || "FIELD_WRITE".equals(eventKind))) {
                     String method = string(row, "method");
-                    if (!inventoryOnly
-                            || "FIELD_READ".equals(eventKind)
-                            || "FIELD_WRITE".equals(eventKind)
-                            && method.contains(": void <init>(")) {
-                        String field = string(row, "field");
-                        if (inventoryOnly) {
-                            String canonical =
-                                    canonicalFieldNames.get(field);
-                            if (canonical == null) {
-                                canonicalFieldNames.put(field, field);
-                            } else {
-                                field = canonical;
-                            }
-                        }
-                        boolean compactRead = inventoryOnly
-                                && "FIELD_READ".equals(eventKind);
-                        trace.fields.add(
-                                new RuntimeRegionPlanner.FieldAccessEvent(
+                    trace.fields.add(
+                            new RuntimeRegionPlanner.FieldAccessEvent(
                             longInteger(row, "seq", 0L),
                             eventKind,
-                            compactRead ? "" : method,
+                            method,
                             longInteger(row, "callId", 0L),
-                            compactRead ? -1
-                                    : integer(row, "unitIndex", -1),
-                            compactRead ? "" : string(row, "siteId"),
-                            field,
-                            compactRead ? 0 : integer(row,
-                                    "fieldReceiverObjectId", 0),
-                            compactRead ? 0 : integer(row,
-                                    "valueObjectId", 0),
-                            compactRead ? "" : string(row,
-                                    "primitiveValue"),
-                            compactRead ? "" : string(row,
-                                    "valueFingerprint"),
-                            !compactRead && bool(row,
-                                    "valueFingerprintComplete", false)));
-                    }
-                } else if (!skeletonOnly && !inventoryOnly
-                        && isExecutionEventKind(eventKind)) {
+                            integer(row, "unitIndex", -1),
+                            string(row, "siteId"),
+                            string(row, "field"),
+                            integer(row, "fieldReceiverObjectId", 0),
+                            integer(row, "valueObjectId", 0),
+                            string(row, "primitiveValue"),
+                            string(row, "valueFingerprint"),
+                            bool(row, "valueFingerprintComplete", false)));
+                } else if (!skeletonOnly && isExecutionEventKind(eventKind)) {
                     trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
                             longInteger(row, "seq", 0L), eventKind,
                             string(row, "method"),
@@ -1117,7 +1014,7 @@ public final class CausynthTraceRecorder {
 
     private static void writeTraceLine(RuntimeRegionPlanner.MethodEvent event) {
         writeTraceRow(
-                "schemaVersion", 2,
+                "schemaVersion", 3,
                 "event", "METHOD_ENTER",
                 "seq", event.seq,
                 "process", event.process,
@@ -1134,7 +1031,7 @@ public final class CausynthTraceRecorder {
     private static void writeFieldTraceLine(
             RuntimeRegionPlanner.FieldAccessEvent event) {
         writeTraceRow(
-                "schemaVersion", 2,
+                "schemaVersion", 3,
                 "event", event.kind,
                 "seq", event.seq,
                 "method", event.method,
@@ -1152,7 +1049,7 @@ public final class CausynthTraceRecorder {
     private static void writeExecutionTraceLine(ExecutionEvent event) {
         if (event == null) return;
         writeTraceRow(
-                "schemaVersion", 2,
+                "schemaVersion", 3,
                 "event", event.kind,
                 "seq", event.id,
                 "method", event.method,
@@ -1278,63 +1175,13 @@ public final class CausynthTraceRecorder {
     private static void writeRuntimeRegionPlans(
             File directory, File staticGraph, File regionFile,
             File regionEdgeFile, TraceData trace) throws IOException {
-        writeRuntimeRegionPlans(directory, staticGraph, regionFile,
-                regionEdgeFile, trace, false, 0L, 0L);
-    }
-
-    private static void writeRuntimeRegionPlans(
-            File directory, File staticGraph, File regionFile,
-            File regionEdgeFile, TraceData trace,
-            boolean inventoryOnly, long traceLoadMillis,
-            long candidatePlanningMillis) throws IOException {
-        RuntimeRegionPlanner.Result planned = inventoryOnly
-                ? RuntimeRegionPlanner.planInventory(regionFile,
-                trace.methods, trace.execution, trace.fields)
-                : RuntimeRegionPlanner.plan(regionFile,
+        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
+                regionFile,
                 regionEdgeFile, staticGraph, trace.methods,
                 trace.execution, trace.fields);
         writeRuntimePlanArtifacts(directory,
                 planned.edgeValidationsJsonl(), planned.regionPlansJsonl(),
                 planned.runtimeInstances);
-        if (inventoryOnly) {
-            writeFile(new File(directory,
-                            "runtime_region_inventory_manifest.json"),
-                    CausynthJson.objectWithoutNulls(
-                            "schemaVersion", 1,
-                            "kind", "RUNTIME_REGION_INPUT_INVENTORY",
-                            "status", "COMPLETE",
-                            "phaseOrder", Arrays.asList(
-                                    "STATIC_CANDIDATE_REGION_PLANNING",
-                                    "RUNTIME_REGION_INSTANTIATION",
-                                    "POST_RUNTIME_REGION_INPUT_SLICING"),
-                            "traceLoadMillis", traceLoadMillis,
-                            "staticCandidateRegionPlanningMillis",
-                            candidatePlanningMillis,
-                            "runtimeRegionInstantiationMillis",
-                            Math.max(0L,
-                                    planned.runtimeInventoryTotalNanos
-                                            - planned.regionInputSlicingNanos)
-                                    / 1_000_000L,
-                            "postRuntimeRegionInputSlicingMillis",
-                            planned.regionInputSlicingNanos / 1_000_000L,
-                            "concolicPlanning", "NOT_REQUESTED",
-                            "materialization", "NOT_COMPUTED",
-                            "staticRegionCount",
-                            planned.staticRegionCount,
-                            "runtimeInstanceCount",
-                            planned.runtimeInstances.size(),
-                            "staticInputCandidateCount",
-                            planned.staticInputCandidateCount,
-                            "runtimeInputCandidateOccurrenceCount",
-                            planned.runtimeInputCandidateOccurrenceCount,
-                            "runtimeRegionInputCount",
-                            planned.runtimeRegionInputCount,
-                            "runtimePrunedInputCandidateCount",
-                            planned.runtimePrunedInputCandidateCount,
-                            "projectedEdgesUsedByOutputSlices",
-                            "NOT_APPLICABLE_IN_INVENTORY_MODE",
-                            "runtimeSymbolizedProjectedPorts", 0));
-        }
     }
 
     private static void writeRuntimePlanArtifacts(

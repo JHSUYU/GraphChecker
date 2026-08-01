@@ -54,7 +54,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|static_regions|static_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_region_instance_id|schedule_target_site|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|refined_regions|candidate_graph|refined_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_region_instance_id|schedule_target_site|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -87,8 +87,9 @@ reset_config() {
   workload_work_dir=""
   workload_command=""
   trace_test=""
-  static_regions=""
-  static_graph=""
+  refined_regions=""
+  candidate_graph=""
+  refined_graph=""
   runtime_region_plan=""
   runtime_edge_validations=""
   schedule_output_dir=""
@@ -169,8 +170,9 @@ apply_environment_overrides() {
   apply_env_override workload_work_dir CAUSYNTH_WORKLOAD_WORK_DIR
   apply_env_override workload_command CAUSYNTH_WORKLOAD_COMMAND
   apply_env_override trace_test CAUSYNTH_TRACE_TEST
-  apply_env_override static_regions CAUSYNTH_STATIC_REGIONS
-  apply_env_override static_graph CAUSYNTH_STATIC_GRAPH
+  apply_env_override refined_regions CAUSYNTH_REFINED_REGIONS
+  apply_env_override candidate_graph CAUSYNTH_CANDIDATE_GRAPH
+  apply_env_override refined_graph CAUSYNTH_REFINED_GRAPH
   apply_env_override runtime_region_plan CAUSYNTH_REGION_PLAN
   apply_env_override runtime_edge_validations CAUSYNTH_EDGE_VALIDATIONS
   apply_env_override schedule_output_dir CAUSYNTH_SCHEDULE_OUTPUT_DIR
@@ -332,10 +334,10 @@ initialize_config() {
   if [[ -n "${causynth_protocol_stubs}" ]]; then
     causynth_protocol_stubs=$(resolve_path "${causynth_protocol_stubs}")
   fi
-
-  static_regions=${static_regions:-${causynth_output_dir}/symbolic_regions.jsonl}
-  static_graph=${static_graph:-${causynth_output_dir}/static_dataflow_edges.jsonl}
+  refined_regions=${refined_regions:-${causynth_output_dir}/symbolic_regions.jsonl}
+  candidate_graph=${candidate_graph:-${causynth_output_dir}/candidate_dataflow_edges.jsonl}
   runtime_region_plan=${runtime_region_plan:-${causynth_output_dir}/runtime/concolic_region_plan.jsonl}
+  refined_graph=${refined_graph:-$(dirname "${runtime_region_plan}")/refined_dataflow_edges.jsonl}
   runtime_edge_validations=${runtime_edge_validations:-${causynth_output_dir}/runtime/runtime_region_edge_validation.jsonl}
   schedule_output_dir=${schedule_output_dir:-${causynth_output_dir}/schedule}
   raw_concolic_results=${raw_concolic_results:-${schedule_output_dir}/concolic_region_results.jsonl}
@@ -349,8 +351,9 @@ initialize_config() {
   composition_manifest=${composition_manifest:-${schedule_output_dir}/composed_smt_manifest.json}
   reach_report=${reach_report:-${schedule_output_dir}/boolean_reach_condition.json}
 
-  static_regions=$(resolve_path "${static_regions}")
-  static_graph=$(resolve_path "${static_graph}")
+  refined_regions=$(resolve_path "${refined_regions}")
+  candidate_graph=$(resolve_path "${candidate_graph}")
+  refined_graph=$(resolve_path "${refined_graph}")
   runtime_region_plan=$(resolve_path "${runtime_region_plan}")
   runtime_edge_validations=$(resolve_path "${runtime_edge_validations}")
   schedule_output_dir=$(resolve_path "${schedule_output_dir}")
@@ -413,7 +416,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs causynth_protocol_stubs custom_jdk_home z3_bin workload_work_dir workload_command trace_test static_regions static_graph runtime_region_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_task_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs causynth_protocol_stubs custom_jdk_home z3_bin workload_work_dir workload_command trace_test refined_regions candidate_graph refined_graph runtime_region_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_task_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -484,6 +487,16 @@ do_analyze() {
       "-Dcausynth.protocol.stubs=${causynth_protocol_stubs}"
     )
   fi
+  if [[ -n "${CAUSYNTH_TRACE_MODE:-}" ]]; then
+    system_properties+=(
+      "-Dcausynth.trace.mode=${CAUSYNTH_TRACE_MODE}"
+    )
+  fi
+  if [[ -n "${CAUSYNTH_REGION_SKELETONS:-}" ]]; then
+    system_properties+=(
+      "-Dcausynth.region.skeletons=${CAUSYNTH_REGION_SKELETONS}"
+    )
+  fi
   if [[ -n "${CAUSYNTH_CONCOLIC_TASK_PLAN:-}" ]]; then
     system_properties+=(
       "-Dcausynth.concolic.task.plan=${CAUSYNTH_CONCOLIC_TASK_PLAN}"
@@ -506,21 +519,20 @@ do_analyze() {
 }
 
 do_schedule() {
-  require_file "symbolic regions" "${static_regions}"
+  require_file "symbolic regions" "${refined_regions}"
   local region_plan="${runtime_region_plan}"
   require_file "runtime region plan" "${region_plan}"
   require_file "runtime edge validations" "${runtime_edge_validations}"
   ensure_output_directory "${schedule_output_dir}"
   local -a args
   args=(
-    --regions "${static_regions}"
+    --regions "${refined_regions}"
     --region-plan "${region_plan}"
     --edge-validations "${runtime_edge_validations}"
     --output-dir "${schedule_output_dir}"
   )
-  if [[ -f "${static_graph}" ]]; then
-    args+=(--static-graph "${static_graph}")
-  fi
+  require_file "runtime-refined graph" "${refined_graph}"
+  args+=(--refined-graph "${refined_graph}")
   if [[ -n "${schedule_summaries}" ]]; then
     require_file "scheduler summaries" "${schedule_summaries}"
     args+=(--summaries "${schedule_summaries}")
@@ -536,12 +548,12 @@ do_schedule() {
 do_import() {
   require_file "raw concolic results" "${raw_concolic_results}"
   require_file "import activation plan" "${import_task_plan}"
-  require_file "symbolic regions" "${static_regions}"
+  require_file "symbolic regions" "${refined_regions}"
   ensure_output_directory "$(dirname "${imported_summaries}")"
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter \
     --results "${raw_concolic_results}" \
     --task-plan "${import_task_plan}" \
-    --regions "${static_regions}" \
+    --regions "${refined_regions}" \
     --output "${imported_summaries}" \
     --diagnostics "${import_diagnostics}" "$@"
 }
@@ -561,7 +573,7 @@ append_path_list_arguments() {
 
 do_compose() {
   require_file "fatal branch queries" "${fatal_queries}"
-  require_file "symbolic regions" "${static_regions}"
+  require_file "symbolic regions" "${refined_regions}"
   ensure_output_directory "$(dirname "${composed_smt}")"
   PATH_LIST_ARGUMENTS=()
   append_path_list_arguments --summaries "${compose_summary_inputs}"
@@ -574,7 +586,7 @@ do_compose() {
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
     --fatal-query "${fatal_queries}" \
     "${PATH_LIST_ARGUMENTS[@]}" \
-    --regions "${static_regions}" \
+    --regions "${refined_regions}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
     "${selection[@]}" "$@"
@@ -583,12 +595,12 @@ do_compose() {
 do_reach() {
   require_file "composed SMT" "${composed_smt}"
   require_file "composition manifest" "${composition_manifest}"
-  require_file "symbolic regions" "${static_regions}"
+  require_file "symbolic regions" "${refined_regions}"
   ensure_output_directory "$(dirname "${reach_report}")"
   run_java_main edu.uva.liftlab.graphchecker.concolic.BooleanReachConditionExtractor \
     --smt "${composed_smt}" \
     --manifest "${composition_manifest}" \
-    --regions "${static_regions}" \
+    --regions "${refined_regions}" \
     --output "${reach_report}" \
     --z3 "${z3_bin}" \
     --timeout-ms "${solver_timeout_ms}" \
@@ -599,22 +611,59 @@ do_reach() {
 do_workload() {
   [[ -n "${workload_command}" ]] || die "workload_command is empty"
   require_directory "workload working" "${workload_work_dir}"
-  if [[ "${dry_run}" == true ]]; then
-    print_command env \
-      "CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}" \
-      bash -lc "${workload_command}"
-  else
-    (cd "${workload_work_dir}" && \
-      CAUSYNTH_CUSTOM_JDK_HOME="${custom_jdk_home}" \
-      bash -lc "${workload_command}")
-  fi
   local trace_dir
   trace_dir=$(dirname "${runtime_region_plan}")
+  local skeleton_pass="${trace_dir}/skeleton-pass"
+  local candidate_skeletons="${causynth_output_dir}/region_skeletons.jsonl.gz"
+  local selected_skeletons="${skeleton_pass}/region_skeletons.jsonl"
+  require_file "candidate region skeletons" "${candidate_skeletons}"
+  ensure_output_directory "${trace_dir}"
+  ensure_output_directory "${skeleton_pass}"
+
+  run_workload_command() {
+    if [[ "${dry_run}" == true ]]; then
+      print_command env \
+        "CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}" \
+        bash -lc "${workload_command}"
+    else
+      (cd "${workload_work_dir}" && \
+        CAUSYNTH_CUSTOM_JDK_HOME="${custom_jdk_home}" \
+        bash -lc "${workload_command}")
+    fi
+  }
+
+  # Pass 1: method activation envelopes only.
+  run_workload_command
   run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
     --trace-dir "${trace_dir}" \
-    --static-graph "${static_graph}" \
-    --regions "${static_regions}" \
-    --region-edges "$(dirname "${static_regions}")/symbolic_region_edges.jsonl" \
+    --region-skeletons "${candidate_skeletons}" \
+    --region-skeleton-only true \
+    --output-dir "${skeleton_pass}" \
+    --test "${trace_test}"
+  if [[ "${dry_run}" != true ]]; then
+    require_file "runtime-selected region skeletons" "${selected_skeletons}"
+
+    # Preserve pass-1 evidence and leave the configured trace directory clean
+    # for the state pass.
+    mv "${trace_dir}/runtime_trace.jsonl" \
+      "${skeleton_pass}/runtime_trace.jsonl"
+    mv "${trace_dir}/streaming_trace_manifest.json" \
+      "${skeleton_pass}/streaming_trace_manifest.json"
+  fi
+
+  # Pass 2: re-instrument only selected region methods, then collect rich
+  # calls, branches, arguments and every direct declared-field access.
+  CAUSYNTH_TRACE_MODE=region-state \
+    CAUSYNTH_REGION_SKELETONS="${selected_skeletons}" \
+    do_analyze
+  run_workload_command
+  run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
+    --trace-dir "${trace_dir}" \
+    --candidate-graph "${candidate_graph}" \
+    --region-skeletons "${selected_skeletons}" \
+    --refined-graph "${refined_graph}" \
+    --regions "${refined_regions}" \
+    --region-edges "$(dirname "${refined_regions}")/symbolic_region_edges.jsonl" \
     --test "${trace_test}"
 }
 
@@ -712,11 +761,11 @@ debug_jsonl_projection() {
 }
 
 debug_static_artifacts() {
-  local region_edges="$(dirname "${static_regions}")/symbolic_region_edges.jsonl"
-  debug_jsonl_projection static_graph "${static_graph}" '
+  local region_edges="$(dirname "${refined_regions}")/symbolic_region_edges.jsonl"
+  debug_jsonl_projection candidate_graph "${candidate_graph}" '
     select(type == "object")
     | {id, kind, transferKind, fromCell, toCell, method, siteId}'
-  debug_jsonl_projection symbolic_regions "${static_regions}" '
+  debug_jsonl_projection symbolic_regions "${refined_regions}" '
     select(type == "object")
     | {regionId, anchorMethod, rootMethod, precision, truncated,
        inputCount: ((.symbolicInputs // []) | length),
@@ -731,6 +780,10 @@ debug_static_artifacts() {
 }
 
 debug_runtime_artifacts() {
+  debug_jsonl_projection refined_graph "${refined_graph}" '
+    select(type == "object")
+    | {id, kind, transferKind, fromCell, toCell, method, siteId,
+       runtimeObserved, fieldPath, runtimeFieldBindings}'
   debug_jsonl_projection runtime_region_edge_validation \
     "${runtime_edge_validations}" '
     select(type == "object")

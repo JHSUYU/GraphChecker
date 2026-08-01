@@ -172,11 +172,10 @@ CAUSYNTH_WORKFLOW_CONFIG=experiments/generic/three-thread-rpc/cases/additive-or/
 `array[1].state.guard.enabled`, a deliberately misleading `array[0]`, and a
 map-entry value's nested Boolean leaf. Its `MapProducer` also has two
 existential `int` roots, `input1` and `input2`: values below 10 are clamped to
-10, and the selected result uses exact Java `int` wrap semantics. The projected
-cross-method `producer#field:inputN` ports are canonicalized to the declared
-primitive fields only after exact static-chain and runtime owner-identity
-checks, with the base read preceding the leaf read and no intervening write to
-that exact leaf. Each relation closes over the feasible paths discovered for
+10, and the selected result uses exact Java `int` wrap semantics. REGION_STATE
+records each direct field access and its receiver/value object identities; the
+runtime planner joins those events into structured paths only inside the
+selected activation. Each relation closes over the feasible paths discovered for
 its requested output; the artifact does not promise a fixed case count.
 `dependent-scalar/` exercises a non-Boolean free scalar that affects a
 producer relation. `cross-method-fields/` crosses several helper calls and

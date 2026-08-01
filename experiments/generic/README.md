@@ -33,7 +33,7 @@ that the composed SMT plus the Java Boolean domain implies that DNF. It does
 not accept handwritten SMT or a caller-provided reachability condition.
 
 The `reach` stage consumes four composition inputs:
-`composed_smt`, `composition_manifest`, `static_regions`, and
+`composed_smt`, `composition_manifest`, `refined_regions`, and
 `relationship_candidates`. It verifies their path/size/SHA-256 bindings from
 the composition manifest before extraction. Its output defaults to
 `schedule/boolean_reach_condition.json`. `reach_max_inputs` (default `12`) and

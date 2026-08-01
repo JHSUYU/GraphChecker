@@ -4,27 +4,20 @@ import java.util.Locale;
 
 /** Runtime evidence level selected before bytecode instrumentation. */
 public enum RuntimeTraceMode {
-    FULL,
     REGION_SKELETON,
     REGION_STATE;
 
     public static RuntimeTraceMode configured() {
         String value = firstNonBlank(
                 System.getProperty("causynth.trace.mode"),
-                System.getenv("CAUSYNTH_TRACE_MODE"), "full");
+                System.getenv("CAUSYNTH_TRACE_MODE"), "region-skeleton");
         String normalized = value.trim().toLowerCase(Locale.ROOT)
                 .replace('_', '-');
-        if ("region-skeleton".equals(normalized)
-                || "skeleton".equals(normalized)) {
+        if ("region-skeleton".equals(normalized)) {
             return REGION_SKELETON;
         }
-        if ("region-state".equals(normalized)
-                || "state".equals(normalized)
-                || "inventory".equals(normalized)) {
+        if ("region-state".equals(normalized)) {
             return REGION_STATE;
-        }
-        if ("full".equals(normalized) || "rich".equals(normalized)) {
-            return FULL;
         }
         throw new IllegalArgumentException(
                 "Unknown causynth trace mode: " + value);

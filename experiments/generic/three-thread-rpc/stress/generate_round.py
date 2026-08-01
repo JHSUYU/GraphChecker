@@ -817,10 +817,10 @@ z3_bin=z3
 solver_timeout_ms=20000
 producer_max_paths_per_region=128
 workload_work_dir=.
-workload_command=java -Dcausynth.trace.output.dir={target}/runtime -Dcausynth.static.graph={target}/analysis/static_dataflow_edges.jsonl -Dcausynth.symbolic.regions={target}/analysis/symbolic_regions.jsonl -Dcausynth.symbolic.region.edges={target}/analysis/symbolic_region_edges.jsonl -Dcausynth.trace.test={row['class']} -cp {target}/instrumented-classes:target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar {fixture} false false
+workload_command=java -Dcausynth.trace.output.dir={target}/runtime -Dcausynth.static.graph={target}/analysis/candidate_dataflow_edges.jsonl -Dcausynth.symbolic.regions={target}/analysis/symbolic_regions.jsonl -Dcausynth.symbolic.region.edges={target}/analysis/symbolic_region_edges.jsonl -Dcausynth.trace.test={row['class']} -cp {target}/instrumented-classes:target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar {fixture} false false
 
-static_regions={target}/analysis/symbolic_regions.jsonl
-static_graph={target}/analysis/static_dataflow_edges.jsonl
+refined_regions={target}/analysis/symbolic_regions.jsonl
+candidate_graph={target}/analysis/candidate_dataflow_edges.jsonl
 runtime_region_plan={target}/runtime/concolic_region_plan.jsonl
 runtime_edge_validations={target}/runtime/runtime_region_edge_validation.jsonl
 schedule_output_dir={target}/schedule
