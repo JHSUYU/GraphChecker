@@ -1,6 +1,8 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.junit.Rule;
 import org.junit.Test;
@@ -80,6 +82,24 @@ public class ConcolicSchedulerTest {
         assertTrue(!AutomaticRegionEdge.composable(edge));
     }
 
+    @Test
+    public void outputClosureSymbolizesOnlyDemandedInputs() throws Exception {
+        File regions = write("output-regions.jsonl", outputRegion());
+        File plans = write("output-plans.jsonl", outputPlan());
+        File edges = writeEmpty("output-edges.jsonl");
+        File refined = write("output-refined.jsonl", refinedEdge());
+        File output = folder.newFolder("output-schedule");
+
+        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                arguments(regions, plans, edges, refined, output));
+
+        assertEquals(1, result.executionTasks.size());
+        JsonArray actions = result.executionTasks.get(0)
+                .getAsJsonArray("inputActions");
+        assertEquals("SYMBOLIC", mode(actions, "REGION.1.in.demanded"));
+        assertEquals("CONCRETE", mode(actions, "REGION.1.in.unrelated"));
+    }
+
     private ConcolicScheduler.Arguments arguments(
             File regions, File plans, File edges, File graph, File output) {
         return ConcolicScheduler.Arguments.parse(new String[]{
@@ -97,6 +117,17 @@ public class ConcolicSchedulerTest {
                 "regionId", "REGION.1",
                 "symbolicInputs", Collections.emptyList(),
                 "outputs", Collections.emptyList());
+    }
+
+    private static Map<String, Object> outputRegion() {
+        return object("schemaVersion", 3, "kind", "SYMBOLIC_REGION",
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "regionId", "REGION.1",
+                "symbolicInputs", java.util.Arrays.asList(
+                        port("REGION.1.in.demanded", "param0"),
+                        port("REGION.1.in.unrelated", "param1")),
+                "outputs", Collections.singletonList(
+                        port("REGION.1.out.value", "result")));
     }
 
     private static Map<String, Object> plan() {
@@ -123,6 +154,78 @@ public class ConcolicSchedulerTest {
                         "method", "<T: void f()>", "ordinal", 1),
                 "targetMethod", "<T: void f()>",
                 "closureGoals", Collections.singletonList(goal));
+    }
+
+    private static Map<String, Object> outputPlan() {
+        String method = "<T: void f(int,int)>";
+        Map<String, Object> demanded = object(
+                "symbol", "REGION.1.in.demanded",
+                "cell", method + ".param0:int",
+                "location", "ARGUMENT", "index", 0,
+                "javaType", "int", "observed", true);
+        Map<String, Object> unrelated = object(
+                "symbol", "REGION.1.in.unrelated",
+                "cell", method + ".param1:int",
+                "location", "ARGUMENT", "index", 1,
+                "javaType", "int", "observed", true);
+
+        Map<String, Object> slice = object(
+                "outputPort", "REGION.1.out.value",
+                "outputCell", "result",
+                "inputPorts", Collections.singletonList(
+                        "REGION.1.in.demanded"),
+                "sites", Collections.emptyList(),
+                "staticSites", Collections.emptyList(),
+                "methods", Collections.singletonList(method),
+                "causalEdgeIds", Collections.emptyList(),
+                "captureBindings", Collections.emptyList(),
+                "captureBindingIssues", Collections.emptyList());
+        Map<String, Object> member = object(
+                "output", object("portId", "REGION.1.out.value",
+                        "cell", "result", "kind", "REGION_OUTPUT",
+                        "javaTypeDescriptor", "I"),
+                "slice", slice);
+        Map<String, Object> closure = object(
+                "schemaVersion", 2,
+                "kind", "OUTPUT_CLOSURE_CONTRACT",
+                "producer", object("regionId", "REGION.1",
+                        "regionInstanceId", "REGION.1@test#call1",
+                        "rootCallId", 1),
+                "causalEdges", Collections.emptyList(),
+                "members", Collections.singletonList(member));
+        Map<String, Object> goal = object(
+                "goalId", "GOAL.OUTPUT",
+                "kind", "OUTPUT_RELATION_CLOSURE",
+                "runtimeDefinitionMethods", Collections.singletonList(method),
+                "admission", object("state", "READY", "blockers",
+                        Collections.emptyList()),
+                "symbolize", java.util.Arrays.asList(demanded, unrelated),
+                "branches", Collections.emptyList(),
+                "edgeBindings", Collections.emptyList(),
+                "outputClosure", closure);
+        return object("schemaVersion", 3,
+                "kind", "CONCOLIC_REGION_PLAN",
+                "regionId", "REGION.1",
+                "regionInstanceId", "REGION.1@test#call1",
+                "rootCallId", 1,
+                "rootSelector", object("kind", "GLOBAL_INVOCATION",
+                        "method", method, "ordinal", 1),
+                "closureGoals", Collections.singletonList(goal));
+    }
+
+    private static Map<String, Object> port(String id, String cell) {
+        return object("portId", id, "symbol", id, "cell", cell);
+    }
+
+    private static String mode(JsonArray actions, String symbol) {
+        for (JsonElement element : actions) {
+            JsonObject action = element.getAsJsonObject();
+            if (symbol.equals(action.get("symbol").getAsString())) {
+                return action.get("mode").getAsString();
+            }
+        }
+        fail("missing input action " + symbol);
+        return "";
     }
 
     private static Map<String, Object> refinedEdge() {

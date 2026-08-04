@@ -125,6 +125,8 @@ public final class ConcolicSummaryImporter {
             JsonElement replayContract = task.replayContract();
 
             JsonObject summary = new JsonObject();
+            summary.addProperty("schemaVersion", 1);
+            summary.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
             summary.addProperty("goalId", task.goalId());
             summary.addProperty("taskId", task.taskId());
             summary.addProperty("regionId", task.regionId());

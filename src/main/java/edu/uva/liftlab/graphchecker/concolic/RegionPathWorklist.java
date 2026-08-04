@@ -159,8 +159,7 @@ public final class RegionPathWorklist {
 
             String region = scope.outputClosure().producer().regionId();
             String outputIdentity = scope.outputClosureIdentity();
-            Map<String, PathObservation> caseByPath =
-                    new LinkedHashMap<>();
+            List<PathObservation> validPaths = new ArrayList<>();
             List<JsonObject> bindings = new ArrayList<>();
             for (PathObservation path : paths) {
                 if (!path.scope().goalKind().capturesOutputRelation()) {
@@ -176,19 +175,14 @@ public final class RegionPathWorklist {
                     continue;
                 }
 
-                String pathKey = path.pathKey();
-                PathObservation previous = caseByPath.get(pathKey);
-                if (previous != null) {
-                    continue;
-                }
                 if (contract.members().size() > 1
                         && !path.hasExactOutputSet(
                         contract.outputPorts())) {
                     gap("JOINT_OUTPUT_EXPRESSION_SET_MISMATCH",
                             "OUTPUT_EXPRESSION_SET_DOES_NOT_MATCH_DEMAND",
-                            region, pathKey, "", -1);
+                            region, path.pathKey(), "", -1);
                 } else {
-                    caseByPath.put(pathKey, path);
+                    validPaths.add(path);
                 }
                 for (JsonElement element : path.edgeBindings()) {
                     if (!element.isJsonObject()) continue;
@@ -197,6 +191,22 @@ public final class RegionPathWorklist {
             }
             if (!gaps.isEmpty()) {
                 return Collections.emptyList();
+            }
+            boolean projectRelationGuards = true;
+            Map<String, String> relationByGuard = new LinkedHashMap<>();
+            for (PathObservation path : validPaths) {
+                String prior = relationByGuard.putIfAbsent(
+                        path.relationGuardKey(), path.relationKey());
+                if (prior != null && !prior.equals(path.relationKey())) {
+                    projectRelationGuards = false;
+                    break;
+                }
+            }
+            Map<String, PathObservation> caseByPath = new LinkedHashMap<>();
+            for (PathObservation path : validPaths) {
+                String key = projectRelationGuards
+                        ? path.relationKey() : path.pathKey();
+                caseByPath.putIfAbsent(key, path);
             }
             if (caseByPath.isEmpty()) {
                 gap("NO_VALID_OUTPUT_CLOSURE_RELATIONS",
@@ -207,7 +217,7 @@ public final class RegionPathWorklist {
 
             RelationSummary merged = RelationSummary.guardedPathMerge(
                     scope.outputClosure(),
-                    caseByPath.values(), bindings);
+                    caseByPath.values(), bindings, projectRelationGuards);
             return Collections.singletonList(merged.toJson());
         }
 

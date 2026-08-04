@@ -511,6 +511,9 @@ public class ConcolicSmtComposerTest {
         binding.addProperty("toInputPort", toPort);
         binding.addProperty("evidenceKind",
                 "FIELD_ASSIGNMENT_READ_FROM_V1");
+        binding.addProperty("schemaVersion", 3);
+        binding.addProperty("correlationAuthority",
+                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
         binding.addProperty("writerEventSeq", writer);
         binding.addProperty("readerEventSeq", reader);
         binding.addProperty("receiverObjectId", 7);

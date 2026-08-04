@@ -250,6 +250,15 @@ public final class ConcolicScheduler {
             JsonObject binding = action.deepCopy();
             String location = string(action, "location");
             String cell = string(action, "cell");
+            if (scope != null && !scope.inputPorts().contains(
+                    string(action, "symbol"))) {
+                // The output closure is the authority for symbolic demand.
+                // Keep the declaration for rooted output capture, but do not
+                // let unrelated region live-ins enter the VM/SMT state.
+                addInputAction(result, represented, binding,
+                        InputActionCatalog.Mode.CONCRETE);
+                continue;
+            }
             boolean vmIntrinsic = verifiedVmIntrinsicPlaceholder(action,
                     location, cell);
             if (action.has("observed")

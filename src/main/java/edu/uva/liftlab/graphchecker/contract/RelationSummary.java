@@ -49,12 +49,22 @@ public final class RelationSummary {
             OutputClosureContract outputClosure,
             Collection<PathObservation> paths,
             Collection<JsonObject> edgeBindings) {
+        return guardedPathMerge(outputClosure, paths, edgeBindings, true);
+    }
+
+    public static RelationSummary guardedPathMerge(
+            OutputClosureContract outputClosure,
+            Collection<PathObservation> paths,
+            Collection<JsonObject> edgeBindings,
+            boolean projectRelationGuards) {
         List<PathObservation> orderedCases = new ArrayList<>(paths);
         Collections.sort(orderedCases,
-                Comparator.comparing(PathObservation::pathKey));
+                Comparator.comparing(projectRelationGuards
+                        ? PathObservation::relationKey
+                        : PathObservation::pathKey));
         JsonArray cases = new JsonArray();
         for (PathObservation path : orderedCases) {
-            cases.add(pathCase(path));
+            cases.add(pathCase(path, projectRelationGuards));
         }
 
         Map<String, JsonObject> bindingsByPayload = new LinkedHashMap<>();
@@ -75,6 +85,9 @@ public final class RelationSummary {
         JsonObject relation = new JsonObject();
         relation.addProperty("schemaVersion", 1);
         relation.addProperty("kind", "GUARDED_PATH_MERGE");
+        relation.addProperty("guardProjection", projectRelationGuards
+                ? "OUTPUT_CLOSURE_BRANCH_SLICE"
+                : "FULL_PATH_COLLISION_FALLBACK");
         relation.add("cases", cases);
         String relationHash = CanonicalJson.sha256(region + "\n"
                 + closureIdentity + "\n" + CanonicalJson.render(cases)
@@ -107,12 +120,15 @@ public final class RelationSummary {
         return other != null && summaryId().equals(other.summaryId());
     }
 
-    private static JsonObject pathCase(PathObservation path) {
+    private static JsonObject pathCase(PathObservation path,
+                                       boolean projectRelationGuard) {
         JsonObject item = new JsonObject();
-        item.addProperty("caseId", "CASE." + path.pathKey());
+        item.addProperty("caseId", "CASE." + (projectRelationGuard
+                ? path.relationKey() : path.pathKey()));
         JsonObject guard = new JsonObject();
         guard.addProperty("kind", "PATH_CONDITION");
-        guard.add("conditions", path.pathCondition());
+        guard.add("conditions", projectRelationGuard
+                ? path.relationPathCondition() : path.pathCondition());
         item.add("guard", guard);
         item.add("outputExpressions", path.outputExpressions());
         item.addProperty("sourceTaskId", path.sourceTaskId());

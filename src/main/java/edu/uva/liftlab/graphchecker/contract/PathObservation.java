@@ -39,6 +39,9 @@ public final class PathObservation {
     private final String branchMappingIssue;
     private final AlphaNormalizer alpha;
     private final String pathKey;
+    private final JsonArray relationPathCondition;
+    private final String relationGuardKey;
+    private final String relationKey;
 
     private PathObservation(JsonObject summary, JsonObject task) {
         this.raw = summary.deepCopy();
@@ -53,7 +56,14 @@ public final class PathObservation {
         this.branchMappings = Collections.unmodifiableList(decoded);
         this.branchMappingIssue = issue;
         this.alpha = new AlphaNormalizer(raw);
-        this.pathKey = stablePathKey(raw, scope, alpha);
+        this.pathKey = stablePathKey(raw, scope,
+                raw.get("pathCondition"), alpha);
+        this.relationPathCondition = projectRelationPathCondition(
+                raw, scope, branchMappings);
+        this.relationGuardKey = CanonicalJson.sha256(alphaCanonical(
+                relationPathCondition, new AlphaNormalizer(raw)));
+        this.relationKey = stablePathKey(raw, scope,
+                relationPathCondition, new AlphaNormalizer(raw));
     }
 
     public static PathObservation decode(JsonObject summary, JsonObject task) {
@@ -83,6 +93,11 @@ public final class PathObservation {
     public JsonObject outputExpressions() {
         return object(raw, "outputExpressions").deepCopy();
     }
+    public JsonArray relationPathCondition() {
+        return relationPathCondition.deepCopy();
+    }
+    public String relationGuardKey() { return relationGuardKey; }
+    public String relationKey() { return relationKey; }
     public JsonArray edgeBindings() {
         return array(raw, "edgeBindings").deepCopy();
     }
@@ -193,18 +208,45 @@ public final class PathObservation {
     }
 
     private static String stablePathKey(
-            JsonObject summary, Scope scope, AlphaNormalizer alpha) {
+            JsonObject summary, Scope scope, JsonElement pathCondition,
+            AlphaNormalizer alpha) {
         StringBuilder value = new StringBuilder();
         component(value, scope.outputClosure == null
                 ? string(summary, "regionId")
                 : scope.outputClosure.producer().regionId());
         component(value, scope.identity);
-        component(value, alphaCanonical(summary.get("pathCondition"), alpha));
+        component(value, alphaCanonical(pathCondition, alpha));
         component(value, alphaCanonical(summary.get("outputExpressions"),
                 alpha));
         component(value, string(summary, "normalExit"));
         component(value, string(summary, "exceptionType"));
         return CanonicalJson.sha256(value.toString());
+    }
+
+    private static JsonArray projectRelationPathCondition(
+            JsonObject summary, Scope scope,
+            List<SummaryBranchMapping> mappings) {
+        JsonArray full = array(summary, "pathCondition");
+        if (!scope.goalKind.capturesOutputRelation()) {
+            return full.deepCopy();
+        }
+        Map<Integer, SummaryBranchMapping> owners = new LinkedHashMap<>();
+        for (SummaryBranchMapping mapping : mappings) {
+            if (mapping.isWitnessed()) {
+                owners.put(mapping.summaryPcIndex(), mapping);
+            }
+        }
+        JsonArray projected = new JsonArray();
+        for (int index = 0; index < full.size(); index++) {
+            SummaryBranchMapping owner = owners.get(index);
+            if (owner != null
+                    && !scope.branchSites.contains(owner.siteId())) {
+                continue;
+            }
+            // Unowned conditions are solver context, not proven branch noise.
+            projected.add(full.get(index).deepCopy());
+        }
+        return projected;
     }
 
     private static String alphaCanonical(

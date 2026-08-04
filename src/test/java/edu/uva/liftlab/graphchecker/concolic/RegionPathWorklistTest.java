@@ -158,6 +158,90 @@ public class RegionPathWorklistTest {
     }
 
     @Test
+    public void relationProjectionDropsOnlyOutOfScopeOwnedBranch() {
+        JsonObject summary = projectionSummary("ACT.PROJECT.ONE",
+                binary("<", 5), binary("+", 1));
+        JsonObject unowned = binary("==", 9);
+        summary.getAsJsonArray("pathCondition").add(unowned.deepCopy());
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.PROJECT.ONE", "SITE.0");
+        attachClosure(summary, closure);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.<JsonObject>emptyList(),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                result.manifest.get("state").getAsString());
+        assertEquals(1, result.relations.size());
+        JsonObject relation = result.relations.get(0)
+                .getAsJsonObject("regionRelation");
+        assertEquals("OUTPUT_CLOSURE_BRANCH_SLICE",
+                relation.get("guardProjection").getAsString());
+        JsonArray guard = relation.getAsJsonArray("cases").get(0)
+                .getAsJsonObject().getAsJsonObject("guard")
+                .getAsJsonArray("conditions");
+        assertEquals(2, guard.size());
+        assertEquals(summary.getAsJsonArray("pathCondition").get(0),
+                guard.get(0));
+        assertEquals(unowned, guard.get(1));
+        assertFalse(guard.contains(
+                summary.getAsJsonArray("pathCondition").get(1)));
+    }
+
+    @Test
+    public void equalProjectedRelationsCollapseToOneCase() {
+        JsonObject first = projectionSummary("ACT.PROJECT.SAME.A",
+                binary("<", 5), binary("+", 1));
+        JsonObject second = projectionSummary("ACT.PROJECT.SAME.B",
+                binary(">=", 5), binary("+", 1));
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.PROJECT.SAME", "SITE.0");
+        attachClosure(first, closure);
+        attachClosure(second, closure);
+        shareGoal(first, second);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Arrays.asList(first, second),
+                Collections.<JsonObject>emptyList(),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        JsonObject relation = result.relations.get(0)
+                .getAsJsonObject("regionRelation");
+        assertEquals("OUTPUT_CLOSURE_BRANCH_SLICE",
+                relation.get("guardProjection").getAsString());
+        assertEquals(1, relation.getAsJsonArray("cases").size());
+    }
+
+    @Test
+    public void projectedGuardOutputCollisionFallsBackToFullRelation() {
+        JsonObject first = projectionSummary("ACT.PROJECT.COLLIDE.A",
+                binary("<", 5), binary("+", 1));
+        JsonObject second = projectionSummary("ACT.PROJECT.COLLIDE.B",
+                binary(">=", 5), binary("-", 1));
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.PROJECT.COLLIDE", "SITE.0");
+        attachClosure(first, closure);
+        attachClosure(second, closure);
+        shareGoal(first, second);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Arrays.asList(first, second),
+                Collections.<JsonObject>emptyList(),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        JsonObject relation = result.relations.get(0)
+                .getAsJsonObject("regionRelation");
+        assertEquals("FULL_PATH_COLLISION_FALLBACK",
+                relation.get("guardProjection").getAsString());
+        assertEquals(2, relation.getAsJsonArray("cases").size());
+    }
+
+    @Test
     public void concreteOnlyOutputBranchNeedsNoFlipTask() {
         JsonObject summary = summary("ACT.CONCRETE.ONLY",
                 ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
@@ -674,6 +758,29 @@ public class RegionPathWorklistTest {
         summary.add("branchMappings", mappings);
         summary.add("outputExpressions", new JsonObject());
         authorizeVmPcMappings(summary);
+        return summary;
+    }
+
+    private static JsonObject projectionSummary(
+            String id, JsonObject noise, JsonObject output) {
+        JsonObject summary = summary(id,
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonArray conditions = new JsonArray();
+        conditions.add(binary(">", 0));
+        conditions.add(noise.deepCopy());
+        summary.add("pathCondition", conditions);
+
+        JsonArray mappings = new JsonArray();
+        JsonObject relevant = mapping("SITE.0", 0);
+        relevant.addProperty("policy", "PATH_ASSUMPTION");
+        mappings.add(relevant);
+        JsonObject irrelevant = mapping("SITE.NOISE", 1);
+        irrelevant.addProperty("policy", "PATH_ASSUMPTION");
+        mappings.add(irrelevant);
+        summary.add("branchMappings", mappings);
+        authorizeVmPcMappings(summary);
+        summary.getAsJsonObject("outputExpressions").add(
+                "REGION.3.out.0", output.deepCopy());
         return summary;
     }
 
