@@ -30,16 +30,21 @@ annotated target exception
         |
         v
 SeedBackwardStaticAnalyzer
-  static_dataflow_edges.jsonl
+  candidate_dataflow_edges.jsonl
+  region_skeletons.jsonl.gz
         |
         v
-SymbolicRegionPlanner
+runtime pass 1: activation binding
+  selected region_skeletons.jsonl
+        |
+        v
+runtime pass 2: state/branch evidence
+  refined_dataflow_edges.jsonl
+        |
+        v
+RuntimeSelectedRegionFinalizer
   symbolic_regions.jsonl
   symbolic_region_edges.jsonl
-        |
-        v
-instrumented seed execution
-  causynth-trace.jsonl
         |
         v
 RuntimeRegionPlanner
@@ -64,6 +69,12 @@ ConcolicSmtComposer
         v
 Z3: sat | unsat
 ```
+
+`schedule` 是全自动分析与真正 concolic execution 的边界：它只生成
+`ExecutionTask`，不会启动 custom-JDK。每个 task 对 execution scope 内所有 normal CFG
+backedge 使用同一个 K bound；第 K+1 次 traversal 产生 `CUT`，不会伪造正常 loop exit，
+也不会被 importer 接受为可组合 relation。container iteration/cardinality 只作为
+`PATH_ASSUMPTION` 保持 seed shape；循环体内由状态字段驱动的语义 guard 仍为 `EXPLORE`。
 
 JSON 只出现在 artifact 边界。生产链中的主要 carrier 是：
 
@@ -460,7 +471,6 @@ composition is not structurally complete
 - 旧 element/entry/snapshot/dynamic binding/heap transformer 路径全部删除；
 - Java 与 custom-JDK 编译通过；
 - 13 个真实 fixtures 的 Z3 SAT/UNSAT 与语义基线一致；
-- 用户的 manual workload 本地修改保持不变；
 - 最终 commit 和 push 完成。
 
 40K–50K 生产 Java 是合理的代码规模方向，不是验收捷径。若正确、general 的实现确实需要
@@ -481,7 +491,6 @@ Maven contract tests             105/105 PASS
 fixed-RPC stress, 5 x 20         100/100 PASS
 original real workflows           13/13 PASS
 container tricky workflows         5/5 PASS
-manual campaign-layout workflow    UNSAT PASS
 ```
 
 stress 的每个 `PASS` 同时要求：四行 concrete truth table 正确、真实 custom-JDK/concolic

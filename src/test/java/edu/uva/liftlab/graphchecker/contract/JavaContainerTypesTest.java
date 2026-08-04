@@ -41,4 +41,23 @@ public class JavaContainerTypesTest {
         assertFalse(JavaContainerTypes.modeledContainerMutator(
                 "<example.State: java.lang.Object put(java.lang.Object,java.lang.Object)>"));
     }
+
+    @Test
+    public void distinguishesStructuralPredicatesFromSemanticLookups() {
+        assertTrue(JavaContainerTypes.structuralIterationPredicate(
+                "<java.util.Iterator: boolean hasNext()>"));
+        assertTrue(JavaContainerTypes.structuralIterationPredicate(
+                "<java.util.Enumeration: boolean hasMoreElements()>"));
+        assertTrue(JavaContainerTypes.structuralCardinalityOperation(
+                "<java.util.Collection: int size()>"));
+        assertTrue(JavaContainerTypes.structuralCardinalityOperation(
+                "<java.util.Map: boolean isEmpty()>"));
+
+        assertFalse(JavaContainerTypes.structuralIterationPredicate(
+                "<java.util.Iterator: java.lang.Object next()>"));
+        assertFalse(JavaContainerTypes.structuralCardinalityOperation(
+                "<java.util.Map: boolean containsKey(java.lang.Object)>"));
+        assertFalse(JavaContainerTypes.structuralCardinalityOperation(
+                "<example.State: int size()>"));
+    }
 }

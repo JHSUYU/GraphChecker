@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
 import org.junit.Test;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -23,6 +24,42 @@ public class ConcolicRegionRuntimeTest {
             "<test.State: int result>";
     private static final String OTHER_FIELD =
             "<test.State: int other>";
+
+    @Test
+    public void inactiveBackedgeHookDoesNotChangeWorkloadExecution() {
+        ConcolicRegionRuntime.resetForTests();
+
+        ConcolicRegionRuntime.checkLoopBackedge(
+                "<test.Loop: void run()>#backedge:u4->u1", 1);
+    }
+
+    @Test
+    public void backedgeBudgetAllowsKTraversalsAndCutsAttemptKPlusOne() {
+        ConcolicRegionRuntime.LoopBackedgeBudget budget =
+                new ConcolicRegionRuntime.LoopBackedgeBudget(
+                        LoopBoundPolicy.cfgBackedges(2));
+        String edge = "<test.Loop: void run()>#backedge:u4->u1";
+
+        assertEquals(1L, budget.recordTraversal(edge));
+        assertEquals(2L, budget.recordTraversal(edge));
+        assertEquals(3L, budget.recordTraversal(edge));
+        // A denied attempt is not reported as a completed traversal.
+        assertEquals(2, budget.toJson().get(edge).getAsInt());
+
+        ConcolicRegionRuntime.LoopBoundCut cut =
+                new ConcolicRegionRuntime.LoopBoundCut(
+                        edge, 2, 3L,
+                        "MAX_BACKEDGE_TRAVERSALS_EXCEEDED");
+        JsonObject encoded = cut.toJson();
+        assertEquals("LOOP_BOUND", encoded.get("kind").getAsString());
+        assertEquals(3L, encoded.get("attemptedTraversal").getAsLong());
+        assertEquals("MAX_BACKEDGE_TRAVERSALS_EXCEEDED",
+                encoded.get("reason").getAsString());
+        assertEquals("CUT",
+                ConcolicRegionRuntime.exceptionalExitKind(cut));
+        assertEquals("THROW", ConcolicRegionRuntime.exceptionalExitKind(
+                new IllegalStateException("workload failure")));
+    }
 
     @Test
     public void sparseIndexedAssignmentsMutateOnlyRequestedElements() {

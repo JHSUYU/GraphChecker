@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import org.junit.After;
 import org.junit.Test;
 import soot.Body;
@@ -7,6 +8,7 @@ import soot.G;
 import soot.IntType;
 import soot.Local;
 import soot.Modifier;
+import soot.RefType;
 import soot.Scene;
 import soot.SootClass;
 import soot.SootField;
@@ -16,6 +18,7 @@ import soot.VoidType;
 import soot.jimple.IntConstant;
 import soot.jimple.Jimple;
 import soot.jimple.Stmt;
+import soot.tagkit.Tag;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -64,6 +67,40 @@ public class CausynthPipelineTest {
         assertFalse(hooks.contains("enterMethodLite"));
     }
 
+    @Test
+    public void concolicLoopBoundSplitsEveryOriginalCfgBackedge()
+            throws Exception {
+        SootMethod method = methodWithGotoAndConditionalBackedges();
+        Body body = method.getActiveBody();
+        int originalIfCount = countUnits(body, soot.jimple.IfStmt.class);
+
+        int bounded = new CausynthPipeline(null)
+                .instrumentConcolicLoopBounds(
+                        Collections.singleton(method.getSignature()),
+                        LoopBoundPolicy.cfgBackedges(2));
+
+        assertEquals(2, bounded);
+        assertEquals(2, count(hookNames(body), "checkLoopBackedge"));
+        // The guard is one static invoke plus an unconditional transfer. It
+        // creates no branch eligible for symbolic-PC instrumentation.
+        assertEquals(originalIfCount,
+                countUnits(body, soot.jimple.IfStmt.class));
+        for (Unit unit : body.getUnits()) {
+            if (!(unit instanceof Stmt)
+                    || !((Stmt) unit).containsInvokeExpr()
+                    || !"checkLoopBackedge".equals(((Stmt) unit)
+                    .getInvokeExpr().getMethodRef().name())) {
+                continue;
+            }
+            assertFalse(hasOriginalUnitTag(unit));
+            assertTrue(body.getUnits().getSuccOf(unit)
+                    instanceof soot.jimple.GotoStmt);
+            assertEquals(2, ((IntConstant) ((Stmt) unit).getInvokeExpr()
+                    .getArg(1)).value);
+        }
+        body.validate();
+    }
+
     private static SootMethod targetMethod() {
         G.reset();
         Scene.v().addClass(new SootClass("java.lang.Throwable",
@@ -104,6 +141,49 @@ public class CausynthPipelineTest {
         return method;
     }
 
+    private static SootMethod methodWithGotoAndConditionalBackedges() {
+        G.reset();
+        SootClass runtime = new SootClass(
+                "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime",
+                Modifier.PUBLIC);
+        runtime.addMethod(new SootMethod("checkLoopBackedge",
+                java.util.Arrays.asList(RefType.v("java.lang.String"),
+                        IntType.v()), VoidType.v(),
+                Modifier.PUBLIC | Modifier.STATIC));
+        Scene.v().addClass(runtime);
+        SootClass owner = new SootClass("example.BoundedLoops",
+                Modifier.PUBLIC);
+        owner.setApplicationClass();
+        Scene.v().addClass(owner);
+        SootMethod method = new SootMethod("run", Collections.emptyList(),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local i = Jimple.v().newLocal("i", IntType.v());
+        body.getLocals().add(i);
+
+        Unit firstHead = Jimple.v().newNopStmt();
+        Unit firstExit = Jimple.v().newNopStmt();
+        body.getUnits().add(Jimple.v().newAssignStmt(i, IntConstant.v(0)));
+        body.getUnits().add(firstHead);
+        body.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newGeExpr(i, IntConstant.v(1)), firstExit));
+        body.getUnits().add(Jimple.v().newAssignStmt(i,
+                Jimple.v().newAddExpr(i, IntConstant.v(1))));
+        body.getUnits().add(Jimple.v().newGotoStmt(firstHead));
+        body.getUnits().add(firstExit);
+
+        Unit secondHead = Jimple.v().newNopStmt();
+        body.getUnits().add(secondHead);
+        body.getUnits().add(Jimple.v().newAssignStmt(i,
+                Jimple.v().newSubExpr(i, IntConstant.v(1))));
+        body.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newGtExpr(i, IntConstant.v(0)), secondHead));
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+        return method;
+    }
+
     private static StaticProgram selected(SootMethod method) {
         StaticProgram program = new StaticProgram();
         program.traceMethods.add(method.getSignature());
@@ -138,5 +218,22 @@ public class CausynthPipelineTest {
             }
         }
         return result;
+    }
+
+    private static int countUnits(Body body, Class<?> type) {
+        int result = 0;
+        for (Unit unit : body.getUnits()) {
+            if (type.isInstance(unit)) result++;
+        }
+        return result;
+    }
+
+    private static boolean hasOriginalUnitTag(Unit unit) {
+        for (Tag tag : unit.getTags()) {
+            if ("CausynthOriginalUnitIndex".equals(tag.getName())) {
+                return true;
+            }
+        }
+        return false;
     }
 }

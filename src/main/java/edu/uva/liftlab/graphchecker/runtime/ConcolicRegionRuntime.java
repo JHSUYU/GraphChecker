@@ -152,6 +152,68 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * Accounts for one attempted traversal of an instrumented normal CFG
+     * backedge.  Calls outside the selected active region are deliberately a
+     * no-op.  All map and policy operations execute while VM path-condition
+     * recording is paused, so this synthetic guard cannot become a symbolic
+     * branch event of the program under test.
+     *
+     * <p>The configured bound allows exactly {@code K} traversals of each
+     * backedge.  Attempt {@code K + 1} throws a dedicated {@link Error}; the
+     * root catch-all records it as a path cut and rethrows it to abort this
+     * execution rather than fabricating a normal loop exit.</p>
+     */
+    public static void checkLoopBackedge(
+            String backedgeId, int instrumentedMaxTraversals) {
+        ActiveRegion active = activeRegion();
+        if (active == null) return;
+
+        EngineApi api = engine();
+        boolean paused = false;
+        LoopBoundCut cut = null;
+        try {
+            api.pausePathCondition();
+            paused = true;
+            String edge = safe(backedgeId);
+            int runtimeMax = active.activation.loopBound
+                    .maxBackedgeTraversals();
+            if (edge.isEmpty()
+                    || instrumentedMaxTraversals != runtimeMax) {
+                cut = active.loopBoundCut(edge, runtimeMax, 0L,
+                        "INSTRUMENTATION_POLICY_MISMATCH");
+            } else {
+                long attempted = active.loopBackedges
+                        .recordTraversal(edge);
+                if (attempted > runtimeMax) {
+                    cut = active.loopBoundCut(edge, runtimeMax, attempted,
+                            "MAX_BACKEDGE_TRAVERSALS_EXCEEDED");
+                }
+            }
+        } catch (Throwable failure) {
+            cut = active.loopBoundCut(safe(backedgeId),
+                    active.activation.loopBound.maxBackedgeTraversals(),
+                    0L, "BOUND_HOOK_FAILURE:" + rootCause(failure));
+        } finally {
+            if (paused) {
+                try {
+                    api.resumePathCondition();
+                } catch (Throwable failure) {
+                    active.addUnresolvedOnce(
+                            "loop-bound path-condition resume failed: "
+                                    + rootCause(failure));
+                    if (cut == null) {
+                        cut = active.loopBoundCut(safe(backedgeId),
+                                active.activation.loopBound
+                                        .maxBackedgeTraversals(),
+                                0L, "BOUND_HOOK_RESUME_FAILURE");
+                    }
+                }
+            }
+        }
+        if (cut != null) throw cut;
+    }
+
+    /**
      * Opens the exact accessor invocation selected by one activation's
      * symbolize action. Unlike the general runtime recorder this hook keeps
      * no value fingerprints and emits no trace events: it only retains the
@@ -852,11 +914,19 @@ public final class ConcolicRegionRuntime {
         try {
             RootInvocationFrame frame = popRootInvocationFrame(rootMethod);
             if (frame != null && frame.token != 0L) {
-                throwRegion(frame.token, throwable);
+                if ("CUT".equals(exceptionalExitKind(throwable))) {
+                    finish(frame.token, "CUT", "", throwable);
+                } else {
+                    throwRegion(frame.token, throwable);
+                }
             }
         } catch (Throwable ignored) {
             // Preserve the program's original throwable identity.
         }
+    }
+
+    static String exceptionalExitKind(Throwable throwable) {
+        return throwable instanceof LoopBoundCut ? "CUT" : "THROW";
     }
 
     private static RootInvocationFrame popRootInvocationFrame(
@@ -1400,11 +1470,14 @@ public final class ConcolicRegionRuntime {
             api.pausePathCondition();
             populateCompletedResult(result, active, exitKind, exceptionType,
                     output);
-            try {
-                String expression = api.expression(output);
-                result.add("rootOutputExpression", parseJson(expression));
-            } catch (Throwable throwable) {
-                result.addProperty("outputExpressionError", rootCause(throwable));
+            if (!"CUT".equals(exitKind)) {
+                try {
+                    String expression = api.expression(output);
+                    result.add("rootOutputExpression", parseJson(expression));
+                } catch (Throwable throwable) {
+                    result.addProperty("outputExpressionError",
+                            rootCause(throwable));
+                }
             }
             String summary = api.finish();
             engineFinished = true;
@@ -1433,9 +1506,14 @@ public final class ConcolicRegionRuntime {
             JsonObject result, ActiveRegion active, String exitKind,
             String exceptionType, Object output) {
         addResultIdentity(result, active, exitKind, exceptionType);
-        if (output instanceof Throwable) {
+        if (output instanceof Throwable && !"CUT".equals(exitKind)) {
             result.add("exceptionChain", exceptionChain((Throwable) output));
         }
+        if (active.loopBoundCut != null) {
+            result.add("pathCut", copyJsonTree(active.loopBoundCut));
+        }
+        result.add("loopBackedgeTraversals",
+                active.loopBackedges.toJson());
         active.validateRegionExitFieldCaptures(exitKind);
         result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
         result.add("symbolizedInputs", GSON.toJsonTree(active.symbolized));
@@ -2680,6 +2758,7 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashMap<>();
         private final Map<String, Integer> localMaterializationOccurrences =
                 new LinkedHashMap<>();
+        private final LoopBackedgeBudget loopBackedges;
         private final Map<Long, PreparedBranch> preparedBranches =
                 new LinkedHashMap<>();
         private final IdentityHashMap<Object, Long> objectTokens =
@@ -2693,6 +2772,7 @@ public final class ConcolicRegionRuntime {
         private long nextObjectToken = 1L;
         private long preparedBranchSequence;
         private int lastPathConditionSize;
+        private JsonObject loopBoundCut;
 
         private ActiveRegion(long token, RuntimeTask activation,
                              Object receiver, Thread thread) {
@@ -2700,6 +2780,21 @@ public final class ConcolicRegionRuntime {
             this.activation = activation;
             this.receiver = receiver;
             this.thread = thread;
+            this.loopBackedges = new LoopBackedgeBudget(
+                    activation.loopBound);
+        }
+
+        private LoopBoundCut loopBoundCut(
+                String backedgeId, int maxTraversals,
+                long attemptedTraversal, String reason) {
+            LoopBoundCut cut = new LoopBoundCut(backedgeId, maxTraversals,
+                    attemptedTraversal, reason);
+            if (loopBoundCut == null) {
+                loopBoundCut = cut.toJson();
+                addUnresolvedOnce("LOOP_BOUND_PATH_CUT:"
+                        + cut.backedgeId + ':' + cut.reason);
+            }
+            return cut;
         }
 
         private int nextBranchOccurrence(String siteId) {
@@ -2888,6 +2983,69 @@ public final class ConcolicRegionRuntime {
 
         private void recordModelAssignment(ModelAssignment assignment) {
             appliedModelAssignments.add(assignment.key);
+        }
+    }
+
+    /** Per-activation, per-CFG-edge traversal accounting. */
+    static final class LoopBackedgeBudget {
+        private final int maxTraversals;
+        private final Map<String, Integer> traversals =
+                new LinkedHashMap<>();
+
+        LoopBackedgeBudget(LoopBoundPolicy policy) {
+            if (policy == null) {
+                throw new IllegalArgumentException(
+                        "loop bound policy is required");
+            }
+            maxTraversals = policy.maxBackedgeTraversals();
+        }
+
+        long recordTraversal(String backedgeId) {
+            Integer previous = traversals.get(backedgeId);
+            int completed = previous == null ? 0 : previous;
+            long attempted = (long) completed + 1L;
+            if (attempted <= maxTraversals) {
+                traversals.put(backedgeId, (int) attempted);
+            }
+            return attempted;
+        }
+
+        JsonObject toJson() {
+            JsonObject encoded = new JsonObject();
+            for (Map.Entry<String, Integer> entry : traversals.entrySet()) {
+                encoded.addProperty(entry.getKey(), entry.getValue());
+            }
+            return encoded;
+        }
+    }
+
+    /** Non-workload control signal used solely to abort a bounded path. */
+    public static final class LoopBoundCut extends Error {
+        private static final long serialVersionUID = 1L;
+        private final String backedgeId;
+        private final int maxTraversals;
+        private final long attemptedTraversal;
+        private final String reason;
+
+        LoopBoundCut(String backedgeId, int maxTraversals,
+                     long attemptedTraversal, String reason) {
+            super("concolic path cut at " + safe(backedgeId)
+                    + " after " + maxTraversals
+                    + " allowed CFG backedge traversals");
+            this.backedgeId = safe(backedgeId);
+            this.maxTraversals = maxTraversals;
+            this.attemptedTraversal = attemptedTraversal;
+            this.reason = safe(reason);
+        }
+
+        JsonObject toJson() {
+            JsonObject encoded = new JsonObject();
+            encoded.addProperty("kind", "LOOP_BOUND");
+            encoded.addProperty("backedgeId", backedgeId);
+            encoded.addProperty("maxBackedgeTraversals", maxTraversals);
+            encoded.addProperty("attemptedTraversal", attemptedTraversal);
+            encoded.addProperty("reason", reason);
+            return encoded;
         }
     }
 

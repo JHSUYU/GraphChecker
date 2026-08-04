@@ -13,6 +13,8 @@ dependency_classpath="${work_root}/dependency-classpath.txt"
 project_classpath="${work_root}/project-classpath.txt"
 cached_protoc="${work_root}/tools/protoc-2.5.0"
 base_commit=ece33208b89a6a06c1b362d10fab31343fe5df13
+key_manager_rel=hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java
+key_manager_source="${hadoop_dir}/${key_manager_rel}"
 protoc_sha256=8b62bcf4d564e08c5bdd5d409c5e8462b07abadba10904946f63870dc9735f45
 test_class=org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer
 test_method=testEncryptedBalancer1
@@ -29,13 +31,64 @@ require_command() {
     || die "required command not found: $1"
 }
 
+require_file() {
+  local label=$1
+  local path=$2
+  [[ -f "${path}" ]] || die "${label} not found: ${path}"
+}
+
+require_nonempty_file() {
+  local label=$1
+  local path=$2
+  [[ -s "${path}" ]] || die "${label} is missing or empty: ${path}"
+}
+
+require_nonempty_directory() {
+  local label=$1
+  local path=$2
+  local first_file
+  [[ -d "${path}" ]] || die "${label} directory not found: ${path}"
+  first_file=$(find "${path}" -type f -print -quit)
+  [[ -n "${first_file}" ]] \
+    || die "${label} directory contains no files: ${path}"
+}
+
 verify_checkout() {
   [[ -d "${hadoop_dir}/.git" ]] \
     || die "Hadoop checkout not found: ${hadoop_dir}"
   local head
+  git -C "${hadoop_dir}" rev-parse --verify "${base_commit}^{commit}" \
+    >/dev/null 2>&1 \
+    || die "pre-fix Hadoop base is unavailable: ${base_commit}"
   head=$(git -C "${hadoop_dir}" rev-parse HEAD)
-  [[ "${head}" == "${base_commit}" ]] \
-    || die "Hadoop HEAD is ${head}; expected ${base_commit}"
+  git -C "${hadoop_dir}" merge-base --is-ancestor \
+    "${base_commit}" "${head}" \
+    || die "Hadoop HEAD ${head} is not based on pre-fix ${base_commit}"
+
+  # Descendants used for tracing are allowed, but the committed experiment
+  # semantics must retain the pre-fix KeyManager.  This admits the local
+  # Causynth RPC trace commit without hard-coding its commit id, while
+  # rejecting the upstream HDFS-11741 fix and any other KeyManager rewrite.
+  git -C "${hadoop_dir}" diff --quiet \
+    "${base_commit}..${head}" -- "${key_manager_rel}" \
+    || die "Hadoop descendant modifies ${key_manager_rel}; HDFS-11741 requires the pre-fix KeyManager"
+
+  require_file "KeyManager source" "${key_manager_source}"
+  local key_method
+  key_method=$(sed -n \
+    '/public DataEncryptionKey newDataEncryptionKey()/,/^  }/p' \
+    "${key_manager_source}")
+  [[ -n "${key_method}" ]] \
+    || die "cannot attest KeyManager.newDataEncryptionKey()"
+  case "${key_method}" in
+    *expiryDate*|*isExpired*|*timer.now*|*Time.now*)
+      die "refusing fixed KeyManager: newDataEncryptionKey() checks key expiry"
+      ;;
+  esac
+  case "${key_method}" in
+    *'if (encryptionKey == null) {'*) ;;
+    *) die "KeyManager.newDataEncryptionKey() no longer has the pre-fix null-only guard" ;;
+  esac
 }
 
 marker_is_applied() {
@@ -178,6 +231,85 @@ do_prepare() {
   do_baseline
 }
 
+verify_static_artifacts() {
+  local analysis="${work_root}/analysis"
+  require_nonempty_file "resolved target" \
+    "${analysis}/target_resolved.json"
+  require_nonempty_file "candidate dataflow graph" \
+    "${analysis}/candidate_dataflow_edges.jsonl"
+  require_nonempty_file "region skeleton archive" \
+    "${analysis}/region_skeletons.jsonl.gz"
+  # Static analysis creates these finalizer destinations.  Their rows are
+  # runtime-selected, so an empty file is valid until the two-pass workload.
+  require_file "symbolic regions placeholder" \
+    "${analysis}/symbolic_regions.jsonl"
+  require_file "symbolic region edges placeholder" \
+    "${analysis}/symbolic_region_edges.jsonl"
+  require_nonempty_directory "instrumented classes" \
+    "${work_root}/instrumented-classes"
+}
+
+verify_runtime_artifacts() {
+  local runtime="${work_root}/runtime"
+  local skeleton="${runtime}/skeleton-pass"
+  require_nonempty_file "pass-1 selected region skeletons" \
+    "${skeleton}/region_skeletons.jsonl"
+  require_nonempty_file "pass-1 runtime trace" \
+    "${skeleton}/runtime_trace.jsonl"
+  require_nonempty_file "pass-1 streaming manifest" \
+    "${skeleton}/streaming_trace_manifest.json"
+  require_nonempty_file "pass-2 runtime trace" \
+    "${runtime}/runtime_trace.jsonl"
+  require_nonempty_file "pass-2 streaming manifest" \
+    "${runtime}/streaming_trace_manifest.json"
+  require_nonempty_file "runtime-refined graph" \
+    "${runtime}/refined_dataflow_edges.jsonl"
+  require_nonempty_file "runtime-finalized symbolic regions" \
+    "${work_root}/analysis/symbolic_regions.jsonl"
+  # A valid refinement may contain no cross-region edge, so the JSONL
+  # contract requires the edge artifacts to exist but not to have rows.
+  require_file "runtime-finalized symbolic region edges" \
+    "${work_root}/analysis/symbolic_region_edges.jsonl"
+  require_nonempty_file "runtime region plan" \
+    "${runtime}/concolic_region_plan.jsonl"
+  require_file "runtime edge validations" \
+    "${runtime}/runtime_region_edge_validation.jsonl"
+}
+
+verify_task_artifacts() {
+  local schedule="${work_root}/schedule"
+  local tasks="${schedule}/execution_task_plan.jsonl"
+  require_command jq
+  require_nonempty_file "concolic execution task plan" "${tasks}"
+  require_file "branch query plan" "${schedule}/branch_queries.jsonl"
+  jq -e -s '
+    length > 0 and
+    any(.[]; .admission.state == "EXECUTABLE") and
+    all(.[];
+      (.taskId | type == "string" and length > 0) and
+      (.goalId | type == "string" and length > 0) and
+      (.regionId | type == "string" and length > 0) and
+      (.regionInstanceId | type == "string" and length > 0) and
+      (.goalKind == "TARGET_REACH_CLOSURE" or
+        .goalKind == "OUTPUT_RELATION_CLOSURE") and
+      (.inputActions | type == "array") and
+      (.branches | type == "array") and
+      (.admission.state == "EXECUTABLE" or
+        .admission.state == "BLOCKED") and
+      .loopBound.schemaVersion == 1 and
+      .loopBound.kind == "CFG_BACKEDGE" and
+      .loopBound.scope == "ALL_EXECUTION_SCOPE_LOOPS" and
+      (.loopBound.maxBackedgeTraversals | type == "number" and . >= 1) and
+      .loopBound.onLimit == "CUT_PATH")
+  ' "${tasks}" >/dev/null \
+    || die "execution task plan failed identity/admission/loopBound validation: ${tasks}"
+  if [[ -s "${schedule}/branch_queries.jsonl" ]]; then
+    jq -e -s 'all(.[]; type == "object")' \
+      "${schedule}/branch_queries.jsonl" >/dev/null \
+      || die "branch query plan is not valid JSONL: ${schedule}/branch_queries.jsonl"
+  fi
+}
+
 do_engine_config() {
   local command=$1
   [[ -s "${project_classpath}" ]] \
@@ -190,6 +322,28 @@ do_engine_config() {
       CAUSYNTH_CLASSPATH="${classpath}" \
       ./run_engine.sh --config "${workflow}" "${command}"
   )
+}
+
+do_tasks() {
+  verify_checkout
+  verify_marker
+  echo "[hdfs-11741] stage 1/3: static analysis"
+  do_engine_config analyze
+  verify_static_artifacts
+  echo "[hdfs-11741] stage 2/3: two-pass runtime refinement"
+  do_engine_config workload
+  verify_runtime_artifacts
+  echo "[hdfs-11741] stage 3/3: schedule concolic tasks"
+  do_engine_config schedule
+  verify_task_artifacts
+  echo "[hdfs-11741] task preparation complete: ${work_root}/schedule/execution_task_plan.jsonl"
+  echo "[hdfs-11741] stopped before concolic execution"
+}
+
+do_full_auto() {
+  do_prepare
+  do_engine_config build
+  do_tasks
 }
 
 do_traced_workload() {
@@ -231,11 +385,13 @@ case "${1:-prepare}" in
   validate) [[ $# -eq 1 ]] || die "validate takes no arguments"; do_engine_config validate ;;
   analyze) [[ $# -eq 1 ]] || die "analyze takes no arguments"; do_engine_config analyze ;;
   workload) [[ $# -eq 1 ]] || die "workload takes no arguments"; do_engine_config workload ;;
+  tasks) [[ $# -eq 1 ]] || die "tasks takes no arguments"; do_tasks ;;
+  full-auto) [[ $# -eq 1 ]] || die "full-auto takes no arguments"; do_full_auto ;;
   traced-workload)
     [[ $# -eq 1 ]] || die "traced-workload takes no arguments"
     do_traced_workload
     ;;
   *)
-    die "usage: $0 [patch|build|classpath|baseline|prepare|config|validate|analyze|workload]"
+    die "usage: $0 [patch|build|classpath|baseline|prepare|config|validate|analyze|workload|tasks|full-auto|traced-workload]"
     ;;
 esac

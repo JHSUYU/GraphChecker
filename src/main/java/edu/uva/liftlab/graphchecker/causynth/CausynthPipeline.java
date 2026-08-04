@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.C
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.RootedOutputCapture;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
 import org.slf4j.Logger;
@@ -32,6 +33,7 @@ import soot.SootMethodRef;
 import soot.Trap;
 import soot.Type;
 import soot.Unit;
+import soot.UnitBox;
 import soot.Value;
 import soot.ValueBox;
 import soot.VoidType;
@@ -55,6 +57,8 @@ import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
 import soot.jimple.SwitchStmt;
 import soot.tagkit.Tag;
+import soot.toolkits.graph.BriefUnitGraph;
+import soot.toolkits.graph.MHGDominatorsFinder;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -308,6 +312,8 @@ public final class CausynthPipeline {
             } catch (RuntimeException ignored) {
             }
         }
+        int boundedBackedges = instrumentConcolicLoopBounds(
+                instrumentationMethods, plan.loopBound());
         try {
             SootMethod method = Scene.v().getMethod(signature);
             if (method == null || !method.isConcrete()) {
@@ -459,8 +465,10 @@ public final class CausynthPipeline {
                 materializationSelection, refs);
         instrumentConcolicMaterializations(materializationSelection, refs);
         instrumentConcolicBranches(branchSelection, refs);
-        LOG.info("Instrumented symbolic-region root {} for concolic replay",
-                signature);
+        LOG.info("Instrumented symbolic-region root {} for concolic replay; "
+                        + "bounded {} CFG backedges at {} traversals each",
+                signature, boundedBackedges,
+                plan.loopBound().maxBackedgeTraversals());
     }
 
     /** Records exact heap definitions without enabling the runtime trace. */
@@ -1072,6 +1080,128 @@ public final class CausynthPipeline {
             }
         }
         return -1;
+    }
+
+    /**
+     * Splits every normal CFG backedge in the selected execution scope through
+     * one observation-only runtime hook.  Dominance is computed before this
+     * pass mutates the body, and only units in the original-index namespace
+     * participate.  Consequently later concolic branch instrumentation cannot
+     * mistake the synthetic transfer for a workload branch.
+     */
+    int instrumentConcolicLoopBounds(
+            Set<String> methods, LoopBoundPolicy policy) {
+        if (policy == null) {
+            throw new IllegalArgumentException("loop bound policy is required");
+        }
+        SootMethodRef checkBackedge = HookCatalog.concolic()
+                .ref(Hook.CHECK_LOOP_BACKEDGE);
+        int instrumented = 0;
+        for (String methodSignature : methods) {
+            final SootMethod method;
+            try {
+                method = Scene.v().getMethod(methodSignature);
+            } catch (RuntimeException missing) {
+                continue;
+            }
+            if (method == null || !method.isConcrete()) {
+                continue;
+            }
+            Body body = method.retrieveActiveBody();
+            List<Unit> original = snapshotUnits(body);
+            tagOriginalUnits(original);
+            BriefUnitGraph graph = new BriefUnitGraph(body);
+            MHGDominatorsFinder<Unit> dominators =
+                    new MHGDominatorsFinder<>(graph);
+            List<CfgBackedge> backedges = new ArrayList<>();
+            for (Unit source : original) {
+                int sourceIndex = originalUnitIndex(source);
+                if (sourceIndex < 0) continue;
+                for (Unit target : graph.getSuccsOf(source)) {
+                    int targetIndex = originalUnitIndex(target);
+                    if (targetIndex >= 0
+                            && dominators.isDominatedBy(source, target)) {
+                        backedges.add(new CfgBackedge(source, sourceIndex,
+                                target, targetIndex));
+                    }
+                }
+            }
+
+            Unit safeEntry = safeInstrumentationEntry(body, method);
+            for (CfgBackedge backedge : backedges) {
+                if (method.isConstructor()
+                        && (safeEntry == null || !unitAtOrAfter(
+                        body, safeEntry, backedge.source))) {
+                    throw new IllegalStateException(
+                            "CFG_BACKEDGE_BEFORE_CONSTRUCTOR_INITIALIZATION: "
+                                    + backedge.identity(method));
+                }
+                splitCfgBackedge(body, method, backedge,
+                        policy.maxBackedgeTraversals(), checkBackedge);
+                instrumented++;
+            }
+        }
+        return instrumented;
+    }
+
+    private static void splitCfgBackedge(
+            Body body, SootMethod method, CfgBackedge backedge,
+            int maxTraversals, SootMethodRef checkBackedge) {
+        List<UnitBox> matchingTargets = new ArrayList<>();
+        for (UnitBox targetBox : backedge.source.getUnitBoxes()) {
+            if (targetBox.getUnit() == backedge.target) {
+                matchingTargets.add(targetBox);
+            }
+        }
+        boolean fallThrough = backedge.source.fallsThrough()
+                && body.getUnits().getSuccOf(backedge.source)
+                == backedge.target;
+        if (matchingTargets.isEmpty() && !fallThrough) {
+            throw new IllegalStateException(
+                    "Could not split CFG backedge "
+                            + backedge.identity(method));
+        }
+
+        String edgeId = backedge.identity(method);
+        Unit hook = Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(checkBackedge,
+                        StringConstant.v(edgeId),
+                        IntConstant.v(maxTraversals)));
+        Unit transfer = Jimple.v().newGotoStmt(backedge.target);
+        // Appending keeps the throwing hook outside every pre-existing
+        // application trap.  The root's synthetic catch-all is added later
+        // and therefore still owns the cut signal.
+        body.getUnits().add(hook);
+        body.getUnits().add(transfer);
+        for (UnitBox targetBox : matchingTargets) {
+            targetBox.setUnit(hook);
+        }
+        if (fallThrough) {
+            // Only this concrete fallthrough edge is redirected; the bridge
+            // itself cannot throw while it is inside an application trap.
+            body.getUnits().insertAfter(Jimple.v().newGotoStmt(hook),
+                    backedge.source);
+        }
+    }
+
+    private static final class CfgBackedge {
+        private final Unit source;
+        private final int sourceIndex;
+        private final Unit target;
+        private final int targetIndex;
+
+        private CfgBackedge(Unit source, int sourceIndex,
+                            Unit target, int targetIndex) {
+            this.source = source;
+            this.sourceIndex = sourceIndex;
+            this.target = target;
+            this.targetIndex = targetIndex;
+        }
+
+        private String identity(SootMethod method) {
+            return method.getSignature() + "#backedge:u" + sourceIndex
+                    + "->u" + targetIndex;
+        }
     }
 
     private void instrumentConcolicBranches(
@@ -2114,6 +2244,7 @@ public final class CausynthPipeline {
         MARK_CONCOLIC_BRANCH,
         RESOLVE_BRANCH,
         RESOLVE_SWITCH_BRANCH,
+        CHECK_LOOP_BACKEDGE,
         EXIT_REGION_FRAME,
         THROW_REGION_FRAME
     }
@@ -2241,6 +2372,9 @@ public final class CausynthPipeline {
                             "resolveSwitchBranch", IntType.v(), LongType.v(),
                             LongType.v(), string, IntType.v(), string, string,
                             string, IntType.v())
+                    .add(Hook.CHECK_LOOP_BACKEDGE, runtime,
+                            "checkLoopBackedge", VoidType.v(), string,
+                            IntType.v())
                     .add(Hook.EXIT_REGION_FRAME, runtime, "exitRegionFrame",
                             VoidType.v(), string, object, string)
                     .add(Hook.THROW_REGION_FRAME, runtime, "throwRegionFrame",

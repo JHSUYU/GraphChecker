@@ -100,6 +100,16 @@ public final class ConcolicSummaryImporter {
                         "UNKNOWN_REGION", task.regionId()));
                 continue;
             }
+            if ("CUT".equals(string(raw, "exitKind"))
+                    || raw.has("pathCut")) {
+                diagnostics.add(diagnostic(raw, index,
+                        "LOOP_BOUND_PATH_CUT",
+                        object(raw, "pathCut").toString()));
+                // A bounded prefix is useful execution diagnostics, but it is
+                // neither a normal return nor a workload exception relation.
+                // Never let it become a composable region summary.
+                continue;
+            }
 
             List<String> issues = new ArrayList<>();
             JsonObject engine = object(raw, "engineSummary");

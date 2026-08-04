@@ -29,6 +29,15 @@ public final class JavaContainerTypes {
                     "java.util.Iterator", "java.util.ListIterator",
                     "java.util.Map$Entry", "java.util.Map.Entry",
                     "java.util.Enumeration")));
+    private static final Set<String> CARDINALITY_OWNERS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "java.util.Collection", "java.util.List",
+                    "java.util.AbstractList", "java.util.ArrayList",
+                    "java.util.Queue", "java.util.Deque",
+                    "java.util.ArrayDeque", "java.util.Set",
+                    "java.util.HashSet", "java.util.LinkedHashSet",
+                    "java.util.Map", "java.util.HashMap",
+                    "java.util.LinkedHashMap")));
     private static final Set<String> INDEXED_RESULTS =
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
                     "boolean add(java.lang.Object)",
@@ -155,6 +164,37 @@ public final class JavaContainerTypes {
         }
         return SETS.contains(method.owner)
                 && SET_MUTATORS.contains(method.subsignature);
+    }
+
+    /**
+     * Exact predicates whose value is the position of a structural traversal,
+     * rather than an element's semantic state.  These are useful to the
+     * failure-directed branch policy: a loop may observe them, but changing
+     * them would change the frozen container shape instead of exercising a
+     * data decision inside the loop.
+     */
+    public static boolean structuralIterationPredicate(String signature) {
+        MethodSignature method = MethodSignature.parse(signature);
+        if (method == null) return false;
+        if ("java.util.Iterator".equals(method.owner)) {
+            return "boolean hasNext()".equals(method.subsignature);
+        }
+        if ("java.util.ListIterator".equals(method.owner)) {
+            return "boolean hasNext()".equals(method.subsignature)
+                    || "boolean hasPrevious()".equals(
+                    method.subsignature);
+        }
+        return "java.util.Enumeration".equals(method.owner)
+                && "boolean hasMoreElements()".equals(
+                method.subsignature);
+    }
+
+    /** Exact collection operations which expose only cardinality. */
+    public static boolean structuralCardinalityOperation(String signature) {
+        MethodSignature method = MethodSignature.parse(signature);
+        return method != null && CARDINALITY_OWNERS.contains(method.owner)
+                && ("int size()".equals(method.subsignature)
+                || "boolean isEmpty()".equals(method.subsignature));
     }
 
     public static boolean symbolicResultReturn(String cell) {

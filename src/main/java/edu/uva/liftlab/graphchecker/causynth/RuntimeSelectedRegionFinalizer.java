@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -13,9 +14,11 @@ import java.io.InputStreamReader;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -237,22 +240,178 @@ public final class RuntimeSelectedRegionFinalizer {
 
     private static List<Map<String, Object>> branches(
             List<Map<String, Object>> edges) {
-        Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
+        Map<String, List<Map<String, Object>>> bySite =
+                new LinkedHashMap<>();
         for (Map<String, Object> edge : edges) {
             if (!"GUARD".equals(text(edge.get("transferKind")))) {
                 continue;
             }
             String site = first(text(edge.get("guardSiteId")),
                     text(edge.get("siteId")));
+            if (!site.isEmpty()) {
+                bySite.computeIfAbsent(site,
+                        ignored -> new ArrayList<>()).add(edge);
+            }
+        }
+
+        BranchPolicyClassifier classifier =
+                new BranchPolicyClassifier(edges);
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map.Entry<String, List<Map<String, Object>>> entry
+                : bySite.entrySet()) {
+            String site = entry.getKey();
+            List<Map<String, Object>> guards = entry.getValue();
+            Map<String, Object> representative = guards.get(0);
             Map<String, Object> branch = new LinkedHashMap<>();
             branch.put("siteId", site);
-            branch.put("method", edge.get("method"));
-            branch.put("unitIndex", number(edge.get("unitIndex"), -1));
-            branch.put("requiredOutcome", edge.get("requiredOutcome"));
-            branch.put("policy", "EXPLORE");
-            unique.put(site, branch);
+            branch.put("method", representative.get("method"));
+            branch.put("unitIndex", number(
+                    representative.get("unitIndex"), -1));
+            Boolean required = consistentRequiredOutcome(guards);
+            branch.put("requiredOutcome", required);
+
+            boolean conflicting = required == null
+                    && hasConflictingRequiredOutcomes(guards);
+            boolean structural = classifier.structuralLoopGuard(
+                    site, guards);
+            branch.put("policy", conflicting || structural
+                    ? "PATH_ASSUMPTION" : "EXPLORE");
+            branch.put("policyReason", conflicting
+                    ? "CONFLICTING_REQUIRED_OUTCOMES"
+                    : structural ? "FROZEN_LOOP_CONTAINER_STRUCTURE"
+                    : "FAILURE_DIRECTED_SEMANTIC_GUARD");
+            result.add(branch);
         }
-        return new ArrayList<>(unique.values());
+        return result;
+    }
+
+    private static List<String> operandCells(
+            Collection<Map<String, Object>> guards) {
+        Set<String> cells = new LinkedHashSet<>();
+        for (Map<String, Object> guard : guards) {
+            String cell = text(guard.get("fromCell"));
+            if (!cell.isEmpty()) cells.add(cell);
+        }
+        List<String> result = new ArrayList<>(cells);
+        Collections.sort(result);
+        return result;
+    }
+
+    private static Boolean consistentRequiredOutcome(
+            Collection<Map<String, Object>> guards) {
+        Boolean selected = null;
+        for (Map<String, Object> guard : guards) {
+            Boolean value = booleanValue(guard.get("requiredOutcome"));
+            if (value == null) continue;
+            if (selected != null && !selected.equals(value)) return null;
+            selected = value;
+        }
+        return selected;
+    }
+
+    private static boolean hasConflictingRequiredOutcomes(
+            Collection<Map<String, Object>> guards) {
+        Set<Boolean> values = new LinkedHashSet<>();
+        for (Map<String, Object> guard : guards) {
+            Boolean value = booleanValue(guard.get("requiredOutcome"));
+            if (value != null) values.add(value);
+        }
+        return values.size() > 1;
+    }
+
+    private static Boolean booleanValue(Object value) {
+        if (value instanceof Boolean) return (Boolean) value;
+        if ("true".equalsIgnoreCase(text(value))) return Boolean.TRUE;
+        if ("false".equalsIgnoreCase(text(value))) return Boolean.FALSE;
+        return null;
+    }
+
+    /**
+     * Classifies only positively proven structural traversal guards.  The
+     * runtime-refined graph is already failure-directed, so every remaining
+     * ambiguous guard stays explorable instead of being discarded by a name
+     * heuristic.  A size/isEmpty/array-length value is structural only when
+     * the same guard also has loop recurrence evidence; semantic cardinality
+     * checks outside a loop remain explorable.
+     */
+    private static final class BranchPolicyClassifier {
+        private final Map<String, List<Map<String, Object>>> incoming =
+                new LinkedHashMap<>();
+
+        private BranchPolicyClassifier(
+                Collection<Map<String, Object>> edges) {
+            for (Map<String, Object> edge : edges) {
+                String target = text(edge.get("toCell"));
+                if (!target.isEmpty()) {
+                    incoming.computeIfAbsent(target,
+                            ignored -> new ArrayList<>()).add(edge);
+                }
+            }
+        }
+
+        private boolean structuralLoopGuard(
+                String site, Collection<Map<String, Object>> guards) {
+            if (!loopRecurrence(site, guards)) return false;
+            for (String operand : operandCells(guards)) {
+                if (hasStructuralSource(operand)) return true;
+            }
+            return false;
+        }
+
+        private boolean loopRecurrence(
+                String site, Collection<Map<String, Object>> guards) {
+            for (Map<String, Object> guard : guards) {
+                String guardSite = first(text(guard.get("guardSiteId")),
+                        text(guard.get("siteId")));
+                if (!site.equals(guardSite)) continue;
+                if (Boolean.TRUE.equals(booleanValue(
+                        guard.get("sameCellRedefinition")))) {
+                    return true;
+                }
+                for (Map<String, Object> definition
+                        : rows(guard.get("controlledDefinitions"))) {
+                    if (Boolean.TRUE.equals(booleanValue(
+                            definition.get("sameCellRedefinition")))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private boolean hasStructuralSource(String start) {
+            Set<String> visitedCells = new LinkedHashSet<>();
+            Set<String> visitedEdges = new LinkedHashSet<>();
+            Deque<String> work = new ArrayDeque<>();
+            work.add(start);
+            while (!work.isEmpty()) {
+                String cell = work.removeFirst();
+                if (!visitedCells.add(cell)) continue;
+                for (Map<String, Object> edge : incoming.getOrDefault(
+                        cell, Collections.<Map<String, Object>>emptyList())) {
+                    String identity = first(text(edge.get("id")),
+                            text(edge.get("siteId")) + "\n"
+                                    + text(edge.get("fromCell")) + "\n"
+                                    + text(edge.get("toCell")));
+                    if (!visitedEdges.add(identity)
+                            || "GUARD".equals(text(
+                            edge.get("transferKind")))) {
+                        continue;
+                    }
+                    String invoke = text(edge.get("invoke"));
+                    if (JavaContainerTypes
+                            .structuralIterationPredicate(invoke)
+                            || JavaContainerTypes
+                            .structuralCardinalityOperation(invoke)
+                            || text(edge.get("unit")).contains("lengthof")) {
+                        return true;
+                    }
+                    String predecessor = text(edge.get("fromCell"));
+                    if (!predecessor.isEmpty()) work.addLast(predecessor);
+                }
+            }
+            return false;
+        }
     }
 
     private static List<Map<String, Object>> fieldFlows(
