@@ -285,6 +285,7 @@ public final class RegionPathWorklist {
             task.addProperty("queryKey", key);
             task.addProperty("regionId", path.regionId());
             task.addProperty("goalId", path.scope().goalId());
+            path.scope().loopBound().writeTo(task);
             path.scope().goalKind().writeToTask(task);
             task.addProperty("sourceTaskId", path.sourceTaskId());
             if (path.scope().outputClosure() != null) {
@@ -348,6 +349,7 @@ public final class RegionPathWorklist {
             }
             if (scopes.size() == 1) {
                 PathObservation.Scope scope = scopes.values().iterator().next();
+                scope.loopBound().writeTo(result);
                 if (scope.outputClosure() != null) {
                     result.add(OutputClosureContract.FIELD,
                             scope.outputClosure().toJson());

@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -98,6 +99,8 @@ public class ConcolicSchedulerTest {
                 .getAsJsonArray("inputActions");
         assertEquals("SYMBOLIC", mode(actions, "REGION.1.in.demanded"));
         assertEquals("CONCRETE", mode(actions, "REGION.1.in.unrelated"));
+        assertEquals(4, LoopBoundPolicy.decode(
+                result.executionTasks.get(0)).maxBackedgeTraversals());
     }
 
     private ConcolicScheduler.Arguments arguments(
@@ -107,7 +110,8 @@ public class ConcolicSchedulerTest {
                 "--region-plan", plans.getPath(),
                 "--edge-validations", edges.getPath(),
                 "--refined-graph", graph.getPath(),
-                "--output-dir", output.getPath()
+                "--output-dir", output.getPath(),
+                "--max-loop-iterations", "4"
         });
     }
 

@@ -15,6 +15,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 public final class ExecutionTask {
     private final JsonObject encoded;
     private final InputActionCatalog inputActions;
+    private final LoopBoundPolicy loopBound;
     private final OutputClosureContract outputClosure;
     private final List<OutputCaptureSpec> outputCaptures;
 
@@ -27,6 +28,7 @@ public final class ExecutionTask {
                             + "regionInstanceId");
         }
         inputActions = InputActionCatalog.decode(encoded);
+        loopBound = LoopBoundPolicy.decode(encoded);
         outputClosure = encoded.has(OutputClosureContract.FIELD)
                 ? OutputClosureCodec.decode(encoded) : null;
         outputCaptures = outputClosure == null
@@ -50,8 +52,9 @@ public final class ExecutionTask {
             String taskId,
             JsonArray inputActions,
             JsonArray branches,
-        JsonArray edgeBindings,
-        boolean ready) {
+            JsonArray edgeBindings,
+            LoopBoundPolicy loopBound,
+            boolean ready) {
         JsonObject task = new JsonObject();
         goal.plan().writeTaskIdentityTo(task);
         goal.writeTaskPayloadTo(task);
@@ -59,6 +62,7 @@ public final class ExecutionTask {
         task.addProperty("goalKind", goal.kind().name());
         task.add(InputActionCatalog.FIELD, inputActions.deepCopy());
         task.add("branches", branches.deepCopy());
+        loopBound.writeTo(task);
         if (edgeBindings.size() > 0) {
             task.add("edgeBindings", edgeBindings.deepCopy());
         }
@@ -115,6 +119,10 @@ public final class ExecutionTask {
 
     public JsonArray branches() {
         return array(encoded, "branches").deepCopy();
+    }
+
+    public LoopBoundPolicy loopBound() {
+        return loopBound;
     }
 
     public JsonArray modelAssignments() {

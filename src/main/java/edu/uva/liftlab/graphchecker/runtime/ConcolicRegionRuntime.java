@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 
@@ -3647,6 +3648,7 @@ public final class ConcolicRegionRuntime {
         /** Actions that execute directly at ordinary instrumentation hooks. */
         private final List<SymbolizeAction> symbolize;
         private final Map<String, String> branchPolicies;
+        private final LoopBoundPolicy loopBound;
         private final List<ModelAssignment> modelAssignments;
         private final List<OutputCaptureSpec> outputCaptures;
         private RuntimeTask(ExecutionTask task) {
@@ -3665,6 +3667,7 @@ public final class ConcolicRegionRuntime {
             this.declaredSymbolize = new ArrayList<>();
             this.symbolize = new ArrayList<>();
             this.branchPolicies = new LinkedHashMap<>();
+            this.loopBound = task.loopBound();
             this.modelAssignments = new ArrayList<>();
             this.outputCaptures = new ArrayList<>();
             for (JsonElement element : task.inputActions().all()) {

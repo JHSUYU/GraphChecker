@@ -96,6 +96,7 @@ public final class RelationSummary {
         JsonObject merged = new JsonObject();
         merged.addProperty("schemaVersion", 1);
         merged.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
+        orderedCases.get(0).scope().loopBound().writeTo(merged);
         merged.addProperty("summaryId", "SUMMARY." + region
                 + ".MERGED." + relationHash);
         OutputClosureCodec.writeTo(merged, outputClosure);

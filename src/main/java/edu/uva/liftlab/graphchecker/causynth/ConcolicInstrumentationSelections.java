@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import soot.SootClass;
@@ -73,6 +74,7 @@ final class ConcolicInstrumentationSelections {
         private final String rootMethod;
         private final String receiverClass;
         private final ConcolicBranchSelection branches;
+        private final LoopBoundPolicy loopBound;
         private final ConcolicMaterializationSelection materializations;
         private final List<RootedOutputCapture> outputCaptures;
         private final Set<String> instrumentationMethods;
@@ -91,6 +93,7 @@ final class ConcolicInstrumentationSelections {
             InputActionCatalog inputActions = task.inputActions();
             JsonArray symbolic = inputActions.symbolic();
             branches = ConcolicBranchSelection.from(task.branches());
+            loopBound = task.loopBound();
             materializations = ConcolicMaterializationSelection.from(symbolic);
             outputCaptures = rootedOutputCaptures(task.outputCaptures(),
                     inputActions.all());
@@ -167,6 +170,10 @@ final class ConcolicInstrumentationSelections {
 
         ConcolicBranchSelection branches() {
             return branches;
+        }
+
+        LoopBoundPolicy loopBound() {
+            return loopBound;
         }
 
         ConcolicMaterializationSelection materializations() {

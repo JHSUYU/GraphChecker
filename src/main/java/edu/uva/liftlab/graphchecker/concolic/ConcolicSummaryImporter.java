@@ -132,6 +132,7 @@ public final class ConcolicSummaryImporter {
             summary.addProperty("regionId", task.regionId());
             summary.addProperty("regionInstanceId",
                     task.regionInstanceId());
+            task.loopBound().writeTo(summary);
             task.goalKind().writeToTask(summary);
             if (task.outputClosure() != null) {
                 summary.add(OutputClosureContract.FIELD,

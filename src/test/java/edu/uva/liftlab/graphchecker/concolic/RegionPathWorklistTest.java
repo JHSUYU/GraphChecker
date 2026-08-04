@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -178,6 +179,10 @@ public class RegionPathWorklistTest {
         assertEquals(1, result.relations.size());
         JsonObject relation = result.relations.get(0)
                 .getAsJsonObject("regionRelation");
+        assertEquals(4, LoopBoundPolicy.decode(result.relations.get(0))
+                .maxBackedgeTraversals());
+        assertEquals(4, LoopBoundPolicy.decode(result.manifest)
+                .maxBackedgeTraversals());
         assertEquals("OUTPUT_CLOSURE_BRANCH_SLICE",
                 relation.get("guardProjection").getAsString());
         JsonArray guard = relation.getAsJsonArray("cases").get(0)
@@ -728,6 +733,7 @@ public class RegionPathWorklistTest {
         task.addProperty("goalId", id + ".GOAL");
         task.addProperty("taskId", "TASK." + id);
         task.addProperty("regionId", "REGION.3");
+        LoopBoundPolicy.cfgBackedges(4).writeTo(task);
         goal.writeToTask(task);
         attachClosure(task, outputClosure("REGION.3.out.0",
                 "<P: int x>", "PROOF.DEFAULT", "SITE.0", "SITE.1"));
@@ -741,6 +747,7 @@ public class RegionPathWorklistTest {
         summary.addProperty("goalId", id + ".GOAL");
         summary.addProperty("taskId", "TASK." + id);
         summary.addProperty("regionId", "REGION.3");
+        LoopBoundPolicy.cfgBackedges(4).writeTo(summary);
         summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", true);
         goal.writeToTask(summary);

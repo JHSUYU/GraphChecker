@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
@@ -117,6 +118,8 @@ public final class ConcolicScheduler {
                     candidate.inputActions, candidate.branches,
                     mergePlan.outboundValueEqualityBindings(
                             candidate.goal, outputContract),
+                    LoopBoundPolicy.cfgBackedges(
+                            arguments.maxLoopIterations),
                     candidate.ready).json();
 
             if (captured != null && outputContract == null) {
@@ -1422,12 +1425,14 @@ public final class ConcolicScheduler {
         public final String goalId;
         public final String targetSite;
         public final int maxJobs;
+        public final int maxLoopIterations;
 
         private Arguments(Path regions, Path regionPlan,
                           Path edgeValidations, Path refinedGraph,
                           Path summaries, Path outputDirectory, String regionId,
                           String regionInstanceId, String goalId,
-                          String targetSite, int maxJobs) {
+                          String targetSite, int maxJobs,
+                          int maxLoopIterations) {
             this.regions = regions;
             this.regionPlan = regionPlan;
             this.edgeValidations = edgeValidations;
@@ -1439,6 +1444,7 @@ public final class ConcolicScheduler {
             this.goalId = safe(goalId);
             this.targetSite = safe(targetSite);
             this.maxJobs = Math.max(1, maxJobs);
+            this.maxLoopIterations = maxLoopIterations;
         }
 
         public static Arguments parse(String[] args) {
@@ -1476,7 +1482,11 @@ public final class ConcolicScheduler {
                     firstNonBlank(values.get("region-instance-id")),
                     firstNonBlank(values.get("goal-id")),
                     firstNonBlank(values.get("target-site")),
-                    parseInt(values.get("max-jobs"), 1));
+                    parseInt(values.get("max-jobs"), 1),
+                    positiveInt(values.get("max-loop-iterations"),
+                            LoopBoundPolicy
+                                    .DEFAULT_MAX_BACKEDGE_TRAVERSALS,
+                            "max-loop-iterations"));
         }
 
         private static boolean knownOption(String key) {
@@ -1490,7 +1500,8 @@ public final class ConcolicScheduler {
                     || "region-instance-id".equals(key)
                     || "goal-id".equals(key)
                     || "target-site".equals(key)
-                    || "max-jobs".equals(key);
+                    || "max-jobs".equals(key)
+                    || "max-loop-iterations".equals(key);
         }
 
         private static Path requiredPath(Map<String, String> values,
@@ -1518,6 +1529,22 @@ public final class ConcolicScheduler {
             } catch (RuntimeException ignored) {
                 return fallback;
             }
+        }
+
+        private static int positiveInt(String value, int fallback,
+                                       String option) {
+            int parsed;
+            try {
+                parsed = value == null ? fallback : Integer.parseInt(value);
+            } catch (RuntimeException malformed) {
+                throw new IllegalArgumentException("--" + option
+                        + " requires a positive integer", malformed);
+            }
+            if (parsed < 1) {
+                throw new IllegalArgumentException("--" + option
+                        + " requires a positive integer");
+            }
+            return parsed;
         }
 
     }

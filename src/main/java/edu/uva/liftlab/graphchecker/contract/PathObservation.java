@@ -134,15 +134,18 @@ public final class PathObservation {
     public static final class Scope {
         private final ClosureGoalKind goalKind;
         private final String goalId;
+        private final LoopBoundPolicy loopBound;
         private final OutputClosureContract outputClosure;
         private final Set<String> branchSites;
         private final String identity;
 
         private Scope(ClosureGoalKind goalKind, String goalId,
+                      LoopBoundPolicy loopBound,
                       OutputClosureContract outputClosure,
                       Set<String> branchSites, String identity) {
             this.goalKind = goalKind;
             this.goalId = goalId;
+            this.loopBound = loopBound;
             this.outputClosure = outputClosure;
             this.branchSites = Collections.unmodifiableSet(branchSites);
             this.identity = identity;
@@ -160,6 +163,10 @@ public final class PathObservation {
                 throw new IllegalArgumentException(
                         "closure goal is required");
             }
+            JsonObject loopBoundSource = canonical.has(
+                    LoopBoundPolicy.FIELD) ? canonical : task;
+            LoopBoundPolicy loopBound = LoopBoundPolicy.decode(
+                    loopBoundSource);
             if (goalKind.capturesTargetReach()) {
                 JsonObject source = task != null ? task : canonical;
                 Set<String> sites = new LinkedHashSet<>();
@@ -179,23 +186,26 @@ public final class PathObservation {
                 String instance = firstNonBlank(string(source,
                         "regionInstanceId"), string(canonical,
                         "regionInstanceId"));
-                return new Scope(goalKind, goalId, null, sites,
+                return new Scope(goalKind, goalId, loopBound, null, sites,
                         "TARGET_REACH_CLOSURE_V1\n" + goalId + "\n"
                                 + region + "\n" + instance + "\n"
-                                + targetMethod);
+                                + targetMethod + "\n"
+                                + loopBound.identity());
             }
             OutputClosureContract contract = OutputClosureCodec.decode(
                     canonical);
-            return new Scope(goalKind, goalId, contract,
+            return new Scope(goalKind, goalId, loopBound, contract,
                     new LinkedHashSet<>(
                             contract.executionScope().branchSites()),
                     "OUTPUT_RELATION_CLOSURE_V1\n" + goalId + "\n"
                             + contract.demandKey() + "\n"
-                            + contract.closureFingerprint());
+                            + contract.closureFingerprint() + "\n"
+                            + loopBound.identity());
         }
 
         public ClosureGoalKind goalKind() { return goalKind; }
         public String goalId() { return goalId; }
+        public LoopBoundPolicy loopBound() { return loopBound; }
         public OutputClosureContract outputClosure() {
             return outputClosure;
         }
