@@ -412,11 +412,6 @@ query key 去重，按 wave 合并新 paths，再生成下一批 flips。worker 
 8. `candidate/candidate.smt2`
    - 只在 manifest `CANDIDATE_READY` 且 gaps 为空后直接运行 Z3。
 
-manual workflow 的 console 输出同时完整保存在
-`target/manual-container-three-thread-rpc/workflow.log`。失败消息包含
-stage、component、campaign、region、instance、goal 和首要 artifact 路径；先看该路径，
-不必从最终 SMT 反推上游失败。
-
 常见错误定位：
 
 ```text
