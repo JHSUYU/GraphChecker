@@ -3731,13 +3731,13 @@ public final class ConcolicRegionRuntime {
     }
 
     /** One selected mutator receiver waiting for its method completion. */
-    private static final class PendingMutationCapture {
+    static final class PendingMutationCapture {
         private final OutputCaptureSpec request;
         private final Object container;
         private final int occurrence;
 
-        private PendingMutationCapture(OutputCaptureSpec request,
-                                       Object container, int occurrence) {
+        PendingMutationCapture(OutputCaptureSpec request,
+                               Object container, int occurrence) {
             this.request = request;
             this.container = container;
             this.occurrence = occurrence;
@@ -3745,9 +3745,40 @@ public final class ConcolicRegionRuntime {
     }
 
     /** One nested invocation of a method that owns a selected mutator. */
-    private static final class MutationMethodScope {
+    static final class MutationMethodScope {
         private int observed;
         private PendingMutationCapture pending;
+        private boolean ambiguousContainer;
+
+        /** How this invocation absorbed one selected mutation. */
+        enum Selection { ANCHORED, FOLDED, AMBIGUOUS, IGNORED }
+
+        /**
+         * A mutation relation denotes the container state at the definition
+         * invocation's normal exit.  Repeating the selected mutator on the
+         * same receiver is therefore the ordinary fold (addKeys puts every
+         * key in one invocation) and keeps the first mutation as the anchor.
+         * Only a second, different receiver makes the exit snapshot
+         * ambiguous, and that poisons the whole invocation rather than
+         * letting a later mutation re-anchor it.
+         */
+        Selection offer(PendingMutationCapture candidate) {
+            if (ambiguousContainer) return Selection.IGNORED;
+            if (pending == null) {
+                pending = candidate;
+                return Selection.ANCHORED;
+            }
+            if (pending.container == candidate.container) {
+                return Selection.FOLDED;
+            }
+            pending = null;
+            ambiguousContainer = true;
+            return Selection.AMBIGUOUS;
+        }
+
+        PendingMutationCapture pendingForTests() {
+            return pending;
+        }
     }
 
     private static final class ActiveRegion {
@@ -3955,14 +3986,12 @@ public final class ConcolicRegionRuntime {
                             + "invocation scope");
                     return;
                 }
-                if (scope.pending != null) {
-                    scope.pending = null;
+                if (scope.offer(pending)
+                        == MutationMethodScope.Selection.AMBIGUOUS) {
                     addUnresolvedOnce(request.captureBindingId()
-                            + ": duplicate selected mutation in one "
-                            + "definition invocation");
-                    return;
+                            + ": selected mutations of different containers "
+                            + "in one definition invocation");
                 }
-                scope.pending = pending;
                 return;
             }
             PendingMutationCapture previous = pendingMutationCaptures.put(
