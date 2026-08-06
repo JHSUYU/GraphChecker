@@ -32,13 +32,22 @@ public final class ConcolicPathFlipSolver {
         Result result = solve(arguments);
         System.out.println(writeOutputs(arguments.outputDirectory, result));
         String status = string(result.solve.record, "status");
-        // UNSUPPORTED is a recorded terminal exploration outcome, not a
-        // process failure: the caller closes over it as a named exploration
-        // gap and the pipeline proceeds to candidates/compose.
-        if (!"SAT_MODEL_READY".equals(status) && !"UNSAT".equals(status)
-                && !"UNSUPPORTED".equals(status)) {
+        // UNSUPPORTED and MATERIALIZATION_GAP are recorded terminal
+        // exploration outcomes, not process failures: the caller closes over
+        // either as a named exploration gap and the pipeline proceeds to
+        // candidates/compose.  Only a solver that reached no verdict at all
+        // still fails the process.
+        if (!terminalExplorationOutcome(status)) {
             System.exit(2);
         }
+    }
+
+    /** True for a status the caller can record and move past. */
+    static boolean terminalExplorationOutcome(String status) {
+        return "SAT_MODEL_READY".equals(status)
+                || "UNSAT".equals(status)
+                || "UNSUPPORTED".equals(status)
+                || "MATERIALIZATION_GAP".equals(status);
     }
 
     static Result solve(Arguments arguments) throws Exception {

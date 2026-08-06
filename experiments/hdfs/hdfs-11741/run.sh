@@ -1243,14 +1243,21 @@ run_path_query() {
       >"${task_dir}/record.jsonl"
     return
   fi
-  # An UNSUPPORTED flip is an explored-and-abandoned exploration proposal,
-  # not a semantic authority: the fatal branch condition itself remains
-  # symbolic and is decided at the reach stage.  Record the named gap so the
-  # planner closes over it and the pipeline proceeds to candidates/compose.
-  if [[ "${solver_outcome}" == "UNSUPPORTED" ]]; then
+  # An UNSUPPORTED or MATERIALIZATION_GAP flip is an explored-and-abandoned
+  # exploration proposal, not a semantic authority: the fatal branch
+  # condition itself remains symbolic and is decided at the reach stage.
+  # One flip the replay cannot express or cannot materialize decides
+  # nothing, so record the named gap and let the planner close over it while
+  # the pipeline proceeds to candidates/compose.  The flip's own
+  # materialization test is untouched.
+  if [[ "${solver_outcome}" == "UNSUPPORTED" \
+      || "${solver_outcome}" == "MATERIALIZATION_GAP" ]]; then
     jq -c '{schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD",
       queryKey, regionId, sourcePathKey, sourceSummaryId, status,
-      reason, unsupported}' "${task_dir}/path_flip_solver_result.json" \
+      reason, unsupported, unresolvedContainerBoundaries,
+      unresolvedReplayControlSymbols}
+      | with_entries(select(.value != null))' \
+      "${task_dir}/path_flip_solver_result.json" \
       >"${task_dir}/record.jsonl"
     return
   fi
