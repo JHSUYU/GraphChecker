@@ -263,6 +263,31 @@ public class ConcolicRegionRuntimeTest {
                 .exactOutputBoundaryReachedForTests(task, captures));
     }
 
+    @Test
+    public void anUnobservedDemandedBranchSiteKeepsTheReplayOpen() {
+        String addKeys = "<test.Keys: void addKeys()>#u16";
+        String expiry = "<test.Keys: void removeExpired()>#u14";
+        List<String> demanded = Arrays.asList(addKeys, expiry);
+        Set<String> observed = new LinkedHashSet<>();
+        observed.add(addKeys);
+
+        // The plan replays the expiry guard, so capturing the output
+        // relation while that site has never executed is not the end of the
+        // work the plan demands.
+        assertFalse(ConcolicRegionRuntime.demandedBranchSitesObserved(
+                demanded, observed));
+
+        observed.add(expiry);
+        assertTrue(ConcolicRegionRuntime.demandedBranchSitesObserved(
+                demanded, observed));
+
+        // A task whose demanded sites were all observed - or that demands
+        // none - keeps the original exact boundary.
+        assertTrue(ConcolicRegionRuntime.demandedBranchSitesObserved(
+                Collections.<String>emptyList(),
+                Collections.<String>emptySet()));
+    }
+
     private static JsonObject exactOutputTask(int outputCount) {
         String region = "REGION.BOUNDARY";
         String instance = region + "@test#call1";

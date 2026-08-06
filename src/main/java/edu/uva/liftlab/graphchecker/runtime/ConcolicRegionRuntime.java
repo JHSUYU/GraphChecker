@@ -1486,6 +1486,32 @@ public final class ConcolicRegionRuntime {
         return true;
     }
 
+    /**
+     * True once every branch-replay site the task demands has executed at
+     * least once in this activation.
+     *
+     * <p>The task plan names the branch sites the producer relation replays,
+     * and a replay that captured its outputs but never reached one of them
+     * has not yet done the work the plan asked for: closing there discards
+     * that site's decision and every later version of the same relation.
+     * Both kinds of observation count, because a symbolic mapping and a
+     * concrete witness each attest that the site executed.  The bounded
+     * window stays capped by the loop-cut policy, so a demanded site this
+     * replay cannot reach ends the activation at its cut instead.</p>
+     */
+    static boolean demandedBranchSitesObserved(
+            Collection<String> demandedSites, Set<String> observedSites) {
+        if (demandedSites == null) return true;
+        for (String site : demandedSites) {
+            if (site != null && !site.isEmpty()
+                    && (observedSites == null
+                    || !observedSites.contains(site))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** Test seam for exact-output boundary completion without a custom VM. */
     static boolean exactOutputBoundaryReachedForTests(
             JsonObject encodedTask, JsonArray encodedCaptures) {
@@ -1702,6 +1728,7 @@ public final class ConcolicRegionRuntime {
             try {
                 active.recordConcreteBranchWitness(method, unitIndex,
                         observedOutcome);
+                finishAtExactOutputBoundary(active);
             } catch (Throwable ignored) {
                 // Observation must never alter the workload's own outcome.
             }
@@ -1882,6 +1909,9 @@ public final class ConcolicRegionRuntime {
             // A marker without either authority carries no decision into the
             // summary, so it must not attest a recorded outcome either.
             active.witnessOutcome(siteId, observedOutcome);
+            // This may be the last demanded branch-replay site, which is half
+            // of the boundary condition; the captures alone never re-check it.
+            finishAtExactOutputBoundary(active);
         }
         return vmAttestation.valid && conditionIndex >= 0;
     }
@@ -4125,7 +4155,10 @@ public final class ConcolicRegionRuntime {
         }
 
         private boolean hasCompleteExactOutputBoundary() {
-            return completeExactOutputBoundary(
+            return demandedBranchSitesObserved(
+                    activation.branchPolicies.keySet(),
+                    witnessedOutcomes.keySet())
+                    && completeExactOutputBoundary(
                     activation.capturesOutputRelation,
                     activation.outputCaptures, outputCaptures);
         }
