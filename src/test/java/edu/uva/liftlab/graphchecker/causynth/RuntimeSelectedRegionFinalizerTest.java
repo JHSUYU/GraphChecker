@@ -2685,6 +2685,115 @@ public class RuntimeSelectedRegionFinalizerTest {
         return file;
     }
 
+    private static final String LEAF =
+            "<example.Key: int keyId>";
+
+    private static Map<String, Object> leafPort(
+            String portId, long rootCallId, int receiver, long seq) {
+        return object("portId", portId, "transportKind", "HEAP",
+                "process", "p", "rootCallId", rootCallId,
+                "fieldReceiverObjectId", receiver, "eventSeq", seq,
+                "dependencyRole", DependencyRole.VALUE_FRONTIER,
+                "fieldPath", Collections.singletonList("keyId"),
+                "fieldPathDeclarations", Collections.singletonList(LEAF));
+    }
+
+    private static Map<String, Object> leafRegion(
+            String regionId, List<Map<String, Object>> outputs,
+            List<Map<String, Object>> inputs) {
+        return object("regionId", regionId, "outputs", outputs,
+                "symbolicInputs", inputs);
+    }
+
+    @Test
+    public void objectIdentityBindsADemandedLeafToItsRealProducer() {
+        // The producer builds the object activation-locally; the consumer
+        // reads that exact object's leaf after it escaped through a carrier.
+        List<Map<String, Object>> regions = Arrays.asList(
+                leafRegion("REGION.W", Collections.singletonList(
+                        leafPort("REGION.W.out.keyId", 10L, 74965, 100L)),
+                        Collections.<Map<String, Object>>emptyList()),
+                leafRegion("REGION.R",
+                        Collections.<Map<String, Object>>emptyList(),
+                        Collections.singletonList(
+                        leafPort("REGION.R.in.keyId", 20L, 74965, 200L))));
+
+        List<Map<String, Object>> flows =
+                RuntimeSelectedRegionFinalizer.demandedLeafProducerFlows(
+                        regions, new ArrayList<Map<String, Object>>(),
+                        new LinkedHashMap<String, Long>());
+
+        assertEquals(1, flows.size());
+        Map<String, Object> edge = flows.get(0);
+        assertEquals("REGION.W", edge.get("fromRegion"));
+        assertEquals("REGION.R", edge.get("toRegion"));
+        assertEquals("RUNTIME_FIELD_FLOW", edge.get("kind"));
+        // Named so a composed manifest can trace the binding back.
+        assertEquals(RuntimeSelectedRegionFinalizer.LEAF_PRODUCER_AUTHORITY,
+                edge.get("authority"));
+        assertEquals(Collections.singletonList(LEAF),
+                edge.get("fieldPathDeclarations"));
+    }
+
+    @Test
+    public void anAmbiguousLeafWriterLeavesTheReadUnbound() {
+        // Two distinct writer ports could have produced the value, so the
+        // trace does not prove a producer and the leaf keeps its concrete
+        // under-approximation.
+        List<Map<String, Object>> regions = Arrays.asList(
+                leafRegion("REGION.W1", Collections.singletonList(
+                        leafPort("REGION.W1.out.keyId", 10L, 74965, 100L)),
+                        Collections.<Map<String, Object>>emptyList()),
+                leafRegion("REGION.W2", Collections.singletonList(
+                        leafPort("REGION.W2.out.keyId", 11L, 74965, 110L)),
+                        Collections.<Map<String, Object>>emptyList()),
+                leafRegion("REGION.R",
+                        Collections.<Map<String, Object>>emptyList(),
+                        Collections.singletonList(
+                        leafPort("REGION.R.in.keyId", 20L, 74965, 200L))));
+
+        assertTrue(RuntimeSelectedRegionFinalizer
+                .demandedLeafProducerFlows(regions,
+                        new ArrayList<Map<String, Object>>(),
+                        new LinkedHashMap<String, Long>()).isEmpty());
+    }
+
+    @Test
+    public void anAlreadyClosedLeafIsNotBoundTwice() {
+        List<Map<String, Object>> regions = Arrays.asList(
+                leafRegion("REGION.W", Collections.singletonList(
+                        leafPort("REGION.W.out.keyId", 10L, 74965, 100L)),
+                        Collections.<Map<String, Object>>emptyList()),
+                leafRegion("REGION.R",
+                        Collections.<Map<String, Object>>emptyList(),
+                        Collections.singletonList(
+                        leafPort("REGION.R.in.keyId", 20L, 74965, 200L))));
+        List<Map<String, Object>> existing = new ArrayList<>();
+        existing.add(object("toRegion", "REGION.R", "toRootCallId", 20L,
+                "toPort", "REGION.R.in.keyId"));
+
+        assertTrue(RuntimeSelectedRegionFinalizer
+                .demandedLeafProducerFlows(regions, existing,
+                        new LinkedHashMap<String, Long>()).isEmpty());
+    }
+
+    @Test
+    public void aDifferentObjectIsNeverTreatedAsTheProducer() {
+        List<Map<String, Object>> regions = Arrays.asList(
+                leafRegion("REGION.W", Collections.singletonList(
+                        leafPort("REGION.W.out.keyId", 10L, 11111, 100L)),
+                        Collections.<Map<String, Object>>emptyList()),
+                leafRegion("REGION.R",
+                        Collections.<Map<String, Object>>emptyList(),
+                        Collections.singletonList(
+                        leafPort("REGION.R.in.keyId", 20L, 74965, 200L))));
+
+        assertTrue(RuntimeSelectedRegionFinalizer
+                .demandedLeafProducerFlows(regions,
+                        new ArrayList<Map<String, Object>>(),
+                        new LinkedHashMap<String, Long>()).isEmpty());
+    }
+
     private static Map<String, Object> object(Object... values) {
         Map<String, Object> result = new LinkedHashMap<>();
         for (int index = 0; index < values.length; index += 2) {

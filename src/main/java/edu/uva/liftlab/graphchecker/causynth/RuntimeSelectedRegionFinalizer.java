@@ -139,6 +139,8 @@ public final class RuntimeSelectedRegionFinalizer {
         program.regionEdges.addAll(runtimeFieldFlows);
         program.regionEdges.addAll(protocolFlows(graph));
         addTrustedRpcDescendantProjections(program, graph);
+        program.regionEdges.addAll(demandedLeafProducerFlows(
+                program.regions, program.regionEdges, laneByInstance));
         annotateFlowContexts(program.regionEdges, runtimeInstances);
         markBoundedContainerStateChains(program.regions,
                 runtimeFieldFlows);
@@ -2446,6 +2448,131 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         return result;
     }
+
+    /**
+     * Binds a still-unclosed demanded leaf to the region that actually wrote
+     * it.
+     *
+     * <p>A leaf reached through a reference another region handed over is
+     * demanded on the reading side, but the write that produced it is
+     * activation-local to the producer: the object is built there and only
+     * later escapes through a carrier field.  The failure-relevant field set
+     * is stated over carriers, so the ordinary field flow never pairs the two
+     * and the leaf is left to be replayed as a concrete observation.</p>
+     *
+     * <p>Runtime object identity settles it exactly.  A write to the same
+     * object and the same declaration, in another activation, before this
+     * read, is that read's producer.  Only an unambiguous writer counts: if
+     * several distinct writer ports could have produced the value, the leaf
+     * keeps its concrete under-approximation rather than inventing a
+     * relation the trace does not prove.</p>
+     */
+    static List<Map<String, Object>> demandedLeafProducerFlows(
+            List<Map<String, Object>> regions,
+            List<Map<String, Object>> regionEdges,
+            Map<String, Long> laneByInstance) {
+        Set<String> closedInputs = new LinkedHashSet<>();
+        for (Map<String, Object> edge : regionEdges) {
+            String toRegion = text(edge.get("toRegion"));
+            long toRootCallId = longNumber(edge.get("toRootCallId"), -1L);
+            String toPort = text(edge.get("toPort"));
+            if (!toRegion.isEmpty() && toRootCallId >= 0L
+                    && !toPort.isEmpty()) {
+                closedInputs.add(portDemandKey(toRegion, toRootCallId,
+                        toPort));
+            }
+        }
+        List<BoundPort> writes = new ArrayList<>();
+        List<BoundPort> reads = new ArrayList<>();
+        for (Map<String, Object> region : regions) {
+            String regionId = text(region.get("regionId"));
+            collectPorts(writes, regionId, rows(region.get("outputs")));
+            // Only a semantic scalar leaf is at stake here.  A carrier read
+            // is answered by the ordinary field flow over demanded fields,
+            // and widening this pass to carriers would invent relations the
+            // failure never asked for.
+            List<Map<String, Object>> leaves = new ArrayList<>();
+            for (Map<String, Object> port
+                    : rows(region.get("symbolicInputs"))) {
+                if (primitiveLeaf(port)) leaves.add(port);
+            }
+            collectPorts(reads, regionId, leaves);
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (BoundPort read : reads) {
+            if (read.receiver == 0
+                    || closedInputs.contains(portDemandKey(read.region,
+                    read.rootCallId, read.port))) {
+                continue;
+            }
+            String readField = read.leafDeclaration();
+            if (readField.isEmpty()) continue;
+            Map<String, BoundPort> byWriterPort = new LinkedHashMap<>();
+            for (BoundPort write : writes) {
+                if (sameInstance(write, read)
+                        || !write.process.equals(read.process)
+                        || write.receiver == 0
+                        || write.receiver != read.receiver
+                        || !write.leafDeclaration().equals(readField)
+                        || sameLane(write, read, laneByInstance)
+                        && write.seq >= read.seq
+                        || DependencyRole.CONCRETE_STRUCTURE_CARRIER.equals(
+                        read.dependencyRole)) {
+                    continue;
+                }
+                String writerPort = portDemandKey(write.region,
+                        write.rootCallId, write.port);
+                BoundPort selected = byWriterPort.get(writerPort);
+                if (selected == null || write.seq > selected.seq) {
+                    byWriterPort.put(writerPort, write);
+                }
+            }
+            if (byWriterPort.size() != 1) continue;
+            BoundPort write = byWriterPort.values().iterator().next();
+            String alternative = write.region + "\n" + write.port
+                    + "\n" + write.rootCallId + "\n" + write.site
+                    + "\n" + write.occurrence + "\n" + read.region
+                    + "\n" + read.port + "\n" + read.rootCallId
+                    + "\n" + read.site + "\n" + read.occurrence;
+            Map<String, Object> edge = new LinkedHashMap<>();
+            edge.put("schemaVersion", 3);
+            edge.put("kind", "RUNTIME_FIELD_FLOW");
+            edge.put("transportKind", "HEAP");
+            edge.put("authority", LEAF_PRODUCER_AUTHORITY);
+            edge.put("edgeId", "RF.LEAF." + UUID.nameUUIDFromBytes(
+                    alternative.getBytes(StandardCharsets.UTF_8)));
+            edge.put("causalAlternativeId", "FIELD_OCCURRENCE."
+                    + UUID.nameUUIDFromBytes(alternative.getBytes(
+                    StandardCharsets.UTF_8)));
+            edge.put("fromRegion", write.region);
+            edge.put("toRegion", read.region);
+            edge.put("fromPort", write.port);
+            edge.put("toPort", read.port);
+            edge.put("fromRootCallId", write.rootCallId);
+            edge.put("toRootCallId", read.rootCallId);
+            edge.put("receiverObjectId", write.receiver);
+            edge.put("valueObjectId", write.valueObject);
+            edge.put("primitiveValue", write.primitiveValue);
+            edge.put("writerEventSeq", write.seq);
+            edge.put("readerEventSeq", read.seq);
+            edge.put("writerStaticSiteId", write.site);
+            edge.put("readerStaticSiteId", read.site);
+            edge.put("writerOccurrence", write.occurrence);
+            edge.put("readerOccurrence", read.occurrence);
+            edge.put("bindingKind", write.bindingKind);
+            edge.put("dependencyRole", read.dependencyRole);
+            edge.put("fieldPathDeclarations", Collections.singletonList(
+                    readField));
+            edge.put("writerFieldPathDeclarations", write.declarations);
+            edge.put("readerFieldPathDeclarations", read.declarations);
+            result.add(edge);
+        }
+        return result;
+    }
+
+    /** Names the leaf-producer binding for downstream manifest tracing. */
+    static final String LEAF_PRODUCER_AUTHORITY =
+            "RUNTIME_FIELD_FLOW_LEAF_PRODUCER_V1";
 
     private static Set<String> failureRelevantFields(
             List<Map<String, Object>> regions,
