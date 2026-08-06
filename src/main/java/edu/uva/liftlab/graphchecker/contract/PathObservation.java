@@ -84,6 +84,10 @@ public final class PathObservation {
                 : scope.outputClosure.producer().regionId();
     }
     public String sourceTaskId() { return string(raw, "taskId"); }
+    /** Canonical replay activation this path was imported against. */
+    public String regionInstanceId() {
+        return string(raw, "regionInstanceId");
+    }
     public boolean relationallyComplete() {
         return bool(raw, "relationallyComplete", false);
     }

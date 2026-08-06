@@ -373,6 +373,18 @@ public final class RegionPathWorklist {
                     scope.goalKind().writeToTask(result);
                 }
             }
+            // Downstream reach-query construction attests that its seed
+            // query and this closure describe the same canonical replay
+            // activation, so a uniquely observed instance is named here.
+            Set<String> observedInstances = new LinkedHashSet<>();
+            for (PathObservation path : paths) {
+                String instance = path.regionInstanceId();
+                if (!instance.isEmpty()) observedInstances.add(instance);
+            }
+            if (observedInstances.size() == 1) {
+                result.addProperty("regionInstanceId",
+                        observedInstances.iterator().next());
+            }
             result.add("gaps", GSON.toJsonTree(gaps));
             // A flip whose solver query used expression IR the path-flip
             // encoder cannot lower is an explored-and-abandoned proposal,

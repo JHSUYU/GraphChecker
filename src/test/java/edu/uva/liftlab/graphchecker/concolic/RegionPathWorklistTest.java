@@ -177,6 +177,33 @@ public class RegionPathWorklistTest {
     }
 
     @Test
+    public void closedManifestNamesTheUniqueCanonicalActivation() {
+        // Reach-query construction attests that the closure and its seed
+        // query describe one canonical replay activation.
+        JsonObject targetSummary = summary("ACT.MANIFEST.INSTANCE",
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        JsonObject targetTask = executionTask("ACT.MANIFEST.INSTANCE",
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        targetSummary.remove("outputClosure");
+        targetTask.remove("outputClosure");
+        targetSummary.add("branchMappings", new JsonArray());
+        targetTask.add("branches", new JsonArray());
+        targetSummary.addProperty("regionInstanceId",
+                "REGION.3@canonical#call7");
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(targetSummary),
+                Collections.singletonList(targetTask),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                result.manifest.get("state").getAsString());
+        assertEquals("REGION.3@canonical#call7",
+                result.manifest.get("regionInstanceId").getAsString());
+    }
+
+    @Test
     public void relationProjectionKeepsOnlySelectedSymbolicBranchSlice() {
         JsonObject summary = projectionSummary("ACT.PROJECT.ONE",
                 binary("<", 5), binary("+", 1));
