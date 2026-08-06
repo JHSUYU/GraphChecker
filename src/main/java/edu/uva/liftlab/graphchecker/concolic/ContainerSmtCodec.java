@@ -292,6 +292,117 @@ public final class ContainerSmtCodec {
                 && owner.sort == Sort.INT;
     }
 
+    /**
+     * Rewrites an indexed read to the element it provably selects.
+     *
+     * <p>Structural readers - the java.lang codec proofs above all - inspect
+     * the recorded expression rather than the lowered term, so they need the
+     * same select-over-store identity {@link #term} applies.  An expression
+     * that decides nothing is returned unchanged.</p>
+     */
+    static JsonElement selectedIndexedElement(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) {
+            return expression;
+        }
+        JsonObject object = expression.getAsJsonObject();
+        JsonArray arguments = array(object, "arguments");
+        if (!EXPRESSION_TYPE.equals(string(object, "_type"))
+                || !"INDEXED".equals(string(object, "shape"))
+                || !"READ".equals(string(object, "operation"))
+                || arguments.size() != 1) {
+            return expression;
+        }
+        JsonElement stored = storedIndexedWrite(object.get("receiver"),
+                arguments.get(0));
+        return stored == null ? expression : selectedIndexedElement(stored);
+    }
+
+    /**
+     * Resolves {@code READ(WRITE(s, j, v), i)} to the stored {@code v}.
+     *
+     * <p>This is the ordinary select-over-store identity, decided only on
+     * exact integer literals: {@code i == j} selects the written value, and
+     * a literally different {@code j} cannot have written index {@code i},
+     * so the search continues into that write's receiver.  An index that is
+     * not an exact literal on either side decides nothing, so the ordinary
+     * select-over-store encoding is kept and the solver reasons about it.</p>
+     *
+     * <p>Resolving here rather than after lowering also keeps the write
+     * chain's unrelated element expressions out of the formula entirely,
+     * which is what {@code (store ... )} means: they cannot be observed
+     * through this read.</p>
+     */
+    private static JsonElement storedIndexedWrite(JsonElement receiver,
+                                                  JsonElement index) {
+        Integer wanted = exactIndexLiteral(index);
+        if (wanted == null) return null;
+        JsonElement cursor = receiver;
+        while (cursor != null && cursor.isJsonObject()) {
+            JsonObject node = cursor.getAsJsonObject();
+            JsonArray arguments = array(node, "arguments");
+            if (!EXPRESSION_TYPE.equals(string(node, "_type"))
+                    || !"INDEXED".equals(string(node, "shape"))
+                    || !"WRITE".equals(string(node, "operation"))
+                    || arguments.size() != 2) {
+                return null;
+            }
+            Integer written = exactIndexLiteral(arguments.get(0));
+            if (written == null) return null;
+            if (written.intValue() == wanted.intValue()) {
+                return arguments.get(1);
+            }
+            cursor = node.get("receiver");
+        }
+        return null;
+    }
+
+    /**
+     * Skips the writes a size query cannot observe.
+     *
+     * <p>{@code indexed_write} rebuilds the state with {@code (indexed_size
+     * s)} unchanged, so a size taken over a write chain is the size of the
+     * state underneath it.  Only {@code WRITE} is size preserving; append,
+     * insert, and remove all change the size and stop the walk.</p>
+     */
+    private static JsonElement sizePreservingIndexedReceiver(
+            JsonElement receiver) {
+        JsonElement cursor = receiver;
+        while (cursor != null && cursor.isJsonObject()) {
+            JsonObject node = cursor.getAsJsonObject();
+            if (!EXPRESSION_TYPE.equals(string(node, "_type"))
+                    || !"INDEXED".equals(string(node, "shape"))
+                    || !"WRITE".equals(string(node, "operation"))
+                    || array(node, "arguments").size() != 2
+                    || node.get("receiver") == null) {
+                return cursor;
+            }
+            cursor = node.get("receiver");
+        }
+        return receiver;
+    }
+
+    /** One exact {@code int} literal, or null when nothing is decided. */
+    private static Integer exactIndexLiteral(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return null;
+        JsonObject object = expression.getAsJsonObject();
+        String type = string(object, "_type");
+        if (!"ConstExpr".equals(type) && !"ConSymbolExp".equals(type)) {
+            return null;
+        }
+        String javaType = string(object, "_java_type");
+        if (!"I".equals(javaType) && !"int".equals(javaType)) return null;
+        String payload = string(object, "_exp");
+        int first = payload.indexOf('_');
+        int second = first < 0 ? -1 : payload.indexOf('_', first + 1);
+        String value = second < 0 ? payload : payload.substring(second + 1);
+        if (!value.matches("-?[0-9]+")) return null;
+        try {
+            return Integer.valueOf(value);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
     public static Term term(JsonObject expression, Host host) {
         String shape = string(expression, "shape");
         String operation = string(expression, "operation");
@@ -423,8 +534,18 @@ public final class ContainerSmtCodec {
             }
         }
         if ("INDEXED".equals(shape)) {
-            Term receiver = host.operand(expression.get("receiver"),
-                    Sort.INDEXED);
+            JsonElement receiverIr = expression.get("receiver");
+            if ("READ".equals(operation) && arguments.size() == 1) {
+                JsonElement stored = storedIndexedWrite(receiverIr,
+                        arguments.get(0));
+                if (stored != null) {
+                    return host.unbox(host.box(stored), javaType);
+                }
+            }
+            if ("SIZE".equals(operation)) {
+                receiverIr = sizePreservingIndexedReceiver(receiverIr);
+            }
+            Term receiver = host.operand(receiverIr, Sort.INDEXED);
             if (receiver == null) return null;
             if ("ITERATOR".equals(operation)) return receiver;
             if ("SIZE".equals(operation)) {

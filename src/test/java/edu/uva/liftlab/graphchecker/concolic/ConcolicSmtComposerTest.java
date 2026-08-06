@@ -883,6 +883,289 @@ public class ConcolicSmtComposerTest {
                 occurrence.get("solverTerm").getAsString());
     }
 
+    @Test
+    public void mergedCaseOutputExpressionReachesTheStringCodec()
+            throws Exception {
+        // A merged relation publishes output expressions per guarded case,
+        // never at the summary root.  The producer builds the SASL username
+        // concat(toString(keyId), " ", pool, " ", nonce); the consumer splits
+        // it and parses element zero out of the split array.  Reading the
+        // case expression is what lets the codec prove that round trip.
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = protocolBinding("EDGE.NAME", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0",
+                10, 11, 12);
+
+        JsonObject keyId = new JsonObject();
+        keyId.addProperty("_type", "SymbolExpression");
+        keyId.addProperty("_java_type", "I");
+        keyId.addProperty("_exp", "REGION.1.in.0");
+        JsonObject username = strConcat(strToString(keyId), strLiteral(" "),
+                strLiteral("BP-x"), strLiteral(" "), strLiteral("nonce"));
+
+        JsonObject consumed = new JsonObject();
+        consumed.addProperty("_type", "SymbolExpression");
+        consumed.addProperty("_java_type", "java/lang/String");
+        consumed.addProperty("_exp", "REGION.0.in.0");
+        JsonObject parts = indexedWrite(indexedWrite(indexedWrite(
+                indexedState("AL_5-0", 3),
+                0, splitElement(consumed, " ", 0)),
+                1, splitElement(consumed, " ", 1)),
+                2, splitElement(consumed, " ", 2));
+
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(indexedSize(parts), "==", integer(3)));
+        constraints.add(binary(parseInt(indexedRead(parts, 0)), "==",
+                integer(11745)));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("USERNAME",
+                        producerInstance, 20, username,
+                        Collections.singletonList("REGION.1.in.0"),
+                        Collections.singletonList(edge),
+                        "java.lang.String")),
+                Arrays.asList(region("REGION.0", "java.lang.String", ""),
+                        region("REGION.1", "int", "java.lang.String")),
+                constraints, edge);
+
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "MODEL_SEMANTICS_MISSING"));
+        assertTrue(result.smtLib,
+                result.smtLib.contains("java_int_to_string"));
+    }
+
+    @Test
+    public void literalIndexedReadSelectsOnlyTheStoredElement()
+            throws Exception {
+        // select-over-store: reading index zero cannot observe what a write
+        // to index one stored, so an unprovable sibling element must not
+        // reach the encoder and must not be reported as a proof gap.
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(indexedRead(indexedWrite(indexedWrite(
+                indexedState("AL_1-0", 2), 0, integer(7)),
+                1, unprovableMethod()), 0), "==", integer(7)));
+
+        ConcolicSmtComposer.Result result = composeWithConstraints(
+                constraints);
+
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "MODEL_SEMANTICS_MISSING"));
+    }
+
+    @Test
+    public void indexedSizeSkipsSizePreservingWrites() throws Exception {
+        // indexed_write rebuilds the state with indexed_size unchanged, so a
+        // size query never observes the written elements.
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(indexedSize(indexedWrite(
+                indexedState("AL_1-0", 2), 0, unprovableMethod())),
+                "==", integer(2)));
+
+        ConcolicSmtComposer.Result result = composeWithConstraints(
+                constraints);
+
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "MODEL_SEMANTICS_MISSING"));
+    }
+
+    @Test
+    public void undecidableIndexedReadKeepsEveryStoredElement()
+            throws Exception {
+        // A read whose index is not an exact literal decides nothing, so the
+        // ordinary select-over-store encoding is kept and every stored
+        // element still has to be encoded - gaps included.
+        JsonObject symbolicIndex = new JsonObject();
+        symbolicIndex.addProperty("_type", "SymbolExpression");
+        symbolicIndex.addProperty("_java_type", "I");
+        symbolicIndex.addProperty("_exp", "REGION.0.in.0");
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(indexedRead(indexedWrite(indexedWrite(
+                indexedState("AL_1-0", 2), 0, integer(7)),
+                1, unprovableMethod()), symbolicIndex), "==", integer(7)));
+
+        ConcolicSmtComposer.Result result = composeWithConstraints(
+                constraints);
+
+        assertTrue(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "MODEL_SEMANTICS_MISSING"));
+    }
+
+    @Test
+    public void undecidableStoredIndexKeepsEveryStoredElement()
+            throws Exception {
+        // The same holds when a write's own index is not a literal: it might
+        // be the index being read, so nothing below it may be selected.
+        JsonObject symbolicIndex = new JsonObject();
+        symbolicIndex.addProperty("_type", "SymbolExpression");
+        symbolicIndex.addProperty("_java_type", "I");
+        symbolicIndex.addProperty("_exp", "REGION.0.in.0");
+        JsonObject writes = indexedWrite(
+                indexedState("AL_1-0", 2), 0, integer(7));
+        writes = indexedWriteAt(writes, symbolicIndex, unprovableMethod());
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(indexedRead(writes, 0), "==", integer(7)));
+
+        ConcolicSmtComposer.Result result = composeWithConstraints(
+                constraints);
+
+        assertTrue(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "MODEL_SEMANTICS_MISSING"));
+    }
+
+    private ConcolicSmtComposer.Result composeWithConstraints(
+            JsonArray constraints) throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.0", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 10, 11);
+        return compose(fatalInstance,
+                Collections.singletonList(summary("PLAIN", producerInstance,
+                        20, 7, Collections.singletonList("REGION.1.in.0"),
+                        Collections.singletonList(edge))),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)),
+                constraints, edge);
+    }
+
+    private static JsonObject unprovableMethod() {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "MethodExpression");
+        expression.addProperty("_name", "java/lang/Object hashCode");
+        expression.add("_param_list", new JsonArray());
+        expression.add("_res_exp", integer(3));
+        return expression;
+    }
+
+    private static JsonObject indexedState(String reference, int size) {
+        JsonObject receiver = new JsonObject();
+        receiver.addProperty("_type", "SymbolExpression");
+        receiver.addProperty("_java_type", "L");
+        receiver.addProperty("_exp", reference);
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type",
+                ContainerSmtCodec.EXPRESSION_TYPE);
+        expression.addProperty("shape", "INDEXED");
+        expression.addProperty("operation", "STATE");
+        expression.addProperty("_java_type", "L");
+        expression.add("receiver", receiver);
+        JsonArray arguments = new JsonArray();
+        arguments.add(integer(size));
+        expression.add("arguments", arguments);
+        return expression;
+    }
+
+    private static JsonObject indexedWrite(JsonObject receiver, int index,
+                                           JsonObject value) {
+        return indexedWriteAt(receiver, integer(index), value);
+    }
+
+    private static JsonObject indexedWriteAt(JsonObject receiver,
+                                             JsonObject index,
+                                             JsonObject value) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type",
+                ContainerSmtCodec.EXPRESSION_TYPE);
+        expression.addProperty("shape", "INDEXED");
+        expression.addProperty("operation", "WRITE");
+        expression.addProperty("_java_type", "L");
+        expression.add("receiver", receiver);
+        JsonArray arguments = new JsonArray();
+        arguments.add(index);
+        arguments.add(value);
+        expression.add("arguments", arguments);
+        return expression;
+    }
+
+    private static JsonObject indexedRead(JsonObject receiver, int index) {
+        return indexedRead(receiver, integer(index));
+    }
+
+    private static JsonObject indexedRead(JsonObject receiver,
+                                          JsonObject index) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type",
+                ContainerSmtCodec.EXPRESSION_TYPE);
+        expression.addProperty("shape", "INDEXED");
+        expression.addProperty("operation", "READ");
+        expression.addProperty("_java_type", "Ljava/lang/String;");
+        expression.add("receiver", receiver);
+        JsonArray arguments = new JsonArray();
+        arguments.add(index);
+        expression.add("arguments", arguments);
+        return expression;
+    }
+
+    private static JsonObject indexedSize(JsonObject receiver) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type",
+                ContainerSmtCodec.EXPRESSION_TYPE);
+        expression.addProperty("shape", "INDEXED");
+        expression.addProperty("operation", "SIZE");
+        expression.addProperty("_java_type", "I");
+        expression.add("receiver", receiver);
+        expression.add("arguments", new JsonArray());
+        return expression;
+    }
+
+    private static JsonObject strLiteral(String content) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "ConStringSymbolExp");
+        expression.addProperty("_java_type", "java/lang/String");
+        expression.addProperty("_exp", "Y_L'String'_" + content);
+        return expression;
+    }
+
+    private static JsonObject strToString(JsonObject value) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "OpStrExpression");
+        expression.addProperty("_name", "toString");
+        JsonArray params = new JsonArray();
+        params.add(value);
+        expression.add("_param_list", params);
+        return expression;
+    }
+
+    private static JsonObject strConcat(JsonObject... parts) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "OpStrExpression");
+        expression.addProperty("_name", "concat");
+        JsonArray params = new JsonArray();
+        for (JsonObject part : parts) params.add(part);
+        expression.add("_param_list", params);
+        return expression;
+    }
+
+    private static JsonObject splitElement(JsonObject receiver,
+                                           String delimiter, int index) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "MethodExpression");
+        expression.addProperty("_name", "java/lang/String splitElement");
+        JsonArray params = new JsonArray();
+        params.add(receiver);
+        params.add(strLiteral(delimiter));
+        params.add(integer(index));
+        expression.add("_param_list", params);
+        expression.add("_res_exp", strLiteral("element"));
+        return expression;
+    }
+
+    private static JsonObject parseInt(JsonObject text) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "MethodExpression");
+        expression.addProperty("_name", "java/lang/Integer parseInt");
+        JsonArray params = new JsonArray();
+        params.add(text);
+        expression.add("_param_list", params);
+        expression.add("_res_exp", integer(11745));
+        return expression;
+    }
+
     private ConcolicSmtComposer.Result compose(
             String fatalInstance, java.util.List<RelationSummary> summaries,
             JsonObject... firstHops) throws Exception {
@@ -895,6 +1178,14 @@ public class ConcolicSmtComposerTest {
             String fatalInstance, java.util.List<RelationSummary> summaries,
             java.util.List<JsonObject> regionRows,
             JsonObject... firstHops) throws Exception {
+        return compose(fatalInstance, summaries, regionRows,
+                new JsonArray(), firstHops);
+    }
+
+    private ConcolicSmtComposer.Result compose(
+            String fatalInstance, java.util.List<RelationSummary> summaries,
+            java.util.List<JsonObject> regionRows, JsonArray constraints,
+            JsonObject... firstHops) throws Exception {
         Path directory = temporary.newFolder().toPath();
         Path fatal = directory.resolve("fatal.jsonl");
         Path summaryFile = directory.resolve("summaries.jsonl");
@@ -902,7 +1193,7 @@ public class ConcolicSmtComposerTest {
         Path output = directory.resolve("candidate.smt2");
         Path manifest = directory.resolve("manifest.json");
 
-        writeJsonl(fatal, fatalQuery(fatalInstance, firstHops));
+        writeJsonl(fatal, fatalQuery(fatalInstance, constraints, firstHops));
         StringBuilder encoded = new StringBuilder();
         for (RelationSummary summary : summaries) {
             encoded.append(summary.toJson()).append('\n');
@@ -1052,7 +1343,8 @@ public class ConcolicSmtComposerTest {
     }
 
     private static JsonObject fatalQuery(
-            String fatalInstance, JsonObject... firstHops) {
+            String fatalInstance, JsonArray constraints,
+            JsonObject... firstHops) {
         JsonObject fatal = new JsonObject();
         fatal.addProperty("schemaVersion", 1);
         fatal.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
@@ -1062,7 +1354,7 @@ public class ConcolicSmtComposerTest {
         fatal.addProperty("constraintAuthority",
                 "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1");
         JsonObject path = new JsonObject();
-        path.add("constraints", new JsonArray());
+        path.add("constraints", constraints.deepCopy());
         JsonArray paths = new JsonArray();
         paths.add(path);
         fatal.add("paths", paths);

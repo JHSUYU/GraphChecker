@@ -1627,8 +1627,8 @@ public final class ConcolicSmtComposer {
                         != Sort.STRING) {
                     continue;
                 }
-                JsonElement value = object(edge.summary.toJson(),
-                        "outputExpressions").get(output);
+                JsonElement value = caseInvariantOutputExpression(
+                        edge.summary.toJson(), output);
                 if (value == null || !value.isJsonObject()
                         || !provablyStringValued(value)) {
                     continue;
@@ -1653,6 +1653,42 @@ public final class ConcolicSmtComposer {
                             "AmbiguousExactEqualityBoundExpression:" + target);
                 }
             }
+        }
+
+        /**
+         * Reads one output's expression from a merged region relation.
+         *
+         * <p>{@link RelationSummary} publishes expressions per guarded case,
+         * never at the summary root: a case owns both the path condition and
+         * the bounded output version that produced its expression.  A reader
+         * outside the case scope may therefore only use an expression every
+         * case agrees on, because that is the one expression the producer
+         * binds whichever case the solver selects.  Cases that disagree -
+         * including the expanded bounded output versions - have no case-free
+         * expression, and the reader keeps its own named gap instead.</p>
+         */
+        private JsonElement caseInvariantOutputExpression(JsonObject summary,
+                                                          String port) {
+            JsonElement direct = object(summary, "outputExpressions")
+                    .get(port);
+            if (direct != null) return direct;
+            JsonArray cases = array(object(summary, "regionRelation"),
+                    "cases");
+            if (cases.size() == 0) return null;
+            JsonElement selected = null;
+            for (JsonElement element : cases) {
+                if (!element.isJsonObject()) return null;
+                JsonElement value = object(element.getAsJsonObject(),
+                        "outputExpressions").get(port);
+                if (value == null) return null;
+                if (selected == null) {
+                    selected = value;
+                } else if (!CanonicalJson.render(selected).equals(
+                        CanonicalJson.render(value))) {
+                    return null;
+                }
+            }
+            return selected;
         }
 
         private String constraint(JsonElement expression, String origin) {
@@ -2857,10 +2893,15 @@ public final class ConcolicSmtComposer {
         }
 
         private SplitPrefix exactSplitPrefix(JsonElement expression) {
-            if (expression == null || !expression.isJsonObject()) {
+            // A split result reaches its reader through the array the VM
+            // filled in, so resolve the select-over-store first: the codec
+            // lowers the same selection, and this proof inspects syntax.
+            JsonElement selected =
+                    ContainerSmtCodec.selectedIndexedElement(expression);
+            if (selected == null || !selected.isJsonObject()) {
                 return SplitPrefix.gap("NOT_METHOD_EXPRESSION");
             }
-            JsonObject split = expression.getAsJsonObject();
+            JsonObject split = selected.getAsJsonObject();
             if (!"MethodExpression".equals(string(split, "_type"))
                     || !isJavaSplitElement(string(split, "_name"))) {
                 return SplitPrefix.gap("NOT_STRING_SPLIT_ELEMENT");
@@ -3779,14 +3820,13 @@ public final class ConcolicSmtComposer {
                         selection.regionInstanceId()));
                 try {
                     JsonObject summary = selection.toJson();
-                    JsonObject outputs = object(summary,
-                            "outputExpressions");
                     for (String output
                             : selection.outputClosure().outputPorts()) {
                         JsonObject slice = selection.outputClosure()
                                 .member(output).slice();
                         if (slice.size() == 0) continue;
-                        JsonElement expression = outputs.get(output);
+                        JsonElement expression =
+                                caseInvariantOutputExpression(summary, output);
                         if (expression == null) continue;
                         Set<String> consumedInputs = new LinkedHashSet<>();
                         collectExpressionInputPorts(expression,
