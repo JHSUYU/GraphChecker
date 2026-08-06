@@ -612,6 +612,16 @@ run_configured_workload() {
   fi
 }
 
+# Reusing a recorded trace is only sound while instrumentation and trace
+# recording are unchanged.  It is therefore opt-in per invocation, never a
+# cached default, and it still recomputes every downstream artifact.
+reuse_recorded_traces() {
+  case "${CAUSYNTH_REUSE_RUNTIME_TRACES:-false}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 do_regions() {
   [[ -n "${workload_command}" ]] || die "workload_command is empty"
   require_directory "workload working" "${workload_work_dir}"
@@ -623,6 +633,13 @@ do_regions() {
   require_file "candidate region skeletons" "${candidate_skeletons}"
   ensure_output_directory "${trace_dir}"
   ensure_output_directory "${skeleton_pass}"
+
+  if [[ "${dry_run}" != true ]] && reuse_recorded_traces \
+      && [[ -s "${selected_skeletons}" \
+        && -s "${skeleton_pass}/runtime_trace.jsonl" ]]; then
+    echo "[graphchecker] reusing recorded pass-1 trace: ${skeleton_pass}" >&2
+    return
+  fi
 
   # Pass 1: method activation envelopes only.
   run_configured_workload
@@ -659,6 +676,19 @@ do_workload() {
       CAUSYNTH_REGION_SKELETONS="${selected_skeletons}" \
       do_analyze
     run_configured_workload
+    run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
+      --trace-dir "${trace_dir}" \
+      --candidate-graph "${candidate_graph}" \
+      --region-skeletons "${selected_skeletons}" \
+      --refined-graph "${refined_graph}" \
+      --regions "${refined_regions}" \
+      --region-edges "$(dirname "${refined_regions}")/symbolic_region_edges.jsonl" \
+      --test "${trace_test}"
+    return
+  fi
+  if reuse_recorded_traces \
+      && [[ -s "${trace_dir}/runtime_trace.jsonl" ]]; then
+    echo "[graphchecker] reusing recorded pass-2 trace: ${trace_dir}" >&2
     run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
       --trace-dir "${trace_dir}" \
       --candidate-graph "${candidate_graph}" \
