@@ -1622,17 +1622,22 @@ public final class ConcolicSmtComposer {
                 String input = bindingTargetInput(binding);
                 if (!AutomaticRegionEdge
                         .trustedRuntimeValueEqualityBinding(binding)
-                        || !ports.contains(output) || !ports.contains(input)
-                        || sortOfJava(ports.get(output).javaType)
-                        != Sort.STRING
-                        || sortOfJava(ports.get(input).javaType)
-                        != Sort.STRING) {
+                        || !ports.contains(output)
+                        || !ports.contains(input)) {
                     continue;
                 }
                 JsonElement value = caseInvariantOutputExpression(
                         edge.summary.toJson(), output);
+                // The consumer must be reading a declared String, and the
+                // producer's own expression must prove it built one.  That
+                // expression is the evidence substituted into the codec
+                // proof, and it is stronger than the producer port's
+                // declaration - which a local-valued cell may not carry at
+                // all.  A declaration that disagrees still stops here.
                 if (value == null || !value.isJsonObject()
-                        || !provablyStringValued(value)) {
+                        || !provablyStringValued(value)
+                        || !declaredString(input)
+                        || contradictsString(output)) {
                     continue;
                 }
                 EqualityBoundExpression candidate =
@@ -1655,6 +1660,18 @@ public final class ConcolicSmtComposer {
                             "AmbiguousExactEqualityBoundExpression:" + target);
                 }
             }
+        }
+
+        /** Whether Java declares this port's value to be a String. */
+        private boolean declaredString(String port) {
+            return sortOfJava(declaredPortJavaType(port)) == Sort.STRING;
+        }
+
+        /** Whether a known declaration rules a String value out. */
+        private boolean contradictsString(String port) {
+            String declared = declaredPortJavaType(port);
+            return !declared.isEmpty()
+                    && sortOfJava(declared) != Sort.STRING;
         }
 
         /**
@@ -4583,8 +4600,9 @@ public final class ConcolicSmtComposer {
             if (sort == Sort.VALUE) {
                 sort = containerCellSort(cell);
             }
-            ports.put(id, new Port(javaType, declaredFieldJavaType(json),
-                    sort, input));
+            ports.put(id, new Port(javaType,
+                    firstNonBlank(declaredFieldJavaType(json),
+                            declaredCellJavaType(cell)), sort, input));
         }
 
         /**
@@ -4886,21 +4904,29 @@ public final class ConcolicSmtComposer {
     }
 
     private static Sort containerCellSort(String cell) {
+        return containerSort(declaredCellJavaType(cell));
+    }
+
+    private static final Pattern CELL_PARAMETER = Pattern.compile(
+            ">\\.param[0-9]+:([^#]+)(?:#.*)?$");
+    private static final Pattern CELL_RETURN = Pattern.compile(
+            "^<[^:]+:\\s+([^<>\\s]+)\\s+[^<>\\s(]+\\([^>]*\\)>"
+                    + "\\.return(?:#.*)?$");
+
+    /**
+     * The Java type a port's cell declares, or an empty string.
+     *
+     * <p>A cell naming a parameter, a field, or a return value carries the
+     * declaration Java itself made.  A cell naming a local carries none.</p>
+     */
+    private static String declaredCellJavaType(String cell) {
         String value = firstNonBlank(cell).trim();
-        Matcher parameter = Pattern.compile(
-                ">\\.param[0-9]+:([^#]+)(?:#.*)?$").matcher(value);
-        if (parameter.find()) {
-            return containerSort(parameter.group(1));
-        }
+        Matcher parameter = CELL_PARAMETER.matcher(value);
+        if (parameter.find()) return parameter.group(1).trim();
         String field = fieldSignatureJavaType(value);
-        if (!field.isEmpty()) {
-            return containerSort(field);
-        }
-        Matcher returned = Pattern.compile(
-                "^<[^:]+:\\s+([^<>\\s]+)\\s+[^<>\\s(]+\\([^>]*\\)>\\.return(?:#.*)?$")
-                .matcher(value);
-        return returned.matches()
-                ? containerSort(returned.group(1)) : Sort.VALUE;
+        if (!field.isEmpty()) return field;
+        Matcher returned = CELL_RETURN.matcher(value);
+        return returned.matches() ? returned.group(1) : "";
     }
 
     private static final Pattern FIELD_SIGNATURE = Pattern.compile(
