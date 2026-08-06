@@ -4147,6 +4147,12 @@ public final class ConcolicSmtComposer {
             if (left.portId.isEmpty() || right.portId.isEmpty()) return false;
             Sort leftSort = portSort(left);
             Sort rightSort = portSort(right);
+            if (leftSort != rightSort
+                    && refineNeutralPortSort(left, right, leftSort,
+                    rightSort)) {
+                leftSort = portSort(left);
+                rightSort = portSort(right);
+            }
             if (leftSort != rightSort) {
                 unsupported.add("PortSortMismatch:" + left + ":" + leftSort
                         + "!=" + right + ":" + rightSort);
@@ -4163,15 +4169,53 @@ public final class ConcolicSmtComposer {
             return true;
         }
 
+        /**
+         * Sharpens a port still carrying the neutral {@code Value} sort to
+         * the container sort its counterpart already proved.
+         *
+         * <p>{@link #promotePort} already treats {@code Value} as an
+         * unrefined carrier a container-valued binding may sharpen, so a
+         * producer whose bound expression is a container reaches an equality
+         * with a consumer port nothing has refined yet.  That is the same
+         * refinement, applied from the other side of the edge.</p>
+         *
+         * <p>Both ports must name the same declared Java type before the
+         * neutral one is sharpened, and a port already declared to the solver
+         * keeps the sort it was declared with.  An unknown or differing
+         * declaration decides nothing and keeps the sort-mismatch gap.</p>
+         */
+        private boolean refineNeutralPortSort(PortOccurrence left,
+                                              PortOccurrence right,
+                                              Sort leftSort, Sort rightSort) {
+            PortOccurrence neutral = leftSort == Sort.VALUE ? left
+                    : rightSort == Sort.VALUE ? right : null;
+            Sort container = leftSort == Sort.VALUE ? rightSort : leftSort;
+            if (neutral == null || container != Sort.MAP
+                    && container != Sort.ARRAY_VALUE
+                    || declaredPortSorts.containsKey(neutral)) {
+                return false;
+            }
+            String leftType = declaredPortJavaType(left.portId);
+            if (leftType.isEmpty()
+                    || !leftType.equals(declaredPortJavaType(right.portId))) {
+                return false;
+            }
+            portSortOverrides.put(neutral, container);
+            return true;
+        }
+
+        private String declaredPortJavaType(String port) {
+            Port schema = ports.get(port);
+            return schema == null ? "" : schema.declaredJavaType();
+        }
+
         private boolean compatibleArrayPortTypes(String left, String right,
                                                  Sort sort) {
             if (sort != Sort.ARRAY_VALUE) return true;
-            Port leftPort = ports.get(left);
-            Port rightPort = ports.get(right);
-            String leftType = leftPort == null ? ""
-                    : javaTypeDescriptor(leftPort.javaType);
-            String rightType = rightPort == null ? ""
-                    : javaTypeDescriptor(rightPort.javaType);
+            String leftType = javaTypeDescriptor(
+                    declaredPortJavaType(left));
+            String rightType = javaTypeDescriptor(
+                    declaredPortJavaType(right));
             if (!leftType.isEmpty() && leftType.equals(rightType)) {
                 return true;
             }
@@ -4539,7 +4583,23 @@ public final class ConcolicSmtComposer {
             if (sort == Sort.VALUE) {
                 sort = containerCellSort(cell);
             }
-            ports.put(id, new Port(javaType, sort, input));
+            ports.put(id, new Port(javaType, declaredFieldJavaType(json),
+                    sort, input));
+        }
+
+        /**
+         * The declared Java type of the field a port's access path ends at.
+         *
+         * <p>Runtime activation ports record the field path they walked but
+         * not always a materialized type, so the last declaration on that
+         * path is the type Java itself gives the value.</p>
+         */
+        private static String declaredFieldJavaType(JsonObject json) {
+            JsonArray declarations = array(json, "fieldPathDeclarations");
+            if (declarations.size() == 0) return "";
+            JsonElement last = declarations.get(declarations.size() - 1);
+            return last.isJsonPrimitive()
+                    ? fieldSignatureJavaType(last.getAsString()) : "";
         }
 
         private Port get(String id) {
@@ -4563,13 +4623,21 @@ public final class ConcolicSmtComposer {
 
     private static final class Port {
         private final String javaType;
+        private final String declaredFieldJavaType;
         private final Sort sort;
         private final boolean input;
 
-        private Port(String javaType, Sort sort, boolean input) {
+        private Port(String javaType, String declaredFieldJavaType,
+                     Sort sort, boolean input) {
             this.javaType = javaType;
+            this.declaredFieldJavaType = declaredFieldJavaType;
             this.sort = sort;
             this.input = input;
+        }
+
+        /** The type Java declares for this port's value, when it is known. */
+        private String declaredJavaType() {
+            return firstNonBlank(javaType, declaredFieldJavaType);
         }
     }
 
@@ -4824,17 +4892,25 @@ public final class ConcolicSmtComposer {
         if (parameter.find()) {
             return containerSort(parameter.group(1));
         }
-        Matcher field = Pattern.compile(
-                "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$")
-                .matcher(value);
-        if (field.matches()) {
-            return containerSort(field.group(1));
+        String field = fieldSignatureJavaType(value);
+        if (!field.isEmpty()) {
+            return containerSort(field);
         }
         Matcher returned = Pattern.compile(
                 "^<[^:]+:\\s+([^<>\\s]+)\\s+[^<>\\s(]+\\([^>]*\\)>\\.return(?:#.*)?$")
                 .matcher(value);
         return returned.matches()
                 ? containerSort(returned.group(1)) : Sort.VALUE;
+    }
+
+    private static final Pattern FIELD_SIGNATURE = Pattern.compile(
+            "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$");
+
+    /** The declared type in a Soot field signature, or an empty string. */
+    private static String fieldSignatureJavaType(String signature) {
+        Matcher field = FIELD_SIGNATURE.matcher(
+                firstNonBlank(signature).trim());
+        return field.matches() ? field.group(1) : "";
     }
 
     private static Sort containerSort(String type) {

@@ -884,6 +884,92 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void oneDeclaredArrayFieldReachesOneContainerEquality()
+            throws Exception {
+        // Both ends of this edge are the same declared byte[] field, but only
+        // the producer was refined to a container by the value it bound.  The
+        // consumer input nothing refined must reach the same container sort
+        // instead of a sort mismatch.
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.BYTES", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 10, 11);
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("BYTES", producerInstance,
+                        20, indexedState("AL_2-0", 4),
+                        Collections.singletonList("REGION.1.in.0"),
+                        Collections.singletonList(edge))),
+                Arrays.asList(
+                        activationRegion("REGION.0", "REGION.0.in.0", true,
+                                "<Test: byte[] nonce>"),
+                        activationRegion("REGION.1", "REGION.1.out.0", false,
+                                "<Test: byte[] nonce>")),
+                edge);
+
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains("PortSortMismatch"));
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "ArrayPortJavaTypeMismatch"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(declare-const port__REGION_0_in_0__instance__"
+                        + "REGION_0_Test_call30 IndexedState)"));
+    }
+
+    @Test
+    public void differentDeclaredFieldTypesKeepTheSortMismatch()
+            throws Exception {
+        // A neutral port is only sharpened when both ends name the same
+        // declared type.  Differing declarations decide nothing.
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.BYTES", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 10, 11);
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("BYTES", producerInstance,
+                        20, indexedState("AL_2-0", 4),
+                        Collections.singletonList("REGION.1.in.0"),
+                        Collections.singletonList(edge))),
+                Arrays.asList(
+                        activationRegion("REGION.0", "REGION.0.in.0", true,
+                                "<Test: int[] lengths>"),
+                        activationRegion("REGION.1", "REGION.1.out.0", false,
+                                "<Test: byte[] nonce>")),
+                edge);
+
+        assertTrue(result.manifest.toString(),
+                result.manifest.toString().contains("PortSortMismatch"));
+    }
+
+    /** One region whose port records only the field path it walked. */
+    private static JsonObject activationRegion(
+            String id, String portId, boolean input, String declaration) {
+        JsonObject port = new JsonObject();
+        port.addProperty("portId", portId);
+        port.addProperty("cell", "<Test: void activation()>#u10"
+                + ".fieldReceiver");
+        JsonArray declarations = new JsonArray();
+        declarations.add(declaration);
+        port.add("fieldPathDeclarations", declarations);
+
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", id);
+        JsonArray inputs = new JsonArray();
+        JsonArray outputs = new JsonArray();
+        if (input) {
+            inputs.add(port);
+        } else {
+            outputs.add(port);
+            inputs.add(port(id + ".in.0", true, "int"));
+        }
+        region.add("symbolicInputs", inputs);
+        region.add("outputs", outputs);
+        return region;
+    }
+
+    @Test
     public void concreteReferenceIdentityBindsTheAliasItRecorded()
             throws Exception {
         // The producer never symbolised this reference; it recorded which
