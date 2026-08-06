@@ -58,6 +58,12 @@ hdfs11741_workload_update_iterations=4
 hdfs11741_nn_update_iterations=${HDFS11741_NN_UPDATE_ITERATIONS:-${hdfs11741_workload_update_iterations}}
 hdfs11741_datanode_refresh_iterations=${HDFS11741_DATANODE_REFRESH_ITERATIONS:-${hdfs11741_workload_update_iterations}}
 hdfs11741_balancer_refresh_iterations=${HDFS11741_BALANCER_REFRESH_ITERATIONS:-${hdfs11741_workload_update_iterations}}
+# The Balancer dispatcher pool decides which thread first materializes the
+# lazily cached data encryption key.  With the Hadoop default of 200 threads
+# the winner is scheduling noise, so runtime discovery and concolic replay
+# would observe different producers for the same region.  Both stages run a
+# single dispatcher thread to make that winner deterministic.
+hdfs11741_balancer_dispatcher_threads=${HDFS11741_BALANCER_DISPATCHER_THREADS:-1}
 
 die() {
   echo "[hdfs-11741] $*" >&2
@@ -84,6 +90,8 @@ require_bounded_workload_iterations HDFS11741_DATANODE_REFRESH_ITERATIONS \
   "${hdfs11741_datanode_refresh_iterations}"
 require_bounded_workload_iterations HDFS11741_BALANCER_REFRESH_ITERATIONS \
   "${hdfs11741_balancer_refresh_iterations}"
+require_positive_integer HDFS11741_BALANCER_DISPATCHER_THREADS \
+  "${hdfs11741_balancer_dispatcher_threads}"
 
 publish_file_atomically() {
   local source=$1
@@ -297,6 +305,9 @@ verify_runtime_patch_content() {
     'hdfs11741.datanode.refresh.iterations'
   require_jsonl_contains "Balancer activation knob" "${key_manager_source}" \
     'hdfs11741.balancer.refresh.iterations'
+  require_jsonl_contains "Balancer dispatcher width knob" \
+    "${hadoop_dir}/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java" \
+    'hdfs11741.balancer.dispatcher.threads'
   if rg -qi 'fixed[- ]length|padding|Arrays\.copyOf' \
       "${runtime_patch_file}"; then
     die "runtime patch must not pad exported keys"
@@ -991,6 +1002,7 @@ replay_concolic_plan() {
         -Dhdfs11741.nn.update.iterations="${hdfs11741_nn_update_iterations}" \
         -Dhdfs11741.datanode.refresh.iterations="${hdfs11741_datanode_refresh_iterations}" \
         -Dhdfs11741.balancer.refresh.iterations="${hdfs11741_balancer_refresh_iterations}" \
+        -Dhdfs11741.balancer.dispatcher.threads="${hdfs11741_balancer_dispatcher_threads}" \
         -Dhadoop.log.dir="${hadoop_log_dir}" \
         -cp "${classes}:${gson_jar}:${classpath}:${graphchecker_jar}" \
         edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
@@ -1828,6 +1840,7 @@ do_traced_workload() {
     -Dhdfs11741.nn.update.iterations="${hdfs11741_nn_update_iterations}" \
     -Dhdfs11741.datanode.refresh.iterations="${hdfs11741_datanode_refresh_iterations}" \
     -Dhdfs11741.balancer.refresh.iterations="${hdfs11741_balancer_refresh_iterations}" \
+    -Dhdfs11741.balancer.dispatcher.threads="${hdfs11741_balancer_dispatcher_threads}" \
     -Dhadoop.log.dir="${hadoop_log_dir}" \
     -cp "${instrumented}:${gson_jar}:${classpath}:${graphchecker_jar}" \
     edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \

@@ -280,10 +280,10 @@ index 042169a9e60..8037ed9d413 100644
        break;
      case DatanodeProtocol.DNA_BALANCERBANDWIDTHUPDATE:
 diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
-index 167997e6597..44837d6a3f9 100644
+index 167997e6597..3ca3d9e9245 100644
 --- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
 +++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
-@@ -144,7 +144,8 @@ public class TestBalancer {
+@@ -143,7 +143,8 @@ public class TestBalancer {
      GenericTestUtils.setLogLevel(Dispatcher.LOG, Level.DEBUG);
    }
  
@@ -293,7 +293,7 @@ index 167997e6597..44837d6a3f9 100644
    final static String RACK0 = "/rack0";
    final static String RACK1 = "/rack1";
    final static String RACK2 = "/rack2";
-@@ -169,7 +170,8 @@ public class TestBalancer {
+@@ -168,7 +169,8 @@ public void shutdown() throws Exception {
  
    ClientProtocol client;
  
@@ -303,7 +303,7 @@ index 167997e6597..44837d6a3f9 100644
    static final double CAPACITY_ALLOWED_VARIANCE = 0.005;  // 0.5%
    static final double BALANCE_ALLOWED_VARIANCE = 0.11;    // 10%+delta
    static final int DEFAULT_BLOCK_SIZE = 100;
-@@ -188,8 +190,12 @@ public class TestBalancer {
+@@ -187,12 +189,19 @@ public static void initTestSetup() {
    static void initConf(Configuration conf) {
      conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, DEFAULT_BLOCK_SIZE);
      conf.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, DEFAULT_BLOCK_SIZE);
@@ -317,3 +317,10 @@ index 167997e6597..44837d6a3f9 100644
      conf.setLong(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
          1L);
      SimulatedFSDataset.setFactory(conf);
+ 
++    conf.setInt(DFSConfigKeys.DFS_BALANCER_DISPATCHERTHREADS_KEY,
++        Integer.getInteger("hdfs11741.balancer.dispatcher.threads",
++            DFSConfigKeys.DFS_BALANCER_DISPATCHERTHREADS_DEFAULT));
+     conf.setLong(DFSConfigKeys.DFS_BALANCER_MOVEDWINWIDTH_KEY, 2000L);
+     conf.setLong(DFSConfigKeys.DFS_BALANCER_GETBLOCKS_MIN_BLOCK_SIZE_KEY, 1L);
+     conf.setInt(DFSConfigKeys.DFS_BALANCER_MAX_NO_MOVE_INTERVAL_KEY, 5*1000);
