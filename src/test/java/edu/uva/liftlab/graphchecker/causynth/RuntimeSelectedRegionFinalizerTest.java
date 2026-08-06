@@ -842,6 +842,113 @@ public class RuntimeSelectedRegionFinalizerTest {
     }
 
     @Test
+    public void demandPenetratesAProtocolCarrierReconstruction()
+            throws Exception {
+        String server = "<example.Server: example.Keys serve()>";
+        String client = "<example.Client: void run()>";
+        String target = "<example.Target: void run()>";
+        String field = "<example.SecretManager: example.Key currentKey>";
+        String decoded = client + "::$decoded";
+        String reply = server + ".return";
+        String loaded = target + "::$loaded";
+        String failure = target + "#u9#exception:example.UnknownKey";
+
+        File skeleton = writeRows("carrier-skeleton.jsonl",
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.server",
+                        "rootMethod", server, "anchorMethod", server,
+                        "methods", Collections.singletonList(server),
+                        "selection", "PROTOCOL_CONTEXT"),
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.client",
+                        "rootMethod", client, "anchorMethod", client,
+                        "methods", Collections.singletonList(client),
+                        "selection", "STATE_CONTEXT"),
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.target",
+                        "rootMethod", target, "anchorMethod", target,
+                        "methods", Collections.singletonList(target),
+                        "selection", "EXCEPTION_CONTEXT"));
+        // The client write is recorded between the request send and its own
+        // caller result: it rebuilds the decoded reply, it does not produce
+        // the value.
+        Map<String, Object> rebuild = fieldBinding(
+                "REGION.client", 2, client, 20, field, "");
+        rebuild.put("valueObjectId", 200);
+        Map<String, Object> read = fieldBinding(
+                "REGION.target", 3, target, 40, field, "");
+        read.put("valueObjectId", 200);
+        Map<String, Object> response = object(
+                "mappingId", "example.response", "port", "response",
+                "direction", "RESPONSE", "transport", "RPC",
+                "authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
+                "fromRegionId", "REGION.server",
+                "toRegionId", "REGION.client",
+                "fromRootCallId", 1, "toRootCallId", 2,
+                "fromCell", reply, "toCell", decoded,
+                "callerSiteEventSeq", 5, "sendEventSeq", 10,
+                "receiveEventSeq", 12, "callerResultEventSeq", 30);
+        File refined = writeRows("carrier-refined.jsonl",
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.rebuild", "kind", "field_write",
+                        "transferKind", "HEAP_WRITE", "method", client,
+                        "regionIds", Collections.singletonList(
+                                "REGION.client"),
+                        "fromCell", client + "::$rebuilt",
+                        "toCell", field, "runtimeFieldBindings",
+                        Collections.singletonList(rebuild)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.read", "kind", "field_read",
+                        "transferKind", "HEAP_READ", "method", target,
+                        "regionIds", Collections.singletonList(
+                                "REGION.target"),
+                        "fromCell", field, "toCell", loaded,
+                        "runtimeFieldBindings",
+                        Collections.singletonList(read)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.response", "kind", "protocol_transfer",
+                        "transferKind", "PROTOCOL_TRANSFER",
+                        "method", client, "regionIds", Arrays.asList(
+                                "REGION.server", "REGION.client"),
+                        "runtimeObserved", true,
+                        "runtimeProtocolBindings",
+                        Collections.singletonList(response)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.failure", "kind", "exception_guard",
+                        "transferKind", "GUARD", "method", target,
+                        "regionIds", Collections.singletonList(
+                                "REGION.target"),
+                        "fromCell", loaded, "toCell", failure,
+                        "siteId", target + "#u9", "unitIndex", 9));
+        File regions = new File(folder.getRoot(), "carrier-regions.jsonl");
+        File edges = new File(folder.getRoot(), "carrier-edges.jsonl");
+
+        RuntimeSelectedRegionFinalizer.Result result =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        refined, skeleton, regions, edges,
+                        Arrays.asList(server, client, target),
+                        Arrays.asList(
+                                activation("REGION.server", 1,
+                                        "PROTOCOL_CONTEXT", server),
+                                activation("REGION.client", 2,
+                                        "STATE_CONTEXT", client),
+                                activation("REGION.target", 3,
+                                        "EXCEPTION_CONTEXT", target)));
+
+        assertEquals(3, result.retainedRegionCount);
+        String regionRows = Files.readAllLines(regions.toPath(),
+                StandardCharsets.UTF_8).toString();
+        assertTrue(regionRows.contains("REGION.server"));
+        assertTrue(regionRows.contains(
+                ProtocolCarrierReconstruction.RESPONSE_PORT));
+        assertTrue(regionRows.contains("example.response"));
+    }
+
+    @Test
     public void failureSliceCrossesObservedProtocolBeforeExactHeapReadFrom()
             throws Exception {
         String updater = "<example.Updater: void run()>";

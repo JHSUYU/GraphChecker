@@ -474,6 +474,121 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
+    public void carrierReconstructionOutputDemandsItsResponsePort()
+            throws Exception {
+        String field = "<example.State: int value>";
+        Map<String, Object> reader = fullRegion();
+        reader.put("symbolicInputs", Collections.singletonList(object(
+                "portId", "REGION.1.in.value", "cell", "reader",
+                "rootCallId", 1, "rootMethod", TARGET,
+                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
+                "rootKind", "OBSERVED_FIELD_RECEIVER",
+                "rootObjectId", 77, "fieldReceiverObjectId", 77,
+                "siteId", TARGET + "#u1",
+                "fieldPath", Collections.singletonList("value"),
+                "fieldPathDeclarations", Collections.singletonList(field))));
+        // The write at event 5 happens between the request send and the
+        // caller's own result, so it only rebuilt the decoded reply.
+        Map<String, Object> writer = object(
+                "schemaVersion", 3, "kind", "SYMBOLIC_REGION",
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "regionId", "REGION.2", "rootMethod", WRITER,
+                "anchorMethod", WRITER,
+                "selection", "STATE_CONTEXT",
+                "runtimeRootCallIds", Collections.singletonList(3),
+                "methods", Collections.singletonList(WRITER),
+                "symbolicInputs", Arrays.asList(
+                        object("portId", "REGION.2.in.seed",
+                                "cell", "writer-input",
+                                "rootCallId", 3, "rootMethod", WRITER,
+                                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
+                                "rootKind", "OBSERVED_FIELD_RECEIVER",
+                                "rootObjectId", 78,
+                                "fieldReceiverObjectId", 78,
+                                "siteId", WRITER + "#u1",
+                                "fieldPath",
+                                Collections.singletonList("seed"),
+                                "fieldPathDeclarations",
+                                Collections.singletonList(
+                                        "<example.Other: int seed>")),
+                        object("portId", "REGION.2.in.response",
+                                "cell", WRITER + "::$decoded",
+                                "sourceKind", "PROTOCOL_INPUT",
+                                "protocolDirection", "RESPONSE",
+                                "authority",
+                                "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
+                                "mappingId", "example.response",
+                                "port", "response",
+                                "transportKind", "RPC",
+                                "dependencyRole", "VALUE_FRONTIER",
+                                "fromRegionId", "REGION.P",
+                                "toRegionId", "REGION.2",
+                                "fromRootCallId", 9, "toRootCallId", 3,
+                                "callerSiteEventSeq", 1,
+                                "sendEventSeq", 2, "receiveEventSeq", 3,
+                                "callerResultEventSeq", 8)),
+                "outputs", Collections.singletonList(object(
+                        "portId", "REGION.2.out.value", "cell", "writer",
+                        "rootCallId", 3, "rootMethod", WRITER,
+                        "bindingKind", "DECLARED_FIELD_ACCESS",
+                        "rootObjectId", 77,
+                        "fieldReceiverObjectId", 77,
+                        "siteId", WRITER + "#u2",
+                        "fieldPath", Collections.singletonList("value"),
+                        "fieldPathDeclarations",
+                        Collections.singletonList(field),
+                        "runtimeAccesses", Collections.singletonList(object(
+                                "rootCallId", 3, "eventSeq", 5,
+                                "staticAccessSiteId", WRITER + "#u2",
+                                "activationLocalStaticSiteOccurrence", 1,
+                                "bindingKind", "DECLARED_FIELD_ACCESS",
+                                "fieldReceiverObjectId", 77,
+                                "fieldPathDeclarations",
+                                Collections.singletonList(field))))),
+                "branchPolicies", Collections.emptyList());
+        File regions = jsonl("carrier-regions.jsonl", reader, writer);
+        File edges = jsonl("carrier-edges.jsonl", object(
+                "schemaVersion", 3, "kind", "RUNTIME_FIELD_FLOW",
+                "transportKind", "HEAP", "edgeId", "RF.1",
+                "fromRegion", "REGION.2", "toRegion", "REGION.1",
+                "fromPort", "REGION.2.out.value",
+                "toPort", "REGION.1.in.value",
+                "fromRootCallId", 3, "toRootCallId", 1,
+                "fromLaneId", 8, "toLaneId", 7,
+                "receiverObjectId", 77,
+                "writerEventSeq", 5, "readerEventSeq", 6,
+                "fieldPathDeclarations",
+                Collections.singletonList(field)));
+        Map<String, Object> refined = candidateEdge();
+        refined.put("refinementSchemaVersion", 1);
+        refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
+        File refinedFile = jsonl("carrier-refined.jsonl", refined);
+        List<RuntimeRegionPlanner.MethodEvent> events = new ArrayList<>();
+        events.add(new RuntimeRegionPlanner.MethodEvent(0, "test", "p", "w",
+                8, WRITER, 30, "example.Writer", 3, 0, 0));
+        events.addAll(methods());
+
+        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                regions, edges, refinedFile, Arrays.asList(
+                        activation("REGION.2", 3, WRITER,
+                                Collections.singletonList(3L)),
+                        activation("REGION.1", 1, ROOT,
+                                Arrays.asList(1L, 2L))),
+                events, runtime(), Collections.emptyList());
+
+        Map<String, Object> writerPlan = null;
+        for (Map<String, Object> candidate : result.regionPlans) {
+            if ("REGION.2".equals(candidate.get("regionId"))) {
+                writerPlan = candidate;
+            }
+        }
+        assertTrue(writerPlan != null);
+        String closure = String.valueOf(rows(
+                writerPlan.get("closureGoals")).get(0).get("outputClosure"));
+        assertTrue(closure.contains("inputPorts=[REGION.2.in.response]"));
+    }
+
+    @Test
     public void fieldFlowIsBoundToExactRegionActivations() throws Exception {
         Map<String, Object> reader = fullRegion();
         reader.put("symbolicInputs", Collections.singletonList(object(
