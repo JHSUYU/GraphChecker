@@ -1221,6 +1221,20 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void splitElementProvesAnEmptyElementBetweenDelimiters()
+            throws Exception {
+        // Two adjacent delimiters produce an element Java keeps and that has
+        // no characters; that is decided, not unknown.
+        JsonObject username = strConcat(strLiteral("a  b"));
+
+        ConcolicSmtComposer.Result result = composeUsername(username, 1);
+
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "MODEL_SEMANTICS_MISSING"));
+    }
+
+    @Test
     public void splitElementKeepsGapForATrailingElement() throws Exception {
         // The last element is not closed by a delimiter, and Java drops a
         // trailing element that turned out empty, so nothing decides it

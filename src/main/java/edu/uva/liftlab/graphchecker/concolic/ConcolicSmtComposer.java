@@ -2927,6 +2927,9 @@ public final class ConcolicSmtComposer {
                 pieces.add(rendered.text);
                 preconditions.add(rendered.precondition);
             }
+            if (pieces.isEmpty()) {
+                return Term.nonNullString(quote(""), "");
+            }
             if (pieces.size() == 1) {
                 return Term.nonNullString(pieces.get(0),
                         and(preconditions));
@@ -4873,8 +4876,9 @@ public final class ConcolicSmtComposer {
             return new SplitSegment(null, gap);
         }
 
+        /** An element between two adjacent delimiters is decided and empty. */
         private boolean complete() {
-            return pieces != null && !pieces.isEmpty() && gap.isEmpty();
+            return pieces != null && gap.isEmpty();
         }
 
         /** The int this element renders when it renders nothing else. */
