@@ -1660,7 +1660,6 @@ final class RuntimeRegionPlanner {
         if (stateSlice == null) return null;
 
         List<String> inputPorts = new ArrayList<>(stateSlice.inputPorts);
-        addProtocolCarrierPorts(inputPorts, regionInputs, rootCallId);
         if (priorStateInput != null) {
             String priorStatePort = text(priorStateInput.get("portId"));
             // Mutating an existing container depends on its prior bounded
@@ -1685,6 +1684,9 @@ final class RuntimeRegionPlanner {
                 invocationCalls, rejectionReasons, outputPort)) {
             return null;
         }
+        // Every selected leaf is known only here: accessor materializations
+        // join the frontier after the value slice.
+        addProtocolCarrierPorts(inputPorts, regionInputs, rootCallId);
 
         List<String> staticSites = new ArrayList<>(stateSlice.staticSites);
         if (!staticSites.contains(staticAccessSiteId)) {
