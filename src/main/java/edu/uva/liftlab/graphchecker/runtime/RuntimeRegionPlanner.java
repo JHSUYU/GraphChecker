@@ -1656,7 +1656,7 @@ final class RuntimeRegionPlanner {
                 // the serialization implementation, not to this relation, so
                 // the demand penetrates to the declared response port.
                 : carrierSlice(carrierPort, definitionMethod, allowed,
-                text(plan.get("rootMethod")));
+                text(region.get("rootMethod")));
         if (stateSlice == null) return null;
 
         List<String> inputPorts = new ArrayList<>(stateSlice.inputPorts);
@@ -2542,7 +2542,12 @@ final class RuntimeRegionPlanner {
                                             String rootMethod) {
         ReturnSlice result = new ReturnSlice();
         result.inputPorts.add(carrierPort);
-        addIfAllowed(result.methods, allowed, definitionMethod);
+        // The definition itself stays in the relation even when it is a
+        // constructor: the replay still has to reach the write that hands
+        // the decoded value to the region.
+        if (allowed.contains(definitionMethod)) {
+            result.methods.add(definitionMethod);
+        }
         addIfAllowed(result.methods, allowed, rootMethod);
         return result;
     }
