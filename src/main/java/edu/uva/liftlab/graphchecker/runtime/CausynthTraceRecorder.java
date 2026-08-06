@@ -28,6 +28,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
@@ -781,17 +786,33 @@ public final class CausynthTraceRecorder {
                             refinedGraph.toPath());
             long refinementMillis = elapsedMillis(refinementStart);
             long candidatePlanningStart = System.nanoTime();
+            // The refined rows returned by the builder are normalized to the
+            // exact JSONL round-trip domain, so the flow index and the
+            // finalizer see precisely what re-reading the artifact would
+            // produce, without parsing the multi-hundred-MB file twice more.
+            RuntimeRegionPlanner.RefinedFlowIndex refinedFlowIndex =
+                    RuntimeRegionPlanner.buildFlowIndex(refinement.rows,
+                            refinedGraph);
             RuntimeSelectedRegionFinalizer.Result closure =
                     RuntimeSelectedRegionFinalizer.finalizeRegions(
-                    refinedGraph, selectedSkeletons, regionFile,
-                    regionEdgeFile,
+                    refinement.rows, refinedGraph, selectedSkeletons,
+                    regionFile, regionEdgeFile,
                     observedMethods, activationGraph.runtimeInstances,
                     branchObservations(trace.execution));
             long candidatePlanningMillis =
                     elapsedMillis(candidatePlanningStart);
-            writeRuntimeRegionPlans(planOutputDirectory, refinedGraph,
+            long planBindingStart = System.nanoTime();
+            for (Map<String, Object> row : closure.regions) {
+                RuntimeRefinedGraphBuilder.normalizeNumbersInPlace(row);
+            }
+            for (Map<String, Object> row : closure.regionEdges) {
+                RuntimeRefinedGraphBuilder.normalizeNumbersInPlace(row);
+            }
+            writeRuntimeRegionPlans(planOutputDirectory, refinedFlowIndex,
+                    closure.regions, closure.regionEdges,
                     regionFile, regionEdgeFile, trace,
                     activationGraph.runtimeInstances);
+            long planBindingMillis = elapsedMillis(planBindingStart);
             writeFile(new File(planOutputDirectory,
                             "runtime_refinement_manifest.json"),
                     CausynthJson.objectWithoutNulls(
@@ -801,6 +822,7 @@ public final class CausynthTraceRecorder {
                             "traceLoadMillis", traceLoadMillis,
                             "refinementMillis", refinementMillis,
                             "regionPlanningMillis", candidatePlanningMillis,
+                            "regionPlanBindingMillis", planBindingMillis,
                             "selectedMethodCount",
                             refinement.selectedMethodCount,
                             "activationCount", refinement.activationCount,
@@ -1128,120 +1150,231 @@ public final class CausynthTraceRecorder {
         traceWriter = null;
     }
 
+    /**
+     * Number of worker threads used by offline trace aggregation parsing.
+     * Aggregation is a batch job; the default deliberately leaves cores for
+     * a concurrently running workload VM.
+     */
+    private static int aggregationThreads() {
+        int configured = Integer.getInteger(
+                "causynth.aggregate.threads", 0);
+        if (configured > 0) {
+            return Math.min(configured, 32);
+        }
+        return Math.max(1, Math.min(8,
+                Runtime.getRuntime().availableProcessors() - 2));
+    }
+
     private static TraceData loadExistingTrace(
             File file, String test, boolean skeletonOnly) throws IOException {
         if (file == null || !file.isFile()) {
             throw new IOException("Runtime trace not found: " + file);
         }
+        int threads = aggregationThreads();
+        ConcurrentHashMap<String, String> pool = new ConcurrentHashMap<>();
         TraceData trace = new TraceData();
+        ExecutorService executor = Executors.newFixedThreadPool(threads,
+                runnable -> {
+                    Thread thread = new Thread(runnable,
+                            "causynth-trace-parse");
+                    thread.setDaemon(true);
+                    return thread;
+                });
         try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
                 StandardCharsets.UTF_8)) {
-            String line;
+            // Batches are parsed concurrently but merged strictly in file
+            // order, so the produced event lists are byte-for-byte the same
+            // as a sequential parse.
+            ArrayDeque<Future<TraceData>> pending = new ArrayDeque<>();
+            int batchCapacity = 16384;
+            List<String> batch = new ArrayList<>(batchCapacity);
+            int firstLineNumber = 1;
             int lineNumber = 0;
+            String line;
             while ((line = reader.readLine()) != null) {
                 lineNumber++;
-                final JsonObject row;
-                try {
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) {
-                        throw new IllegalArgumentException(
-                                "row is not an object");
-                    }
-                    row = parsed.getAsJsonObject();
-                } catch (RuntimeException malformed) {
-                    throw new IOException("Malformed runtime trace row "
-                            + lineNumber + " in " + file, malformed);
-                }
-                if (integer(row, "schemaVersion", -1) != 3) {
-                    throw new IOException("Unsupported runtime trace row: "
-                            + line);
-                }
-                String eventKind = string(row, "event");
-                if ("METHOD_ENTER".equals(eventKind)) {
-                    String method = string(row, "method");
-                    String threadName = string(row, "threadName");
-                    String process = string(row, "process");
-                    if (process.isEmpty()) {
-                        throw new IOException("METHOD_ENTER has no process at "
-                                + file + ":" + lineNumber);
-                    }
-                    long seq = longInteger(row, "seq", 0L);
-                    trace.methods.add(new RuntimeRegionPlanner.MethodEvent(
-                            seq,
-                            test,
-                            process,
-                            threadName,
-                            longInteger(row, "tid", 0L),
-                            method,
-                            integer(row, "objectId", 0),
-                            string(row, "receiverType"),
-                            longInteger(row, "callId", seq),
-                            longInteger(row, "parentCallId", 0L),
-                            longInteger(row, "parentSiteId", 0L),
-                            longInteger(row, "ownerId", 0L),
-                            longInteger(row, "laneId", 0L),
-                            longInteger(row, "spanId", 0L),
-                            longInteger(row, "parentSpanId", 0L),
-                            longInteger(row, "remoteParentSpanId", 0L)));
-                } else if (!skeletonOnly && ("FIELD_READ".equals(eventKind)
-                        || "FIELD_WRITE".equals(eventKind))) {
-                    String method = string(row, "method");
-                    trace.fields.add(
-                            new RuntimeRegionPlanner.FieldAccessEvent(
-                            longInteger(row, "seq", 0L),
-                            eventKind,
-                            method,
-                            longInteger(row, "callId", 0L),
-                            integer(row, "unitIndex", -1),
-                            string(row, "siteId"),
-                            string(row, "field"),
-                            integer(row, "fieldReceiverObjectId", 0),
-                            integer(row, "valueObjectId", 0),
-                            string(row, "primitiveValue")));
-                } else if (!skeletonOnly && ("RPC_SEND".equals(eventKind)
-                        || "RPC_RECEIVE".equals(eventKind))) {
-                    trace.protocol.add(new RuntimeRegionPlanner.ProtocolEvent(
-                            longInteger(row, "seq", 0L),
-                            "RPC_SEND".equals(eventKind)
-                                    ? "SEND" : "RECEIVE",
-                            string(row, "transport"),
-                            string(row, "correlationId"),
-                            string(row, "process"),
-                            string(row, "threadName"),
-                            longInteger(row, "tid", 0L),
-                            string(row, "method"),
-                            longInteger(row, "callId", 0L),
-                            longInteger(row, "invocationId", 0L),
-                            string(row, "declaredCallee"),
-                            longInteger(row, "ownerId", 0L),
-                            longInteger(row, "laneId", 0L),
-                            longInteger(row, "spanId", 0L),
-                            longInteger(row, "parentSpanId", 0L),
-                            longInteger(row, "remoteParentSpanId", 0L)));
-                } else if (!skeletonOnly && isExecutionEventKind(eventKind)) {
-                    trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
-                            longInteger(row, "seq", 0L), eventKind,
-                            string(row, "method"),
-                            longInteger(row, "callId", 0L),
-                            longInteger(row, "invocationId", 0L),
-                            0L,
-                            string(row, "siteId"),
-                            string(row, "declaredCallee"),
-                            integer(row, "argumentIndex", -1),
-                            string(row, "runtimeType"),
-                            integer(row, "objectId", 0),
-                            string(row, "primitiveValue"),
-                            row.has("outcome")
-                                    ? bool(row, "outcome", false) : null,
-                            row.has("successorIndex")
-                                    ? integer(row, "successorIndex", -1)
-                                    : null,
-                            string(row, "branchKind"),
-                            ""));
+                batch.add(line);
+                if (batch.size() >= batchCapacity) {
+                    submitBatch(executor, pending, trace, batch,
+                            firstLineNumber, file, test, skeletonOnly, pool,
+                            threads);
+                    firstLineNumber = lineNumber + 1;
+                    batch = new ArrayList<>(batchCapacity);
                 }
             }
+            if (!batch.isEmpty()) {
+                submitBatch(executor, pending, trace, batch,
+                        firstLineNumber, file, test, skeletonOnly, pool,
+                        threads);
+            }
+            while (!pending.isEmpty()) {
+                mergeBatch(trace, pending.removeFirst());
+            }
+        } finally {
+            executor.shutdownNow();
         }
         return trace;
+    }
+
+    private static void submitBatch(
+            ExecutorService executor, ArrayDeque<Future<TraceData>> pending,
+            TraceData trace, List<String> batch, int firstLineNumber,
+            File file, String test, boolean skeletonOnly,
+            ConcurrentHashMap<String, String> pool, int threads)
+            throws IOException {
+        pending.addLast(executor.submit(() -> parseTraceBatch(batch,
+                firstLineNumber, file, test, skeletonOnly, pool)));
+        // Bound the number of in-flight batches; the head of the queue is
+        // always the oldest batch, so merging preserves file order.
+        while (pending.size() > threads * 2) {
+            mergeBatch(trace, pending.removeFirst());
+        }
+    }
+
+    private static void mergeBatch(TraceData trace,
+                                   Future<TraceData> future)
+            throws IOException {
+        try {
+            TraceData part = future.get();
+            trace.methods.addAll(part.methods);
+            trace.fields.addAll(part.fields);
+            trace.execution.addAll(part.execution);
+            trace.protocol.addAll(part.protocol);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("trace parse interrupted", interrupted);
+        } catch (ExecutionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof IOException) {
+                throw (IOException) cause;
+            }
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new IOException("trace parse failed", cause);
+        }
+    }
+
+    private static TraceData parseTraceBatch(
+            List<String> lines, int firstLineNumber, File file, String test,
+            boolean skeletonOnly, ConcurrentHashMap<String, String> pool)
+            throws IOException {
+        TraceData trace = new TraceData();
+        for (int index = 0; index < lines.size(); index++) {
+            parseTraceLine(trace, lines.get(index),
+                    firstLineNumber + index, file, test, skeletonOnly, pool);
+        }
+        return trace;
+    }
+
+    private static void parseTraceLine(
+            TraceData trace, String line, int lineNumber, File file,
+            String test, boolean skeletonOnly,
+            ConcurrentHashMap<String, String> pool) throws IOException {
+        FlatJsonRow row = FlatJsonRow.parse(line, pool);
+        if (row == null) {
+            // The strict flat scanner refused the row; reproduce the exact
+            // legacy diagnostics with the reference parser.
+            final JsonObject parsed;
+            try {
+                JsonElement element = JsonParser.parseString(line);
+                if (!element.isJsonObject()) {
+                    throw new IllegalArgumentException(
+                            "row is not an object");
+                }
+                parsed = element.getAsJsonObject();
+            } catch (RuntimeException malformed) {
+                throw new IOException("Malformed runtime trace row "
+                        + lineNumber + " in " + file, malformed);
+            }
+            if (integer(parsed, "schemaVersion", -1) != 3) {
+                throw new IOException("Unsupported runtime trace row: "
+                        + line);
+            }
+            row = FlatJsonRow.fromJsonObject(parsed, pool);
+        }
+        if (row.longValue("schemaVersion", -1L) != 3L) {
+            throw new IOException("Unsupported runtime trace row: " + line);
+        }
+        String eventKind = row.stringValue("event");
+        if ("METHOD_ENTER".equals(eventKind)) {
+            String process = row.stringValue("process");
+            if (process.isEmpty()) {
+                throw new IOException("METHOD_ENTER has no process at "
+                        + file + ":" + lineNumber);
+            }
+            long seq = row.longValue("seq", 0L);
+            trace.methods.add(new RuntimeRegionPlanner.MethodEvent(
+                    seq,
+                    test,
+                    process,
+                    row.stringValue("threadName"),
+                    row.longValue("tid", 0L),
+                    row.stringValue("method"),
+                    row.intValue("objectId", 0),
+                    row.stringValue("receiverType"),
+                    row.longValue("callId", seq),
+                    row.longValue("parentCallId", 0L),
+                    row.longValue("parentSiteId", 0L),
+                    row.longValue("ownerId", 0L),
+                    row.longValue("laneId", 0L),
+                    row.longValue("spanId", 0L),
+                    row.longValue("parentSpanId", 0L),
+                    row.longValue("remoteParentSpanId", 0L)));
+        } else if (!skeletonOnly && ("FIELD_READ".equals(eventKind)
+                || "FIELD_WRITE".equals(eventKind))) {
+            trace.fields.add(
+                    new RuntimeRegionPlanner.FieldAccessEvent(
+                    row.longValue("seq", 0L),
+                    eventKind,
+                    row.stringValue("method"),
+                    row.longValue("callId", 0L),
+                    row.intValue("unitIndex", -1),
+                    row.stringValue("siteId"),
+                    row.stringValue("field"),
+                    row.intValue("fieldReceiverObjectId", 0),
+                    row.intValue("valueObjectId", 0),
+                    row.stringValue("primitiveValue")));
+        } else if (!skeletonOnly && ("RPC_SEND".equals(eventKind)
+                || "RPC_RECEIVE".equals(eventKind))) {
+            trace.protocol.add(new RuntimeRegionPlanner.ProtocolEvent(
+                    row.longValue("seq", 0L),
+                    "RPC_SEND".equals(eventKind) ? "SEND" : "RECEIVE",
+                    row.stringValue("transport"),
+                    row.stringValue("correlationId"),
+                    row.stringValue("process"),
+                    row.stringValue("threadName"),
+                    row.longValue("tid", 0L),
+                    row.stringValue("method"),
+                    row.longValue("callId", 0L),
+                    row.longValue("invocationId", 0L),
+                    row.stringValue("declaredCallee"),
+                    row.longValue("ownerId", 0L),
+                    row.longValue("laneId", 0L),
+                    row.longValue("spanId", 0L),
+                    row.longValue("parentSpanId", 0L),
+                    row.longValue("remoteParentSpanId", 0L)));
+        } else if (!skeletonOnly && isExecutionEventKind(eventKind)) {
+            trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
+                    row.longValue("seq", 0L), eventKind,
+                    row.stringValue("method"),
+                    row.longValue("callId", 0L),
+                    row.longValue("invocationId", 0L),
+                    0L,
+                    row.stringValue("siteId"),
+                    row.stringValue("declaredCallee"),
+                    row.intValue("argumentIndex", -1),
+                    row.stringValue("runtimeType"),
+                    row.intValue("objectId", 0),
+                    row.stringValue("primitiveValue"),
+                    row.has("outcome")
+                            ? row.booleanValue("outcome", false) : null,
+                    row.has("successorIndex")
+                            ? row.intValue("successorIndex", -1)
+                            : null,
+                    row.stringValue("branchKind"),
+                    ""));
+        }
     }
 
     private static boolean isExecutionEventKind(String kind) {
@@ -1441,12 +1574,14 @@ public final class CausynthTraceRecorder {
 
     /** Binds frozen static regions to concrete same-thread invocations. */
     private static void writeRuntimeRegionPlans(
-            File directory, File staticGraph, File regionFile,
-            File regionEdgeFile, TraceData trace,
+            File directory, RuntimeRegionPlanner.RefinedFlowIndex flowIndex,
+            List<Map<String, Object>> regions,
+            List<Map<String, Object>> regionEdges,
+            File regionFile, File regionEdgeFile, TraceData trace,
             Collection<Map<String, Object>> runtimeSeeds) throws IOException {
         RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
-                regionFile,
-                regionEdgeFile, staticGraph, runtimeSeeds, trace.methods,
+                regions, regionEdges, flowIndex, regionFile,
+                regionEdgeFile, runtimeSeeds, trace.methods,
                 trace.execution, trace.fields);
         copyObservedFatalTargets(runtimeSeeds, planned.runtimeInstances);
         writeRuntimePlanArtifacts(directory,
@@ -1617,6 +1752,338 @@ public final class CausynthTraceRecorder {
             this.method = safe(method);
             this.spanId = spanId;
             this.rootContext = rootContext;
+        }
+    }
+
+    /**
+     * Strict scanner for one flat JSON trace row: an object whose values are
+     * only strings, numbers, booleans, or null.  Any row using structure the
+     * scanner does not model exactly yields {@code null} and the caller
+     * falls back to the reference Gson parser, so acceptance and diagnostics
+     * are unchanged; this class only removes tree-parse overhead from the
+     * hot, well-formed path.  Accessors replicate the forgiving semantics of
+     * {@code JsonFields} over a Gson tree.
+     */
+    private static final class FlatJsonRow {
+        private final String[] keys;
+        private final Object[] values;
+        private final int size;
+
+        private FlatJsonRow(String[] keys, Object[] values, int size) {
+            this.keys = keys;
+            this.values = values;
+            this.size = size;
+        }
+
+        private static FlatJsonRow parse(
+                String line, ConcurrentHashMap<String, String> pool) {
+            int length = line.length();
+            int cursor = skipWhitespace(line, 0);
+            if (cursor >= length || line.charAt(cursor) != '{') {
+                return null;
+            }
+            cursor++;
+            String[] keys = new String[24];
+            Object[] values = new Object[24];
+            int size = 0;
+            cursor = skipWhitespace(line, cursor);
+            if (cursor < length && line.charAt(cursor) == '}') {
+                cursor = skipWhitespace(line, cursor + 1);
+                return cursor == length
+                        ? new FlatJsonRow(keys, values, 0) : null;
+            }
+            StringBuilder scratch = new StringBuilder(64);
+            while (true) {
+                cursor = skipWhitespace(line, cursor);
+                if (cursor >= length || line.charAt(cursor) != '"') {
+                    return null;
+                }
+                scratch.setLength(0);
+                cursor = scanString(line, cursor + 1, scratch);
+                if (cursor < 0) {
+                    return null;
+                }
+                String key = intern(pool, scratch.toString());
+                cursor = skipWhitespace(line, cursor);
+                if (cursor >= length || line.charAt(cursor) != ':') {
+                    return null;
+                }
+                cursor = skipWhitespace(line, cursor + 1);
+                if (cursor >= length) {
+                    return null;
+                }
+                Object value;
+                char first = line.charAt(cursor);
+                if (first == '"') {
+                    scratch.setLength(0);
+                    cursor = scanString(line, cursor + 1, scratch);
+                    if (cursor < 0) {
+                        return null;
+                    }
+                    value = intern(pool, scratch.toString());
+                } else if (first == 't') {
+                    if (!line.startsWith("true", cursor)) {
+                        return null;
+                    }
+                    cursor += 4;
+                    value = Boolean.TRUE;
+                } else if (first == 'f') {
+                    if (!line.startsWith("false", cursor)) {
+                        return null;
+                    }
+                    cursor += 5;
+                    value = Boolean.FALSE;
+                } else if (first == 'n') {
+                    if (!line.startsWith("null", cursor)) {
+                        return null;
+                    }
+                    cursor += 4;
+                    value = null;
+                } else if (first == '-' || first >= '0' && first <= '9') {
+                    int start = cursor;
+                    cursor++;
+                    boolean floating = false;
+                    while (cursor < length) {
+                        char digit = line.charAt(cursor);
+                        if (digit >= '0' && digit <= '9') {
+                            cursor++;
+                        } else if (digit == '.' || digit == 'e'
+                                || digit == 'E' || digit == '+'
+                                || digit == '-') {
+                            floating = true;
+                            cursor++;
+                        } else {
+                            break;
+                        }
+                    }
+                    String token = line.substring(start, cursor);
+                    try {
+                        value = floating ? (Object) Double.valueOf(token)
+                                : (Object) Long.valueOf(token);
+                    } catch (NumberFormatException malformed) {
+                        return null;
+                    }
+                } else {
+                    return null;
+                }
+                if (size == keys.length) {
+                    String[] grownKeys = new String[size * 2];
+                    Object[] grownValues = new Object[size * 2];
+                    System.arraycopy(keys, 0, grownKeys, 0, size);
+                    System.arraycopy(values, 0, grownValues, 0, size);
+                    keys = grownKeys;
+                    values = grownValues;
+                }
+                keys[size] = key;
+                values[size] = value;
+                size++;
+                cursor = skipWhitespace(line, cursor);
+                if (cursor >= length) {
+                    return null;
+                }
+                char separator = line.charAt(cursor);
+                if (separator == ',') {
+                    cursor++;
+                    continue;
+                }
+                if (separator == '}') {
+                    cursor = skipWhitespace(line, cursor + 1);
+                    return cursor == length
+                            ? new FlatJsonRow(keys, values, size) : null;
+                }
+                return null;
+            }
+        }
+
+        /** Escape-aware string scan; returns -1 on malformed input. */
+        private static int scanString(String line, int cursor,
+                                      StringBuilder target) {
+            int length = line.length();
+            while (cursor < length) {
+                char value = line.charAt(cursor);
+                if (value == '"') {
+                    return cursor + 1;
+                }
+                if (value == '\\') {
+                    cursor++;
+                    if (cursor >= length) {
+                        return -1;
+                    }
+                    char escape = line.charAt(cursor);
+                    switch (escape) {
+                        case '"': target.append('"'); break;
+                        case '\\': target.append('\\'); break;
+                        case '/': target.append('/'); break;
+                        case 'b': target.append('\b'); break;
+                        case 'f': target.append('\f'); break;
+                        case 'n': target.append('\n'); break;
+                        case 'r': target.append('\r'); break;
+                        case 't': target.append('\t'); break;
+                        case 'u':
+                            if (cursor + 4 >= length) {
+                                return -1;
+                            }
+                            try {
+                                target.append((char) Integer.parseInt(
+                                        line.substring(cursor + 1,
+                                                cursor + 5), 16));
+                            } catch (NumberFormatException malformed) {
+                                return -1;
+                            }
+                            cursor += 4;
+                            break;
+                        default:
+                            return -1;
+                    }
+                    cursor++;
+                    continue;
+                }
+                if (value < 0x20) {
+                    return -1;
+                }
+                target.append(value);
+                cursor++;
+            }
+            return -1;
+        }
+
+        private static int skipWhitespace(String line, int cursor) {
+            int length = line.length();
+            while (cursor < length) {
+                char value = line.charAt(cursor);
+                if (value != ' ' && value != '\t' && value != '\r'
+                        && value != '\n') {
+                    break;
+                }
+                cursor++;
+            }
+            return cursor;
+        }
+
+        private static String intern(ConcurrentHashMap<String, String> pool,
+                                     String value) {
+            String existing = pool.putIfAbsent(value, value);
+            return existing != null ? existing : value;
+        }
+
+        private static FlatJsonRow fromJsonObject(
+                JsonObject object, ConcurrentHashMap<String, String> pool) {
+            List<String> keys = new ArrayList<>();
+            List<Object> values = new ArrayList<>();
+            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+                JsonElement value = entry.getValue();
+                Object decoded;
+                if (value == null || value.isJsonNull()) {
+                    decoded = null;
+                } else if (value.isJsonPrimitive()) {
+                    if (value.getAsJsonPrimitive().isBoolean()) {
+                        decoded = value.getAsBoolean();
+                    } else if (value.getAsJsonPrimitive().isNumber()) {
+                        String token = value.getAsString();
+                        decoded = token.indexOf('.') >= 0
+                                || token.indexOf('e') >= 0
+                                || token.indexOf('E') >= 0
+                                ? (Object) value.getAsDouble()
+                                : (Object) value.getAsLong();
+                    } else {
+                        decoded = intern(pool, value.getAsString());
+                    }
+                } else {
+                    // Preserve the forgiving legacy accessor behavior for
+                    // structured values: string() returned "" and numeric
+                    // accessors returned their fallback.
+                    decoded = STRUCTURED;
+                }
+                keys.add(intern(pool, entry.getKey()));
+                values.add(decoded);
+            }
+            return new FlatJsonRow(keys.toArray(new String[0]),
+                    values.toArray(), keys.size());
+        }
+
+        private static final Object STRUCTURED = new Object();
+
+        private Object find(String key) {
+            // Later duplicate keys win, matching JsonObject.add overwrite.
+            for (int index = size - 1; index >= 0; index--) {
+                if (keys[index].equals(key)) {
+                    return values[index];
+                }
+            }
+            return MISSING;
+        }
+
+        private static final Object MISSING = new Object();
+
+        private boolean has(String key) {
+            return find(key) != MISSING;
+        }
+
+        private String stringValue(String key) {
+            Object value = find(key);
+            if (value == MISSING || value == null
+                    || value == STRUCTURED) {
+                return "";
+            }
+            return String.valueOf(value);
+        }
+
+        private long longValue(String key, long fallback) {
+            Object value = find(key);
+            if (value == MISSING || value == null
+                    || value == STRUCTURED) {
+                return fallback;
+            }
+            if (value instanceof Long) {
+                return (Long) value;
+            }
+            if (value instanceof Double) {
+                return (long) (double) (Double) value;
+            }
+            if (value instanceof String) {
+                try {
+                    return Long.parseLong((String) value);
+                } catch (NumberFormatException malformed) {
+                    return fallback;
+                }
+            }
+            return fallback;
+        }
+
+        private int intValue(String key, int fallback) {
+            Object value = find(key);
+            if (value == MISSING || value == null
+                    || value == STRUCTURED) {
+                return fallback;
+            }
+            if (value instanceof Long) {
+                return (int) (long) (Long) value;
+            }
+            if (value instanceof Double) {
+                return (int) (double) (Double) value;
+            }
+            if (value instanceof String) {
+                try {
+                    return Integer.parseInt((String) value);
+                } catch (NumberFormatException malformed) {
+                    return fallback;
+                }
+            }
+            return fallback;
+        }
+
+        private boolean booleanValue(String key, boolean fallback) {
+            Object value = find(key);
+            if (value == MISSING || value == null
+                    || value == STRUCTURED) {
+                return fallback;
+            }
+            if (value instanceof Boolean) {
+                return (Boolean) value;
+            }
+            // JsonPrimitive.getAsBoolean parses any non-boolean primitive
+            // with Boolean.parseBoolean.
+            return Boolean.parseBoolean(String.valueOf(value));
         }
     }
 

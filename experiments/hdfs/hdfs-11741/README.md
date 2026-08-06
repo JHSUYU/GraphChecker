@@ -29,6 +29,16 @@ HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh candidates
 HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh full
 ```
 
+All experiment artifacts are rooted at `experiments-output/hdfs-11741`
+(override with `HDFS11741_WORK_ROOT`), deliberately outside `target/` so
+`mvn clean` cannot erase a recorded campaign. A tree recorded before this
+change under `target/hdfs-11741` is still honored with a warning; migrate it
+once with:
+
+```bash
+mv target/hdfs-11741 experiments-output/hdfs-11741
+```
+
 `config` and `validate` are read-only diagnostics. `traced-workload` is an
 internal callback used by `workflow.properties`; it is not a separate workflow.
 There is no public single-task, single-region, or single-target selector.
@@ -36,12 +46,12 @@ There is no public single-task, single-region, or single-target selector.
 `tasks` stops before concolic execution and produces:
 
 ```text
-target/hdfs-11741/analysis/symbolic_regions.jsonl
-target/hdfs-11741/runtime/concolic_region_plan.jsonl
-target/hdfs-11741/schedule/execution_task_plan.jsonl
-target/hdfs-11741/schedule/branch_queries.jsonl
-target/hdfs-11741/schedule/selected_target_binding.tsv
-target/hdfs-11741/schedule/selected_closure_bindings.tsv
+experiments-output/hdfs-11741/analysis/symbolic_regions.jsonl
+experiments-output/hdfs-11741/runtime/concolic_region_plan.jsonl
+experiments-output/hdfs-11741/schedule/execution_task_plan.jsonl
+experiments-output/hdfs-11741/schedule/branch_queries.jsonl
+experiments-output/hdfs-11741/schedule/selected_target_binding.tsv
+experiments-output/hdfs-11741/schedule/selected_closure_bindings.tsv
 ```
 
 Scheduling is target-first. It takes the highest-ranked valid fatal target,
@@ -58,9 +68,9 @@ importer and composer consume those VM summaries directly. The SAT candidate
 is retained at:
 
 ```text
-target/hdfs-11741/candidates/<campaign>/candidate.smt2
-target/hdfs-11741/candidates/<campaign>/z3-result.json
-target/hdfs-11741/candidates/sat-result.json
+experiments-output/hdfs-11741/candidates/<campaign>/candidate.smt2
+experiments-output/hdfs-11741/candidates/<campaign>/z3-result.json
+experiments-output/hdfs-11741/candidates/sat-result.json
 ```
 
 Concolic execution keeps two bounded parallelism levels. Independent logical

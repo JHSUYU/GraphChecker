@@ -106,6 +106,7 @@ public final class ConcolicScheduler {
         Collections.sort(candidates, Candidate.ORDER);
 
         Result result = new Result();
+        Map<String, Integer> semanticIdUses = new LinkedHashMap<>();
         for (Candidate candidate : candidates) {
             if (result.executionTasks.size() >= arguments.maxJobs) {
                 break;
@@ -116,14 +117,22 @@ public final class ConcolicScheduler {
             JsonArray edgeBindings = mergePlan
                     .outboundValueEqualityBindings(candidate.goal,
                             outputContract, candidate.projection);
+            // Two candidates with byte-identical semantic content are
+            // interchangeable; a deterministic ordinal suffix keeps their
+            // task ids unique without reintroducing trace ordinals.
+            String taskId = candidate.seedTaskId();
+            int uses = semanticIdUses.merge(taskId, 1, Integer::sum);
+            if (uses > 1) {
+                taskId = taskId + "-dup" + uses;
+            }
             ExecutionTask scheduled = candidate.projection == null
                     ? ExecutionTask.create(candidate.goal,
-                    candidate.seedTaskId(), candidate.inputActions,
+                    taskId, candidate.inputActions,
                     candidate.branches, edgeBindings,
                     LoopBoundPolicy.cfgBackedges(
                             arguments.maxLoopIterations), candidate.ready)
                     : ExecutionTask.createProjectedOutput(candidate.goal,
-                    candidate.seedTaskId(), candidate.inputActions,
+                    taskId, candidate.inputActions,
                     candidate.branches, edgeBindings,
                     LoopBoundPolicy.cfgBackedges(
                             arguments.maxLoopIterations), candidate.ready,
@@ -1815,16 +1824,117 @@ public final class ConcolicScheduler {
                     ? goal.outputClosure() : projectedOutputClosure) : null;
         }
 
+        /**
+         * Purely semantic task identity: region content hash x path seed x
+         * exact port set (x target predicate for reach goals).
+         *
+         * <p>Trace-run ordinals deliberately do not participate.  The
+         * previous identity hashed {@code logicalRegionId} (which embeds a
+         * per-recording runtime owner id) and {@code goalId} (minted from a
+         * {@code regionInstanceId} that embeds a trace root call id), so a
+         * fresh recording of the semantically identical closure renamed
+         * every task and orphaned every previously imported summary.  All
+         * components below survive re-recording as long as the closure
+         * semantics are unchanged; the importer's pairing is untouched
+         * because results echo whatever id the scheduled plan carried, and
+         * summary reuse still requires the full canonical task payload to
+         * match.</p>
+         */
         private String seedTaskId() {
-            String identity = goal.plan().logicalRegionId() + "\n"
-                    + goal.goalId() + "\n"
-                    + goal.pathSeedKey() + "\n"
-                    + target.siteId + "\n" + target.selectedOccurrence
-                    + "\n" + target.observedOutcome
-                    + "\n" + target.desiredOutcome + "\n"
-                    + (projection == null ? "UNPROJECTED"
-                    : projection.fingerprint());
-            return "TASK.SEED." + ArtifactIO.sha256(identity);
+            StringBuilder identity = new StringBuilder(
+                    "TASK.SEED.SEMANTIC.V2");
+            identity.append('\n').append(goal.plan().regionId());
+            identity.append('\n').append(goal.kind().name());
+            identity.append('\n').append(regionContentHash());
+            identity.append('\n').append(goal.pathSeedKey());
+            identity.append('\n').append(portSetHash());
+            identity.append('\n').append(target.siteId)
+                    .append('\n').append(target.selectedOccurrence)
+                    .append('\n').append(target.observedOutcome)
+                    .append('\n').append(target.desiredOutcome)
+                    .append('\n').append(projection == null
+                            ? "UNPROJECTED" : "PROJECTED_OUTPUT");
+            return "TASK.SEED." + ArtifactIO.sha256(identity.toString());
+        }
+
+        /** Sorted definition methods and explored branch sites. */
+        private String regionContentHash() {
+            java.util.TreeSet<String> methods = new java.util.TreeSet<>(
+                    goal.runtimeDefinitionMethods());
+            java.util.TreeSet<String> sites = new java.util.TreeSet<>();
+            for (JsonElement element : branches) {
+                if (!element.isJsonObject()) continue;
+                String site = string(element.getAsJsonObject(), "siteId");
+                if (!site.isEmpty()) sites.add(site);
+            }
+            return ArtifactIO.sha256(String.join("\n", methods)
+                    + "\n--BRANCH-SITES--\n" + String.join("\n", sites));
+        }
+
+        /**
+         * Canonical ordinal-free port descriptors.  Runtime port ids embed
+         * trace call ids, so the identity uses each port's static semantic
+         * shape instead: location/cell/site/declared field path for inputs,
+         * and cell/kind/type plus static capture endpoints (with their
+         * replay-stable bounded occurrence) for demanded outputs.
+         */
+        private String portSetHash() {
+            java.util.TreeSet<String> descriptors = new java.util.TreeSet<>();
+            for (JsonElement element : inputActions) {
+                if (!element.isJsonObject()) continue;
+                descriptors.add("IN\n" + semanticPortDescriptor(
+                        element.getAsJsonObject()));
+            }
+            OutputClosureContract contract = outputContract();
+            if (contract == null) {
+                descriptors.add("OUT\nNO_OUTPUT_RELATION");
+            } else {
+                for (OutputClosureContract.Member member
+                        : contract.members()) {
+                    StringBuilder descriptor = new StringBuilder("OUT");
+                    descriptor.append('\n').append(member.cell());
+                    descriptor.append('\n').append(member.outputKind());
+                    descriptor.append('\n').append(
+                            member.javaTypeDescriptor());
+                    java.util.TreeSet<String> captures =
+                            new java.util.TreeSet<>();
+                    for (JsonElement capture : member.captures()) {
+                        if (!capture.isJsonObject()) continue;
+                        captures.add(semanticPortDescriptor(
+                                capture.getAsJsonObject()));
+                    }
+                    for (String capture : captures) {
+                        descriptor.append("\n--CAPTURE--\n")
+                                .append(capture);
+                    }
+                    descriptors.add(descriptor.toString());
+                }
+            }
+            return ArtifactIO.sha256(String.join(
+                    "\n==PORT==\n", descriptors));
+        }
+
+        /** Static, replay-stable fields of one port/capture row. */
+        private static final String[] SEMANTIC_PORT_FIELDS = {
+                "accessFieldSignature", "accessSites", "argumentIndex",
+                "boundedContainerStateRole", "captureKind", "cell",
+                "containerCapacity", "declaredCallee", "definitionMethod",
+                "definitionUnitIndex", "dependencyRole", "fieldPath",
+                "fieldPathDeclarations", "fieldPaths", "fieldSignature",
+                "javaType", "leafFieldSignature", "location", "outputCell",
+                "outputOccurrence", "outputSiteId", "protocolDirection",
+                "replayOccurrence", "rootKind", "rootMethod", "siteId",
+                "sourceKind", "symbolicDemand"};
+
+        private static String semanticPortDescriptor(JsonObject row) {
+            JsonObject filtered = new JsonObject();
+            for (String field : SEMANTIC_PORT_FIELDS) {
+                JsonElement value = row.get(field);
+                if (value != null && !value.isJsonNull()) {
+                    filtered.add(field, value);
+                }
+            }
+            return CanonicalJson.render(filtered);
         }
     }
 

@@ -66,7 +66,24 @@ public final class RuntimeSelectedRegionFinalizer {
             Collection<Map<String, Object>> runtimeInstances,
             Collection<Map<String, Object>> runtimeBranchObservations)
             throws IOException {
-        List<Map<String, Object>> graph = read(refinedGraph);
+        return finalizeRegions(read(refinedGraph), refinedGraph,
+                selectedSkeletons, regions, regionEdges, observedMethods,
+                runtimeInstances, runtimeBranchObservations);
+    }
+
+    /**
+     * In-memory entry point for an already parsed refined graph.  The rows
+     * must be in the exact JSONL value domain (integral numbers as Long),
+     * which {@code RuntimeRefinedGraphBuilder} guarantees for the rows it
+     * returns; behavior is identical to re-reading {@code refinedGraph}.
+     */
+    public static Result finalizeRegions(
+            List<Map<String, Object>> graph, File refinedGraph,
+            File selectedSkeletons, File regions,
+            File regionEdges, Collection<String> observedMethods,
+            Collection<Map<String, Object>> runtimeInstances,
+            Collection<Map<String, Object>> runtimeBranchObservations)
+            throws IOException {
         List<Map<String, Object>> skeletons = read(selectedSkeletons);
         requireRefinedGraph(graph, refinedGraph);
         Set<String> observed = new LinkedHashSet<>();
@@ -153,8 +170,8 @@ public final class RuntimeSelectedRegionFinalizer {
         CausynthArtifactWriter.writeRegions(regions.toPath(),
                 regionEdges.toPath(), program);
         return new Result(closure.instanceCount, closure.reached.size(),
-                closure.targetCount, program.regions.size(),
-                program.regionEdges.size(), closure.targetClosures);
+                closure.targetCount, program.regions,
+                program.regionEdges, closure.targetClosures);
     }
 
     /**
@@ -1748,6 +1765,7 @@ public final class RuntimeSelectedRegionFinalizer {
             String regionId, List<Map<String, Object>> edges,
             String transfer, String prefix) {
         Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
+        Map<String, Set<String>> seenAccesses = new LinkedHashMap<>();
         DependencyRoleClassifier roles = new DependencyRoleClassifier(edges);
         for (Map<String, Object> edge : edges) {
             if (!transfer.equals(text(edge.get("transferKind")))) {
@@ -1791,7 +1809,9 @@ public final class RuntimeSelectedRegionFinalizer {
                     port.put("dependencyRole", DependencyRole.merge(
                             port.get("dependencyRole"), dependencyRole));
                 }
-                addRuntimeAccess(port, binding, edge);
+                addRuntimeAccess(port, binding, edge,
+                        seenAccesses.computeIfAbsent(key,
+                                ignored -> new LinkedHashSet<>()));
                 addUniqueString(port, "dependencyCells",
                         text(edge.get("fromCell")));
             }
@@ -1799,19 +1819,20 @@ public final class RuntimeSelectedRegionFinalizer {
         return new ArrayList<>(unique.values());
     }
 
+    @SuppressWarnings("unchecked")
     private static void addRuntimeAccess(Map<String, Object> port,
                                          Map<String, Object> binding,
-                                         Map<String, Object> edge) {
-        List<Map<String, Object>> accesses = rows(port.get(
-                "runtimeAccesses"));
+                                         Map<String, Object> edge,
+                                         Set<String> seen) {
+        // statePorts installs the list, so the cast is exact; the seen set
+        // replaces a quadratic rescan with the same (eventSeq, receiver)
+        // dedup identity and the same append order.
+        List<Map<String, Object>> accesses = (List<Map<String, Object>>)
+                port.get("runtimeAccesses");
         long seq = longNumber(binding.get("eventSeq"), 0L);
         int receiver = number(binding.get("fieldReceiverObjectId"), 0);
-        for (Map<String, Object> access : accesses) {
-            if (seq == longNumber(access.get("eventSeq"), 0L)
-                    && receiver == number(access.get(
-                    "fieldReceiverObjectId"), 0)) {
-                return;
-            }
+        if (!seen.add(seq + "\n" + receiver)) {
+            return;
         }
         Map<String, Object> access = new LinkedHashMap<>();
         access.put("eventSeq", binding.get("eventSeq"));
@@ -1836,7 +1857,6 @@ public final class RuntimeSelectedRegionFinalizer {
         access.put("staticAccessSiteId", first(
                 text(binding.get("siteId")), staticAccessSiteId(edge)));
         accesses.add(access);
-        port.put("runtimeAccesses", accesses);
     }
 
     private static String staticAccessSiteId(Map<String, Object> edge) {
@@ -3002,6 +3022,16 @@ public final class RuntimeSelectedRegionFinalizer {
                 explicitFatalSeedsBySite = new LinkedHashMap<>();
         private final Map<String, List<String>> fatalSeeds =
                 new LinkedHashMap<>();
+        /**
+         * inputsForOutput is a pure function of the frozen index; the union
+         * walk and every per-target closure walk repeat the same demands, so
+         * each backward walk is computed once.  Cached lists are read-only
+         * by contract of the callers.
+         */
+        private final Map<String, List<String>> inputsForOutputCache =
+                new LinkedHashMap<>();
+        private final Map<Map<String, Object>, List<String>>
+                targetInputsCache = new java.util.IdentityHashMap<>();
 
         private RegionDemandIndex(List<Map<String, Object>> regions,
                                   List<Map<String, Object>> graph) {
@@ -3102,6 +3132,17 @@ public final class RuntimeSelectedRegionFinalizer {
 
         private List<String> targetInputs(Map<String, Object> instance)
                 throws IOException {
+            List<String> cached = targetInputsCache.get(instance);
+            if (cached != null) {
+                return cached;
+            }
+            List<String> computed = computeTargetInputs(instance);
+            targetInputsCache.put(instance, computed);
+            return computed;
+        }
+
+        private List<String> computeTargetInputs(
+                Map<String, Object> instance) throws IOException {
             String regionId = text(instance.get("regionId"));
             long rootCallId = longNumber(instance.get("rootCallId"), -1L);
             Map<String, List<String>> explicit =
@@ -3149,6 +3190,20 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         private List<String> inputsForOutput(String regionId,
+                                             long rootCallId,
+                                             String portId) {
+            String demand = portDemandKey(regionId, rootCallId, portId);
+            List<String> cached = inputsForOutputCache.get(demand);
+            if (cached != null) {
+                return cached;
+            }
+            List<String> computed = computeInputsForOutput(regionId,
+                    rootCallId, portId);
+            inputsForOutputCache.put(demand, computed);
+            return computed;
+        }
+
+        private List<String> computeInputsForOutput(String regionId,
                                              long rootCallId,
                                              String portId) {
             Map<String, Object> output = outputs.get(portDemandKey(regionId,
@@ -3706,24 +3761,30 @@ public final class RuntimeSelectedRegionFinalizer {
         public final String regionCatalogScope;
         public final boolean directlySchedulable;
         public final List<Map<String, Object>> targetClosures;
+        /** Finalized region rows exactly as written to the artifact. */
+        public final List<Map<String, Object>> regions;
+        /** Canonicalized region edges exactly as written to the artifact. */
+        public final List<Map<String, Object>> regionEdges;
 
         private Result(int candidateInstanceCount,
                        int retainedInstanceCount,
                        int targetInstanceCount,
-                       int retainedRegionCount,
-                       int retainedEdgeCount,
+                       List<Map<String, Object>> regions,
+                       List<Map<String, Object>> regionEdges,
                        List<Map<String, Object>> targetClosures) {
             this.candidateInstanceCount = candidateInstanceCount;
             this.retainedInstanceCount = retainedInstanceCount;
             this.targetInstanceCount = targetInstanceCount;
-            this.retainedRegionCount = retainedRegionCount;
-            this.retainedEdgeCount = retainedEdgeCount;
+            this.retainedRegionCount = regions.size();
+            this.retainedEdgeCount = regionEdges.size();
             this.regionCatalogScope = targetInstanceCount == 1
                     ? "SINGLE_TARGET_CLOSURE"
                     : "MULTI_TARGET_UNION_CATALOG";
             this.directlySchedulable = targetInstanceCount == 1;
             this.targetClosures = Collections.unmodifiableList(
                     new ArrayList<>(targetClosures));
+            this.regions = regions;
+            this.regionEdges = regionEdges;
         }
     }
 }

@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -417,6 +418,78 @@ public class ConcolicSchedulerTest {
         }
         assertEquals(2, seeds.size());
         assertEquals(2, tasks.size());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void taskIdentitySurvivesReRecordedTraceOrdinals()
+            throws Exception {
+        // A fresh recording renames every trace ordinal: root call ids,
+        // runtime owner ids (and thus logicalRegionId), and the goal ids
+        // minted from instance ids.  The task identity is a pure semantic
+        // hash (region content x path seed x port set x target predicate),
+        // so the semantically unchanged closure keeps its task id and
+        // previously imported summaries stay addressable.
+        Map<String, Object> first = plan();
+        first.put("logicalRegionId", "REGION.1@owner7");
+        first.put("summaryReuseKey", "REGION.1@owner7");
+        File output1 = folder.newFolder("stable-id-1");
+        ConcolicScheduler.Result run1 = ConcolicScheduler.schedule(
+                arguments(write("stable-id-regions-1.jsonl", region()),
+                        write("stable-id-plans-1.jsonl", first),
+                        writeEmpty("stable-id-edges-1.jsonl"),
+                        write("stable-id-refined-1.jsonl", refinedEdge()),
+                        output1));
+
+        Map<String, Object> second = plan();
+        // Same semantics, different recording: every trace-run ordinal
+        // moves.
+        second.put("regionInstanceId", "REGION.1@test#call4242");
+        second.put("rootCallId", 4242L);
+        second.put("logicalRegionId", "REGION.1@owner93");
+        second.put("summaryReuseKey", "REGION.1@owner93");
+        java.util.List<Map<String, Object>> goals =
+                (java.util.List<Map<String, Object>>) second.get(
+                        "closureGoals");
+        goals.get(0).put("goalId", "GOAL.RENAMED.BY.RERECORDING");
+        File output2 = folder.newFolder("stable-id-2");
+        ConcolicScheduler.Result run2 = ConcolicScheduler.schedule(
+                arguments(write("stable-id-regions-2.jsonl", region()),
+                        write("stable-id-plans-2.jsonl", second),
+                        writeEmpty("stable-id-edges-2.jsonl"),
+                        write("stable-id-refined-2.jsonl", refinedEdge()),
+                        output2));
+
+        assertEquals(1, run1.executionTasks.size());
+        assertEquals(1, run2.executionTasks.size());
+        assertEquals(
+                run1.executionTasks.get(0).get("taskId").getAsString(),
+                run2.executionTasks.get(0).get("taskId").getAsString());
+
+        // A semantic change (different explored branch site) must move the
+        // identity.
+        Map<String, Object> changed = plan();
+        java.util.List<Map<String, Object>> changedGoals =
+                (java.util.List<Map<String, Object>>) changed.get(
+                        "closureGoals");
+        for (Map<String, Object> branch
+                : (java.util.List<Map<String, Object>>) changedGoals.get(0)
+                .get("branches")) {
+            if (Boolean.TRUE.equals(branch.get("failureTarget"))) {
+                branch.put("siteId", "<T: void f()>#u9");
+            }
+        }
+        File output3 = folder.newFolder("stable-id-3");
+        ConcolicScheduler.Result run3 = ConcolicScheduler.schedule(
+                arguments(write("stable-id-regions-3.jsonl", region()),
+                        write("stable-id-plans-3.jsonl", changed),
+                        writeEmpty("stable-id-edges-3.jsonl"),
+                        write("stable-id-refined-3.jsonl", refinedEdge()),
+                        output3));
+        assertEquals(1, run3.executionTasks.size());
+        assertFalse(run1.executionTasks.get(0).get("taskId").getAsString()
+                .equals(run3.executionTasks.get(0).get("taskId")
+                        .getAsString()));
     }
 
     @Test

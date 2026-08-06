@@ -27,6 +27,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
@@ -77,7 +81,6 @@ final class RuntimeRefinedGraphBuilder {
 
         SkeletonCatalog skeletons = SkeletonCatalog.read(selectedSkeletons);
         Set<String> selectedMethods = skeletons.methods;
-        List<Map<String, Object>> candidates = readRows(candidateGraph);
         List<RuntimeRegionPlanner.MethodEvent> methodEvents = sortedMethods(
                 methods);
         List<RuntimeRegionPlanner.RuntimeEvent> runtimeEvents = sortedRuntime(
@@ -186,16 +189,20 @@ final class RuntimeRefinedGraphBuilder {
                 }
         }
 
-        List<Map<String, Object>> refined = new ArrayList<>();
-        int runtimeBoundRows = 0;
-        for (Map<String, Object> candidate : candidates) {
+        final List<Map<String, Object>> refined = new ArrayList<>();
+        final int[] runtimeBoundCounter = {0};
+        // The candidate graph can be multi-gigabyte.  Parse it in parallel
+        // batches and process rows strictly in file order, so the refined
+        // output is identical to a sequential pass while the full candidate
+        // row set never has to be resident at once.
+        streamRows(candidateGraph, candidate -> {
             requireCandidateEdge(candidate, candidateGraph);
             String method = string(candidate.get("method"));
             String candidateTransfer = string(candidate.get(
                     "transferKind"));
             if (!selectedMethods.contains(method)
                     && !"PROTOCOL_TRANSFER".equals(candidateTransfer)) {
-                continue;
+                return;
             }
             Map<String, Object> edge = new LinkedHashMap<>(candidate);
             edge.put("refinementSchemaVersion", REFINEMENT_SCHEMA_VERSION);
@@ -221,7 +228,7 @@ final class RuntimeRefinedGraphBuilder {
                     edge.put("runtimeAccessorBindings",
                             encodeAccessorBindings(bindings, edge));
                     edge.put("runtimeObserved", true);
-                    runtimeBoundRows++;
+                    runtimeBoundCounter[0]++;
                 }
             } else if ("HEAP_READ".equals(transfer)
                     || "HEAP_WRITE".equals(transfer)) {
@@ -239,7 +246,7 @@ final class RuntimeRefinedGraphBuilder {
                         edge.put("fieldPathDeclarations", uniqueDeclarations);
                     }
                     edge.put("runtimeObserved", true);
-                    runtimeBoundRows++;
+                    runtimeBoundCounter[0]++;
                 } else {
                     edge.put("runtimeObserved", false);
                 }
@@ -262,17 +269,169 @@ final class RuntimeRefinedGraphBuilder {
                     }
                     edge.put("regionIds", regionIds);
                     edge.put("runtimeObserved", true);
-                    runtimeBoundRows++;
+                    runtimeBoundCounter[0]++;
                 }
             } else {
                 edge.put("runtimeObserved", true);
             }
             refined.add(edge);
-        }
+        });
 
         writeRows(output, refined);
-        return new Result(output, refined.size(), runtimeBoundRows,
+        // Normalize retained rows to the exact value domain a JSONL
+        // round-trip would produce (integral numbers become Long), so the
+        // in-memory graph handed to later passes is indistinguishable from
+        // re-reading the file this method just wrote.
+        for (Map<String, Object> row : refined) {
+            normalizeNumbersInPlace(row);
+        }
+        return new Result(output, refined, runtimeBoundCounter[0],
                 activations.size(), selectedMethods.size());
+    }
+
+    /** Receives rows strictly in file order. */
+    private interface RowSink {
+        void accept(Map<String, Object> row) throws IOException;
+    }
+
+    /**
+     * Streams JSONL rows in file order while parsing batches on background
+     * threads.  Row acceptance is unchanged: every non-blank line must be a
+     * JSON object, exactly as {@link #readRows(File)} required.
+     */
+    private static void streamRows(File file, RowSink sink)
+            throws IOException {
+        int threads = Math.max(1, Math.min(8,
+                Runtime.getRuntime().availableProcessors() - 2));
+        int configured = Integer.getInteger(
+                "causynth.aggregate.threads", 0);
+        if (configured > 0) {
+            threads = Math.min(configured, 32);
+        }
+        final int workerCount = threads;
+        ExecutorService executor = Executors.newFixedThreadPool(workerCount,
+                runnable -> {
+                    Thread thread = new Thread(runnable,
+                            "causynth-candidate-parse");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        try (BufferedReader input = reader(file.toPath())) {
+            ArrayDeque<Future<List<Map<String, Object>>>> pending =
+                    new ArrayDeque<>();
+            int batchCapacity = 4096;
+            List<String> batch = new ArrayList<>(batchCapacity);
+            String line;
+            while ((line = input.readLine()) != null) {
+                if (line.trim().isEmpty()) {
+                    continue;
+                }
+                batch.add(line);
+                if (batch.size() >= batchCapacity) {
+                    final List<String> submitted = batch;
+                    pending.addLast(executor.submit(
+                            () -> parseBatch(submitted, file)));
+                    batch = new ArrayList<>(batchCapacity);
+                    while (pending.size() > workerCount * 2) {
+                        drainBatch(pending.removeFirst(), sink);
+                    }
+                }
+            }
+            if (!batch.isEmpty()) {
+                final List<String> submitted = batch;
+                pending.addLast(executor.submit(
+                        () -> parseBatch(submitted, file)));
+            }
+            while (!pending.isEmpty()) {
+                drainBatch(pending.removeFirst(), sink);
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private static void drainBatch(
+            Future<List<Map<String, Object>>> future, RowSink sink)
+            throws IOException {
+        for (Map<String, Object> row : joinBatch(future)) {
+            sink.accept(row);
+        }
+    }
+
+    private static List<Map<String, Object>> parseBatch(
+            List<String> lines, File file) throws IOException {
+        List<Map<String, Object>> result = new ArrayList<>(lines.size());
+        for (String line : lines) {
+            Map<String, Object> row = GSON.fromJson(line, ROW_TYPE);
+            if (row == null) {
+                throw new IOException("null JSON row in " + file);
+            }
+            result.add(row);
+        }
+        return result;
+    }
+
+    private static List<Map<String, Object>> joinBatch(
+            Future<List<Map<String, Object>>> future) throws IOException {
+        try {
+            return future.get();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("candidate parse interrupted",
+                    interrupted);
+        } catch (ExecutionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof IOException) {
+                throw (IOException) cause;
+            }
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new IOException("candidate parse failed", cause);
+        }
+    }
+
+    /**
+     * Rewrites integral boxed numbers to Long in place, which is exactly the
+     * value domain produced by writing with {@link CausynthJson} and parsing
+     * with the LONG_OR_DOUBLE strategy.
+     */
+    @SuppressWarnings("unchecked")
+    static void normalizeNumbersInPlace(Object value) {
+        if (value instanceof Map<?, ?>) {
+            Map<String, Object> map = (Map<String, Object>) value;
+            for (Map.Entry<String, Object> entry : map.entrySet()) {
+                Object entryValue = entry.getValue();
+                Object normalized = normalizeScalar(entryValue);
+                if (normalized != entryValue) {
+                    entry.setValue(normalized);
+                } else {
+                    normalizeNumbersInPlace(entryValue);
+                }
+            }
+        } else if (value instanceof List<?>) {
+            List<Object> list = (List<Object>) value;
+            for (int index = 0; index < list.size(); index++) {
+                Object item = list.get(index);
+                Object normalized = normalizeScalar(item);
+                if (normalized != item) {
+                    list.set(index, normalized);
+                } else {
+                    normalizeNumbersInPlace(item);
+                }
+            }
+        }
+    }
+
+    private static Object normalizeScalar(Object value) {
+        if (value instanceof Integer || value instanceof Short
+                || value instanceof Byte) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof Float) {
+            return ((Number) value).doubleValue();
+        }
+        return value;
     }
 
     private static Map<Long, RuntimeRegionPlanner.RuntimeEvent>
@@ -776,16 +935,20 @@ final class RuntimeRefinedGraphBuilder {
 
     static final class Result {
         final Path output;
+        /** Refined rows, normalized to the exact JSONL round-trip domain. */
+        final List<Map<String, Object>> rows;
         final int edgeCount;
         final int runtimeBoundEdgeCount;
         final int activationCount;
         final int selectedMethodCount;
 
-        private Result(Path output, int edgeCount, int runtimeBoundEdgeCount,
+        private Result(Path output, List<Map<String, Object>> rows,
+                       int runtimeBoundEdgeCount,
                        int activationCount,
                        int selectedMethodCount) {
             this.output = output;
-            this.edgeCount = edgeCount;
+            this.rows = rows;
+            this.edgeCount = rows.size();
             this.runtimeBoundEdgeCount = runtimeBoundEdgeCount;
             this.activationCount = activationCount;
             this.selectedMethodCount = selectedMethodCount;
