@@ -144,7 +144,9 @@ public final class ConcolicSummaryImporter {
                         "PATH_SEED_MISMATCH", pathSeedMismatch));
                 continue;
             }
-            JsonObject outputs = outputExpressions(raw, task, issues);
+            JsonObject referenceIdentities = new JsonObject();
+            JsonObject outputs = outputExpressions(raw, task, issues,
+                    referenceIdentities);
             JsonArray symbolicInputs = symbolicInputs(raw);
             JsonObject occurrenceCatalog =
                     task.occurrenceInstantiationCatalog();
@@ -185,6 +187,10 @@ public final class ConcolicSummaryImporter {
             summary.add("pathCondition", path.expressions);
             summary.add("branchMappings", mappings);
             summary.add("outputExpressions", outputs);
+            if (referenceIdentities.size() > 0) {
+                summary.add("outputReferenceIdentities",
+                        referenceIdentities);
+            }
             boolean boundedExit = "BOUNDED".equals(exitKind)
                     || "OUTPUT_BOUNDARY".equals(exitKind);
             summary.addProperty("normalExit", boundedExit
@@ -787,7 +793,10 @@ public final class ConcolicSummaryImporter {
                     continue;
                 }
                 JsonElement expression = capture.get("expression");
-                if (expression != null && !expression.isJsonNull()
+                boolean related = expression != null
+                        && !expression.isJsonNull()
+                        || referenceIdentity(capture) != null;
+                if (related
                         && exactOutputCaptureOccurrence(request, capture)) {
                     successfulRows++;
                 }
@@ -928,18 +937,25 @@ public final class ConcolicSummaryImporter {
     }
 
     private static JsonObject outputExpressions(
-            JsonObject raw, ExecutionTask task, List<String> issues) {
+            JsonObject raw, ExecutionTask task, List<String> issues,
+            JsonObject identities) {
         JsonObject result = new JsonObject();
         OutputClosureContract closure = task.outputClosure();
         if (closure == null) return result;
 
         Map<String, List<JsonObject>> captures = new LinkedHashMap<>();
+        Map<String, List<JsonObject>> referenceRows = new LinkedHashMap<>();
         for (JsonElement element : array(raw, "outputCaptures")) {
             if (!element.isJsonObject()) continue;
             JsonObject row = element.getAsJsonObject();
             JsonElement expression = row.get("expression");
             if (expression != null && !expression.isJsonNull()) {
                 captures.computeIfAbsent(string(row, "captureBindingId"),
+                        ignored -> new ArrayList<>())
+                        .add(row.deepCopy());
+            } else if (referenceIdentity(row) != null) {
+                referenceRows.computeIfAbsent(
+                        string(row, "captureBindingId"),
                         ignored -> new ArrayList<>())
                         .add(row.deepCopy());
             }
@@ -981,6 +997,17 @@ public final class ConcolicSummaryImporter {
                 result.add(port, expressions.get(0));
                 continue;
             }
+            // A reference the VM never symbolised still related an exact
+            // object.  Keep it apart from the expressions so a composition
+            // can only pass the alias on, never read a value out of it.
+            if (expressions.isEmpty() && specs != null) {
+                JsonObject identity = admittedReferenceIdentity(specs,
+                        referenceRows);
+                if (identity != null) {
+                    identities.add(port, identity);
+                    continue;
+                }
+            }
             JsonElement root = rootOutputExpression(raw);
             if ((specs == null || specs.isEmpty())
                     && closure.outputPorts().size() == 1
@@ -992,6 +1019,50 @@ public final class ConcolicSummaryImporter {
                     + expressions.size());
         }
         return result;
+    }
+
+    /** Names a reference output the custom VM never symbolised. */
+    public static final String CONCRETE_REFERENCE_IDENTITY_AUTHORITY =
+            "CONCRETE_REFERENCE_IDENTITY_RELATION_V1";
+
+    /** The exact object a reference-valued write handed on, or null. */
+    private static JsonObject referenceIdentity(JsonObject capture) {
+        JsonElement identity = capture == null
+                ? null : capture.get("referenceIdentity");
+        if (identity == null || !identity.isJsonObject()) return null;
+        JsonObject value = identity.getAsJsonObject();
+        return CONCRETE_REFERENCE_IDENTITY_AUTHORITY.equals(
+                string(value, "authority")) ? value : null;
+    }
+
+    /**
+     * Selects the one reference identity a port's captures agree on.
+     *
+     * <p>This is an alias relation, not a value: it says which object the
+     * consumer received.  Several distinct objects at one port would be
+     * several relations, so that stays unadmitted and the port keeps its
+     * ordinary count issue.</p>
+     */
+    private static JsonObject admittedReferenceIdentity(
+            List<OutputCaptureSpec> specs,
+            Map<String, List<JsonObject>> referenceRows) {
+        JsonObject selected = null;
+        for (OutputCaptureSpec spec : specs) {
+            List<JsonObject> rows = referenceRows.get(
+                    spec.captureBindingId());
+            if (rows == null) continue;
+            for (JsonObject row : rows) {
+                if (!exactOutputCaptureOccurrence(spec, row)) return null;
+                JsonObject identity = referenceIdentity(row);
+                if (identity == null) return null;
+                if (selected == null) {
+                    selected = identity;
+                } else if (!selected.equals(identity)) {
+                    return null;
+                }
+            }
+        }
+        return selected;
     }
 
     /**

@@ -3240,6 +3240,32 @@ public final class ConcolicSmtComposer {
                 }
                 bindPort(port, value);
             }
+            bindReferenceIdentityOutputs(region, summary);
+        }
+
+        /**
+         * States what a reference-only output cannot answer.
+         *
+         * <p>A reference the custom VM never symbolised was recorded by
+         * identity: the producer says which object it handed on, and nothing
+         * about any value inside it.  That is enough to pass the alias along,
+         * but a consumer reading a scalar leaf below the reference needs that
+         * leaf to have its own producer.  When it does not, the composition
+         * says so by name instead of leaving the port to become a free
+         * variable the producer never constrained.</p>
+         */
+        private void bindReferenceIdentityOutputs(String region,
+                                                  JsonObject summary) {
+            JsonObject identities = object(summary,
+                    "outputReferenceIdentities");
+            for (String port : identities.keySet()) {
+                if (!ports.contains(port)
+                        || boundPorts.contains(currentOccurrence(port))) {
+                    continue;
+                }
+                heapGap("ConcreteReferenceIdentityWithoutLeafProducer@"
+                        + region + ":" + port);
+            }
         }
 
         /**

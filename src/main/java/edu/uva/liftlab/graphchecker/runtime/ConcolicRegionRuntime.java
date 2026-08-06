@@ -1241,6 +1241,7 @@ public final class ConcolicRegionRuntime {
         try {
             EngineApi api = engine();
             JsonElement expression;
+            DeclaredField field = null;
             if (containerValue(fieldValue)) {
                 if (!snapshotOutputContainer(fieldValue, api)) {
                     throw new IllegalStateException(
@@ -1248,7 +1249,7 @@ public final class ConcolicRegionRuntime {
                 }
                 expression = engineExpression(api.expression(fieldValue));
             } else {
-                DeclaredField field = FieldPathSpec.declaredField(
+                field = FieldPathSpec.declaredField(
                         request.fieldSignature());
                 if (field == null) {
                     throw new IllegalStateException(
@@ -1259,10 +1260,16 @@ public final class ConcolicRegionRuntime {
                         javaTypeDescriptor(field.type()), fieldValue));
             }
             if (expression == null || expression.isJsonNull()) {
-                throw new IllegalStateException(
-                        "custom VM returned no field-write expression");
+                JsonObject identity = concreteReferenceIdentity(active,
+                        field, fieldValue);
+                if (identity == null) {
+                    throw new IllegalStateException(
+                            "custom VM returned no field-write expression");
+                }
+                row.add("referenceIdentity", identity);
+            } else {
+                row.add("expression", expression);
             }
-            row.add("expression", expression);
         } catch (Throwable throwable) {
             active.addGuardedOutputCaptureFailure(
                     request.captureBindingId(),
@@ -1306,6 +1313,7 @@ public final class ConcolicRegionRuntime {
         EngineApi api = engine();
         try {
             JsonElement expression;
+            DeclaredField declared = null;
             if (containerValue(fieldValue)) {
                 // A tracked container relation may still be rooted at an
                 // unconstrained STATE.  Re-snapshot the concrete final
@@ -1314,21 +1322,27 @@ public final class ConcolicRegionRuntime {
                 snapshotOutputContainer(fieldValue, api);
                 expression = engineExpression(api.expression(fieldValue));
             } else {
-                DeclaredField field = FieldPathSpec.declaredField(
+                declared = FieldPathSpec.declaredField(
                         request.fieldSignature());
-                if (field == null) {
+                if (declared == null) {
                     throw new IllegalStateException(
                             "normal-exit capture has no exact field");
                 }
                 expression = engineExpression(api.fieldExpression(
-                        fieldOwner, field.owner(), field.name(),
-                        javaTypeDescriptor(field.type()), fieldValue));
+                        fieldOwner, declared.owner(), declared.name(),
+                        javaTypeDescriptor(declared.type()), fieldValue));
             }
             if (expression == null || expression.isJsonNull()) {
-                throw new IllegalStateException(
-                        "custom VM returned no normal-exit field expression");
+                JsonObject identity = concreteReferenceIdentity(active,
+                        declared, fieldValue);
+                if (identity == null) {
+                    throw new IllegalStateException("custom VM returned no "
+                            + "normal-exit field expression");
+                }
+                row.add("referenceIdentity", identity);
+            } else {
+                row.add("expression", expression);
             }
-            row.add("expression", expression);
         } catch (Throwable throwable) {
             active.addGuardedOutputCaptureFailure(
                     request.captureBindingId(),
@@ -1338,6 +1352,41 @@ public final class ConcolicRegionRuntime {
         } finally {
             active.outputCaptures.add(row);
         }
+    }
+
+    /** Names a reference output the VM never symbolised. */
+    static final String CONCRETE_REFERENCE_IDENTITY_AUTHORITY =
+            "CONCRETE_REFERENCE_IDENTITY_RELATION_V1";
+
+    /**
+     * States what a reference-valued write actually related.
+     *
+     * <p>The custom VM has no expression for a reference: there is no value
+     * to constrain, only an object to hand on.  That is still a real
+     * relation — this write says exactly which object the consumer receives —
+     * and the replay knows it exactly, by identity.  Recording it keeps the
+     * producer's output observable for alias passing without inventing a
+     * symbolic value the VM does not have; a composition that needs a scalar
+     * leaf below this reference must find that leaf its own producer or say
+     * so.  Only a reference qualifies: a primitive with no expression is a
+     * genuine capture failure and must stay one.</p>
+     */
+    private static JsonObject concreteReferenceIdentity(
+            ActiveRegion active, DeclaredField field, Object value) {
+        if (active == null || field == null) return null;
+        String descriptor = javaTypeDescriptor(field.type());
+        if (!descriptor.startsWith("L") && !descriptor.startsWith("[")) {
+            return null;
+        }
+        JsonObject identity = new JsonObject();
+        identity.addProperty("authority",
+                CONCRETE_REFERENCE_IDENTITY_AUTHORITY);
+        identity.addProperty("fieldSignature", field.signature());
+        identity.addProperty("javaType", field.type());
+        identity.addProperty("objectId", active.objectToken(value));
+        identity.addProperty("runtimeType", value == null ? ""
+                : value.getClass().getName());
+        return identity;
     }
 
     private static void addOutputCaptureOccurrence(
@@ -1374,13 +1423,25 @@ public final class ConcolicRegionRuntime {
                 string(capture, "captureBindingId"))) {
             return false;
         }
-        JsonElement expression = capture.get("expression");
-        if (expression == null || expression.isJsonNull()) return false;
+        if (!observedOutputRelation(capture)) return false;
         return !request.occurrenceScoped()
                 || request.outputSiteId().equals(
                 string(capture, "outputSiteId"))
                 && withinBoundedOutputWindow(integer(capture,
                 "outputOccurrence", -1));
+    }
+
+    /**
+     * True when the row carries a relation: a symbolic expression, or the
+     * exact runtime identity of a reference the VM never symbolised.
+     */
+    private static boolean observedOutputRelation(JsonObject capture) {
+        JsonElement expression = capture.get("expression");
+        if (expression != null && !expression.isJsonNull()) return true;
+        JsonElement identity = capture.get("referenceIdentity");
+        return identity != null && identity.isJsonObject()
+                && CONCRETE_REFERENCE_IDENTITY_AUTHORITY.equals(
+                string(identity.getAsJsonObject(), "authority"));
     }
 
     /**

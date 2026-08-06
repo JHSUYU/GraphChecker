@@ -163,6 +163,50 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void aReferenceOutputIsKeptAsAnIdentityRelation() throws Exception {
+        // The VM has no expression for a reference; the write still related
+        // an exact object, and that alias is kept apart from the values so a
+        // composition cannot read a scalar out of it.
+        Path directory = folder.newFolder("reference-identity").toPath();
+        Path results = directory.resolve("results.jsonl");
+        Path tasks = directory.resolve("tasks.jsonl");
+        Path regions = directory.resolve("regions.jsonl");
+        Path output = directory.resolve("summaries.jsonl");
+        Path diagnostics = directory.resolve("diagnostics.jsonl");
+
+        JsonObject raw = outputBoundaryResult(1);
+        JsonObject capture = raw.getAsJsonArray("outputCaptures").get(0)
+                .getAsJsonObject();
+        capture.remove("expression");
+        JsonObject identity = new JsonObject();
+        identity.addProperty("authority", ConcolicSummaryImporter
+                .CONCRETE_REFERENCE_IDENTITY_AUTHORITY);
+        identity.addProperty("fieldSignature", "<test.State: int value0>");
+        identity.addProperty("javaType", "test.Held");
+        identity.addProperty("objectId", 74965L);
+        capture.add("referenceIdentity", identity);
+
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", "REGION.BOUNDARY");
+        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
+                outputBoundaryTask(1)));
+        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
+        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+
+        ConcolicSummaryImporter.ImportResult imported =
+                ConcolicSummaryImporter.importSummaries(results, tasks,
+                        regions, output, diagnostics);
+
+        assertEquals(1, imported.validSummaryCount);
+        assertEquals(0, imported.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(output).get(0);
+        assertTrue(summary.get("relationallyComplete").getAsBoolean());
+        assertEquals(0, summary.getAsJsonObject("outputExpressions").size());
+        assertEquals(1, summary.getAsJsonObject(
+                "outputReferenceIdentities").size());
+    }
+
+    @Test
     public void anObservationAtAnotherSiteIsRejectedFailClosed()
             throws Exception {
         Path directory = folder.newFolder("wrong-site").toPath();
