@@ -118,6 +118,80 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void anObservationAtAnotherOccurrenceIsImported() throws Exception {
+        // The goal states the relation without an invocation ordinal, so a
+        // bounded replay that reached the site a different number of times
+        // than the recording did has still observed the relation.  A failed
+        // earlier occurrence is a guarded observation, not a gap.
+        Path directory = folder.newFolder("relaxed-occurrence").toPath();
+        Path results = directory.resolve("results.jsonl");
+        Path tasks = directory.resolve("tasks.jsonl");
+        Path regions = directory.resolve("regions.jsonl");
+        Path output = directory.resolve("summaries.jsonl");
+        Path diagnostics = directory.resolve("diagnostics.jsonl");
+
+        JsonObject raw = outputBoundaryResult(1);
+        JsonArray captures = raw.getAsJsonArray("outputCaptures");
+        JsonObject guarded = new JsonObject();
+        guarded.addProperty("captureBindingId", "CAPTURE.0");
+        guarded.addProperty("outputSiteId", "<test.Worker: void run()>#u1");
+        guarded.addProperty("outputOccurrence", 1);
+        guarded.addProperty("replayOccurrence", 1);
+        captures.get(0).getAsJsonObject()
+                .addProperty("outputOccurrence", 3);
+        JsonArray ordered = new JsonArray();
+        ordered.add(guarded);
+        ordered.add(captures.get(0));
+        raw.add("outputCaptures", ordered);
+
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", "REGION.BOUNDARY");
+        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
+                outputBoundaryTask(1)));
+        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
+        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+
+        ConcolicSummaryImporter.ImportResult imported =
+                ConcolicSummaryImporter.importSummaries(results, tasks,
+                        regions, output, diagnostics);
+
+        assertEquals(1, imported.validSummaryCount);
+        assertEquals(0, imported.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(output).get(0);
+        assertTrue(summary.get("relationallyComplete").getAsBoolean());
+        assertEquals(1, summary.getAsJsonObject("outputExpressions").size());
+    }
+
+    @Test
+    public void anObservationAtAnotherSiteIsRejectedFailClosed()
+            throws Exception {
+        Path directory = folder.newFolder("wrong-site").toPath();
+        Path results = directory.resolve("results.jsonl");
+        Path tasks = directory.resolve("tasks.jsonl");
+        Path regions = directory.resolve("regions.jsonl");
+        Path output = directory.resolve("summaries.jsonl");
+        Path diagnostics = directory.resolve("diagnostics.jsonl");
+
+        JsonObject raw = outputBoundaryResult(1);
+        raw.getAsJsonArray("outputCaptures").get(0).getAsJsonObject()
+                .addProperty("outputSiteId",
+                        "<test.Worker: void run()>#u99");
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", "REGION.BOUNDARY");
+        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
+                outputBoundaryTask(1)));
+        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
+        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+
+        ConcolicSummaryImporter.ImportResult imported =
+                ConcolicSummaryImporter.importSummaries(results, tasks,
+                        regions, output, diagnostics);
+
+        assertEquals(0, imported.validSummaryCount);
+        assertTrue(imported.diagnosticCount > 0);
+    }
+
+    @Test
     public void incompleteOutputBoundaryIsRejectedFailClosed()
             throws Exception {
         Path directory = folder.newFolder("incomplete-boundary").toPath();

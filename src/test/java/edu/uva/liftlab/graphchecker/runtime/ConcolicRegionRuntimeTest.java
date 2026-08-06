@@ -152,7 +152,7 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void multipleExactOutputsWaitForLastAndRejectDuplicates() {
+    public void multipleExactOutputsWaitForTheLastBinding() {
         JsonObject task = exactOutputTask(2);
         JsonArray captures = new JsonArray();
         captures.add(exactOutputCapture(0));
@@ -163,7 +163,49 @@ public class ConcolicRegionRuntimeTest {
         assertTrue(ConcolicRegionRuntime
                 .exactOutputBoundaryReachedForTests(task, captures));
 
+        // Observing the same site again is another version of the same
+        // relation, not a second relation, so it is not a contradiction.
         captures.add(exactOutputCapture(1));
+        assertTrue(ConcolicRegionRuntime
+                .exactOutputBoundaryReachedForTests(task, captures));
+    }
+
+    @Test
+    public void anObservationAtAnotherOccurrenceStillCompletesTheBoundary() {
+        // The goal states the relation without an invocation ordinal, so a
+        // bounded replay that reaches the site a different number of times
+        // than the recording did has still observed the relation.
+        JsonObject task = exactOutputTask(1);
+        JsonArray captures = new JsonArray();
+        JsonObject later = exactOutputCapture(0);
+        later.addProperty("outputOccurrence", 3);
+        captures.add(later);
+
+        assertTrue(ConcolicRegionRuntime
+                .exactOutputBoundaryReachedForTests(task, captures));
+    }
+
+    @Test
+    public void anObservationBeyondTheBoundedWindowIsNotAdmitted() {
+        JsonObject task = exactOutputTask(1);
+        JsonArray captures = new JsonArray();
+        JsonObject beyond = exactOutputCapture(0);
+        beyond.addProperty("outputOccurrence",
+                LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS + 1);
+        captures.add(beyond);
+
+        assertFalse(ConcolicRegionRuntime
+                .exactOutputBoundaryReachedForTests(task, captures));
+    }
+
+    @Test
+    public void anObservationAtAnotherSiteIsNotAdmitted() {
+        JsonObject task = exactOutputTask(1);
+        JsonArray captures = new JsonArray();
+        JsonObject elsewhere = exactOutputCapture(0);
+        elsewhere.addProperty("outputSiteId", "<test.Worker: void run()>#u99");
+        captures.add(elsewhere);
+
         assertFalse(ConcolicRegionRuntime
                 .exactOutputBoundaryReachedForTests(task, captures));
     }

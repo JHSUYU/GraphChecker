@@ -1359,15 +1359,11 @@ final class RuntimeRegionPlanner {
         int outputOccurrence = integer(output.get(
                 "activationLocalStaticSiteOccurrence"), -1);
         String bindingKind = text(output.get("bindingKind"));
-        if (!staticSite.matches() || outputOccurrence < 1
-                || outputOccurrence
-                > LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS) {
-            if (outputOccurrence
-                    > LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS) {
-                addBoundInsufficient(rejectionReasons,
-                        "OUTPUT_OCCURRENCE", outputPort, outputOccurrence,
-                        LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS);
-            }
+        // The recorded ordinal counts every activation-local execution of the
+        // site, nested calls included, and the replay no longer has to hit it
+        // exactly.  Dropping an output because the recording reached its site
+        // often would discard a relation the trace proves.
+        if (!staticSite.matches() || outputOccurrence < 1) {
             return null;
         }
         String definitionMethod = staticSite.group(1);

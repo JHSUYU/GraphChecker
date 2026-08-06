@@ -79,11 +79,14 @@ public final class OutputCaptureSpec {
         replayOccurrence = encoded.has("replayOccurrence")
                 ? encoded.get("replayOccurrence").getAsInt()
                 : outputOccurrence;
+        // The ordinal is recorded provenance, not a replay demand: the goal
+        // states the relation without one, and a bounded replay reaches the
+        // site a different number of times than the recording did.  Refusing
+        // a recorded ordinal past the replay window would discard an output
+        // the recording proves for a reason the relation never asserted.
         if (occurrenceScoped && (outputSiteId.isEmpty()
                 || outputOccurrence < 1
-                || replayOccurrence != outputOccurrence
-                || replayOccurrence
-                > LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS)) {
+                || replayOccurrence != outputOccurrence)) {
             throw new IllegalArgumentException(
                     "invalid bounded output capture occurrence");
         }

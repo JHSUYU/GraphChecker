@@ -1106,7 +1106,7 @@ public final class ConcolicRegionRuntime {
             return;
         }
         int occurrence = active.nextOutputCaptureOccurrence(request);
-        if (occurrence != request.replayOccurrence()) return;
+        if (!withinBoundedOutputWindow(occurrence)) return;
 
         recordRegionExitFieldOutput(active, request, fieldOwner, fieldValue,
                 occurrence);
@@ -1121,7 +1121,7 @@ public final class ConcolicRegionRuntime {
                 captureBindingId);
         if (request == null || !request.capturesCallArgument()) return;
         int occurrence = active.nextOutputCaptureOccurrence(request);
-        if (occurrence != request.replayOccurrence()) return;
+        if (!withinBoundedOutputWindow(occurrence)) return;
 
         JsonObject row = new JsonObject();
         row.addProperty("captureBindingId", request.captureBindingId());
@@ -1141,7 +1141,9 @@ public final class ConcolicRegionRuntime {
             }
             row.add("expression", expression);
         } catch (Throwable throwable) {
-            active.addUnresolvedOnce(request.captureBindingId()
+            active.addGuardedOutputCaptureFailure(
+                    request.captureBindingId(),
+                    request.captureBindingId()
                     + ": call-argument output capture failed: "
                     + rootCause(throwable));
         } finally {
@@ -1181,8 +1183,7 @@ public final class ConcolicRegionRuntime {
                 captureBindingId);
         if (request == null || !request.capturesMutationState()) return;
         int occurrence = active.nextMutationOutputCaptureOccurrence(request);
-        if (occurrence < 1) return;
-        if (occurrence != request.replayOccurrence()) return;
+        if (!withinBoundedOutputWindow(occurrence)) return;
 
         active.deferMutationStateOutput(request, container, occurrence);
     }
@@ -1214,7 +1215,9 @@ public final class ConcolicRegionRuntime {
             }
             row.add("expression", expression);
         } catch (Throwable throwable) {
-            active.addUnresolvedOnce(request.captureBindingId()
+            active.addGuardedOutputCaptureFailure(
+                    request.captureBindingId(),
+                    request.captureBindingId()
                     + ": mutation-state output capture failed: "
                     + rootCause(throwable));
         } finally {
@@ -1232,7 +1235,7 @@ public final class ConcolicRegionRuntime {
                 captureBindingId);
         if (request == null || !request.capturesFieldWriteState()) return;
         int occurrence = active.nextOutputCaptureOccurrence(request);
-        if (occurrence != request.replayOccurrence()) return;
+        if (!withinBoundedOutputWindow(occurrence)) return;
 
         JsonObject row = outputCaptureRow(request, occurrence);
         try {
@@ -1261,7 +1264,9 @@ public final class ConcolicRegionRuntime {
             }
             row.add("expression", expression);
         } catch (Throwable throwable) {
-            active.addUnresolvedOnce(request.captureBindingId()
+            active.addGuardedOutputCaptureFailure(
+                    request.captureBindingId(),
+                    request.captureBindingId()
                     + ": field-write output capture failed: "
                     + rootCause(throwable));
         } finally {
@@ -1325,7 +1330,9 @@ public final class ConcolicRegionRuntime {
             }
             row.add("expression", expression);
         } catch (Throwable throwable) {
-            active.addUnresolvedOnce(request.captureBindingId()
+            active.addGuardedOutputCaptureFailure(
+                    request.captureBindingId(),
+                    request.captureBindingId()
                     + ": normal-exit field capture failed: "
                     + rootCause(throwable));
         } finally {
@@ -1347,6 +1354,19 @@ public final class ConcolicRegionRuntime {
                 || request.capturesMutationState());
     }
 
+    /**
+     * Admits an observation of the recorded output relation.
+     *
+     * <p>The goal states this relation without an invocation ordinal, so the
+     * recorded ordinal is not replay identity: a bounded replay reaches the
+     * same site a different number of times than the recording did, and
+     * demanding the same ordinal back rejects a faithful observation for a
+     * reason the relation never asserted.  What must still agree is the
+     * shape: the same capture binding, the same recorded static site, and an
+     * expression the custom VM actually produced for that site's declared
+     * cell.  Choosing among several observed versions is the composed
+     * versioned channel's job, not this hook's.</p>
+     */
     private static boolean successfulExactOutputCapture(
             OutputCaptureSpec request, JsonObject capture) {
         if (request == null || capture == null
@@ -1359,10 +1379,18 @@ public final class ConcolicRegionRuntime {
         return !request.occurrenceScoped()
                 || request.outputSiteId().equals(
                 string(capture, "outputSiteId"))
-                && request.replayOccurrence()
-                == integer(capture, "outputOccurrence", -1)
-                && request.replayOccurrence()
-                == integer(capture, "replayOccurrence", -1);
+                && withinBoundedOutputWindow(integer(capture,
+                "outputOccurrence", -1));
+    }
+
+    /**
+     * The bounded replay window an output site may be observed in.  It is the
+     * loop bound because that is what limits how often a bounded replay can
+     * reach the site at all.
+     */
+    private static boolean withinBoundedOutputWindow(int occurrence) {
+        return occurrence >= 1
+                && occurrence <= LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
     }
 
     private static boolean completeExactOutputBoundary(
@@ -1378,19 +1406,16 @@ public final class ConcolicRegionRuntime {
                     || !requestedBindings.add(request.captureBindingId())) {
                 return false;
             }
-            int matchingRows = 0;
             int successfulRows = 0;
             for (JsonObject capture : captures) {
-                if (!request.captureBindingId().equals(
-                        string(capture, "captureBindingId"))) {
-                    continue;
-                }
-                matchingRows++;
                 if (successfulExactOutputCapture(request, capture)) {
                     successfulRows++;
                 }
             }
-            if (matchingRows != 1 || successfulRows != 1) return false;
+            // One admitted observation completes the boundary.  A later
+            // occurrence is another version of the same relation, not a
+            // second relation, so several of them are not a contradiction.
+            if (successfulRows < 1) return false;
         }
         return true;
     }
@@ -2271,7 +2296,7 @@ public final class ConcolicRegionRuntime {
                 continue;
             }
             int occurrence = active.nextOutputCaptureOccurrence(request);
-            if (occurrence == request.replayOccurrence()) {
+            if (withinBoundedOutputWindow(occurrence)) {
                 recordRegionExitFieldOutput(active, request, owner, value,
                         occurrence);
             }
@@ -3700,6 +3725,8 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashMap<>();
         private final OutputCaptureOccurrenceCounter outputCaptureOccurrences =
                 new OutputCaptureOccurrenceCounter();
+        private final Map<String, List<String>> guardedOutputCaptureFailures =
+                new LinkedHashMap<>();
         private final Map<String, PendingMutationCapture>
                 pendingMutationCaptures = new LinkedHashMap<>();
         private final Map<String, Deque<MutationMethodScope>>
@@ -3970,10 +3997,16 @@ public final class ConcolicRegionRuntime {
                         matches++;
                     }
                 }
-                if (normal && matches != 1) {
+                if (normal && matches < 1) {
+                    // Only now is a failed occurrence a real gap: no
+                    // occurrence of this binding produced the relation.
+                    for (String failure : guardedOutputCaptureFailures
+                            .getOrDefault(request.captureBindingId(),
+                                    Collections.<String>emptyList())) {
+                        addUnresolvedOnce(failure);
+                    }
                     addUnresolvedOnce(request.captureBindingId()
-                            + ": expected bounded output occurrence "
-                            + request.replayOccurrence() + " exactly once; "
+                            + ": bounded replay produced no output relation; "
                             + "observed " + outputCaptureOccurrences.observed(
                             request.captureBindingId(), request.outputSiteId())
                             + " hook occurrence(s) and captured " + matches);
@@ -4025,6 +4058,27 @@ public final class ConcolicRegionRuntime {
             if (!value.isEmpty() && unresolvedUnique.add(value)) {
                 unresolved.add(value);
             }
+        }
+
+        /**
+         * Holds one occurrence's capture failure without yet calling it a
+         * gap.  A bounded replay observes the site several times, and a
+         * failure at one occurrence says nothing about the relation when
+         * another occurrence produced it; only a binding that never captured
+         * anything has actually lost its output.
+         */
+        private void addGuardedOutputCaptureFailure(String captureBindingId,
+                                                    String detail) {
+            String binding = safe(captureBindingId);
+            String value = safe(detail);
+            if (value.isEmpty()) return;
+            if (binding.isEmpty()) {
+                addUnresolvedOnce(value);
+                return;
+            }
+            List<String> failures = guardedOutputCaptureFailures
+                    .computeIfAbsent(binding, ignored -> new ArrayList<>());
+            if (!failures.contains(value)) failures.add(value);
         }
 
         private long objectToken(Object value) {

@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
@@ -777,7 +778,6 @@ public final class ConcolicSummaryImporter {
                     || !requestedBindings.add(request.captureBindingId())) {
                 return false;
             }
-            int matchingRows = 0;
             int successfulRows = 0;
             for (JsonElement element : captures) {
                 if (!element.isJsonObject()) continue;
@@ -786,14 +786,17 @@ public final class ConcolicSummaryImporter {
                         string(capture, "captureBindingId"))) {
                     continue;
                 }
-                matchingRows++;
                 JsonElement expression = capture.get("expression");
                 if (expression != null && !expression.isJsonNull()
                         && exactOutputCaptureOccurrence(request, capture)) {
                     successfulRows++;
                 }
             }
-            if (matchingRows != 1 || successfulRows != 1) return false;
+            // One admitted observation is the relation.  A row that carried
+            // no expression is a guarded observation of an occurrence that
+            // produced nothing, and a further admitted row is another version
+            // of the same relation rather than a second relation.
+            if (successfulRows < 1) return false;
         }
         return true;
     }
@@ -957,13 +960,20 @@ public final class ConcolicSummaryImporter {
                             spec.captureBindingId());
                     if (values == null) continue;
                     for (JsonObject value : values) {
+                        JsonElement expression = value.get("expression");
+                        if (expression == null || expression.isJsonNull()) {
+                            // A guarded observation of an occurrence that
+                            // produced nothing; another occurrence of the
+                            // same site may still carry the relation.
+                            continue;
+                        }
                         if (!exactOutputCaptureOccurrence(spec, value)) {
                             issues.add("OUTPUT_CAPTURE_OCCURRENCE_MISMATCH:"
                                     + port + ":"
                                     + spec.captureBindingId());
                             continue;
                         }
-                        expressions.add(value.get("expression").deepCopy());
+                        expressions.add(expression.deepCopy());
                     }
                 }
             }
@@ -984,15 +994,24 @@ public final class ConcolicSummaryImporter {
         return result;
     }
 
+    /**
+     * Admits an observation of the recorded output relation.
+     *
+     * <p>The recorded ordinal is not replay identity: the goal states this
+     * relation without one, and a bounded replay reaches the site a different
+     * number of times than the recording did.  What must agree is the shape —
+     * the same recorded static site, observed inside the bounded replay
+     * window.  Which version of the relation a reader sees is settled by the
+     * composed versioned channel, not here.</p>
+     */
     private static boolean exactOutputCaptureOccurrence(
             OutputCaptureSpec request, JsonObject capture) {
         if (!request.occurrenceScoped()) return true;
+        int occurrence = integer(capture, "outputOccurrence", -1);
         return request.outputSiteId().equals(
                 string(capture, "outputSiteId"))
-                && request.replayOccurrence()
-                == integer(capture, "outputOccurrence", -1)
-                && request.replayOccurrence()
-                == integer(capture, "replayOccurrence", -1);
+                && occurrence >= 1
+                && occurrence <= LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
     }
 
     private static JsonElement rootOutputExpression(JsonObject raw) {
