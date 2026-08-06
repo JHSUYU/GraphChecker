@@ -1883,6 +1883,421 @@ public class RuntimeSelectedRegionFinalizerTest {
                 decoded.get("rpcProjectionBlocker").getAsString());
     }
 
+    @Test
+    public void trustedResponseProjectsScalarLeafAndKeepsCarrierConcrete()
+            throws Exception {
+        ProjectionFixture fixture = rpcScalarLeafProjectionFixture(
+                "rpc-scalar");
+
+        assertEquals(2, fixture.result.retainedRegionCount);
+        List<JsonObject> edges = readJsonLines(fixture.edges);
+        assertEquals(1, edges.size());
+        JsonObject projection = edges.get(0);
+        assertEquals("RUNTIME_PROTOCOL_FLOW",
+                projection.get("kind").getAsString());
+        assertEquals("SCALAR_LEAF_VALUE",
+                projection.get("projectionKind").getAsString());
+        assertEquals("STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1",
+                projection.get("projectionSelectionAuthority")
+                        .getAsString());
+        assertEquals("TRUSTED_CONFIGURED_RPC_MAPPING_V1",
+                projection.get("authority").getAsString());
+        assertEquals("int", projection.get("javaType").getAsString());
+
+        JsonObject producer = fixture.region("REGION.producer");
+        JsonObject derived = null;
+        for (com.google.gson.JsonElement element
+                : producer.getAsJsonArray("outputs")) {
+            JsonObject output = element.getAsJsonObject();
+            if (output.has("rpcDescendantProjectionOutput")) {
+                derived = output;
+            }
+        }
+        assertTrue(derived != null);
+        assertEquals("int", derived.get("javaType").getAsString());
+        assertFalse(derived.has("symbolicDemand"));
+        assertFalse(derived.has("containerCapacity"));
+
+        // The wire carrier object never becomes a symbolic port; only the
+        // demanded scalar leaf below it does.
+        JsonObject consumer = fixture.region("REGION.consumer");
+        assertEquals(1, consumer.getAsJsonArray("symbolicInputs").size());
+        JsonObject leaf = inputForField(consumer,
+                "<example.WireResponse: int keyId>");
+        assertEquals("int", leaf.get("javaType").getAsString());
+        assertEquals(DependencyRole.VALUE_FRONTIER,
+                leaf.get("dependencyRole").getAsString());
+        assertTrue(leaf.get("rpcDescendantProjectionInput").getAsBoolean());
+        assertFalse(leaf.has("symbolicDemand"));
+        assertFalse(leaf.has("referenceBoundaryLeaf"));
+        assertEquals(projection.get("toPort").getAsString(),
+                leaf.get("portId").getAsString());
+    }
+
+    @Test
+    public void sharedCarrierAccessorLeafBindsItsExactProducerWrite()
+            throws Exception {
+        for (boolean accessor : new boolean[]{false, true}) {
+            ProjectionFixture fixture = sharedCarrierLeafFixture(
+                    "shared-carrier-" + accessor, accessor);
+            JsonObject leafEdge = null;
+            for (JsonObject edge : readJsonLines(fixture.edges)) {
+                if ("<example.Payload: int value>".equals(
+                        edge.getAsJsonArray("fieldPathDeclarations").get(0)
+                                .getAsString())) {
+                    leafEdge = edge;
+                }
+            }
+            assertTrue(leafEdge != null);
+            assertEquals("RUNTIME_FIELD_FLOW",
+                    leafEdge.get("kind").getAsString());
+            assertEquals("REGION.writer",
+                    leafEdge.get("fromRegion").getAsString());
+
+            JsonObject consumer = fixture.region("REGION.target");
+            JsonObject leaf = inputForField(consumer,
+                    "<example.Payload: int value>");
+            assertEquals(leafEdge.get("toPort").getAsString(),
+                    leaf.get("portId").getAsString());
+            assertFalse(leaf.has("referenceBoundaryLeaf"));
+            assertFalse(leaf.has("symbolicDemand"));
+
+            // The shared reference carrier itself is never projected into a
+            // symbolic value; it only names the object the leaf belongs to.
+            JsonObject carrier = inputForField(consumer,
+                    "<example.Holder: example.Payload payload>");
+            assertFalse(carrier.has("symbolicDemand"));
+            assertFalse(carrier.has("rpcDescendantProjectionInput"));
+        }
+    }
+
+    private ProjectionFixture sharedCarrierLeafFixture(
+            String prefix, boolean accessor) throws Exception {
+        String writer = "<example.Writer: void run()>";
+        String target = "<example.Reader: void run()>";
+        String holderPayload =
+                "<example.Holder: example.Payload payload>";
+        String payloadValue = "<example.Payload: int value>";
+        String getValue = "<example.Payload: int getValue()>";
+        String payloadLocal = target + "::$payload";
+        String valueLocal = target + "::$value";
+        String failure = target + "#u9#exception:example.Failure";
+
+        File skeleton = writeRows(prefix + "-skeleton.jsonl",
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.writer",
+                        "rootMethod", writer, "anchorMethod", writer,
+                        "methods", Collections.singletonList(writer),
+                        "selection", "STATE_CONTEXT"),
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.target",
+                        "rootMethod", target, "anchorMethod", target,
+                        "methods", Collections.singletonList(target),
+                        "selection", "EXCEPTION_CONTEXT"));
+
+        Map<String, Object> leafWrite = object(
+                "regionId", "REGION.writer", "rootCallId", 1,
+                "rootKind", "OBSERVED_FIELD_RECEIVER", "rootMethod", writer,
+                "rootCell", writer + "#u4.fieldReceiver",
+                "rootObjectId", 100, "fieldReceiverObjectId", 100,
+                "valueObjectId", 0, "primitiveValue", "7", "eventSeq", 4,
+                "bindingKind", "ACTIVATION_FIELD_ACCESS",
+                "fieldPath", Collections.singletonList("value"),
+                "fieldPathDeclarations",
+                Collections.singletonList(payloadValue));
+        Map<String, Object> publish = object(
+                "regionId", "REGION.writer", "rootCallId", 1,
+                "rootKind", "RECEIVER", "rootMethod", writer,
+                "rootCell", writer + ".receiver", "rootObjectId", 10,
+                "fieldReceiverObjectId", 10, "valueObjectId", 100,
+                "eventSeq", 5, "bindingKind", "ACTIVATION_FIELD_ACCESS",
+                "fieldPath", Collections.singletonList("payload"),
+                "fieldPathDeclarations",
+                Collections.singletonList(holderPayload));
+        Map<String, Object> carrierRead = object(
+                "regionId", "REGION.target", "rootCallId", 2,
+                "rootKind", "RECEIVER", "rootMethod", target,
+                "rootCell", target + ".receiver", "rootObjectId", 10,
+                "fieldReceiverObjectId", 10, "valueObjectId", 100,
+                "eventSeq", 7, "bindingKind", "ACTIVATION_FIELD_ACCESS",
+                "fieldPath", Collections.singletonList("payload"),
+                "fieldPathDeclarations",
+                Collections.singletonList(holderPayload));
+        Map<String, Object> leafRead = object(
+                "regionId", "REGION.target", "rootCallId", 2,
+                "rootKind", "OBSERVED_FIELD_RECEIVER", "rootMethod", target,
+                "rootCell", target + "#u8.fieldReceiver",
+                "rootObjectId", 100, "fieldReceiverObjectId", 100,
+                "valueObjectId", 0, "primitiveValue", "7", "eventSeq", 8,
+                "bindingKind", "ACTIVATION_FIELD_ACCESS",
+                "fieldPath", Collections.singletonList("value"),
+                "fieldPathDeclarations",
+                Collections.singletonList(payloadValue));
+        Map<String, Object> accessorRead = object(
+                "regionId", "REGION.target", "rootCallId", 2,
+                "callId", 2, "invocationId", 41,
+                "callerMethod", target, "unitIndex", 8,
+                "siteId", target + "#u8", "eventSeq", 8,
+                "receiverObjectId", 100,
+                "receiverRuntimeType", "example.Payload",
+                "valueObjectId", 0, "primitiveValue", "7",
+                "accessorOccurrence", 1,
+                "declaredCallee", getValue,
+                "declaredFieldSignature", payloadValue,
+                "accessorImplementationMethod", getValue,
+                "authority", "EXACT_RUNTIME_ACCESSOR_RECEIVER_RETURN_V1");
+
+        Map<String, Object> leafReadRow = accessor
+                ? object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "id", "DF.leaf.read", "kind", "accessor_field_return",
+                "transferKind", "HEAP_READ", "method", target,
+                "siteId", target + "#u8", "unitIndex", 8,
+                "invoke", getValue,
+                "accessorImplementationMethod", getValue,
+                "declaredFieldSignature", payloadValue,
+                "runtimeObserved", true,
+                "fromCell", payloadValue, "toCell", valueLocal,
+                "regionIds", Collections.singletonList("REGION.target"),
+                "runtimeAccessorBindings",
+                Collections.singletonList(accessorRead))
+                : object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "id", "DF.leaf.read", "kind", "field_read",
+                "transferKind", "HEAP_READ", "method", target,
+                "siteId", target + "#u8", "unitIndex", 8,
+                "fromCell", payloadValue, "toCell", valueLocal,
+                "regionIds", Collections.singletonList("REGION.target"),
+                "runtimeFieldBindings",
+                Collections.singletonList(leafRead));
+
+        File refined = writeRows(prefix + "-refined.jsonl",
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.leaf.write", "kind", "field_write",
+                        "transferKind", "HEAP_WRITE", "method", writer,
+                        "siteId", writer + "#u4", "unitIndex", 4,
+                        "fromCell", writer + "::$value",
+                        "toCell", payloadValue,
+                        "regionIds", Collections.singletonList(
+                                "REGION.writer"),
+                        "runtimeFieldBindings",
+                        Collections.singletonList(leafWrite)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.publish", "kind", "field_write",
+                        "transferKind", "HEAP_WRITE", "method", writer,
+                        "siteId", writer + "#u5", "unitIndex", 5,
+                        "fromCell", writer + "::$payload",
+                        "toCell", holderPayload,
+                        "regionIds", Collections.singletonList(
+                                "REGION.writer"),
+                        "runtimeFieldBindings",
+                        Collections.singletonList(publish)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.carrier.read", "kind", "field_read",
+                        "transferKind", "HEAP_READ", "method", target,
+                        "siteId", target + "#u7", "unitIndex", 7,
+                        "fromCell", holderPayload, "toCell", payloadLocal,
+                        "regionIds", Collections.singletonList(
+                                "REGION.target"),
+                        "runtimeFieldBindings",
+                        Collections.singletonList(carrierRead)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.receiver", "kind", "receiver_dependency",
+                        "transferKind", "VALUE_PASS", "method", target,
+                        "fromCell", payloadLocal, "toCell", valueLocal,
+                        "regionIds", Collections.singletonList(
+                                "REGION.target")),
+                leafReadRow,
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.failure", "kind", "exception_guard",
+                        "transferKind", "GUARD", "method", target,
+                        "fromCell", valueLocal, "toCell", failure,
+                        "siteId", target + "#u9", "unitIndex", 9,
+                        "regionIds", Collections.singletonList(
+                                "REGION.target")));
+        File regions = new File(folder.getRoot(), prefix + "-regions.jsonl");
+        File edges = new File(folder.getRoot(), prefix + "-edges.jsonl");
+        RuntimeSelectedRegionFinalizer.Result result =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        refined, skeleton, regions, edges,
+                        Arrays.asList(writer, target), Arrays.asList(
+                                activation("REGION.writer", 1,
+                                        "STATE_CONTEXT", writer, 1),
+                                activationAtFatalSite("REGION.target", 2,
+                                        "EXCEPTION_CONTEXT", target, 2,
+                                        target + "#u9")));
+        return new ProjectionFixture(regions, edges, result);
+    }
+
+    private ProjectionFixture rpcScalarLeafProjectionFixture(String prefix)
+            throws Exception {
+        String producer = "<example.Producer: example.WireResponse run()>";
+        String consumer = "<example.Consumer: void run()>";
+        String store = "<example.Store: int seed>";
+        String wireKeyId = "<example.WireResponse: int keyId>";
+        String responsePayload =
+                "<example.WireEnvelope: example.WireResponse payload>";
+        String producerSeed = producer + "::$seed";
+        String producerId = producer + "::$id";
+        String response = producer + ".return";
+        String received = consumer + "::$response";
+        String consumerKeyId = consumer + "::$keyId";
+        String failure = consumer + "#u9#exception:example.MissingKey";
+
+        File skeleton = writeRows(prefix + "-skeleton.jsonl",
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.producer",
+                        "rootMethod", producer, "anchorMethod", producer,
+                        "methods", Collections.singletonList(producer),
+                        "selection", "STATE_CONTEXT"),
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.consumer",
+                        "rootMethod", consumer, "anchorMethod", consumer,
+                        "methods", Collections.singletonList(consumer),
+                        "selection", "EXCEPTION_CONTEXT"));
+
+        Map<String, Object> seedRead = object(
+                "regionId", "REGION.producer", "rootCallId", 1,
+                "rootKind", "RECEIVER", "rootMethod", producer,
+                "rootCell", producer + ".receiver", "rootObjectId", 10,
+                "fieldReceiverObjectId", 10, "valueObjectId", 0,
+                "primitiveValue", "3", "eventSeq", 13,
+                "fieldPath", Collections.singletonList("seed"),
+                "fieldPathDeclarations", Collections.singletonList(store));
+        Map<String, Object> keyIdWrite = object(
+                "regionId", "REGION.producer", "rootCallId", 1,
+                "rootKind", "OBSERVED_FIELD_RECEIVER",
+                "rootMethod", producer,
+                "rootCell", producer + "#u3.fieldReceiver",
+                "rootObjectId", 100, "fieldReceiverObjectId", 100,
+                "valueObjectId", 0, "primitiveValue", "7", "eventSeq", 14,
+                "bindingKind", "ACTIVATION_FIELD_ACCESS",
+                "fieldPath", Collections.singletonList("keyId"),
+                "fieldPathDeclarations",
+                Collections.singletonList(wireKeyId));
+        Map<String, Object> payloadRead = object(
+                "regionId", "REGION.consumer", "rootCallId", 2,
+                "rootKind", "OBSERVED_FIELD_RECEIVER",
+                "rootMethod", consumer,
+                "rootCell", consumer + "#u3.fieldReceiver",
+                "rootObjectId", 300, "fieldReceiverObjectId", 300,
+                "valueObjectId", 310, "eventSeq", 18,
+                "bindingKind", "ACTIVATION_FIELD_ACCESS",
+                "fieldPath", Collections.singletonList("payload"),
+                "fieldPathDeclarations",
+                Collections.singletonList(responsePayload));
+        Map<String, Object> keyIdRead = object(
+                "regionId", "REGION.consumer", "rootCallId", 2,
+                "rootKind", "OBSERVED_FIELD_RECEIVER",
+                "rootMethod", consumer,
+                "rootCell", consumer + "#u4.fieldReceiver",
+                "rootObjectId", 310, "fieldReceiverObjectId", 310,
+                "valueObjectId", 0, "primitiveValue", "7", "eventSeq", 19,
+                "bindingKind", "ACTIVATION_FIELD_ACCESS",
+                "fieldPath", Collections.singletonList("keyId"),
+                "fieldPathDeclarations",
+                Collections.singletonList(wireKeyId));
+        Map<String, Object> protocol = object(
+                "mappingId", "example.fetch", "port", "response",
+                "direction", "RESPONSE", "transport", "RPC",
+                "fromRegionId", "REGION.producer",
+                "toRegionId", "REGION.consumer",
+                "fromRootCallId", 1, "toRootCallId", 2,
+                "fromCell", response, "toCell", received,
+                "callerSiteEventSeq", 10, "sendEventSeq", 11,
+                "receiveEventSeq", 12, "producerResultEventSeq", 15,
+                "producerResultObjectId", 500,
+                "callerResultEventSeq", 18,
+                "callerResultObjectId", 300,
+                "authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1");
+
+        File refined = writeRows(prefix + "-refined.jsonl",
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.seed.read", "kind", "field_read",
+                        "transferKind", "HEAP_READ", "method", producer,
+                        "siteId", producer + "#u1", "unitIndex", 1,
+                        "fromCell", store, "toCell", producerSeed,
+                        "regionIds", Collections.singletonList(
+                                "REGION.producer"),
+                        "runtimeFieldBindings",
+                        Collections.singletonList(seedRead)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.derive", "kind", "local_def_use",
+                        "transferKind", "VALUE_PASS", "method", producer,
+                        "siteId", producer + "#u2", "unitIndex", 2,
+                        "fromCell", producerSeed, "toCell", producerId,
+                        "regionIds", Collections.singletonList(
+                                "REGION.producer")),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.keyid.write", "kind", "field_write",
+                        "transferKind", "HEAP_WRITE", "method", producer,
+                        "siteId", producer + "#u3", "unitIndex", 3,
+                        "fromCell", producerId, "toCell", wireKeyId,
+                        "regionIds", Collections.singletonList(
+                                "REGION.producer"),
+                        "runtimeFieldBindings",
+                        Collections.singletonList(keyIdWrite)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.rpc", "kind", "protocol_transfer",
+                        "transferKind", "PROTOCOL_TRANSFER",
+                        "method", producer, "fromCell", response,
+                        "toCell", received, "regionIds", Arrays.asList(
+                                "REGION.producer", "REGION.consumer"),
+                        "runtimeProtocolBindings",
+                        Collections.singletonList(protocol)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.decode.owner", "kind", "field_read",
+                        "transferKind", "HEAP_READ", "method", consumer,
+                        "siteId", consumer + "#u3", "unitIndex", 3,
+                        "fromCell", responsePayload,
+                        "toCell", consumer + "::$payload",
+                        "regionIds", Collections.singletonList(
+                                "REGION.consumer"),
+                        "runtimeFieldBindings",
+                        Collections.singletonList(payloadRead)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.keyid.read", "kind", "field_read",
+                        "transferKind", "HEAP_READ", "method", consumer,
+                        "siteId", consumer + "#u4", "unitIndex", 4,
+                        "fromCell", wireKeyId, "toCell", consumerKeyId,
+                        "regionIds", Collections.singletonList(
+                                "REGION.consumer"),
+                        "runtimeFieldBindings",
+                        Collections.singletonList(keyIdRead)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.failure", "kind", "exception_guard",
+                        "transferKind", "GUARD", "method", consumer,
+                        "siteId", consumer + "#u9", "unitIndex", 9,
+                        "fromCell", consumerKeyId, "toCell", failure,
+                        "regionIds", Collections.singletonList(
+                                "REGION.consumer")));
+        File regions = new File(folder.getRoot(), prefix + "-regions.jsonl");
+        File edges = new File(folder.getRoot(), prefix + "-edges.jsonl");
+        RuntimeSelectedRegionFinalizer.Result result =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        refined, skeleton, regions, edges,
+                        Arrays.asList(producer, consumer),
+                        Arrays.asList(
+                                activation("REGION.producer", 1,
+                                        "STATE_CONTEXT", producer, 1),
+                                activationAtFatalSite("REGION.consumer", 2,
+                                        "EXCEPTION_CONTEXT", consumer, 2,
+                                        consumer + "#u9")));
+        return new ProjectionFixture(regions, edges, result);
+    }
+
     private ProjectionFixture rpcContainerProjectionFixture(
             String prefix, int observedWidth) throws Exception {
         return rpcContainerProjectionFixture(prefix, observedWidth, 1);

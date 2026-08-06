@@ -137,8 +137,6 @@ experiments/generic/test_workflow.sh
 
 ## TODO
 
-- Complete demand-driven scalar-leaf projection across trusted RPC and shared
-  reference carriers while keeping carrier objects concrete.
 - Regenerate the HDFS-11741 target-first closure and run its real custom-VM
   concolic campaigns with region-level and path-level parallelism.
 - Compose the resulting summaries, verify that `keyId` has no unconstrained

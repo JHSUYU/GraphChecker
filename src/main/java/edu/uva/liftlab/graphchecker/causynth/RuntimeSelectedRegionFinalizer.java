@@ -138,7 +138,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 program.regions, demandedFields, laneByInstance);
         program.regionEdges.addAll(runtimeFieldFlows);
         program.regionEdges.addAll(protocolFlows(graph));
-        addTrustedRpcContainerProjections(program, graph);
+        addTrustedRpcDescendantProjections(program, graph);
         annotateFlowContexts(program.regionEdges, runtimeInstances);
         markBoundedContainerStateChains(program.regions,
                 runtimeFieldFlows);
@@ -1304,15 +1304,17 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Projects a bounded container carried below a trusted RPC response.
+     * Projects a demanded value leaf carried below a trusted RPC response.
      *
      * <p>The configured response mapping is the sole cross-process
-     * authority.  Static value flow only selects the exact container written
-     * into the producer response and the matching container read after the
-     * consumer receives it.  In particular, this does not equate a producer
-     * state input (for example a {@code Map}) with the response: the VM must
-     * capture the derived array/list/map output after the producer's actual
-     * conversion code has run.</p>
+     * authority.  Static value flow only selects the exact leaf written into
+     * the producer response and the matching leaf read after the consumer
+     * receives it.  A leaf is either a bounded container or a semantic scalar
+     * ({@code int}, {@code boolean}, {@code java.lang.String}, ...); the
+     * carrier objects between them stay concrete.  In particular, this does
+     * not equate a producer state input (for example a {@code Map}) with the
+     * response: the VM must capture the derived output after the producer's
+     * actual conversion code has run.</p>
      *
      * <p>The producer is selected uniquely inside the exact server receive
      * to normal-return window.  On the consumer, runtime object ids reject
@@ -1320,10 +1322,10 @@ public final class RuntimeSelectedRegionFinalizer {
      * ids are deliberately absent from the projected edge and its
      * deterministic identity.</p>
      */
-    private static void addTrustedRpcContainerProjections(
+    private static void addTrustedRpcDescendantProjections(
             StaticProgram program, List<Map<String, Object>> graph) {
-        RpcContainerProjectionIndex index =
-                new RpcContainerProjectionIndex(program.regions, graph);
+        RpcDescendantProjectionIndex index =
+                new RpcDescendantProjectionIndex(program.regions, graph);
         List<Map<String, Object>> wholeFlows = new ArrayList<>(
                 program.regionEdges);
         Set<String> emittedEdges = new LinkedHashSet<>();
@@ -1350,7 +1352,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 continue;
             }
 
-            Map<String, List<RpcContainerCandidate>> producers =
+            Map<String, List<RpcDescendantCandidate>> producers =
                     candidatesByDeclaration(index.candidates(fromRegion,
                             fromRoot, "HEAP_WRITE"), candidate ->
                             producerLowerSeq >= 0L
@@ -1358,7 +1360,7 @@ public final class RuntimeSelectedRegionFinalizer {
                                     && candidate.eventSeq >= producerLowerSeq
                                     && candidate.eventSeq
                                     <= producerUpperSeq);
-            Map<String, List<RpcContainerCandidate>> consumers =
+            Map<String, List<RpcDescendantCandidate>> consumers =
                     candidatesByDeclaration(index.candidates(toRegion,
                             toRoot, "HEAP_READ"), candidate ->
                             consumerLowerSeq >= 0L
@@ -1367,11 +1369,11 @@ public final class RuntimeSelectedRegionFinalizer {
                                     < consumerUpperSeq);
 
             for (String declaration : consumers.keySet()) {
-                List<RpcContainerCandidate> sourceCandidates = producers
+                List<RpcDescendantCandidate> sourceCandidates = producers
                         .getOrDefault(declaration,
-                                Collections.<RpcContainerCandidate>
+                                Collections.<RpcDescendantCandidate>
                                         emptyList());
-                List<RpcContainerCandidate> targetCandidates =
+                List<RpcDescendantCandidate> targetCandidates =
                         consumers.get(declaration);
                 if (sourceCandidates.size() != 1
                         || targetCandidates.size() != 1) {
@@ -1380,8 +1382,8 @@ public final class RuntimeSelectedRegionFinalizer {
                             -1);
                     continue;
                 }
-                RpcContainerCandidate source = sourceCandidates.get(0);
-                RpcContainerCandidate target = targetCandidates.get(0);
+                RpcDescendantCandidate source = sourceCandidates.get(0);
+                RpcDescendantCandidate target = targetCandidates.get(0);
                 ExactPort sourceState = index.exactPort(source, true);
                 ExactPort targetInput = index.exactInputPort(target);
                 if (sourceState == null || targetInput == null) {
@@ -1389,9 +1391,10 @@ public final class RuntimeSelectedRegionFinalizer {
                             "MISSING_EXACT_RPC_DESCENDANT_PORT", -1);
                     continue;
                 }
+                boolean container = rpcProjectableContainerType(target.type);
                 int width = Math.max(source.observedWidth,
                         target.observedWidth);
-                if (width > LoopBoundPolicy
+                if (container && width > LoopBoundPolicy
                         .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
                     markRpcProjectionBlocked(index, targetCandidates,
                             "BOUND_INSUFFICIENT", width);
@@ -1399,7 +1402,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
 
                 Map<String, Object> derivedOutput =
-                        derivedRpcContainerOutput(whole, source,
+                        derivedRpcDescendantOutput(whole, source,
                                 sourceState);
                 Map<String, Object> outputRegion = index.region(fromRegion);
                 if (outputRegion == null) continue;
@@ -1408,14 +1411,16 @@ public final class RuntimeSelectedRegionFinalizer {
                 addPortIfAbsent(outputs, derivedOutput);
                 outputRegion.put("outputs", outputs);
 
-                markProjectedContainerInput(targetInput.port, whole,
+                markProjectedDescendantInput(targetInput.port, whole,
                         declaration, target.type, false);
                 targetInput.port.put("runtimeAccesses",
                         Collections.singletonList(targetInput.access));
-                markProducerContainerDependencies(index, whole, source);
+                if (container) {
+                    markProducerContainerDependencies(index, whole, source);
+                }
 
                 Map<String, Object> projection =
-                        projectedRpcContainerFlow(whole, source, target,
+                        projectedRpcDescendantFlow(whole, source, target,
                                 text(derivedOutput.get("portId")),
                                 text(targetInput.port.get("portId")));
                 if (emittedEdges.add(text(projection.get("edgeId")))) {
@@ -1426,16 +1431,16 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     private interface RpcCandidatePredicate {
-        boolean test(RpcContainerCandidate candidate);
+        boolean test(RpcDescendantCandidate candidate);
     }
 
-    private static Map<String, List<RpcContainerCandidate>>
+    private static Map<String, List<RpcDescendantCandidate>>
             candidatesByDeclaration(
-            List<RpcContainerCandidate> candidates,
+            List<RpcDescendantCandidate> candidates,
             RpcCandidatePredicate predicate) {
-        Map<String, Map<String, RpcContainerCandidate>> unique =
+        Map<String, Map<String, RpcDescendantCandidate>> unique =
                 new LinkedHashMap<>();
-        for (RpcContainerCandidate candidate : candidates) {
+        for (RpcDescendantCandidate candidate : candidates) {
             if (!predicate.test(candidate)) continue;
             String occurrence = candidate.staticSite + "\n"
                     + candidate.eventSeq + "\n" + candidate.declaration;
@@ -1443,9 +1448,9 @@ public final class RuntimeSelectedRegionFinalizer {
                     ignored -> new LinkedHashMap<>()).putIfAbsent(
                     occurrence, candidate);
         }
-        Map<String, List<RpcContainerCandidate>> result =
+        Map<String, List<RpcDescendantCandidate>> result =
                 new LinkedHashMap<>();
-        for (Map.Entry<String, Map<String, RpcContainerCandidate>> entry
+        for (Map.Entry<String, Map<String, RpcDescendantCandidate>> entry
                 : unique.entrySet()) {
             result.put(entry.getKey(), new ArrayList<>(
                     entry.getValue().values()));
@@ -1496,8 +1501,8 @@ public final class RuntimeSelectedRegionFinalizer {
         return next;
     }
 
-    private static Map<String, Object> derivedRpcContainerOutput(
-            Map<String, Object> whole, RpcContainerCandidate source,
+    private static Map<String, Object> derivedRpcDescendantOutput(
+            Map<String, Object> whole, RpcDescendantCandidate source,
             ExactPort exact) {
         Map<String, Object> output = new LinkedHashMap<>(exact.port);
         String identity = text(whole.get("fromRegion")) + "\n"
@@ -1511,12 +1516,16 @@ public final class RuntimeSelectedRegionFinalizer {
                 Collections.singletonList(exact.access));
         output.put("javaType", source.type);
         output.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
-        output.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
+        if (rpcProjectableContainerType(source.type)) {
+            output.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
+        } else {
+            output.remove("symbolicDemand");
+        }
         output.put("rpcDescendantProjectionOutput", true);
         output.put("rpcProjectionAuthority",
                 "TRUSTED_CONFIGURED_RPC_MAPPING_V1");
         output.put("rpcProjectionSelectionAuthority",
-                "STATIC_DEF_USE_CONTAINER_PROJECTION_V1");
+                rpcProjectionSelectionAuthority(source.type));
         output.put("rpcProjectionMappingId", whole.get("mappingId"));
         output.put("rpcProjectionFieldDeclaration", source.declaration);
         output.put("rpcProjectionValueCell", source.valueCell());
@@ -1526,9 +1535,9 @@ public final class RuntimeSelectedRegionFinalizer {
         return output;
     }
 
-    private static Map<String, Object> projectedRpcContainerFlow(
-            Map<String, Object> whole, RpcContainerCandidate source,
-            RpcContainerCandidate target, String fromPort, String toPort) {
+    private static Map<String, Object> projectedRpcDescendantFlow(
+            Map<String, Object> whole, RpcDescendantCandidate source,
+            RpcDescendantCandidate target, String fromPort, String toPort) {
         String identity = text(whole.get("edgeId")) + "\n"
                 + source.declaration + "\n" + fromPort + "\n" + toPort;
         Map<String, Object> result = new LinkedHashMap<>();
@@ -1552,10 +1561,10 @@ public final class RuntimeSelectedRegionFinalizer {
         result.put("port", whole.get("port"));
         result.put("authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1");
         result.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
-        result.put("projectionKind", "BOUNDED_CONTAINER_STATE");
+        result.put("projectionKind", rpcProjectionKind(source.type));
         result.put("rpcDescendantProjection", true);
         result.put("projectionSelectionAuthority",
-                "STATIC_DEF_USE_CONTAINER_PROJECTION_V1");
+                rpcProjectionSelectionAuthority(source.type));
         result.put("projectionOfEdgeId", whole.get("edgeId"));
         result.put("projectionOfFromPort", whole.get("fromPort"));
         result.put("projectionOfToPort", whole.get("toPort"));
@@ -1578,27 +1587,35 @@ public final class RuntimeSelectedRegionFinalizer {
         return result;
     }
 
-    private static void markProjectedContainerInput(
+    private static void markProjectedDescendantInput(
             Map<String, Object> input, Map<String, Object> whole,
             String declaration, String javaType, boolean producerDependency) {
         input.put("javaType", javaType);
         input.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
-        input.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
         input.put("rpcDescendantProjectionInput", !producerDependency);
         input.put("rpcDescendantProjectionDependency", producerDependency);
         input.put("rpcProjectionAuthority",
                 "TRUSTED_CONFIGURED_RPC_MAPPING_V1");
         input.put("rpcProjectionSelectionAuthority",
-                "STATIC_DEF_USE_CONTAINER_PROJECTION_V1");
+                rpcProjectionSelectionAuthority(javaType));
         input.put("rpcProjectionMappingId", whole.get("mappingId"));
         input.put("rpcProjectionFieldDeclaration", declaration);
-        input.put("containerCapacity", LoopBoundPolicy
-                .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY);
+        if (rpcProjectableContainerType(javaType)) {
+            input.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
+            input.put("containerCapacity", LoopBoundPolicy
+                    .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY);
+        } else {
+            // A scalar leaf carried below the wire object is an ordinary
+            // symbolic value once its exact producer definition is bound.
+            // The carrier object itself keeps no demand and stays concrete.
+            input.remove("symbolicDemand");
+            input.remove("containerCapacity");
+        }
     }
 
     private static void markProducerContainerDependencies(
-            RpcContainerProjectionIndex index, Map<String, Object> whole,
-            RpcContainerCandidate source) {
+            RpcDescendantProjectionIndex index, Map<String, Object> whole,
+            RpcDescendantCandidate source) {
         Map<String, Object> region = index.region(
                 text(whole.get("fromRegion")));
         if (region == null) return;
@@ -1617,17 +1634,17 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
             if (reaches) {
-                markProjectedContainerInput(input, whole,
+                markProjectedDescendantInput(input, whole,
                         source.declaration, type, true);
             }
         }
     }
 
     private static void markRpcProjectionBlocked(
-            RpcContainerProjectionIndex index,
-            List<RpcContainerCandidate> candidates, String blocker,
+            RpcDescendantProjectionIndex index,
+            List<RpcDescendantCandidate> candidates, String blocker,
             int observedWidth) {
-        for (RpcContainerCandidate candidate : candidates) {
+        for (RpcDescendantCandidate candidate : candidates) {
             ExactPort port = index.exactInputPort(candidate);
             if (port == null) continue;
             port.port.put("symbolicDemand", "BOUND_INSUFFICIENT".equals(
@@ -1635,10 +1652,12 @@ public final class RuntimeSelectedRegionFinalizer {
                     : "CONCRETE_RPC_DESCENDANT_REPLAY");
             port.port.put("rpcProjectionAdmission", "BLOCKED");
             port.port.put("rpcProjectionBlocker", blocker);
-            port.port.put("containerCapacity", LoopBoundPolicy
-                    .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY);
-            if (observedWidth >= 0) {
-                port.port.put("observedContainerWidth", observedWidth);
+            if (rpcProjectableContainerType(candidate.type)) {
+                port.port.put("containerCapacity", LoopBoundPolicy
+                        .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY);
+                if (observedWidth >= 0) {
+                    port.port.put("observedContainerWidth", observedWidth);
+                }
             }
         }
     }
@@ -1677,6 +1696,34 @@ public final class RuntimeSelectedRegionFinalizer {
                 || "java.util.List".equals(value)
                 || "java.util.AbstractList".equals(value)
                 || "java.util.ArrayList".equals(value);
+    }
+
+    /**
+     * Semantic value leaves the current VM/SMT contract can represent
+     * directly.  A carrier object below a boundary is never one of them, so
+     * the demanded slice keeps descending until it reaches such a leaf.
+     */
+    private static boolean rpcProjectableScalarLeafType(String type) {
+        String value = text(type).trim();
+        return "boolean".equals(value) || "byte".equals(value)
+                || "char".equals(value) || "short".equals(value)
+                || "int".equals(value) || "long".equals(value)
+                || "float".equals(value) || "double".equals(value)
+                || "java.lang.String".equals(value);
+    }
+
+    /** Empty when the declared type is neither a projectable leaf shape. */
+    private static String rpcProjectionKind(String type) {
+        if (rpcProjectableContainerType(type)) {
+            return "BOUNDED_CONTAINER_STATE";
+        }
+        return rpcProjectableScalarLeafType(type) ? "SCALAR_LEAF_VALUE" : "";
+    }
+
+    private static String rpcProjectionSelectionAuthority(String type) {
+        return rpcProjectableContainerType(type)
+                ? "STATIC_DEF_USE_CONTAINER_PROJECTION_V1"
+                : "STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1";
     }
 
     private static int observedContainerWidth(Map<String, Object> edge,
@@ -2517,10 +2564,26 @@ public final class RuntimeSelectedRegionFinalizer {
         return leftLane != null && leftLane.equals(rightLane);
     }
 
+    /**
+     * Ports that read or write one declared field of one observed object.
+     *
+     * <p>An exact accessor return is such a read: it names the same declared
+     * leaf and the same receiver object as a direct {@code getfield}.  Only
+     * its transport label differs, so excluding it would leave a demanded
+     * scalar leaf below a shared reference carrier without any producer even
+     * though the exact writer is present in this trace.</p>
+     */
+    private static boolean causalHeapPort(Map<String, Object> port) {
+        if ("HEAP".equals(text(port.get("transportKind")))) return true;
+        return "ACCESSOR_RETURN".equals(text(port.get("sourceKind")))
+                && number(port.get("fieldReceiverObjectId"), 0) > 0
+                && !strings(port.get("fieldPathDeclarations")).isEmpty();
+    }
+
     private static void collectPorts(List<BoundPort> target, String region,
                                      List<Map<String, Object>> ports) {
         for (Map<String, Object> port : ports) {
-            if (!"HEAP".equals(text(port.get("transportKind")))) {
+            if (!causalHeapPort(port)) {
                 continue;
             }
             List<Map<String, Object>> accesses = boundedRuntimeAccesses(port);
@@ -2947,16 +3010,16 @@ public final class RuntimeSelectedRegionFinalizer {
         }
     }
 
-    private static final class RpcContainerProjectionIndex {
+    private static final class RpcDescendantProjectionIndex {
         private final Map<String, Map<String, Object>> regions =
                 new LinkedHashMap<>();
-        private final Map<String, List<RpcContainerCandidate>> candidates =
+        private final Map<String, List<RpcDescendantCandidate>> candidates =
                 new LinkedHashMap<>();
         private final Map<String, List<ExactPort>> ports =
                 new LinkedHashMap<>();
         private final StaticValueFlowIndex valueFlow;
 
-        private RpcContainerProjectionIndex(
+        private RpcDescendantProjectionIndex(
                 List<Map<String, Object>> regionRows,
                 List<Map<String, Object>> graph) {
             for (Map<String, Object> region : regionRows) {
@@ -3001,12 +3064,12 @@ public final class RuntimeSelectedRegionFinalizer {
             String region = text(binding.get("regionId"));
             long rootCallId = longNumber(binding.get("rootCallId"), -1L);
             long eventSeq = longNumber(binding.get("eventSeq"), -1L);
-            if (field == null || !rpcProjectableContainerType(field.type)
+            if (field == null || rpcProjectionKind(field.type).isEmpty()
                     || region.isEmpty() || rootCallId < 0L
                     || eventSeq < 0L) {
                 return;
             }
-            RpcContainerCandidate candidate = new RpcContainerCandidate(
+            RpcDescendantCandidate candidate = new RpcDescendantCandidate(
                     region, rootCallId, transfer, declaration, field.type,
                     staticAccessSiteId(edge), eventSeq,
                     number(binding.get(accessor ? "receiverObjectId"
@@ -3052,13 +3115,13 @@ public final class RuntimeSelectedRegionFinalizer {
             return regions.get(regionId);
         }
 
-        private List<RpcContainerCandidate> candidates(
+        private List<RpcDescendantCandidate> candidates(
                 String region, long rootCallId, String transfer) {
             return candidates.getOrDefault(endpointKey(region, rootCallId,
-                    transfer), Collections.<RpcContainerCandidate>emptyList());
+                    transfer), Collections.<RpcDescendantCandidate>emptyList());
         }
 
-        private ExactPort exactPort(RpcContainerCandidate candidate,
+        private ExactPort exactPort(RpcDescendantCandidate candidate,
                                     boolean output) {
             List<ExactPort> matches = ports.getOrDefault(exactPortKey(
                     candidate.region, candidate.rootCallId, output,
@@ -3068,7 +3131,7 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         private ExactPort exactInputPort(
-                RpcContainerCandidate candidate) {
+                RpcDescendantCandidate candidate) {
             ExactPort exact = exactPort(candidate, false);
             if (exact != null || !candidate.accessor) return exact;
             Map<String, Object> region = region(candidate.region);
@@ -3156,7 +3219,7 @@ public final class RuntimeSelectedRegionFinalizer {
         }
     }
 
-    private static final class RpcContainerCandidate {
+    private static final class RpcDescendantCandidate {
         private final String region;
         private final long rootCallId;
         private final String transfer;
@@ -3170,7 +3233,7 @@ public final class RuntimeSelectedRegionFinalizer {
         private final Map<String, Object> binding;
         private final boolean accessor;
 
-        private RpcContainerCandidate(
+        private RpcDescendantCandidate(
                 String region, long rootCallId, String transfer,
                 String declaration, String type, String staticSite,
                 long eventSeq, int receiverObjectId, int observedWidth,
