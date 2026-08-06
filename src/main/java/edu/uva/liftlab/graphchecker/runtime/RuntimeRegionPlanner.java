@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
@@ -329,10 +330,31 @@ final class RuntimeRegionPlanner {
                        List<MethodEvent> methods,
                        List<RuntimeEvent> runtimeEvents,
                        List<FieldAccessEvent> fieldEvents) {
-        RefinedFlowIndex refinedFlow = RefinedFlowIndex.read(
-                refinedGraphFile);
-        List<Map<String, Object>> regions = read(regionFile);
-        List<Map<String, Object>> regionEdges = read(regionEdgeFile);
+        return plan(read(regionFile), read(regionEdgeFile),
+                RefinedFlowIndex.read(refinedGraphFile), regionFile,
+                regionEdgeFile, runtimeSeeds, methods, runtimeEvents,
+                fieldEvents);
+    }
+
+    /** Builds the refined-flow index once from already parsed rows. */
+    static RefinedFlowIndex buildFlowIndex(
+            List<Map<String, Object>> rows, File source) {
+        return RefinedFlowIndex.build(rows, source);
+    }
+
+    /**
+     * In-memory planning entry point.  {@code regionFile} and
+     * {@code regionEdgeFile} only label diagnostics; rows must already be in
+     * the exact JSONL value domain the file readers would produce.
+     */
+    static Result plan(List<Map<String, Object>> regions,
+                       List<Map<String, Object>> regionEdges,
+                       RefinedFlowIndex refinedFlow,
+                       File regionFile, File regionEdgeFile,
+                       Collection<Map<String, Object>> runtimeSeeds,
+                       List<MethodEvent> methods,
+                       List<RuntimeEvent> runtimeEvents,
+                       List<FieldAccessEvent> fieldEvents) {
         TraceIndex trace = new TraceIndex(methods, runtimeEvents, fieldEvents);
         Result result = new Result();
         result.staticRegionCount = regions.size();
@@ -898,8 +920,79 @@ final class RuntimeRegionPlanner {
                 : Collections.emptyMap();
     }
 
+    /**
+     * Structural replacement for the previous Gson round-trip copy with the
+     * identical value domain: null-valued map entries are dropped, integral
+     * numbers become Long, list nulls survive.
+     */
     private static Map<String, Object> deepCopy(Map<String, Object> value) {
-        return GSON.fromJson(GSON.toJsonTree(value), ROW);
+        return (Map<String, Object>) deepCopyValue(value);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object deepCopyValue(Object value) {
+        if (value instanceof Map<?, ?>) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                if (entry.getValue() == null) continue;
+                result.put(String.valueOf(entry.getKey()),
+                        deepCopyValue(entry.getValue()));
+            }
+            return result;
+        }
+        if (value instanceof Collection<?>) {
+            List<Object> result = new ArrayList<>(
+                    ((Collection<?>) value).size());
+            for (Object item : (Collection<?>) value) {
+                result.add(item == null ? null : deepCopyValue(item));
+            }
+            return result;
+        }
+        if (value instanceof Integer || value instanceof Short
+                || value instanceof Byte) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof Float) {
+            return ((Number) value).doubleValue();
+        }
+        return value;
+    }
+
+    /**
+     * Structural replacement for {@code GSON.toJsonTree} over the plain
+     * Map/List/scalar rows this planner manipulates; mirrors Gson exactly,
+     * including dropped null map entries and JsonNull list members.
+     */
+    private static JsonElement toJsonTreeFast(Object value) {
+        if (value == null) {
+            return com.google.gson.JsonNull.INSTANCE;
+        }
+        if (value instanceof String) {
+            return new com.google.gson.JsonPrimitive((String) value);
+        }
+        if (value instanceof Boolean) {
+            return new com.google.gson.JsonPrimitive((Boolean) value);
+        }
+        if (value instanceof Number) {
+            return new com.google.gson.JsonPrimitive((Number) value);
+        }
+        if (value instanceof Map<?, ?>) {
+            JsonObject result = new JsonObject();
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                if (entry.getValue() == null) continue;
+                result.add(String.valueOf(entry.getKey()),
+                        toJsonTreeFast(entry.getValue()));
+            }
+            return result;
+        }
+        if (value instanceof Collection<?>) {
+            JsonArray result = new JsonArray();
+            for (Object item : (Collection<?>) value) {
+                result.add(toJsonTreeFast(item));
+            }
+            return result;
+        }
+        return GSON.toJsonTree(value);
     }
 
     private static void copyIfPresent(Map<String, Object> target,
@@ -913,15 +1006,75 @@ final class RuntimeRegionPlanner {
      * one static output are alternate bounded seeds; they are never conjoined
      * as if one VM summary simultaneously represented several loop epochs.
      */
+    /**
+     * Producer-goal completion is independent per plan over shared
+     * read-only inputs (region catalog, refined-flow index, trace index),
+     * so plans are processed on a bounded pool; every plan's goals are
+     * computed exactly as in the sequential order and written back only to
+     * that plan, which keeps results and artifact order byte-identical.
+     */
     private static void finalizeProducerGoals(
             List<Map<String, Object>> plans,
             Map<String, Map<String, Object>> regionById,
             RefinedFlowIndex refinedFlow, TraceIndex trace) {
-        for (Map<String, Object> plan : plans) {
+        int configured = Integer.getInteger(
+                "causynth.aggregate.threads", 0);
+        int threads = configured > 0 ? Math.min(configured, 32)
+                : Math.max(1, Math.min(8,
+                Runtime.getRuntime().availableProcessors() - 2));
+        if (threads <= 1 || plans.size() <= 1) {
+            for (Map<String, Object> plan : plans) {
+                finalizeProducerGoalsForPlan(plan, regionById, refinedFlow,
+                        trace);
+            }
+            return;
+        }
+        java.util.concurrent.ExecutorService executor =
+                java.util.concurrent.Executors.newFixedThreadPool(threads,
+                        runnable -> {
+                            Thread thread = new Thread(runnable,
+                                    "causynth-producer-goals");
+                            thread.setDaemon(true);
+                            return thread;
+                        });
+        try {
+            List<java.util.concurrent.Future<?>> pending =
+                    new ArrayList<>();
+            for (Map<String, Object> plan : plans) {
+                pending.add(executor.submit(() ->
+                        finalizeProducerGoalsForPlan(plan, regionById,
+                                refinedFlow, trace)));
+            }
+            for (java.util.concurrent.Future<?> future : pending) {
+                future.get();
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                    "producer goal planning interrupted", interrupted);
+        } catch (java.util.concurrent.ExecutionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            if (cause instanceof Error) {
+                throw (Error) cause;
+            }
+            throw new IllegalStateException(cause);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private static void finalizeProducerGoalsForPlan(
+            Map<String, Object> plan,
+            Map<String, Map<String, Object>> regionById,
+            RefinedFlowIndex refinedFlow, TraceIndex trace) {
+        {
             List<Map<String, Object>> goals = rows(plan.get("closureGoals"));
             if (goals.size() != 1 || !"OUTPUT_RELATION_CLOSURE".equals(
                     text(goals.get(0).get("kind")))) {
-                continue;
+                return;
             }
             Map<String, Object> base = goals.get(0);
             Map<String, Object> producerRegion = regionById.get(
@@ -1085,6 +1238,7 @@ final class RuntimeRegionPlanner {
             plan.put("closureGoals", completeSet);
         }
     }
+
 
     /**
      * Identifies a semantic output endpoint independently of the runtime
@@ -1331,7 +1485,7 @@ final class RuntimeRegionPlanner {
         boolean allReadFrom = true;
         boolean allRpcContainerProjection = true;
         for (Map<String, Object> binding : bindings) {
-            JsonObject encoded = GSON.toJsonTree(binding).getAsJsonObject();
+            JsonObject encoded = toJsonTreeFast(binding).getAsJsonObject();
             allReadFrom &= AutomaticRegionEdge
                     .trustedRuntimeReadFromBinding(encoded);
             allRpcContainerProjection &=
@@ -1550,7 +1704,7 @@ final class RuntimeRegionPlanner {
             slice.addProperty("foldedMutationCount",
                     mutationFold.completions.size());
             slice.add("foldedMutationCompletionSeqs",
-                    GSON.toJsonTree(mutationFold.completions));
+                    toJsonTreeFast(mutationFold.completions));
             if (exactPreState != null) {
                 slice.addProperty("containerPreStatePort",
                         text(exactPreState.port.get("portId")));
@@ -1586,7 +1740,7 @@ final class RuntimeRegionPlanner {
             String edgeId = text(binding.get("edgeId"));
             if (edgeId.isEmpty() || !seenEdges.add(edgeId)) continue;
             edgeIds.add(edgeId);
-            causalEdges.add(GSON.toJsonTree(binding).getAsJsonObject());
+            causalEdges.add(toJsonTreeFast(binding).getAsJsonObject());
         }
         if (edgeIds.size() == 0) return null;
         slice.add("causalEdgeIds", edgeIds);
@@ -1750,7 +1904,7 @@ final class RuntimeRegionPlanner {
                 }
                 MaterializationSpec materialization =
                         MaterializationSpec.decode(
-                                GSON.toJsonTree(candidate)
+                                toJsonTreeFast(candidate)
                                         .getAsJsonObject());
                 long callId = longNumber(candidate.get("callId"), -1L);
                 long eventSeq = longNumber(candidate.get("eventSeq"), -1L);
@@ -1807,7 +1961,7 @@ final class RuntimeRegionPlanner {
                 continue;
             }
             MaterializationSpec materialization = MaterializationSpec.decode(
-                    GSON.toJsonTree(candidate).getAsJsonObject());
+                    toJsonTreeFast(candidate).getAsJsonObject());
             long eventSeq = longNumber(candidate.get("eventSeq"), -1L);
             if (materialization.kind()
                     != MaterializationSpec.Kind.ACCESSOR_RETURN
@@ -1907,7 +2061,7 @@ final class RuntimeRegionPlanner {
                         "callId", event.callId));
             }
             replay.put("occurrences", occurrences);
-            result.add(GSON.toJsonTree(replay));
+            result.add(toJsonTreeFast(replay));
         }
         return result;
     }
@@ -1940,7 +2094,7 @@ final class RuntimeRegionPlanner {
         for (Map<String, Object> input : regionInputs) {
             if (!selectedPorts.contains(text(input.get("portId")))) continue;
             MaterializationSpec materialization = MaterializationSpec.decode(
-                    GSON.toJsonTree(input).getAsJsonObject());
+                    toJsonTreeFast(input).getAsJsonObject());
             if (materialization.kind()
                     == MaterializationSpec.Kind.ACCESSOR_RETURN) {
                 symbolicAccessorSites.add(materialization.siteId());
@@ -2055,7 +2209,7 @@ final class RuntimeRegionPlanner {
         if (region == null) return null;
         List<Map<String, Object>> trusted = new ArrayList<>();
         for (Map<String, Object> binding : bindings) {
-            JsonObject encoded = GSON.toJsonTree(binding).getAsJsonObject();
+            JsonObject encoded = toJsonTreeFast(binding).getAsJsonObject();
             if (AutomaticRegionEdge.trustedRuntimeValueEqualityBinding(
                     encoded)) {
                 trusted.add(binding);
@@ -2163,7 +2317,7 @@ final class RuntimeRegionPlanner {
             String edgeId = text(binding.get("edgeId"));
             if (edgeId.isEmpty() || !seenEdges.add(edgeId)) continue;
             edgeIds.add(edgeId);
-            causalEdges.add(GSON.toJsonTree(binding).getAsJsonObject());
+            causalEdges.add(toJsonTreeFast(binding).getAsJsonObject());
         }
         if (edgeIds.size() == 0) return null;
         slice.add("causalEdgeIds", edgeIds);
@@ -2490,7 +2644,7 @@ final class RuntimeRegionPlanner {
             List<String> path = strings(port.get("fieldPath"));
             Map<String, Object> action = new LinkedHashMap<>(port);
             MaterializationSpec materialization = MaterializationSpec.decode(
-                    GSON.toJsonTree(port).getAsJsonObject());
+                    toJsonTreeFast(port).getAsJsonObject());
             action.put("symbol", port.get("portId"));
             action.put("observed", true);
             action.put("objectId", port.get("rootObjectId"));
@@ -2660,9 +2814,66 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
-    private static final class RefinedFlowIndex {
+    static final class RefinedFlowIndex {
         private final Map<String, List<FlowEdge>> incoming =
                 new LinkedHashMap<>();
+        /** region\nmethod\nsite -> cells guarded by that exact branch. */
+        private final Map<String, Set<String>> guardedCellsBySite =
+                new LinkedHashMap<>();
+        /** declaration\nmethod\nsite -> regions with that HEAP_WRITE. */
+        private final Map<String, Set<String>> heapWriteRegionsBySite =
+                new LinkedHashMap<>();
+
+        private void addEdge(FlowEdge edge) {
+            incoming.computeIfAbsent(edge.toCell,
+                    ignored -> new ArrayList<>()).add(edge);
+            if ("GUARD".equals(edge.transferKind)
+                    && !edge.method.isEmpty() && !edge.siteId.isEmpty()) {
+                for (String region : edge.regions) {
+                    guardedCellsBySite.computeIfAbsent(region + "\n"
+                            + edge.method + "\n" + edge.siteId,
+                            ignored -> new LinkedHashSet<>())
+                            .add(edge.toCell);
+                }
+            }
+            if ("HEAP_WRITE".equals(edge.transferKind)
+                    && !edge.method.isEmpty() && !edge.siteId.isEmpty()) {
+                for (String region : edge.regions) {
+                    heapWriteRegionsBySite.computeIfAbsent(edge.toCell
+                            + "\n" + edge.method + "\n" + edge.siteId,
+                            ignored -> new LinkedHashSet<>()).add(region);
+                }
+            }
+        }
+
+        private static RefinedFlowIndex build(
+                List<Map<String, Object>> rows, File graph) {
+            RefinedFlowIndex result = new RefinedFlowIndex();
+            int count = 0;
+            for (Map<String, Object> row : rows == null
+                    ? Collections.<Map<String, Object>>emptyList() : rows) {
+                count++;
+                if (row == null
+                        || integer(row.get("schemaVersion"), -1) != 3
+                        || integer(row.get("refinementSchemaVersion"), -1)
+                        != 1
+                        || !"RUNTIME_REFINED_DATAFLOW".equals(
+                        text(row.get("graphKind")))) {
+                    throw new IllegalArgumentException(
+                            "concolic planning requires the "
+                                    + "runtime-refined graph: " + graph);
+                }
+                FlowEdge edge = FlowEdge.decode(row);
+                if (edge != null) {
+                    result.addEdge(edge);
+                }
+            }
+            if (count == 0) {
+                throw new IllegalArgumentException(
+                        "refined graph is empty: " + graph);
+            }
+            return result;
+        }
 
         private static RefinedFlowIndex read(File graph) {
             if (graph == null || !graph.isFile()) {
@@ -2689,8 +2900,7 @@ final class RuntimeRegionPlanner {
                     }
                     FlowEdge edge = FlowEdge.decode(row);
                     if (edge != null) {
-                        result.incoming.computeIfAbsent(edge.toCell,
-                                ignored -> new ArrayList<>()).add(edge);
+                        result.addEdge(edge);
                     }
                 }
             } catch (IOException exception) {
@@ -2830,18 +3040,68 @@ final class RuntimeRegionPlanner {
         private boolean controlsSelectedCell(String regionId, String method,
                                              String site,
                                              Set<String> selectedCells) {
-            for (String cell : selectedCells) {
-                for (FlowEdge edge : incoming.getOrDefault(cell,
-                        Collections.<FlowEdge>emptyList())) {
-                    if ("GUARD".equals(edge.transferKind)
-                            && method.equals(edge.method)
-                            && site.equals(edge.siteId)
-                            && edge.regions.contains(regionId)) {
-                        return true;
-                    }
+            // Index form of: exists GUARD edge at (regionId, method, site)
+            // whose guarded cell is currently selected.
+            Set<String> guarded = guardedCellsBySite.get(regionId + "\n"
+                    + method + "\n" + site);
+            if (guarded == null) return false;
+            if (guarded.size() <= selectedCells.size()) {
+                for (String cell : guarded) {
+                    if (selectedCells.contains(cell)) return true;
                 }
+                return false;
+            }
+            for (String cell : selectedCells) {
+                if (guarded.contains(cell)) return true;
             }
             return false;
+        }
+
+        /**
+         * Input boundary maps depend only on the (immutable) region input
+         * list and the bound root call; they were previously rebuilt on
+         * every backward slice, which dominated planning time.  The cache
+         * preserves construction order exactly.
+         */
+        private final Map<List<Map<String, Object>>, Map<Long, Boundaries>>
+                boundariesByInputs = new java.util.IdentityHashMap<>();
+
+        private static final class Boundaries {
+            private final Map<String, List<Map<String, Object>>> direct =
+                    new LinkedHashMap<>();
+            private final Map<String, List<Map<String, Object>>> heap =
+                    new LinkedHashMap<>();
+        }
+
+        /** Synchronized: plans are finalized on a pool sharing this index. */
+        private synchronized Boundaries boundaries(
+                List<Map<String, Object>> inputs, long rootCallId) {
+            Map<Long, Boundaries> byRoot = boundariesByInputs
+                    .computeIfAbsent(inputs,
+                            ignored -> new LinkedHashMap<>());
+            Boundaries cached = byRoot.get(rootCallId);
+            if (cached != null) return cached;
+            Boundaries result = new Boundaries();
+            for (Map<String, Object> input : inputs) {
+                long boundRoot = "PROTOCOL_INPUT".equals(
+                        text(input.get("sourceKind")))
+                        ? longNumber(input.get("toRootCallId"), -1L)
+                        : longNumber(input.get("rootCallId"), -1L);
+                String port = text(input.get("portId"));
+                if (boundRoot != rootCallId || port.isEmpty()) continue;
+                registerBoundary(result.direct, text(input.get("cell")),
+                        input);
+                List<String> declarations = strings(
+                        input.get("fieldPathDeclarations"));
+                if (!declarations.isEmpty()) {
+                    registerBoundary(result.heap,
+                            text(input.get("siteId")) + "\n"
+                                    + declarations.get(
+                                    declarations.size() - 1), input);
+                }
+            }
+            byRoot.put(rootCallId, result);
+            return result;
         }
 
         private ReturnSlice backwardSlice(
@@ -2855,28 +3115,11 @@ final class RuntimeRegionPlanner {
             if (sinkCell.isEmpty()) return result;
             result.cells.add(sinkCell);
 
+            Boundaries bounds = boundaries(inputs, rootCallId);
             Map<String, List<Map<String, Object>>> directInputs =
-                    new LinkedHashMap<>();
+                    bounds.direct;
             Map<String, List<Map<String, Object>>> heapInputs =
-                    new LinkedHashMap<>();
-            for (Map<String, Object> input : inputs) {
-                long boundRoot = "PROTOCOL_INPUT".equals(
-                        text(input.get("sourceKind")))
-                        ? longNumber(input.get("toRootCallId"), -1L)
-                        : longNumber(input.get("rootCallId"), -1L);
-                String port = text(input.get("portId"));
-                if (boundRoot != rootCallId || port.isEmpty()) continue;
-                registerBoundary(directInputs, text(input.get("cell")),
-                        input);
-                List<String> declarations = strings(
-                        input.get("fieldPathDeclarations"));
-                if (!declarations.isEmpty()) {
-                    registerBoundary(heapInputs,
-                            text(input.get("siteId")) + "\n"
-                                    + declarations.get(
-                                    declarations.size() - 1), input);
-                }
-            }
+                    bounds.heap;
 
             String forcedMethod = exactHeapOutput == null ? ""
                     : text(exactHeapOutput.get("rootMethod"));
@@ -3004,16 +3247,9 @@ final class RuntimeRegionPlanner {
 
         private boolean hasExactWrite(String regionId, String declaration,
                                       String method, String site) {
-            for (FlowEdge edge : incoming.getOrDefault(declaration,
-                    Collections.<FlowEdge>emptyList())) {
-                if ("HEAP_WRITE".equals(edge.transferKind)
-                        && method.equals(edge.method)
-                        && site.equals(edge.siteId)
-                        && edge.regions.contains(regionId)) {
-                    return true;
-                }
-            }
-            return false;
+            Set<String> regions = heapWriteRegionsBySite.get(declaration
+                    + "\n" + method + "\n" + site);
+            return regions != null && regions.contains(regionId);
         }
 
         private static void enqueueSlice(
@@ -3633,6 +3869,76 @@ final class RuntimeRegionPlanner {
         }
     }
 
+    /** Open-addressed long->long map with an ambiguity sentinel. */
+    private static final class LongLongMap {
+        private static final long AMBIGUOUS = Long.MIN_VALUE;
+        private long[] keys = new long[1 << 16];
+        private long[] values = new long[1 << 16];
+        private int size;
+
+        /** Keys are event sequence numbers >= 0; values are call ids > 0. */
+        private void register(long seq, long callId) {
+            int mask = keys.length - 1;
+            int index = mix(seq) & mask;
+            while (true) {
+                long existingValue = values[index];
+                if (existingValue == 0L) {
+                    keys[index] = seq;
+                    values[index] = callId;
+                    size++;
+                    if (size * 4 > keys.length * 3) {
+                        grow();
+                    }
+                    return;
+                }
+                if (keys[index] == seq) {
+                    if (existingValue != callId) {
+                        values[index] = AMBIGUOUS;
+                    }
+                    return;
+                }
+                index = (index + 1) & mask;
+            }
+        }
+
+        /** Unique call id for seq, or -1 when absent or ambiguous. */
+        private long uniqueValue(long seq) {
+            int mask = keys.length - 1;
+            int index = mix(seq) & mask;
+            while (true) {
+                long value = values[index];
+                if (value == 0L) return -1L;
+                if (keys[index] == seq) {
+                    return value == AMBIGUOUS ? -1L : value;
+                }
+                index = (index + 1) & mask;
+            }
+        }
+
+        private void grow() {
+            long[] oldKeys = keys;
+            long[] oldValues = values;
+            keys = new long[oldKeys.length * 2];
+            values = new long[oldValues.length * 2];
+            int mask = keys.length - 1;
+            for (int from = 0; from < oldKeys.length; from++) {
+                long value = oldValues[from];
+                if (value == 0L) continue;
+                int index = mix(oldKeys[from]) & mask;
+                while (values[index] != 0L) {
+                    index = (index + 1) & mask;
+                }
+                keys[index] = oldKeys[from];
+                values[index] = value;
+            }
+        }
+
+        private static int mix(long key) {
+            long h = key * 0x9E3779B97F4A7C15L;
+            return (int) (h ^ (h >>> 32));
+        }
+    }
+
     private static final class TraceIndex {
         private final List<MethodEvent> methods;
         private final Map<Long, MethodEvent> methodByCall =
@@ -3642,8 +3948,14 @@ final class RuntimeRegionPlanner {
         private final Map<Long, List<Long>> children = new LinkedHashMap<>();
         private final Map<Long, List<RuntimeEvent>> runtimeByCall =
                 new LinkedHashMap<>();
-        private final Map<Long, Set<Long>> eventCallIdsBySeq =
-                new LinkedHashMap<>();
+        /**
+         * seq -> unique owning callId, or the ambiguity sentinel when two
+         * events registered different call ids for one sequence number.
+         * Behaviorally identical to the previous Map&lt;Long, Set&lt;Long&gt;&gt;
+         * whose readers only accepted singleton sets, at a fraction of the
+         * footprint for multi-million-event traces.
+         */
+        private final LongLongMap eventCallIdBySeq = new LongLongMap();
 
         private TraceIndex(Collection<MethodEvent> methodEvents,
                            Collection<RuntimeEvent> runtimeEvents,
@@ -3670,8 +3982,7 @@ final class RuntimeRegionPlanner {
 
         private void registerEventCall(long seq, long callId) {
             if (seq < 0L || callId <= 0L) return;
-            eventCallIdsBySeq.computeIfAbsent(seq,
-                    ignored -> new LinkedHashSet<>()).add(callId);
+            eventCallIdBySeq.register(seq, callId);
         }
 
         private List<MethodEvent> methods(String signature) {
@@ -3763,12 +4074,10 @@ final class RuntimeRegionPlanner {
          */
         private Set<Long> exactOutputInvocationCalls(
                 long rootCallId, long outputEventSeq) {
-            Set<Long> callers = eventCallIdsBySeq.get(outputEventSeq);
-            if (callers == null || callers.size() != 1
-                    || !methodByCall.containsKey(rootCallId)) {
+            long caller = eventCallIdBySeq.uniqueValue(outputEventSeq);
+            if (caller <= 0L || !methodByCall.containsKey(rootCallId)) {
                 return null;
             }
-            long caller = callers.iterator().next();
             if (!methodByCall.containsKey(caller)) return null;
             Set<Long> corridor;
             try {
@@ -3791,14 +4100,14 @@ final class RuntimeRegionPlanner {
                 long anchorCompletionSeq, String definitionMethod,
                 String siteId, String declaredCallee,
                 int containerObjectId) {
-            Set<Long> callers = eventCallIdsBySeq.get(anchorCompletionSeq);
-            if (callers == null || callers.size() != 1
+            long definitionCallId = eventCallIdBySeq.uniqueValue(
+                    anchorCompletionSeq);
+            if (definitionCallId <= 0L
                     || definitionMethod.isEmpty() || siteId.isEmpty()
                     || declaredCallee.isEmpty()
                     || containerObjectId == 0) {
                 return null;
             }
-            long definitionCallId = callers.iterator().next();
             MethodEvent definition = methodByCall.get(definitionCallId);
             if (definition == null || !definitionMethod.equals(
                     definition.method)) {
