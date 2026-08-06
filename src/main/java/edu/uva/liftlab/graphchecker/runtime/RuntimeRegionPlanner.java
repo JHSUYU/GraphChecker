@@ -2028,9 +2028,14 @@ final class RuntimeRegionPlanner {
         String site = text(selected.get("staticAccessSiteId"));
         int occurrence = integer(selected.get(
                 "activationLocalStaticSiteOccurrence"), -1);
-        if (!STATIC_SITE.matcher(site).matches() || occurrence < 1
-                || occurrence
-                > LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS) {
+        // The recorded ordinal counts every activation-local execution of the
+        // site, nested calls included, and the replay no longer has to hit it
+        // exactly (the same rule directHeapOutputClosure already applies).
+        // Capping it here silently dropped the only mutation writer of a
+        // demanded container input, leaving that input without a producer in
+        // the demanded closure.  The mutation fold still bounds how many
+        // mutations one definition invocation may perform.
+        if (!STATIC_SITE.matcher(site).matches() || occurrence < 1) {
             return null;
         }
         Map<String, Object> exact = deepCopy(port);

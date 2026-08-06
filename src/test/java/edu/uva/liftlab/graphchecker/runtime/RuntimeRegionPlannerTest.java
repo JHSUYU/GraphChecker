@@ -798,9 +798,14 @@ public class RuntimeRegionPlannerTest {
                         "runtimeAccesses", Collections.singletonList(object(
                                 "rootCallId", 3, "eventSeq", 22,
                                 "staticAccessSiteId", definition + "#u4",
-                                // This was the seventh use in the long-lived
-                                // root, but the first in exact call 5.
-                                "activationLocalStaticSiteOccurrence", 7,
+                                // This was the twenty-sixth use in the
+                                // long-lived root — far past the replay loop
+                                // bound — but the first in exact call 5.  The
+                                // recorded ordinal is provenance, not replay
+                                // identity: a demanded mutation writer must
+                                // not be dropped because the recording
+                                // reached its site often.
+                                "activationLocalStaticSiteOccurrence", 26,
                                 "bindingKind", "CONTAINER_MUTATION",
                                 "mutationCompletionSeq", 22,
                                 "mutatorDeclaredCallee", mutator,
