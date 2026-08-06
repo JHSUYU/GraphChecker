@@ -186,15 +186,20 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void anObservationBeyondTheBoundedWindowIsNotAdmitted() {
+    public void anObservationPastTheLoopBoundOrdinalIsStillAdmitted() {
+        // The per-site occurrence counts every activation-local execution,
+        // nested calls and multiple loop nests included.  A replay whose
+        // loops all stay within the CFG bound can still reach one capture
+        // site a twenty-sixth time; that observation is the same relation,
+        // not a bound violation, so it completes the boundary.
         JsonObject task = exactOutputTask(1);
         JsonArray captures = new JsonArray();
         JsonObject beyond = exactOutputCapture(0);
         beyond.addProperty("outputOccurrence",
-                LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS + 1);
+                LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS + 18);
         captures.add(beyond);
 
-        assertFalse(ConcolicRegionRuntime
+        assertTrue(ConcolicRegionRuntime
                 .exactOutputBoundaryReachedForTests(task, captures));
     }
 

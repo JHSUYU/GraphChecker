@@ -4,7 +4,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
@@ -1079,10 +1078,13 @@ public final class ConcolicSummaryImporter {
             OutputCaptureSpec request, JsonObject capture) {
         if (!request.occurrenceScoped()) return true;
         int occurrence = integer(capture, "outputOccurrence", -1);
+        // The occurrence counts every activation-local execution of the
+        // site, nested calls included; a bounded replay can reach one site
+        // more often than the per-loop body bound.  What must agree is the
+        // shape (the recorded static site), never the ordinal.
         return request.outputSiteId().equals(
                 string(capture, "outputSiteId"))
-                && occurrence >= 1
-                && occurrence <= LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
+                && occurrence >= 1;
     }
 
     private static JsonElement rootOutputExpression(JsonObject raw) {

@@ -1445,13 +1445,20 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * The bounded replay window an output site may be observed in.  It is the
-     * loop bound because that is what limits how often a bounded replay can
-     * reach the site at all.
+     * Admits any positive replay-local occurrence of an output site.
+     *
+     * <p>The occurrence counter numbers every activation-local execution of
+     * the capture site, nested calls and multiple loop nests included, so it
+     * is not a loop body counter and the CFG loop bound does not cap it: a
+     * replay whose every loop stays within eight body iterations can still
+     * reach one site more than eight times.  The bounded window is enforced
+     * by the loop-cut policy itself; refusing the ordinal here silently
+     * discarded relations the bounded replay legitimately produced — the
+     * same recorded-ordinal-as-identity rule already removed from
+     * exactDemandedHeapOutput and OutputClosureCodec.</p>
      */
     private static boolean withinBoundedOutputWindow(int occurrence) {
-        return occurrence >= 1
-                && occurrence <= LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
+        return occurrence >= 1;
     }
 
     private static boolean completeExactOutputBoundary(

@@ -137,8 +137,11 @@ public class ConcolicSummaryImporterTest {
         guarded.addProperty("outputSiteId", "<test.Worker: void run()>#u1");
         guarded.addProperty("outputOccurrence", 1);
         guarded.addProperty("replayOccurrence", 1);
+        // Twenty-six is far past the CFG loop bound: the per-site ordinal
+        // counts nested-call executions too, so a bounded replay can reach
+        // the site that often, and the importer must still admit it.
         captures.get(0).getAsJsonObject()
-                .addProperty("outputOccurrence", 3);
+                .addProperty("outputOccurrence", 26);
         JsonArray ordered = new JsonArray();
         ordered.add(guarded);
         ordered.add(captures.get(0));
