@@ -87,6 +87,40 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void seedReplaySkipsOnlyTheActivationThatContradictsARecording() {
+        Map<String, Set<Boolean>> recorded = new LinkedHashMap<>();
+        recorded.put("ROOT#u5", outcomes(false));
+        recorded.put("ROOT#u9", outcomes(true));
+
+        // The winning activation drove a recorded site the other way, so it
+        // can never attest this seed and must let a later one compete.
+        Map<String, Set<Boolean>> contradicting = new LinkedHashMap<>();
+        contradicting.put("ROOT#u5", outcomes(true));
+        assertTrue(ConcolicRegionRuntime.seedOutcomeConflict(
+                recorded, contradicting).startsWith("ROOT#u5:"));
+
+        // A wider environment revisits a site both ways.  The recorded
+        // outcome is still witnessed, so this is the same decision.
+        Map<String, Set<Boolean>> wider = new LinkedHashMap<>();
+        wider.put("ROOT#u5", outcomes(true, false));
+        wider.put("ROOT#u9", outcomes(true));
+        assertEquals("", ConcolicRegionRuntime.seedOutcomeConflict(
+                recorded, wider));
+
+        // Sites this activation never decided, and sites the recording never
+        // planned, are judged over the whole summary rather than here.
+        Map<String, Set<Boolean>> partial = new LinkedHashMap<>();
+        partial.put("ROOT#u9", outcomes(true));
+        partial.put("UNPLANNED#u2", outcomes(false));
+        assertEquals("", ConcolicRegionRuntime.seedOutcomeConflict(
+                recorded, partial));
+    }
+
+    private static Set<Boolean> outcomes(Boolean... values) {
+        return new LinkedHashSet<>(Arrays.asList(values));
+    }
+
+    @Test
     public void outputCaptureOccurrencesAreActivationLocalAndSiteScoped() {
         ConcolicRegionRuntime.OutputCaptureOccurrenceCounter first =
                 new ConcolicRegionRuntime.OutputCaptureOccurrenceCounter();

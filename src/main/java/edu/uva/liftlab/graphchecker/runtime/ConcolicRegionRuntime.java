@@ -1682,6 +1682,11 @@ public final class ConcolicRegionRuntime {
         }
         active.lastPathConditionSize = rawPathConditionSize;
         active.branchMappings.add(mapping);
+        if (mapping.has("witness") || mapping.has("concreteObservation")) {
+            // A marker without either authority carries no decision into the
+            // summary, so it must not attest a recorded outcome either.
+            active.witnessOutcome(siteId, observedOutcome);
+        }
         return vmAttestation.valid && conditionIndex >= 0;
     }
 
@@ -2112,6 +2117,14 @@ public final class ConcolicRegionRuntime {
             writeSkipped(active.activation,
                     "no compatible activation matched replay prefix: "
                             + active.replayProgress.failure());
+            return;
+        }
+        String seedConflict = active.activation.replayContract == null
+                ? active.seedOutcomeConflict() : "";
+        if (!seedConflict.isEmpty()) {
+            writeSkipped(active.activation,
+                    "activation contradicts a recorded seed outcome: "
+                            + seedConflict);
             return;
         }
         boolean written = appendResult(result, rawEngineSummary);
@@ -3181,6 +3194,39 @@ public final class ConcolicRegionRuntime {
         active.pathRecordingStarted = true;
     }
 
+    /**
+     * Reports the first recorded branch outcome an activation drove the other
+     * way.
+     *
+     * <p>A recording and its replay are two executions of the same concurrent
+     * workload, so which activation first reaches a lazily shared region is
+     * decided by scheduling.  An activation whose witnesses contradict a
+     * recorded decision cannot attest the seed however it finishes, and
+     * keeping it consumes the single result the task is allowed to emit.
+     * Reporting the conflict lets that activation be skipped so a later one
+     * competes, exactly as for a replay prefix that never matched.</p>
+     *
+     * <p>Only a witnessed contradiction counts.  A recorded site this
+     * activation never decided may still be decided by a later one, and a
+     * site the recording never planned is a whole-summary judgement the
+     * importer owns; neither is a reason to discard evidence here.</p>
+     */
+    static String seedOutcomeConflict(
+            Map<String, Set<Boolean>> recorded,
+            Map<String, Set<Boolean>> witnessed) {
+        for (Map.Entry<String, Set<Boolean>> site : recorded.entrySet()) {
+            Set<Boolean> found = witnessed.get(site.getKey());
+            if (found == null || found.isEmpty()) continue;
+            for (Boolean outcome : site.getValue()) {
+                if (!found.contains(outcome)) {
+                    return site.getKey() + ": recorded " + site.getValue()
+                            + " but witnessed " + found;
+                }
+            }
+        }
+        return "";
+    }
+
     private static void writeSkipped(RuntimeTask activation,
                                      String reason) {
         JsonObject result = new JsonObject();
@@ -3525,6 +3571,11 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashSet<>();
         private final Map<String, Integer> branchOccurrences =
                 new LinkedHashMap<>();
+        // Outcomes this activation actually witnessed at each static branch
+        // site, restricted to the mappings a summary keeps.  A seed replay is
+        // attested against the recorded outcome set of the same sites.
+        private final Map<String, Set<Boolean>> witnessedOutcomes =
+                new LinkedHashMap<>();
         private final Map<String, Integer> localMaterializationOccurrences =
                 new LinkedHashMap<>();
         private final Map<String, Integer> accessorCallOccurrences =
@@ -3592,6 +3643,20 @@ public final class ConcolicRegionRuntime {
             int occurrence = previous == null ? 1 : previous + 1;
             branchOccurrences.put(siteId, occurrence);
             return occurrence;
+        }
+
+        private void witnessOutcome(String siteId, boolean outcome) {
+            Set<Boolean> outcomes = witnessedOutcomes.get(siteId);
+            if (outcomes == null) {
+                outcomes = new LinkedHashSet<>();
+                witnessedOutcomes.put(siteId, outcomes);
+            }
+            outcomes.add(outcome);
+        }
+
+        private String seedOutcomeConflict() {
+            return ConcolicRegionRuntime.seedOutcomeConflict(
+                    activation.seedOutcomes, witnessedOutcomes);
         }
 
         private boolean observeReplayBranch(
@@ -4922,6 +4987,7 @@ public final class ConcolicRegionRuntime {
         private final List<OutputCaptureSpec> outputCaptures;
         private final boolean capturesOutputRelation;
         private final BranchReplayContract replayContract;
+        private final Map<String, Set<Boolean>> seedOutcomes;
         private final String stopAfterBranchSite;
         private final int stopAfterBranchOccurrence;
         private RuntimeTask(ExecutionTask task) {
@@ -4939,6 +5005,7 @@ public final class ConcolicRegionRuntime {
             this.declaredSymbolize = new ArrayList<>();
             this.symbolize = new ArrayList<>();
             this.branchPolicies = new LinkedHashMap<>();
+            this.seedOutcomes = new LinkedHashMap<>();
             this.loopBound = task.loopBound();
             this.modelAssignments = new ArrayList<>();
             this.outputCaptures = new ArrayList<>();
@@ -4968,10 +5035,15 @@ public final class ConcolicRegionRuntime {
                     this.symbolize.add(action);
                 }
             }
+            boolean seedTask = this.replayContract == null
+                    && !task.pathSeedKey().isEmpty();
             for (JsonElement element : task.branches()) {
                 JsonObject branch = element.getAsJsonObject();
-                branchPolicies.put(string(branch, "siteId"),
-                        string(branch, "policy"));
+                String siteId = string(branch, "siteId");
+                branchPolicies.put(siteId, string(branch, "policy"));
+                if (seedTask) {
+                    recordSeedOutcomes(siteId, branch.get("occurrences"));
+                }
             }
             for (JsonElement element : task.modelAssignments()) {
                 modelAssignments.add(new ModelAssignment(
@@ -4988,6 +5060,37 @@ public final class ConcolicRegionRuntime {
             }
             for (OutputCaptureSpec request : task.outputCaptures()) {
                 outputCaptures.add(request);
+            }
+        }
+
+        /**
+         * Indexes the outcomes the recording witnessed at one static branch
+         * site.  A malformed contract simply leaves the site unindexed: the
+         * importer owns the fail-closed judgement over the whole summary, and
+         * discarding an activation here on incomplete evidence would lose the
+         * only result the task may emit.
+         */
+        private void recordSeedOutcomes(
+                String siteId, JsonElement encodedOccurrences) {
+            if (siteId.isEmpty() || encodedOccurrences == null
+                    || !encodedOccurrences.isJsonArray()) {
+                return;
+            }
+            for (JsonElement element
+                    : encodedOccurrences.getAsJsonArray()) {
+                if (!element.isJsonObject()) continue;
+                JsonElement outcome = element.getAsJsonObject().get(
+                        "outcome");
+                if (outcome == null || !outcome.isJsonPrimitive()
+                        || !outcome.getAsJsonPrimitive().isBoolean()) {
+                    continue;
+                }
+                Set<Boolean> outcomes = seedOutcomes.get(siteId);
+                if (outcomes == null) {
+                    outcomes = new LinkedHashSet<>();
+                    seedOutcomes.put(siteId, outcomes);
+                }
+                outcomes.add(outcome.getAsBoolean());
             }
         }
 
