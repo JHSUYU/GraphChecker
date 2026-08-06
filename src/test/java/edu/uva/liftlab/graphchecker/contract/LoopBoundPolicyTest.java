@@ -8,25 +8,35 @@ import static org.junit.Assert.fail;
 
 public class LoopBoundPolicyTest {
     @Test
-    public void roundTripsCfgBackedgeBound() {
+    public void roundTripsFixedLoopBodyBound() {
         JsonObject task = new JsonObject();
-        LoopBoundPolicy.cfgBackedges(5).writeTo(task);
+        LoopBoundPolicy.cfgBackedges(
+                LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS).writeTo(task);
 
         LoopBoundPolicy decoded = LoopBoundPolicy.decode(task);
 
-        assertEquals(5, decoded.maxBackedgeTraversals());
-        assertEquals("CFG_BACKEDGE:5:CUT_PATH", decoded.identity());
+        assertEquals(8, decoded.maxBackedgeTraversals());
+        assertEquals("CFG_BACKEDGE:8:CUT_PATH", decoded.identity());
+        assertEquals(8,
+                LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY);
     }
 
     @Test
-    public void missingOrNonPositiveBoundIsRejected() {
+    public void missingOrNonFixedBoundIsRejected() {
         assertRejected(new JsonObject());
 
         JsonObject task = new JsonObject();
-        LoopBoundPolicy.cfgBackedges(1).writeTo(task);
+        LoopBoundPolicy.cfgBackedges(8).writeTo(task);
         task.getAsJsonObject(LoopBoundPolicy.FIELD)
-                .addProperty("maxBackedgeTraversals", 0);
+                .addProperty("maxBackedgeTraversals", 3);
         assertRejected(task);
+
+        try {
+            LoopBoundPolicy.cfgBackedges(4);
+            fail("configurable loop bounds must be rejected");
+        } catch (IllegalArgumentException expected) {
+            // Fixed execution-wide bound is canonical.
+        }
     }
 
     private static void assertRejected(JsonObject task) {

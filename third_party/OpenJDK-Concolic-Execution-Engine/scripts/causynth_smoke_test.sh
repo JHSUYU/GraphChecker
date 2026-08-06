@@ -19,6 +19,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionContainerLiveInApiSmoke.java \
   test/causynth/RegionMapApiSmoke.java \
   test/causynth/RegionMapIteratorRemoveApiSmoke.java \
+  test/causynth/RegionMapValuesToObjectArrayApiSmoke.java \
   test/causynth/RegionNumericLoopApiSmoke.java \
   test/causynth/RegionNumericSemanticsApiSmoke.java \
   test/causynth/RegionObjectArrayMapApiSmoke.java \
@@ -44,6 +45,7 @@ for smoke in \
   RegionContainerLiveInApiSmoke \
   RegionMapApiSmoke \
   RegionMapIteratorRemoveApiSmoke \
+  RegionMapValuesToObjectArrayApiSmoke \
   RegionNumericLoopApiSmoke \
   RegionNumericSemanticsApiSmoke \
   RegionObjectArrayMapApiSmoke \

@@ -112,32 +112,14 @@ usage() {
   cat <<'EOF'
 Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
 
-  prepare                 Build GraphChecker and isolate fixture classes
-  analyze                 Static analysis plus trace instrumentation
-  trace                   Run a non-bug concrete discovery execution
-  discover                Resolve producer and target campaigns from evidence
-  schedule-target         Schedule one unforced consumer target seed
-  seed-target             Capture/import the unforced target seed query
-  explore-target          Close target-function paths and build reach query
-  schedule-producer ID    Schedule one producer campaign
-  instrument ID           Instrument that campaign's execution goal
-  replay ID [b1 b2]       Run one real custom-JDK concolic capture
-  import ID               Strictly import that producer capture
-  explore-producer ID     Close and merge one producer path worklist
-  candidate-compose       Compose producer relations with the target seed
-  candidate-smt           Run the clean workflow through candidate SMT
-  candidate-solve         Check the candidate SMT with Z3
-  candidate-manifest      Refresh hashes for an existing solved candidate
-  candidate               Run the clean workflow through candidate SMT + Z3
-  smoke                   prepare + analyze + trace + discovery + target
-  all                     Alias for candidate
-  clean                   Remove only the configured fixture work products
+  prepare  Build GraphChecker and isolate fixture classes
+  tasks    Prepare through automatic target-task scheduling
+  full     Run the automatic custom-VM, SMT, and Z3 workflow
+  clean    Remove only the configured fixture work products
 
 No command writes SMT text or a reachability formula. Producer dependencies
-are discovered from runtime-confirmed read-from evidence. Campaign identity is
+are discovered from runtime-confirmed field/RPC occurrences. Campaign identity is
 region-instance/goal based and does not depend on an output field name.
-The terminal artifact is deliberately CANDIDATE_ONLY.  Promoting it to a
-trusted result by a natural replay is a documented follow-up TODO.
 Producer seed pipelines use up to eight region workers by default. Path
 exploration then uses bounded waves of independent custom-JDK processes;
 CAUSYNTH_CONCOLIC_JOBS defaults to nproc (40 on the current server), and N=1
@@ -191,13 +173,9 @@ producer_campaign_directory() {
   printf '%s/%s\n' "${producer_campaign_root}" "$1"
 }
 
-target_campaign_binding() {
-  target_binding
-}
-
 target_campaign_directory() {
   local binding campaign region instance goal
-  binding=$(target_campaign_binding) || return $?
+  binding=$(target_binding) || return $?
   IFS=$'\t' read -r campaign region instance goal <<< "${binding}"
   [[ -n "${campaign}" && -n "${region}" && -n "${instance}" \
       && -n "${goal}" ]] \
@@ -1345,40 +1323,21 @@ do_candidate() {
   echo "[three-thread-rpc] complete Z3-checked candidate workflow"
 }
 
-do_all() { do_candidate; }
+do_tasks() {
+  do_prepare
+  do_analyze
+  do_trace
+  do_discover
+  do_schedule_target
+}
 
 command_name=${1:-help}
 shift || true
 case "${command_name}" in
   help|-h|--help) usage ;;
-  prepare) do_prepare ;;
-  analyze) do_analyze ;;
-  trace) do_trace ;;
-  discover) [[ $# -eq 0 ]] || die "discover takes no arguments"; do_discover ;;
-  schedule-target) [[ $# -eq 0 ]] || die "schedule-target takes no arguments"; do_schedule_target ;;
-  seed-target) [[ $# -eq 0 ]] || die "seed-target takes no arguments"; do_seed_target ;;
-  explore-target) [[ $# -eq 0 ]] || die "explore-target takes no arguments"; do_explore_target ;;
-  schedule-producer) [[ $# -eq 1 ]] || die "schedule-producer needs one campaign ID"; do_schedule_producer "$1" ;;
-  instrument) [[ $# -eq 1 ]] || die "instrument needs one campaign ID"; do_instrument "$1" ;;
-  replay)
-    [[ $# -ge 1 && $# -le 3 ]] || die "replay needs CAMPAIGN [b1 b2]"
-    run_custom_java "$1" "${2:-false}" "${3:-false}"
-    ;;
-  import) [[ $# -eq 1 ]] || die "import needs one campaign ID"; do_import "$1" ;;
-  explore-producer) [[ $# -eq 1 ]] || die "explore-producer needs one campaign ID"; do_explore_producer "$1" ;;
-  candidate-compose) [[ $# -eq 0 ]] || die "candidate-compose takes no arguments"; do_candidate_compose ;;
-  candidate-smt) [[ $# -eq 0 ]] || die "candidate-smt takes no arguments"; do_candidate_smt ;;
-  candidate-solve) [[ $# -eq 0 ]] || die "candidate-solve takes no arguments"; do_candidate_solve ;;
-  candidate-manifest) [[ $# -eq 0 ]] || die "candidate-manifest takes no arguments"; write_candidate_manifest ;;
-  candidate) [[ $# -eq 0 ]] || die "candidate takes no arguments"; do_candidate ;;
-  smoke)
-    do_prepare
-    do_analyze
-    do_trace
-    do_discover
-    do_schedule_target
-    ;;
-  all) [[ $# -eq 0 ]] || die "all takes no arguments"; do_all ;;
+  prepare) [[ $# -eq 0 ]] || die "prepare takes no arguments"; do_prepare ;;
+  tasks) [[ $# -eq 0 ]] || die "tasks takes no arguments"; do_tasks ;;
+  full) [[ $# -eq 0 ]] || die "full takes no arguments"; do_candidate ;;
   clean) [[ $# -eq 0 ]] || die "clean takes no arguments"; do_clean ;;
   *) die "unknown command: ${command_name}" ;;
 esac

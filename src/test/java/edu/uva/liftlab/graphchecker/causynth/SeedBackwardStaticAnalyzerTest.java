@@ -3,10 +3,12 @@ package edu.uva.liftlab.graphchecker.causynth;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import soot.ArrayType;
 import soot.Body;
 import soot.BooleanType;
 import soot.IntType;
 import soot.Local;
+import soot.LongType;
 import soot.Modifier;
 import soot.RefType;
 import soot.Scene;
@@ -17,6 +19,7 @@ import soot.Unit;
 import soot.VoidType;
 import soot.jimple.IntConstant;
 import soot.jimple.Jimple;
+import soot.jimple.NullConstant;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -30,6 +33,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class SeedBackwardStaticAnalyzerTest {
     @Before
@@ -71,6 +75,8 @@ public class SeedBackwardStaticAnalyzerTest {
             assertNotNull(edge);
             assertEquals("test.rpc", edge.get("protocolStubMappingId"));
             assertEquals("TEST_RPC", edge.get("protocolTransport"));
+            assertEquals("EXECUTION_ENTRY",
+                    edge.get("protocolServerContext"));
             assertEquals("payload", edge.get("protocolPort"));
             assertEquals(fixture.server.getSignature() + ".param0:int",
                     edge.get("toCell"));
@@ -84,6 +90,124 @@ public class SeedBackwardStaticAnalyzerTest {
                     "seed_exception_throw".equals(candidate.get("kind"))
                             || "exception_payload_argument".equals(
                             candidate.get("kind"))));
+            assertEquals("RPC_HANDLER",
+                    program.executionContextAuthorities.get(
+                            fixture.server.getSignature()));
+            assertFalse(program.nestedContextEndpoints.contains(
+                    fixture.server.getSignature()));
+        } finally {
+            Files.deleteIfExists(mappings);
+        }
+    }
+
+    @Test
+    public void configuredInterfaceStubMapsConcreteClientInvocation()
+            throws Exception {
+        RpcFixture fixture = rpcFixture(true);
+        Path mappings = Files.createTempFile("concrete-protocol-stubs",
+                ".jsonl");
+        try {
+            String row = "{\"schemaVersion\":1,"
+                    + "\"kind\":\"PROTOCOL_STUB_MAPPING\","
+                    + "\"id\":\"test.concrete.rpc\","
+                    + "\"transport\":\"TEST_RPC\","
+                    + "\"clientStub\":\""
+                    + fixture.client.getSignature() + "\","
+                    + "\"serverStub\":\""
+                    + fixture.server.getSignature() + "\","
+                    + "\"request\":[{\"name\":\"payload\","
+                    + "\"clientArgument\":1,\"serverParameter\":0}],"
+                    + "\"response\":true}\n";
+            Files.write(mappings, row.getBytes(StandardCharsets.UTF_8));
+            System.setProperty("causynth.protocol.stubs",
+                    mappings.toString());
+
+            StaticProgram program = analyze(fixture);
+            long callerEdges = program.edges.stream().filter(candidate ->
+                    "rpc_caller_argument".equals(candidate.get("kind"))
+                            && fixture.clientImplementation.getSignature()
+                            .equals(candidate.get("invoke"))).count();
+            long invokeEdges = program.edges.stream().filter(candidate ->
+                    "rpc_argument".equals(candidate.get("kind"))
+                            && fixture.clientImplementation.getSignature()
+                            .equals(candidate.get("invoke"))).count();
+            assertEquals(1L, callerEdges);
+            assertEquals(1L, invokeEdges);
+        } finally {
+            Files.deleteIfExists(mappings);
+        }
+    }
+
+    @Test
+    public void nestedProtocolServerCallIsNotAnExecutionContextEntry()
+            throws Exception {
+        RpcFixture fixture = rpcFixture();
+        Path mappings = Files.createTempFile("nested-protocol-stubs",
+                ".jsonl");
+        try {
+            String row = "{\"schemaVersion\":1,"
+                    + "\"kind\":\"PROTOCOL_STUB_MAPPING\","
+                    + "\"id\":\"test.nested.rpc\","
+                    + "\"transport\":\"TEST_RPC\","
+                    + "\"serverContext\":\"NESTED_CALL\","
+                    + "\"clientStub\":\""
+                    + fixture.client.getSignature() + "\","
+                    + "\"serverStub\":\""
+                    + fixture.server.getSignature() + "\","
+                    + "\"request\":[{\"name\":\"payload\","
+                    + "\"clientArgument\":1,\"serverParameter\":0}],"
+                    + "\"response\":true}\n";
+            Files.write(mappings, row.getBytes(StandardCharsets.UTF_8));
+            System.setProperty("causynth.protocol.stubs",
+                    mappings.toString());
+
+            StaticProgram program = analyze(fixture);
+            Map<String, Object> edge = edge(program.edges,
+                    "rpc_caller_argument");
+            assertNotNull(edge);
+            assertEquals("NESTED_CALL",
+                    edge.get("protocolServerContext"));
+            assertFalse(program.executionContextAuthorities.containsKey(
+                    fixture.server.getSignature()));
+            assertTrue(program.nestedContextEndpoints.contains(
+                    fixture.server.getSignature()));
+        } finally {
+            Files.deleteIfExists(mappings);
+        }
+    }
+
+    @Test
+    public void conflictingServerContextDeclarationsAreRejected()
+            throws Exception {
+        RpcFixture fixture = rpcFixture();
+        Path mappings = Files.createTempFile("conflicting-protocol-stubs",
+                ".jsonl");
+        try {
+            String prefix = "{\"schemaVersion\":1,"
+                    + "\"kind\":\"PROTOCOL_STUB_MAPPING\","
+                    + "\"transport\":\"TEST_RPC\","
+                    + "\"clientStub\":\""
+                    + fixture.client.getSignature() + "\","
+                    + "\"serverStub\":\""
+                    + fixture.server.getSignature() + "\","
+                    + "\"request\":[{\"name\":\"payload\","
+                    + "\"clientArgument\":1,\"serverParameter\":0}],"
+                    + "\"response\":true,";
+            String rows = prefix + "\"id\":\"entry\","
+                    + "\"serverContext\":\"EXECUTION_ENTRY\"}\n"
+                    + prefix + "\"id\":\"nested\","
+                    + "\"serverContext\":\"NESTED_CALL\"}\n";
+            Files.write(mappings, rows.getBytes(StandardCharsets.UTF_8));
+            System.setProperty("causynth.protocol.stubs",
+                    mappings.toString());
+
+            try {
+                analyze(fixture);
+                fail("conflicting serverContext must be rejected");
+            } catch (IllegalStateException expected) {
+                assertTrue(String.valueOf(expected.getCause().getMessage())
+                        .contains("Conflicting serverContext"));
+            }
         } finally {
             Files.deleteIfExists(mappings);
         }
@@ -95,6 +219,182 @@ public class SeedBackwardStaticAnalyzerTest {
         StaticProgram program = analyze(rpcFixture());
         assertFalse(program.edges.stream().anyMatch(edge ->
                 String.valueOf(edge.get("kind")).startsWith("rpc_")));
+    }
+
+    @Test
+    public void inheritedLibraryPrimitiveGetterIsAStructuralAccessor()
+            throws Exception {
+        SootClass object = libraryClass("java.lang.Object");
+        SootClass runtimeException = libraryClass(
+                "java.lang.RuntimeException");
+        runtimeException.setSuperclass(object);
+        SootMethod runtimeConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        runtimeException.addMethod(runtimeConstructor);
+
+        SootClass keyBase = libraryClass("example.LibraryKey");
+        keyBase.setSuperclass(object);
+        SootField expiry = new SootField("expiryDate", LongType.v(),
+                Modifier.PRIVATE);
+        keyBase.addField(expiry);
+        SootMethod getter = new SootMethod("getExpiryDate",
+                Collections.emptyList(), LongType.v(), Modifier.PUBLIC);
+        keyBase.addMethod(getter);
+        Body getterBody = Jimple.v().newBody(getter);
+        getter.setActiveBody(getterBody);
+        Local getterThis = local(getterBody, "this",
+                RefType.v(keyBase.getName()));
+        Local getterValue = local(getterBody, "value", LongType.v());
+        getterBody.getUnits().add(Jimple.v().newIdentityStmt(getterThis,
+                Jimple.v().newThisRef((RefType) getterThis.getType())));
+        getterBody.getUnits().add(Jimple.v().newAssignStmt(getterValue,
+                Jimple.v().newInstanceFieldRef(getterThis,
+                        expiry.makeRef())));
+        getterBody.getUnits().add(Jimple.v().newReturnStmt(getterValue));
+
+        SootClass key = applicationClass("example.BlockKey", keyBase);
+        SootClass failure = applicationClass("example.ExpiredKeyFailure",
+                runtimeException);
+        SootMethod failureConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        failure.addMethod(failureConstructor);
+        constructorBody(failureConstructor, runtimeConstructor);
+
+        SootClass owner = applicationClass("example.KeyManager", object);
+        SootField currentKey = new SootField("currentKey",
+                RefType.v(key.getName()), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addField(currentKey);
+        SootMethod check = new SootMethod("check",
+                Collections.emptyList(), VoidType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(check);
+        Body body = Jimple.v().newBody(check);
+        check.setActiveBody(body);
+        Local keyLocal = local(body, "key", RefType.v(key.getName()));
+        Local expiryLocal = local(body, "expiry", LongType.v());
+        Local exception = local(body, "failure", RefType.v(failure.getName()));
+        body.getUnits().add(Jimple.v().newAssignStmt(keyLocal,
+                Jimple.v().newStaticFieldRef(currentKey.makeRef())));
+        body.getUnits().add(Jimple.v().newAssignStmt(expiryLocal,
+                Jimple.v().newVirtualInvokeExpr(keyLocal,
+                        getter.makeRef())));
+        Unit normalReturn = Jimple.v().newReturnVoidStmt();
+        body.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newGeExpr(expiryLocal,
+                        soot.jimple.LongConstant.v(0L)), normalReturn));
+        body.getUnits().add(Jimple.v().newAssignStmt(exception,
+                Jimple.v().newNewExpr(RefType.v(failure.getName()))));
+        body.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newSpecialInvokeExpr(exception,
+                        failureConstructor.makeRef())));
+        body.getUnits().add(Jimple.v().newThrowStmt(exception));
+        body.getUnits().add(normalReturn);
+
+        ExceptionTargetSite site = new ExceptionTargetSite(
+                "inherited-accessor", owner.getName(), check.getName(),
+                "()V", check.getSignature(), failure.getName(), 0, -1);
+        StaticProgram program = new SeedBackwardStaticAnalyzer(
+                new CausynthTargetContext(null, null, site.id, site,
+                        "TEST")).analyze();
+
+        Map<String, Object> edge = edge(program.edges,
+                "accessor_field_return");
+        assertNotNull(edge);
+        assertEquals(expiry.getSignature(), edge.get("fromCell"));
+        assertEquals(getter.getSignature(),
+                edge.get("accessorImplementationMethod"));
+    }
+
+    @Test
+    public void mapLookupUsedOnlyToSelectFieldOwnerIsStructureCarrier()
+            throws Exception {
+        SootClass object = libraryClass("java.lang.Object");
+        SootClass runtimeException = libraryClass(
+                "java.lang.RuntimeException");
+        runtimeException.setSuperclass(object);
+        SootMethod runtimeConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        runtimeException.addMethod(runtimeConstructor);
+
+        SootClass map = new SootClass("java.util.Map",
+                Modifier.PUBLIC | Modifier.INTERFACE);
+        Scene.v().addClass(map);
+        SootMethod get = new SootMethod("get",
+                Collections.singletonList(RefType.v(object.getName())),
+                RefType.v(object.getName()),
+                Modifier.PUBLIC | Modifier.ABSTRACT);
+        map.addMethod(get);
+
+        SootClass node = applicationClass("example.OwnerNode", object);
+        SootField value = new SootField("value", IntType.v(),
+                Modifier.PUBLIC);
+        node.addField(value);
+        SootClass failure = applicationClass("example.OwnerFailure",
+                runtimeException);
+        SootMethod failureConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        failure.addMethod(failureConstructor);
+        constructorBody(failureConstructor, runtimeConstructor);
+
+        SootClass owner = applicationClass("example.OwnerLookup", object);
+        SootField values = new SootField("values", RefType.v(map.getName()),
+                Modifier.PUBLIC | Modifier.STATIC);
+        SootField key = new SootField("key", RefType.v(object.getName()),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addField(values);
+        owner.addField(key);
+        SootMethod check = new SootMethod("check",
+                Collections.emptyList(), VoidType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(check);
+        Body body = Jimple.v().newBody(check);
+        check.setActiveBody(body);
+        Local mapLocal = local(body, "map", RefType.v(map.getName()));
+        Local keyLocal = local(body, "key", RefType.v(object.getName()));
+        Local selected = local(body, "selected",
+                RefType.v(object.getName()));
+        Local nodeLocal = local(body, "node", RefType.v(node.getName()));
+        Local scalar = local(body, "scalar", IntType.v());
+        Local exception = local(body, "failure",
+                RefType.v(failure.getName()));
+        body.getUnits().add(Jimple.v().newAssignStmt(mapLocal,
+                Jimple.v().newStaticFieldRef(values.makeRef())));
+        body.getUnits().add(Jimple.v().newAssignStmt(keyLocal,
+                Jimple.v().newStaticFieldRef(key.makeRef())));
+        body.getUnits().add(Jimple.v().newAssignStmt(selected,
+                Jimple.v().newInterfaceInvokeExpr(mapLocal, get.makeRef(),
+                        keyLocal)));
+        body.getUnits().add(Jimple.v().newAssignStmt(nodeLocal,
+                Jimple.v().newCastExpr(selected,
+                        RefType.v(node.getName()))));
+        Unit normal = Jimple.v().newReturnVoidStmt();
+        body.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newEqExpr(nodeLocal, NullConstant.v()), normal));
+        body.getUnits().add(Jimple.v().newAssignStmt(scalar,
+                Jimple.v().newInstanceFieldRef(nodeLocal,
+                        value.makeRef())));
+        body.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newNeExpr(scalar, IntConstant.v(0)), normal));
+        body.getUnits().add(Jimple.v().newAssignStmt(exception,
+                Jimple.v().newNewExpr(RefType.v(failure.getName()))));
+        body.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newSpecialInvokeExpr(exception,
+                        failureConstructor.makeRef())));
+        body.getUnits().add(Jimple.v().newThrowStmt(exception));
+        body.getUnits().add(normal);
+
+        ExceptionTargetSite site = new ExceptionTargetSite(
+                "owner-lookup", owner.getName(), check.getName(), "()V",
+                check.getSignature(), failure.getName(), 0, -1);
+        StaticProgram program = new SeedBackwardStaticAnalyzer(
+                new CausynthTargetContext(null, null, site.id, site,
+                        "TEST")).analyze();
+
+        Map<String, Object> receiver = edge(program.edges,
+                "container_receiver");
+        assertNotNull(receiver);
+        assertEquals("CONCRETE_STRUCTURE_CARRIER",
+                receiver.get("dependencyRole"));
     }
 
     @Test
@@ -156,7 +456,10 @@ public class SeedBackwardStaticAnalyzerTest {
             owner.addField(field);
         }
 
+        SootMethod mutationHelper = buildMapMutationHelper(owner, map, node,
+                put);
         SootMethod compute = buildCompute(owner, map, node, get, put,
+                mutationHelper,
                 values, key, fallback, replacement, mutate,
                 nodeFlag, nodeValue);
         buildProducer(owner, compute, output);
@@ -187,12 +490,147 @@ public class SeedBackwardStaticAnalyzerTest {
 
         String receiverEdge = edgeId(program.edges,
                 "container_receiver");
+        String mutationArgumentEdge = edgeId(program.edges,
+                "container_mutation_argument");
+        String callMutationEdge = edgeId(program.edges,
+                "container_call_mutation_effect");
         String mutationGuardEdge = edgeId(program.edges,
                 "heap_mutation_path_guard");
         assertNotNull(receiverEdge);
+        assertEquals("CONCRETE_STRUCTURE_CARRIER", edge(program.edges,
+                "container_receiver").get("dependencyRole"));
+        assertNotNull(mutationArgumentEdge);
+        assertNotNull(callMutationEdge);
+        assertEquals("MODEL_TRANSFORM", edge(program.edges,
+                "container_mutation_argument").get("transferKind"));
+        assertEquals("MODEL_TRANSFORM", edge(program.edges,
+                "container_call_mutation_effect").get("transferKind"));
         assertNotNull(mutationGuardEdge);
         assertTrue(((Number) program.targetResolved.get(
                 "globalFieldWriterIndexSize")).intValue() > 0);
+    }
+
+    @Test
+    public void arrayStoreAndLoadCloseThroughBoundedElementCell()
+            throws Exception {
+        SootClass object = libraryClass("java.lang.Object");
+        SootClass runtimeException = libraryClass(
+                "java.lang.RuntimeException");
+        runtimeException.setSuperclass(object);
+        SootMethod runtimeConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        runtimeException.addMethod(runtimeConstructor);
+
+        SootClass failure = applicationClass(
+                "example.ArrayFailure", runtimeException);
+        SootMethod failureConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        failure.addMethod(failureConstructor);
+        constructorBody(failureConstructor, runtimeConstructor);
+
+        SootClass owner = applicationClass("example.ArrayFlow", object);
+        ArrayType ints = ArrayType.v(IntType.v(), 1);
+        SootField source = new SootField("source", IntType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addField(source);
+
+        SootMethod producer = new SootMethod("produce",
+                Arrays.asList(IntType.v(), IntType.v()), ints,
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(producer);
+        Body producerBody = Jimple.v().newBody(producer);
+        producer.setActiveBody(producerBody);
+        Local stored = local(producerBody, "stored", IntType.v());
+        Local storeIndex = local(producerBody, "storeIndex", IntType.v());
+        Local result = local(producerBody, "result", ints);
+        producerBody.getUnits().add(Jimple.v().newIdentityStmt(stored,
+                Jimple.v().newParameterRef(IntType.v(), 0)));
+        producerBody.getUnits().add(Jimple.v().newIdentityStmt(storeIndex,
+                Jimple.v().newParameterRef(IntType.v(), 1)));
+        producerBody.getUnits().add(Jimple.v().newAssignStmt(result,
+                Jimple.v().newNewArrayExpr(IntType.v(),
+                        IntConstant.v(2))));
+        producerBody.getUnits().add(Jimple.v().newAssignStmt(
+                Jimple.v().newArrayRef(result, storeIndex), stored));
+        producerBody.getUnits().add(Jimple.v().newReturnStmt(result));
+
+        SootMethod consumer = new SootMethod("consume",
+                Arrays.asList(ints, IntType.v()), VoidType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(consumer);
+        Body consumerBody = Jimple.v().newBody(consumer);
+        consumer.setActiveBody(consumerBody);
+        Local input = local(consumerBody, "input", ints);
+        Local loadIndex = local(consumerBody, "loadIndex", IntType.v());
+        Local loaded = local(consumerBody, "loaded", IntType.v());
+        Local exception = local(consumerBody, "failure",
+                RefType.v(failure.getName()));
+        consumerBody.getUnits().add(Jimple.v().newIdentityStmt(input,
+                Jimple.v().newParameterRef(ints, 0)));
+        consumerBody.getUnits().add(Jimple.v().newIdentityStmt(loadIndex,
+                Jimple.v().newParameterRef(IntType.v(), 1)));
+        consumerBody.getUnits().add(Jimple.v().newAssignStmt(loaded,
+                Jimple.v().newArrayRef(input, loadIndex)));
+        Unit normal = Jimple.v().newReturnVoidStmt();
+        consumerBody.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newLeExpr(loaded, IntConstant.v(0)), normal));
+        consumerBody.getUnits().add(Jimple.v().newAssignStmt(exception,
+                Jimple.v().newNewExpr(RefType.v(failure.getName()))));
+        consumerBody.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newSpecialInvokeExpr(exception,
+                        failureConstructor.makeRef())));
+        consumerBody.getUnits().add(Jimple.v().newThrowStmt(exception));
+        consumerBody.getUnits().add(normal);
+
+        SootMethod caller = new SootMethod("run",
+                Collections.emptyList(), VoidType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(caller);
+        Body callerBody = Jimple.v().newBody(caller);
+        caller.setActiveBody(callerBody);
+        Local sourceValue = local(callerBody, "source", IntType.v());
+        Local produced = local(callerBody, "produced", ints);
+        callerBody.getUnits().add(Jimple.v().newAssignStmt(sourceValue,
+                Jimple.v().newStaticFieldRef(source.makeRef())));
+        callerBody.getUnits().add(Jimple.v().newAssignStmt(produced,
+                Jimple.v().newStaticInvokeExpr(producer.makeRef(),
+                        sourceValue, IntConstant.v(0))));
+        callerBody.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(consumer.makeRef(),
+                        produced, IntConstant.v(0))));
+        callerBody.getUnits().add(Jimple.v().newReturnVoidStmt());
+
+        ExceptionTargetSite site = new ExceptionTargetSite(
+                "array-flow", owner.getName(), consumer.getName(),
+                "([II)V", consumer.getSignature(), failure.getName(),
+                0, -1);
+        StaticProgram program = new SeedBackwardStaticAnalyzer(
+                new CausynthTargetContext(null, null, site.id, site,
+                        "TEST")).analyze();
+
+        String producerBase = producer.getSignature() + "::result";
+        String producerElement = producerBase + "#array-element";
+        String consumerBase = consumer.getSignature() + "::input";
+        String consumerElement = consumerBase + "#array-element";
+        assertTrue(hasEdge(program, "container_array_store_value",
+                producer.getSignature() + "::stored", producerElement));
+        assertTrue(hasEdge(program, "container_array_store_base",
+                producerElement, producerBase));
+        assertTrue(hasEdge(program, "container_array_load_base",
+                consumerBase, consumerElement));
+        assertTrue(hasEdge(program, "container_array_load_value",
+                consumerElement, consumer.getSignature() + "::loaded"));
+        assertEquals("RUNTIME_BOUNDED_SLOTS", edge(program.edges,
+                "container_array_store_value").get("arraySlotPolicy"));
+        assertFalse(program.edges.stream().anyMatch(candidate ->
+                (producer.getSignature() + "::storeIndex").equals(
+                        candidate.get("fromCell"))
+                        || (producer.getSignature() + "::storeIndex").equals(
+                        candidate.get("toCell"))
+                        || (consumer.getSignature() + "::loadIndex").equals(
+                        candidate.get("fromCell"))
+                        || (consumer.getSignature() + "::loadIndex").equals(
+                        candidate.get("toCell"))));
     }
 
     @Test
@@ -275,6 +713,18 @@ public class SeedBackwardStaticAnalyzerTest {
                 consume.getSignature() + "::leaf"));
         assertTrue(hasEdge(program, "field_read", leafValue.getSignature(),
                 consume.getSignature() + "::value"));
+        assertTrue(hasEdge(program, "field_write",
+                writeMiddle.getSignature() + "::value",
+                rootMiddle.getSignature()));
+        assertFalse(hasEdge(program, "field_write",
+                writeMiddle.getSignature() + "::receiver",
+                rootMiddle.getSignature()));
+        assertTrue(hasEdge(program, "field_write",
+                writeValue.getSignature() + "::input",
+                leafValue.getSignature()));
+        assertFalse(hasEdge(program, "field_write",
+                writeValue.getSignature() + "::receiver",
+                leafValue.getSignature()));
         assertFalse(program.edges.stream().anyMatch(edge ->
                 String.valueOf(edge.get("fromCell")).contains("#field:")
                         || String.valueOf(edge.get("toCell"))
@@ -394,7 +844,8 @@ public class SeedBackwardStaticAnalyzerTest {
 
     private static SootMethod buildCompute(
             SootClass owner, SootClass map, SootClass node,
-            SootMethod get, SootMethod put, SootField values,
+            SootMethod get, SootMethod put, SootMethod mutationHelper,
+            SootField values,
             SootField key, SootField fallback, SootField replacement,
             SootField mutate, SootField nodeFlag, SootField nodeValue) {
         SootMethod method = new SootMethod("compute",
@@ -432,6 +883,9 @@ public class SeedBackwardStaticAnalyzerTest {
         body.getUnits().add(Jimple.v().newAssignStmt(replacementLocal,
                 Jimple.v().newStaticFieldRef(replacement.makeRef())));
         body.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(mutationHelper.makeRef(),
+                        mapLocal, keyLocal, replacementLocal)));
+        body.getUnits().add(Jimple.v().newInvokeStmt(
                 Jimple.v().newInterfaceInvokeExpr(mapLocal, put.makeRef(),
                         keyLocal, replacementLocal)));
         body.getUnits().add(lookup);
@@ -450,6 +904,32 @@ public class SeedBackwardStaticAnalyzerTest {
                         nodeValue.makeRef())));
         body.getUnits().add(Jimple.v().newReturnStmt(valueLocal));
         body.getUnits().add(fallbackReturn);
+        return method;
+    }
+
+    private static SootMethod buildMapMutationHelper(
+            SootClass owner, SootClass map, SootClass node, SootMethod put) {
+        SootMethod method = new SootMethod("mutateMap",
+                Arrays.asList(RefType.v(map.getName()),
+                        RefType.v("java.lang.Object"),
+                        RefType.v(node.getName())),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local mapLocal = local(body, "map", RefType.v(map.getName()));
+        Local keyLocal = local(body, "key", RefType.v("java.lang.Object"));
+        Local valueLocal = local(body, "value", RefType.v(node.getName()));
+        body.getUnits().add(Jimple.v().newIdentityStmt(mapLocal,
+                Jimple.v().newParameterRef(mapLocal.getType(), 0)));
+        body.getUnits().add(Jimple.v().newIdentityStmt(keyLocal,
+                Jimple.v().newParameterRef(keyLocal.getType(), 1)));
+        body.getUnits().add(Jimple.v().newIdentityStmt(valueLocal,
+                Jimple.v().newParameterRef(valueLocal.getType(), 2)));
+        body.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newInterfaceInvokeExpr(mapLocal, put.makeRef(),
+                        keyLocal, valueLocal)));
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
         return method;
     }
 
@@ -497,6 +977,10 @@ public class SeedBackwardStaticAnalyzerTest {
     }
 
     private static RpcFixture rpcFixture() {
+        return rpcFixture(false);
+    }
+
+    private static RpcFixture rpcFixture(boolean concreteClientInvocation) {
         SootClass object = libraryClass("java.lang.Object");
         SootClass runtimeException = libraryClass(
                 "java.lang.RuntimeException");
@@ -520,6 +1004,32 @@ public class SeedBackwardStaticAnalyzerTest {
                 Arrays.asList(IntType.v(), IntType.v()), IntType.v(),
                 Modifier.PUBLIC | Modifier.ABSTRACT);
         protocol.addMethod(client);
+
+        SootMethod clientImplementation = null;
+        SootClass concreteClient = null;
+        if (concreteClientInvocation) {
+            concreteClient = applicationClass(
+                    "example.RemoteClient", object);
+            concreteClient.addInterface(protocol);
+            clientImplementation = new SootMethod("request",
+                    Arrays.asList(IntType.v(), IntType.v()), IntType.v(),
+                    Modifier.PUBLIC);
+            concreteClient.addMethod(clientImplementation);
+            Body clientBody = Jimple.v().newBody(clientImplementation);
+            clientImplementation.setActiveBody(clientBody);
+            Local clientThis = local(clientBody, "this",
+                    RefType.v(concreteClient.getName()));
+            Local first = local(clientBody, "first", IntType.v());
+            Local payload = local(clientBody, "payload", IntType.v());
+            clientBody.getUnits().add(Jimple.v().newIdentityStmt(clientThis,
+                    Jimple.v().newThisRef(
+                            (RefType) clientThis.getType())));
+            clientBody.getUnits().add(Jimple.v().newIdentityStmt(first,
+                    Jimple.v().newParameterRef(IntType.v(), 0)));
+            clientBody.getUnits().add(Jimple.v().newIdentityStmt(payload,
+                    Jimple.v().newParameterRef(IntType.v(), 1)));
+            clientBody.getUnits().add(Jimple.v().newReturnStmt(payload));
+        }
 
         SootClass serverOwner = applicationClass(
                 "example.RemoteServer", object);
@@ -556,8 +1066,10 @@ public class SeedBackwardStaticAnalyzerTest {
 
         SootClass callerOwner = applicationClass(
                 "example.ProtocolCaller", object);
+        RefType remoteType = RefType.v(concreteClientInvocation
+                ? concreteClient.getName() : protocol.getName());
         SootField remote = new SootField("remote",
-                RefType.v(protocol.getName()),
+                remoteType,
                 Modifier.PUBLIC | Modifier.STATIC);
         SootField input = new SootField("input", IntType.v(),
                 Modifier.PUBLIC | Modifier.STATIC);
@@ -570,7 +1082,7 @@ public class SeedBackwardStaticAnalyzerTest {
         Body callerBody = Jimple.v().newBody(caller);
         caller.setActiveBody(callerBody);
         Local remoteLocal = local(callerBody, "remote",
-                RefType.v(protocol.getName()));
+                remoteType);
         Local inputLocal = local(callerBody, "input", IntType.v());
         Local result = local(callerBody, "result", IntType.v());
         callerBody.getUnits().add(Jimple.v().newAssignStmt(remoteLocal,
@@ -578,10 +1090,14 @@ public class SeedBackwardStaticAnalyzerTest {
         callerBody.getUnits().add(Jimple.v().newAssignStmt(inputLocal,
                 Jimple.v().newStaticFieldRef(input.makeRef())));
         callerBody.getUnits().add(Jimple.v().newAssignStmt(result,
-                Jimple.v().newInterfaceInvokeExpr(remoteLocal,
+                concreteClientInvocation
+                        ? Jimple.v().newVirtualInvokeExpr(remoteLocal,
+                        clientImplementation.makeRef(), IntConstant.v(0),
+                        inputLocal)
+                        : Jimple.v().newInterfaceInvokeExpr(remoteLocal,
                         client.makeRef(), IntConstant.v(0), inputLocal)));
         callerBody.getUnits().add(Jimple.v().newReturnStmt(result));
-        return new RpcFixture(client, server, failure);
+        return new RpcFixture(client, clientImplementation, server, failure);
     }
 
     private static StaticProgram analyze(RpcFixture fixture)
@@ -679,12 +1195,15 @@ public class SeedBackwardStaticAnalyzerTest {
 
     private static final class RpcFixture {
         private final SootMethod client;
+        private final SootMethod clientImplementation;
         private final SootMethod server;
         private final SootClass failure;
 
-        private RpcFixture(SootMethod client, SootMethod server,
-                           SootClass failure) {
+        private RpcFixture(SootMethod client,
+                           SootMethod clientImplementation,
+                           SootMethod server, SootClass failure) {
             this.client = client;
+            this.clientImplementation = clientImplementation;
             this.server = server;
             this.failure = failure;
         }

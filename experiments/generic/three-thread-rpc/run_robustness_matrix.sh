@@ -197,7 +197,7 @@ run_case() {
   echo "[three-thread-rpc-matrix] ${label}: candidate"
   CAUSYNTH_WORKFLOW_CONFIG="${config}" \
     GRAPH_CHECKER_SKIP_BUILD=true \
-    "${fixture_runner}" candidate || return $?
+    "${fixture_runner}" full || return $?
   validate_candidate "${label}" "${work_root}" "${z3}" "${expected}"
 }
 

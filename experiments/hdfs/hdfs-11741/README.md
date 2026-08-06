@@ -1,107 +1,104 @@
 # HDFS-11741
 
-This experiment targets the Hadoop source immediately before the HDFS-11741
-fix:
+This experiment runs the automatic bounded GraphChecker pipeline against the
+Hadoop revision immediately before the HDFS-11741 fix:
 
 ```text
 ece33208b89a6a06c1b362d10fab31343fe5df13
 ```
 
-The checkout may be this commit or a descendant that leaves
-`KeyManager.java` unchanged, such as the local commit that adds optional
-Causynth RPC tracing. `run.sh` verifies ancestry and the null-only
-`KeyManager.newDataEncryptionKey()` guard. It refuses a descendant containing
-the HDFS-11741 expiry fix, including a cherry-pick with a different commit id.
+Start from that clean revision. The experiment applies one canonical runtime
+patch (trace context, bounded workload knobs, and deterministic block-key
+serials) plus the fatal-target marker. It rejects a checkout containing the
+upstream expiry fix. The RPC hooks carry trace lineage only; endpoint, payload,
+and value fingerprints are not part of the binding protocol.
 
-The patch only adds GraphChecker's class-retained fatal-target marker to the
-`InvalidEncryptionKeyException` construction in
-`BlockTokenSecretManager.retrieveDataEncryptionKey`. It does not change Hadoop
-runtime behavior or apply the upstream bug fix.
-
-Apply it from the root of a clean Hadoop checkout:
+The supported commands are:
 
 ```bash
-git checkout ece33208b89a6a06c1b362d10fab31343fe5df13
-git apply --check \
-  /opt/GraphChecker/experiments/hdfs/hdfs-11741/patches/mark-fatal-target.patch
-git apply \
-  /opt/GraphChecker/experiments/hdfs/hdfs-11741/patches/mark-fatal-target.patch
+# Patch/build Hadoop, construct its test classpath, and run the concrete test.
+HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh prepare
+
+# Automatic static analysis + two runtime passes + task generation.
+HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh tasks
+
+# Resume from an existing task plan: VM summaries, SMT, and Z3 only.
+HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh candidates
+
+# Complete pipeline: prepare, task discovery, VM summaries, SMT, and Z3.
+HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh full
 ```
 
-## Baseline workload
+`config` and `validate` are read-only diagnostics. `traced-workload` is an
+internal callback used by `workflow.properties`; it is not a separate workflow.
+There is no public single-task, single-region, or single-target selector.
 
-The experiment uses the existing Hadoop JUnit method:
+`tasks` stops before concolic execution and produces:
 
 ```text
-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1
-```
-
-Prepare the pre-fix checkout, compile its main and test classes, materialize
-the complete test-scope classpath, and run only that method:
-
-```bash
-experiments/hdfs/hdfs-11741/run.sh prepare
-```
-
-The individual steps are also available as `patch`, `build`, `classpath`, and
-`baseline`. The generated classpath is written to:
-
-```text
-target/hdfs-11741/project-classpath.txt
-```
-
-## Prepare concolic tasks automatically
-
-After `prepare` and a GraphChecker build, run the complete pre-concolic
-pipeline with one command:
-
-```bash
-experiments/hdfs/hdfs-11741/run.sh tasks
-```
-
-`tasks` performs static analysis, the activation-envelope runtime pass, the
-selected-region state/runtime pass, and task scheduling. It validates each
-stage's artifacts. The final task plan must contain executable typed tasks
-with the canonical `CFG_BACKEDGE` loop-bound contract.
-
-The command stops at:
-
-```text
+target/hdfs-11741/analysis/symbolic_regions.jsonl
+target/hdfs-11741/runtime/concolic_region_plan.jsonl
 target/hdfs-11741/schedule/execution_task_plan.jsonl
 target/hdfs-11741/schedule/branch_queries.jsonl
+target/hdfs-11741/schedule/selected_target_binding.tsv
+target/hdfs-11741/schedule/selected_closure_bindings.tsv
 ```
 
-It never starts the custom concolic JVM and does not run import, composition,
-or reachability solving. An empty `branch_queries.jsonl` is valid before any
-concolic result has been captured.
+Scheduling is target-first. It takes the highest-ranked valid fatal target,
+walks its trusted exact-port dependency closure, and schedules only that one
+target goal plus the unique producer logical goals in the closure. Each goal
+is selected with its region, runtime occurrence membership, and goal identity;
+the occurrence is discovery evidence, while the emitted task retains the
+logical replay identity. Per-goal scheduler outputs are isolated and then
+merged deterministically by `taskId` and `queryKey`.
 
-For a clean checkout, the fully automated preparation is:
+`full` does not hard-code thread ids, object ids, call ids, or HDFS region
+names. Each selected task is instrumented and replayed by the custom VM; the
+importer and composer consume those VM summaries directly. The SAT candidate
+is retained at:
+
+```text
+target/hdfs-11741/candidates/<campaign>/candidate.smt2
+target/hdfs-11741/candidates/<campaign>/z3-result.json
+target/hdfs-11741/candidates/sat-result.json
+```
+
+Concolic execution keeps two bounded parallelism levels. Independent logical
+region campaigns run in parallel (`HDFS11741_REGION_JOBS`, default 2), and one
+campaign executes the sorted semantic path-seed/branch-flip frontier in
+parallel (`HDFS11741_PATH_JOBS`, default 2). Every campaign and flip has a
+private classes, test-data, log, result, and summary directory. Frontier
+results are merged serially by canonical query key, and only the coordinator
+performs partial-SAT probes, so concurrency does not change the composed
+relation order.
+
+All loops in a concolic task use the generic CFG-backedge limit of eight body
+iterations; this applies to service loops without recognizing Hadoop method
+names. The three HDFS workload activation knobs also default to eight so runtime
+discovery cannot record an eighth or thirty-second occurrence that replay must
+cut. `HDFS11741_NN_UPDATE_ITERATIONS`,
+`HDFS11741_DATANODE_REFRESH_ITERATIONS`, and
+`HDFS11741_BALANCER_REFRESH_ITERATIONS` may reduce that concrete evidence
+window to 1--8; values above eight are rejected. Container materialization
+currently retains up to eight failure-relevant cells per logical input port; this
+is an independent exploration resource cap, not an assumption that an HDFS
+container has length eight and never a way to increase loop execution.
+
+The concrete workload is:
+
+```text
+org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer
+  #testEncryptedBalancer1
+```
+
+The protocol mapping in `protocol-stubs.jsonl` declares the logical RPC pairs
+and whether a server callback starts a new execution entry or remains nested in
+its owning region. Runtime trace lineage chooses the actual occurrences; wire
+payload equality is deliberately not revalidated.
+
+The lightweight patch gate uses a temporary clean checkout and tests first and
+idempotent second application:
 
 ```bash
-experiments/hdfs/hdfs-11741/run.sh full-auto
+experiments/hdfs/hdfs-11741/test_patch.sh
 ```
-
-`full-auto` applies the marker, builds and tests Hadoop, materializes the
-classpath, builds GraphChecker, and then runs `tasks`. It has the same
-pre-concolic stopping point.
-
-`workflow.properties`, `target.yaml`, and `protocol-stubs.jsonl` define the
-next GraphChecker phase. The protocol stub file explicitly connects the
-logical NameNode/DataNode RPC methods and the encrypted SASL handshake; static
-analysis does not infer these bridges from `Protocol`/`PB` class names.
-
-Run the configured static analysis with:
-
-```bash
-experiments/hdfs/hdfs-11741/run.sh analyze
-```
-
-After static analysis, run the two runtime-analysis passes with:
-
-```bash
-experiments/hdfs/hdfs-11741/run.sh workload
-```
-
-The first pass selects concrete region activations. The second pass records
-direct field identities and configured RPC endpoints, then writes the refined
-graph and runtime region plans. This command does not start concolic replay.

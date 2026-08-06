@@ -658,6 +658,73 @@ public class ConcolicConstraintSolverTest {
     }
 
     @Test
+    public void sparseReferenceCanReplayNull() throws Exception {
+        Assume.assumeTrue(z3Available());
+        String port = "REGION.61e62f41-34c6-3a5d-b610-b639dc3f4838"
+                + ".in.fc915256-5ad9-3272-977b-2ccd8a7699a9";
+        JsonObject element = associativeRead(
+                "M_L_field_" + port, intConstant(7), "L");
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(binaryExpression(element, "==",
+                        referenceSymbol("N"))),
+                containerActivation(containerInputAction(
+                        port, "java.util.Map")),
+                Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(1, result.modelAssignments.size());
+        JsonObject assignment = result.modelAssignments.get(0)
+                .getAsJsonObject();
+        assertEquals(port, assignment.get("inputSymbol").getAsString());
+        assertEquals("NULL", assignment.get("valueType").getAsString());
+        JsonObject target = assignment.getAsJsonObject("containerTarget");
+        assertEquals("ACCESS_ORDINAL",
+                target.get("selectorKind").getAsString());
+        assertEquals(1, target.get("accessOrdinal").getAsInt());
+        assertFalse(target.has("keyValue"));
+    }
+
+    @Test
+    public void associativeElementLongFieldLowersJvmLcmpWithoutTypeGap()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String port = "REGION.3.in.map";
+        String state = "M_L_field_" + port;
+        JsonObject entryView = associativeOperation("ENTRY_VIEW",
+                associativeState(state));
+        JsonObject iterator = associativeOperation("ITERATOR", entryView);
+        JsonObject next = associativeOperation("NEXT", iterator,
+                intConstant(0));
+        JsonObject value = associativeOperation("VALUE", next);
+        JsonObject expiry = new JsonObject();
+        expiry.addProperty("_type", "FieldAccessExpression");
+        expiry.addProperty("_java_type", "J");
+        expiry.addProperty("ownerClass", "example/Key");
+        expiry.addProperty("fieldOffset", 24);
+        expiry.add("owner", value);
+        JsonObject now = new JsonObject();
+        now.addProperty("_type", "PlaceholderExpression");
+        now.addProperty("_place_holder_func", "currentTimeMills");
+        now.addProperty("_count", 1);
+        JsonObject lcmp = binaryExpression(expiry, "--", now);
+        lcmp.addProperty("_java_type", "I");
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(binaryExpression(lcmp, "<", intConstant(0))),
+                containerActivation(containerInputAction(port,
+                        "java.util.Map")), Paths.get("z3"), 10_000L);
+
+        assertFalse(result.record.toString(), "UNSUPPORTED".equals(
+                result.record.get("status").getAsString()));
+        assertFalse(result.record.toString(), result.record
+                .getAsJsonArray("unsupported").toString()
+                .contains("MALFORMED_JVM_LCMP_OPERANDS"));
+        assertTrue(result.smtLib, result.smtLib.contains("(ite (> "));
+    }
+
+    @Test
     public void observedReferenceIdentityIsIndependentOfDeclaredType()
             throws Exception {
         Assume.assumeTrue(z3Available());

@@ -2,10 +2,14 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import org.junit.Test;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class InitialContainerObservationTest {
     @Test
@@ -29,11 +33,25 @@ public class InitialContainerObservationTest {
                         equality.getAsJsonObject("_left")).inputPort));
 
         assertFalse(InitialContainerObservation.isConcreteEquality(
-                equality("M_L_field_REGION.12.in.34x", "int", "int")));
+                equality("M_L_field_REGION.12.in.34$x", "int", "int")));
         assertFalse(InitialContainerObservation.isConcreteEquality(
                 equality("M_I_field_REGION.12.in.34", "int", "int")));
         assertFalse(InitialContainerObservation.isConcreteEquality(
-                equality("M_L_field_REGION.x.in.34", "int", "int")));
+                equality("M_L_field_REGION.$.in.34", "int", "int")));
+    }
+
+    @Test
+    public void recognizesStableUuidRegionAndPortIds() {
+        String port = "REGION.61e62f41-34c6-3a5d-b610-b639dc3f4838"
+                + ".in.fc915256-5ad9-3272-977b-2ccd8a7699a9";
+        JsonObject equality = equality("M_L_field_" + port,
+                "int", "int");
+        InitialContainerObservation.Read read =
+                InitialContainerObservation.initialRead(
+                        equality.getAsJsonObject("_left"));
+
+        assertTrue(read != null);
+        assertTrue(port.equals(read.inputPort));
     }
 
     @Test
@@ -66,8 +84,58 @@ public class InitialContainerObservationTest {
                         "ENTRY_VIEW", 0)));
     }
 
+    @Test
+    public void relevanceSelectedSnapshotAllowsEightUniqueCellsOnly() {
+        JsonArray eight = new JsonArray();
+        JsonArray nine = new JsonArray();
+        for (int index = 0; index < 9; index++) {
+            JsonObject cell = equality("REGION.container.in.values",
+                    "int", "int", index);
+            nine.add(cell);
+            if (index < 8) eight.add(cell.deepCopy());
+        }
+
+        assertTrue(InitialContainerObservation
+                .failureRelevantCapacityIssue(eight).isEmpty());
+        assertTrue(InitialContainerObservation
+                .failureRelevantCapacityIssue(nine).contains(
+                        "SYMBOLIC_CONTAINER_RELEVANT_CELL_"
+                                + "CAPACITY_EXCEEDED"));
+    }
+
+    @Test
+    public void pathObservationRejectsNineFailureRelevantCells() {
+        JsonObject summary = new JsonObject();
+        summary.addProperty("goalId", "GOAL.container.capacity");
+        summary.addProperty("regionId", "REGION.container");
+        ClosureGoalKind.TARGET_REACH_CLOSURE.writeToTask(summary);
+        LoopBoundPolicy.cfgBackedges(8).writeTo(summary);
+        JsonArray path = new JsonArray();
+        for (int index = 0; index < 9; index++) {
+            path.add(equality("REGION.container.in.values",
+                    "int", "int", index));
+        }
+        summary.add("pathCondition", path);
+        summary.add("branchMappings", new JsonArray());
+        summary.add("outputExpressions", new JsonObject());
+
+        try {
+            PathObservation.decode(summary, null);
+            fail("oversized relevant snapshot must fail closed");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains(
+                    "SYMBOLIC_CONTAINER_RELEVANT_CELL_"
+                            + "CAPACITY_EXCEEDED"));
+        }
+    }
+
     private static JsonObject equality(String symbol, String readType,
                                        String valueType) {
+        return equality(symbol, readType, valueType, 1);
+    }
+
+    private static JsonObject equality(String symbol, String readType,
+                                       String valueType, int cellIndex) {
         JsonObject identity = new JsonObject();
         identity.addProperty("_type", "SymbolExpression");
         identity.addProperty("_exp", symbol);
@@ -81,7 +149,7 @@ public class InitialContainerObservationTest {
         JsonObject index = new JsonObject();
         index.addProperty("_type", "ConstExpr");
         index.addProperty("_java_type", "int");
-        index.addProperty("_exp", "CONST_INT_1");
+        index.addProperty("_exp", "CONST_INT_" + cellIndex);
 
         JsonObject read = new JsonObject();
         read.addProperty("_type", "ContainerRelation");

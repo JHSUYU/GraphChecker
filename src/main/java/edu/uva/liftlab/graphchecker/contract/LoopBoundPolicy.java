@@ -6,10 +6,15 @@ import com.google.gson.JsonObject;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/** Canonical execution-wide bound applied to every CFG backedge. */
+/** Canonical fixed bounds for bounded concolic execution. */
 public final class LoopBoundPolicy {
     public static final String FIELD = "loopBound";
-    public static final int DEFAULT_MAX_BACKEDGE_TRAVERSALS = 8;
+    /** No {@code for}, {@code while}, or {@code do-while} body may run more. */
+    public static final int MAX_LOOP_BODY_ITERATIONS = 8;
+    /** Maximum failure-relevant cells retained for one symbolic container. */
+    public static final int SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY = 8;
+    // A guarded body-entry hook denies body nine after eight bodies have run.
+    // The encoded field name is historical; the value is a body bound.
     private static final int SCHEMA_VERSION = 1;
     private static final String KIND = "CFG_BACKEDGE";
     private static final String SCOPE = "ALL_EXECUTION_SCOPE_LOOPS";
@@ -18,9 +23,10 @@ public final class LoopBoundPolicy {
     private final int maxBackedgeTraversals;
 
     private LoopBoundPolicy(int maxBackedgeTraversals) {
-        if (maxBackedgeTraversals < 1) {
+        if (maxBackedgeTraversals != MAX_LOOP_BODY_ITERATIONS) {
             throw new IllegalArgumentException(
-                    "loop bound must allow at least one backedge traversal");
+                    "loop body bound is fixed at "
+                            + MAX_LOOP_BODY_ITERATIONS + " iterations");
         }
         this.maxBackedgeTraversals = maxBackedgeTraversals;
     }

@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 
+import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+
 /**
  * Static field-input materialization selected by exact analysis sites.
  *
@@ -56,6 +58,9 @@ public final class MaterializationSpec {
             throw new IllegalArgumentException(
                     "FIELD_READ materialization requires accessSites");
         }
+        if (this.kind == Kind.ACCESSOR_RETURN) {
+            validateAccessorReturn();
+        }
     }
 
     public static MaterializationSpec none() {
@@ -78,8 +83,22 @@ public final class MaterializationSpec {
             String javaType, String field, List<String> path,
             String callerMethod, int unitIndex,
             String declaredCallee, String implementationMethod) {
+        return accessorReturn(javaType, field, field, path, callerMethod,
+                unitIndex, declaredCallee, implementationMethod);
+    }
+
+    /**
+     * Materializes one demanded leaf below the object returned by an exact
+     * accessor call.  The root and leaf declarations stay separate so a
+     * transported reference is never mistaken for the symbolic value.
+     */
+    public static MaterializationSpec accessorReturn(
+            String javaType, String rootField, String leafField,
+            List<String> path, String callerMethod, int unitIndex,
+            String declaredCallee, String implementationMethod) {
         return new MaterializationSpec(Kind.ACCESSOR_RETURN, javaType,
-                field, field, path, Collections.<String>emptyList(),
+                rootField, leafField, path,
+                Collections.<String>emptyList(),
                 Collections.<String>emptyList(), callerMethod, unitIndex,
                 declaredCallee,
                 implementationMethod);
@@ -220,6 +239,38 @@ public final class MaterializationSpec {
                     implementationMethod);
         }
         return result;
+    }
+
+    private void validateAccessorReturn() {
+        FieldPathSpec.DeclaredField root =
+                FieldPathSpec.declaredField(rootField);
+        FieldPathSpec.DeclaredField leaf =
+                FieldPathSpec.declaredField(leafField);
+        if (root == null || leaf == null || path.isEmpty()
+                || !root.name().equals(path.get(0))
+                || !leaf.name().equals(path.get(path.size() - 1))
+                || !leaf.type().equals(javaType)
+                || method.isEmpty() || unitIndex < 0
+                || declaredCallee.isEmpty()
+                || implementationMethod.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "ACCESSOR_RETURN requires an exact root-to-leaf path "
+                            + "and call site");
+        }
+        if (rootField.equals(leafField)) {
+            if (path.size() != 1) {
+                throw new IllegalArgumentException(
+                        "direct accessor materialization requires one field");
+            }
+            return;
+        }
+        String rootDescriptor = javaTypeDescriptor(root.type());
+        if (path.size() < 2 || !rootDescriptor.startsWith("L")
+                || !rootDescriptor.endsWith(";")) {
+            throw new IllegalArgumentException(
+                    "nested accessor materialization requires a reference "
+                            + "root and complete field path");
+        }
     }
 
     private static List<String> immutable(List<String> values) {

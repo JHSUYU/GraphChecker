@@ -18,6 +18,10 @@ public final class RegionStringSplitParseMapApiSmoke {
 
         System.startConcolicRegion("REGION.string-split-parse-map",
                 "ACT.string-split-parse-map");
+        String[] concreteParts = new String("11:concrete").split(":");
+        require(concreteParts.length == 2
+                && "concrete".equals(concreteParts[1]),
+                "concrete split before symbolization");
         System.symbolize(decimalInput, "split_parse_decimal");
         System.symbolize(radixInput, "split_parse_radix");
 

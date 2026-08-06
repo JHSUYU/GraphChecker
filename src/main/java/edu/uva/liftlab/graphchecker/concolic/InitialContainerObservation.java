@@ -3,6 +3,12 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
@@ -16,7 +22,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * not part of the region's symbolic relation. Only a concrete array/list
  * index or primitive/String map key is replayable.</p>
  */
-final class InitialContainerObservation {
+public final class InitialContainerObservation {
     private InitialContainerObservation() {
     }
 
@@ -68,6 +74,62 @@ final class InitialContainerObservation {
         }
         return new Read(shape, symbol, inputPort, index, selector,
                 iterationProjection, string(expression, "_java_type"));
+    }
+
+    /**
+     * Validates a relevance-selected expression slice against the fixed
+     * sparse-container capacity. Repeated reads of the same logical cell are
+     * counted once, and capacity is enforced independently for each canonical
+     * region input port. The caller chooses the failure-relevant roots; this
+     * method never fills spare slots with unrelated physical members.
+     *
+     * @return an empty string when every logical container fits, otherwise a
+     * deterministic fail-closed diagnostic
+     */
+    public static String failureRelevantCapacityIssue(
+            JsonElement... relevantRoots) {
+        Map<String, Set<String>> cellsByPort = new LinkedHashMap<>();
+        if (relevantRoots != null) {
+            for (JsonElement root : relevantRoots) {
+                collectFailureRelevantCells(root, cellsByPort);
+            }
+        }
+        for (Map.Entry<String, Set<String>> entry
+                : cellsByPort.entrySet()) {
+            int size = entry.getValue().size();
+            if (size > LoopBoundPolicy
+                    .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
+                return "SYMBOLIC_CONTAINER_RELEVANT_CELL_CAPACITY_EXCEEDED:"
+                        + entry.getKey() + ':' + size + '>'
+                        + LoopBoundPolicy
+                        .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY;
+            }
+        }
+        return "";
+    }
+
+    private static void collectFailureRelevantCells(
+            JsonElement expression,
+            Map<String, Set<String>> cellsByPort) {
+        if (expression == null || expression.isJsonNull()) return;
+        if (expression.isJsonArray()) {
+            for (JsonElement child : expression.getAsJsonArray()) {
+                collectFailureRelevantCells(child, cellsByPort);
+            }
+            return;
+        }
+        if (!expression.isJsonObject()) return;
+        JsonObject object = expression.getAsJsonObject();
+        Read read = initialRead(object);
+        if (read != null && read.concreteSelector()) {
+            cellsByPort.computeIfAbsent(read.inputPort,
+                    ignored -> new LinkedHashSet<>())
+                    .add(read.shape + '\u0000'
+                            + read.selectorIdentity());
+        }
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            collectFailureRelevantCells(entry.getValue(), cellsByPort);
+        }
     }
 
     private static JsonObject initialState(JsonElement expression,
@@ -139,13 +201,17 @@ final class InitialContainerObservation {
         } else {
             return "";
         }
-        int cursor = start + "REGION.".length();
-        int regionEnd = digitsEnd(value, cursor);
-        if (regionEnd == cursor || !value.startsWith(".in.", regionEnd)) {
+        if (!value.startsWith("REGION.", start)) {
             return "";
         }
-        cursor = regionEnd + ".in.".length();
-        int portEnd = digitsEnd(value, cursor);
+        int inputMarker = value.indexOf(".in.",
+                start + "REGION.".length());
+        if (inputMarker < 0 || !stableToken(value,
+                start + "REGION.".length(), inputMarker)) {
+            return "";
+        }
+        int cursor = inputMarker + ".in.".length();
+        int portEnd = tokenEnd(value, cursor);
         if (portEnd == cursor) {
             return "";
         }
@@ -158,13 +224,28 @@ final class InitialContainerObservation {
         return value.substring(start, portEnd);
     }
 
-    private static int digitsEnd(String value, int start) {
+    private static int tokenEnd(String value, int start) {
         int cursor = start;
         while (cursor < value.length()
-                && Character.isDigit(value.charAt(cursor))) {
+                && stableTokenCharacter(value.charAt(cursor))) {
             cursor++;
         }
         return cursor;
+    }
+
+    private static boolean stableToken(String value, int start, int end) {
+        if (start >= end) return false;
+        for (int index = start; index < end; index++) {
+            char current = value.charAt(index);
+            if (current != '.' && !stableTokenCharacter(current)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean stableTokenCharacter(char value) {
+        return Character.isLetterOrDigit(value) || value == '-';
     }
 
     static boolean isConcreteEquality(JsonElement expression) {

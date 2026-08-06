@@ -77,6 +77,8 @@ final class ConcolicInstrumentationSelections {
         private final LoopBoundPolicy loopBound;
         private final ConcolicMaterializationSelection materializations;
         private final List<RootedOutputCapture> outputCaptures;
+        private final List<CallArgumentOutputCapture> callArgumentOutputs;
+        private final List<ExactHeapOutputCapture> exactHeapOutputs;
         private final Set<String> instrumentationMethods;
 
         private InstrumentationPlan(ExecutionTask task) throws IOException {
@@ -97,6 +99,10 @@ final class ConcolicInstrumentationSelections {
             materializations = ConcolicMaterializationSelection.from(symbolic);
             outputCaptures = rootedOutputCaptures(task.outputCaptures(),
                     inputActions.all());
+            callArgumentOutputs = callArgumentOutputCaptures(
+                    task.outputCaptures());
+            exactHeapOutputs = exactHeapOutputCaptures(
+                    task.outputCaptures());
 
             LinkedHashSet<String> methods = new LinkedHashSet<>();
             methods.add(rootMethod);
@@ -105,6 +111,12 @@ final class ConcolicInstrumentationSelections {
                 methods.addAll(closure.executionScope().methods());
             } else {
                 methods.addAll(branches.methods());
+            }
+            for (CallArgumentOutputCapture capture : callArgumentOutputs) {
+                methods.add(capture.method());
+            }
+            for (ExactHeapOutputCapture capture : exactHeapOutputs) {
+                methods.add(capture.method());
             }
             instrumentationMethods = Collections.unmodifiableSet(methods);
         }
@@ -184,6 +196,14 @@ final class ConcolicInstrumentationSelections {
             return outputCaptures;
         }
 
+        List<CallArgumentOutputCapture> callArgumentOutputs() {
+            return callArgumentOutputs;
+        }
+
+        List<ExactHeapOutputCapture> exactHeapOutputs() {
+            return exactHeapOutputs;
+        }
+
         Set<String> instrumentationMethods() {
             return instrumentationMethods;
         }
@@ -193,6 +213,7 @@ final class ConcolicInstrumentationSelections {
                 throws IOException {
             List<RootedOutputCapture> rooted = new ArrayList<>();
             for (OutputCaptureSpec capture : captures) {
+                if (!capture.capturesRegionExitField()) continue;
                 JsonObject match = null;
                 for (JsonElement element : actions) {
                     JsonObject action = element.getAsJsonObject();
@@ -218,9 +239,133 @@ final class ConcolicInstrumentationSelections {
                             + capture.captureBindingId()
                             + " has no exact rooted field path");
                 }
+                // A nested heap owner is identified by the exact field-read
+                // hook at runtime, not by inventing a path from the region
+                // root receiver.  Runtime captures it from that observed
+                // owner when the bounded activation finishes.
+                if (match != null && "HEAP_OBJECT_FIELD".equals(
+                        jsonString(match, "location"))) {
+                    if (!"SYMBOLIC".equals(jsonString(match, "mode"))
+                            || !"FIELD_ACCESS".equals(
+                            jsonString(match, "bindingMode"))) {
+                        throw new IOException("Output capture "
+                                + capture.captureBindingId()
+                                + " has no symbolic nested field owner");
+                    }
+                    continue;
+                }
                 rooted.add(new RootedOutputCapture(capture, path));
             }
             return Collections.unmodifiableList(rooted);
+        }
+
+        private static List<CallArgumentOutputCapture>
+        callArgumentOutputCaptures(List<OutputCaptureSpec> captures) {
+            List<CallArgumentOutputCapture> result = new ArrayList<>();
+            for (OutputCaptureSpec capture : captures) {
+                if (capture.capturesCallArgument()) {
+                    result.add(new CallArgumentOutputCapture(capture));
+                }
+            }
+            return Collections.unmodifiableList(result);
+        }
+
+        private static List<ExactHeapOutputCapture>
+        exactHeapOutputCaptures(List<OutputCaptureSpec> captures) {
+            List<ExactHeapOutputCapture> result = new ArrayList<>();
+            for (OutputCaptureSpec capture : captures) {
+                if (capture.capturesExactHeapWrite()) {
+                    result.add(new ExactHeapOutputCapture(capture));
+                }
+            }
+            return Collections.unmodifiableList(result);
+        }
+    }
+
+    static final class ExactHeapOutputCapture {
+        private final OutputCaptureSpec capture;
+
+        private ExactHeapOutputCapture(OutputCaptureSpec capture) {
+            this.capture = capture;
+        }
+
+        String captureBindingId() {
+            return capture.captureBindingId();
+        }
+
+        String method() {
+            return capture.definitionMethod();
+        }
+
+        int unitIndex() {
+            return capture.definitionUnitIndex();
+        }
+
+        String declaredCallee() {
+            return capture.declaredCallee();
+        }
+
+        String fieldSignature() {
+            // The existing pipeline selector consumes this accessor to match
+            // the concrete putfield.  For a nested leaf projection that is
+            // the definition field, not the semantic output leaf.
+            return capture.definitionFieldSignature();
+        }
+
+        String definitionFieldSignature() {
+            return capture.definitionFieldSignature();
+        }
+
+        String leafFieldSignature() {
+            return capture.leafFieldSignature();
+        }
+
+        List<String> fieldPath() {
+            return capture.fieldPath();
+        }
+
+        boolean nestedFieldWriteState() {
+            return capture.nestedFieldWriteState();
+        }
+
+        boolean mutationState() {
+            return capture.capturesMutationState();
+        }
+
+        boolean definitionInvocationScoped() {
+            return capture.definitionInvocationScoped();
+        }
+
+        boolean fieldWriteState() {
+            return capture.capturesFieldWriteState();
+        }
+    }
+
+    static final class CallArgumentOutputCapture {
+        private final OutputCaptureSpec capture;
+
+        private CallArgumentOutputCapture(OutputCaptureSpec capture) {
+            this.capture = capture;
+        }
+
+        String captureBindingId() {
+            return capture.captureBindingId();
+        }
+
+        String method() {
+            return capture.definitionMethod();
+        }
+
+        int unitIndex() {
+            return capture.definitionUnitIndex();
+        }
+
+        int argumentIndex() {
+            return capture.argumentIndex();
+        }
+
+        String declaredCallee() {
+            return capture.declaredCallee();
         }
     }
 
@@ -304,6 +449,8 @@ final class ConcolicInstrumentationSelections {
                 "^(<.+>)::([^#]+)(?:#.*)?$");
         private final Map<String, Map<String, Set<Integer>>> localsByMethod =
                 new LinkedHashMap<>();
+        private final Map<String, Set<Integer>> methodArguments =
+                new LinkedHashMap<>();
         private final List<FieldTarget> fields = new ArrayList<>();
         private final Map<String, AccessorCallTarget> accessorCallsBySite =
                 new LinkedHashMap<>();
@@ -322,6 +469,16 @@ final class ConcolicInstrumentationSelections {
             addAccessorCallTarget(action);
             String mode = jsonString(action, "bindingMode");
             String cell = jsonString(action, "cell");
+            if ("METHOD_ARGUMENT".equals(mode)) {
+                String method = jsonString(action, "method");
+                int index = intJson(action, "index", -1);
+                if (method.isEmpty() || index < 0) {
+                    throw unsupported(action);
+                }
+                methodArguments.computeIfAbsent(method,
+                        ignored -> new LinkedHashSet<>()).add(index);
+                return;
+            }
             if ("LOCAL_DEFINITION".equals(mode)) {
                 String method = jsonString(action, "method");
                 String local = jsonString(action, "local");
@@ -413,12 +570,23 @@ final class ConcolicInstrumentationSelections {
         }
 
         boolean isEmpty() {
-            return localsByMethod.isEmpty() && fields.isEmpty()
+            return localsByMethod.isEmpty() && methodArguments.isEmpty()
+                    && fields.isEmpty()
                     && accessorCallsBySite.isEmpty();
         }
 
         Set<String> localMethods() {
             return localsByMethod.keySet();
+        }
+
+        Set<String> methodArgumentMethods() {
+            return methodArguments.keySet();
+        }
+
+        Set<Integer> methodArguments(String method) {
+            Set<Integer> indices = methodArguments.get(method);
+            return indices == null ? Collections.<Integer>emptySet()
+                    : indices;
         }
 
         Set<String> accessorCallerMethods() {

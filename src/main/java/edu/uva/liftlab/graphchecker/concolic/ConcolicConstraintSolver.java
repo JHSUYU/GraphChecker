@@ -7,6 +7,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -148,7 +149,8 @@ public final class ConcolicConstraintSolver {
                 actions, replayControlSymbols, referenceDomains);
         ModelProjection containerProjection =
                 sparseContainerAssignments(values, containerBoundaries,
-                        referenceDomains);
+                        referenceDomains,
+                        replayContract.source().occurrence());
         for (JsonElement assignment : containerProjection.assignments) {
             projection.assignments.add(assignment);
         }
@@ -485,7 +487,9 @@ public final class ConcolicConstraintSolver {
                             "(declare-fun " + accessor + " (Ref) "
                                     + result.smt + ")");
                     return toContainerTerm(new Term("(" + accessor + " "
-                            + owner.text + ")", result));
+                            + owner.text + ")", result,
+                            JavaPrimitiveSmtSemantics.widthOfJavaType(
+                                    javaType)));
                 }
 
                 @Override
@@ -994,6 +998,16 @@ public final class ConcolicConstraintSolver {
                                 + boundary.term.sort.smt + " "
                                 + boundary.term.text + ")");
                 additionalModelNames.add(boundary.modelName);
+                if (boundary.term.sort == Sort.REF
+                        && boundary.nullCompared) {
+                    boundary.nullModelName = boundary.modelName
+                            + "__is_null";
+                    functionDeclarations.put(boundary.nullModelName,
+                            "(define-fun " + boundary.nullModelName
+                                    + " () Bool (= " + boundary.term.text
+                                    + " nullRef))");
+                    additionalModelNames.add(boundary.nullModelName);
+                }
                 JavaPrimitiveSmtSemantics.IntegralDomain domain =
                         JavaPrimitiveSmtSemantics.domainOfJavaType(
                                 boundary.javaType);
@@ -1629,7 +1643,8 @@ public final class ConcolicConstraintSolver {
     private static ModelProjection sparseContainerAssignments(
             Map<String, String> values,
             SparseContainerBoundaries boundaries,
-            ReferenceDomains referenceDomains) {
+            ReferenceDomains referenceDomains,
+            int targetOccurrence) {
         JsonArray assignments = new JsonArray();
         Set<String> unresolved = new LinkedHashSet<>();
         Map<String, List<SparseContainerBoundary>> referenceGroups =
@@ -1641,13 +1656,27 @@ public final class ConcolicConstraintSolver {
                 continue;
             }
             if (boundary.term.sort == Sort.REF) {
+                if (!boundary.nullModelName.isEmpty()) {
+                    String nullness = values.get(boundary.nullModelName);
+                    if ("true".equals(nullness)) {
+                        assignments.add(containerAssignment(
+                                boundary, "NULL", "null",
+                                targetOccurrence));
+                        continue;
+                    }
+                    if (!"false".equals(nullness)) {
+                        unresolved.add(boundary.modelName);
+                        continue;
+                    }
+                }
                 referenceGroups.computeIfAbsent(value,
                         ignored -> new ArrayList<>()).add(boundary);
                 continue;
             }
             assignments.add(containerAssignment(boundary,
                     boundary.term.sort.name(),
-                    SmtModelValueCodec.normalizeScalar(value)));
+                    SmtModelValueCodec.normalizeScalar(value),
+                    targetOccurrence));
         }
         for (Map.Entry<String, List<SparseContainerBoundary>> entry
                 : referenceGroups.entrySet()) {
@@ -1655,19 +1684,13 @@ public final class ConcolicConstraintSolver {
             group.sort(Comparator.comparing(
                     SparseContainerBoundary::identity));
             String modelValue = entry.getKey();
-            if ("nullRef".equals(modelValue)) {
-                for (SparseContainerBoundary boundary : group) {
-                    assignments.add(containerAssignment(
-                            boundary, "NULL", "null"));
-                }
-                continue;
-            }
             String ordinarySource =
                     referenceDomains.sourceForModelValue(modelValue, values);
             if (!ordinarySource.isEmpty()) {
                 for (SparseContainerBoundary target : group) {
                     JsonObject assignment = containerAssignment(target,
-                            "CONTAINER_REFERENCE_ALIAS", "");
+                            "CONTAINER_REFERENCE_ALIAS", "",
+                            targetOccurrence);
                     assignment.addProperty("referenceSourceInputSymbol",
                             ordinarySource);
                     assignments.add(assignment);
@@ -1691,7 +1714,8 @@ public final class ConcolicConstraintSolver {
             for (SparseContainerBoundary target : group) {
                 if (target == source) continue;
                 JsonObject assignment = containerAssignment(target,
-                        "CONTAINER_REFERENCE_ALIAS", "");
+                        "CONTAINER_REFERENCE_ALIAS", "",
+                        targetOccurrence);
                 assignment.addProperty("referenceSourceInputSymbol",
                         string(source.action, "symbol"));
                 target.addSourceSelector(
@@ -1705,7 +1729,7 @@ public final class ConcolicConstraintSolver {
 
     private static JsonObject containerAssignment(
             SparseContainerBoundary boundary, String valueType,
-            String value) {
+            String value, int targetOccurrence) {
             JsonObject assignment = new JsonObject();
             assignment.addProperty("modelAssignmentKey",
                     boundary.modelName);
@@ -1715,7 +1739,7 @@ public final class ConcolicConstraintSolver {
             assignment.addProperty("valueType", valueType);
             if (!value.isEmpty()) assignment.addProperty("value", value);
             JsonObject target = new JsonObject();
-            boundary.addSelector(target);
+            boundary.addSelector(target, targetOccurrence);
             assignment.add("containerTarget", target);
             return assignment;
     }
@@ -1737,12 +1761,19 @@ public final class ConcolicConstraintSolver {
         private final Set<String> gaps = new LinkedHashSet<>();
         private final List<SparseContainerBoundary> models =
                 new ArrayList<>();
+        private final Map<String, Set<String>> retainedCellsByPort =
+                new LinkedHashMap<>();
 
         private static SparseContainerBoundaries discover(
                 JsonArray predicates, JsonArray context,
                 List<JsonObject> actions) {
             SparseContainerBoundaries result =
                     new SparseContainerBoundaries();
+            String capacityIssue = InitialContainerObservation
+                    .failureRelevantCapacityIssue(predicates);
+            if (!capacityIssue.isEmpty()) {
+                result.gaps.add(capacityIssue);
+            }
             result.scan(predicates, true, false);
             result.scan(context, false, false);
             for (SparseContainerBoundary boundary
@@ -1782,8 +1813,10 @@ public final class ConcolicConstraintSolver {
                     SparseContainerBoundary existing =
                             boundaries.get(identity);
                     if (existing == null && discover) {
-                        boundaries.put(identity,
-                                new SparseContainerBoundary(read));
+                        if (retainFailureRelevantCell(read)) {
+                            boundaries.put(identity,
+                                    new SparseContainerBoundary(read));
+                        }
                     } else if (existing != null
                             && !JavaPrimitiveSmtSemantics
                             .javaTypeDescriptor(existing.javaType)
@@ -1805,6 +1838,51 @@ public final class ConcolicConstraintSolver {
                         fieldAccess && "owner".equals(entry.getKey())
                                 || preferredReferenceSource);
             }
+            if (discover) markNullComparison(object);
+        }
+
+        private boolean retainFailureRelevantCell(
+                InitialContainerObservation.Read read) {
+            Set<String> retained = retainedCellsByPort.computeIfAbsent(
+                    read.inputPort, ignored -> new LinkedHashSet<>());
+            String cell = read.shape + "\u0000"
+                    + read.selectorIdentity();
+            if (retained.contains(cell)) return true;
+            if (retained.size() >= LoopBoundPolicy
+                    .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
+                return false;
+            }
+            retained.add(cell);
+            return true;
+        }
+
+        private void markNullComparison(JsonObject expression) {
+            if (!"BinaryExpression".equals(string(expression, "_type"))) {
+                return;
+            }
+            markNullComparison(expression.get("_left"),
+                    expression.get("_right"));
+            markNullComparison(expression.get("_right"),
+                    expression.get("_left"));
+        }
+
+        private void markNullComparison(JsonElement readElement,
+                                        JsonElement otherElement) {
+            if (readElement == null || !readElement.isJsonObject()
+                    || otherElement == null || !otherElement.isJsonObject()
+                    || !"SymbolExpression".equals(string(
+                    otherElement.getAsJsonObject(), "_type"))
+                    || !"N".equals(string(otherElement.getAsJsonObject(),
+                    "_exp"))) {
+                return;
+            }
+            InitialContainerObservation.Read read =
+                    InitialContainerObservation.initialRead(
+                            readElement.getAsJsonObject());
+            if (read == null || !read.concreteSelector()) return;
+            SparseContainerBoundary boundary = boundaries.get(
+                    boundaryIdentity(read));
+            if (boundary != null) boundary.nullCompared = true;
         }
 
         private boolean isConcreteObservation(JsonElement expression) {
@@ -1860,6 +1938,8 @@ public final class ConcolicConstraintSolver {
         private JsonObject action;
         private Term term;
         private String modelName = "";
+        private String nullModelName = "";
+        private boolean nullCompared;
         private boolean preferredReferenceSource;
 
         private SparseContainerBoundary(
@@ -1883,8 +1963,14 @@ public final class ConcolicConstraintSolver {
             return selectorIdentity;
         }
 
-        private void addSelector(JsonObject target) {
+        private void addSelector(JsonObject target, int targetOccurrence) {
             target.addProperty("shape", shape);
+            if ("ASSOCIATIVE".equals(shape) && nullCompared
+                    && targetOccurrence > 0) {
+                target.addProperty("selectorKind", "ACCESS_ORDINAL");
+                target.addProperty("accessOrdinal", targetOccurrence);
+                return;
+            }
             if ("INDEXED".equals(shape)) {
                 target.addProperty("index", index);
             } else if (!iterationProjection.isEmpty()) {
@@ -2386,7 +2472,8 @@ public final class ConcolicConstraintSolver {
 
     private static boolean regionInput(String raw) {
         return raw != null && raw.matches(
-                ".*REGION(?:[._-][A-Za-z0-9-]+)+[._-]in[._-][0-9]+.*");
+                ".*REGION(?:[._-][A-Za-z0-9-]+)+[._-]in[._-]"
+                        + "[A-Za-z0-9-]+.*");
     }
 
     private static Sort sortOfJava(String javaType) {

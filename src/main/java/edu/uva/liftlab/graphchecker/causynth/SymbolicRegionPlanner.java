@@ -14,7 +14,8 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Partitions the cheap static method graph into candidate region skeletons.
+ * Builds candidate region skeletons around authoritative execution-context
+ * entries.
  *
  * <p>This phase deliberately knows nothing about REGION.IN, REGION.OUT or
  * field paths.  Those facts require a concrete activation and are produced
@@ -35,17 +36,16 @@ final class SymbolicRegionPlanner {
         }
         selected.remove("");
 
-        Map<String, Set<String>> neighbors = new LinkedHashMap<>();
-        Map<String, Set<String>> parents = new LinkedHashMap<>();
+        Map<String, Set<String>> outgoing = new LinkedHashMap<>();
         Set<String> failureMethods = new LinkedHashSet<>();
         Set<String> protocolAnchors = new LinkedHashSet<>();
+        Set<String> stateAnchors = new LinkedHashSet<>();
+        Set<String> demandedState = failureRelevantState(program.edges);
         for (String method : selected) {
-            neighbors.put(method, new LinkedHashSet<>());
-            parents.put(method, new LinkedHashSet<>());
+            outgoing.put(method, new LinkedHashSet<>());
         }
         for (Map<String, Object> edge : program.edges) {
             String method = text(edge.get("method"));
-            String invoke = text(edge.get("invoke"));
             String transfer = text(edge.get("transferKind"));
             String target = text(edge.get("toCell"));
             if (target.contains("#exception:") && selected.contains(method)) {
@@ -54,49 +54,112 @@ final class SymbolicRegionPlanner {
             if (!text(edge.get("protocolStubMappingId")).isEmpty()) {
                 addIfSelected(protocolAnchors, selected, method);
                 addIfSelected(protocolAnchors, selected,
-                        text(edge.get("protocolClientStub")));
-                addIfSelected(protocolAnchors, selected,
                         text(edge.get("protocolServerStub")));
             }
-            if (!selected.contains(method) || !selected.contains(invoke)
-                    || method.equals(invoke) || boundary(transfer)) {
+            if (("HEAP_READ".equals(transfer)
+                    || "HEAP_WRITE".equals(transfer))
+                    && selected.contains(method)
+                    && !constructor(method)
+                    && demandedState.contains(stateDeclaration(edge,
+                    transfer))) {
+                stateAnchors.add(method);
+            }
+            String callee = invocationTarget(edge);
+            if (!selected.contains(method) || !selected.contains(callee)
+                    || method.equals(callee)
+                    || "PROTOCOL_TRANSFER".equals(transfer)) {
                 continue;
             }
-            neighbors.get(method).add(invoke);
-            neighbors.get(invoke).add(method);
-            parents.get(invoke).add(method);
+            outgoing.get(method).add(callee);
         }
 
-        List<List<String>> components = components(selected, neighbors);
         program.regions.clear();
         program.regionEdges.clear();
-        for (List<String> methods : components) {
-            List<String> anchors = intersections(methods, failureMethods,
-                    protocolAnchors);
-            if (anchors.isEmpty()) {
-                anchors.add(methods.get(methods.size() - 1));
+        List<String> roots = new ArrayList<>(
+                program.executionContextAuthorities.keySet());
+        Collections.sort(roots);
+        for (String root : roots) {
+            if (!selected.contains(root) || constructor(root)) {
+                continue;
             }
-            for (String anchor : anchors) {
-                String root = root(methods, parents, anchor);
-                String identity = String.join("\n", methods) + "\n" + root
-                        + "\n" + anchor;
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("schemaVersion", REGION_SCHEMA_VERSION);
-                row.put("kind", SKELETON_KIND);
-                row.put("regionId", "REGION."
-                        + UUID.nameUUIDFromBytes(identity.getBytes(
-                        StandardCharsets.UTF_8)));
-                row.put("rootMethod", root);
-                row.put("anchorMethod", anchor);
-                row.put("methods", methods);
-                row.put("selection", failureMethods.contains(anchor)
-                        ? "EXCEPTION_COMPONENT"
-                        : protocolAnchors.contains(anchor)
-                        ? "PROTOCOL_COMPONENT" : "CANDIDATE_COMPONENT");
-                row.put("planningMode", "STATIC_SKELETON_ONLY");
-                program.regions.add(row);
+            List<String> methods = forwardClosure(root, outgoing,
+                    program.executionContextAuthorities);
+            String authority = program.executionContextAuthorities.get(root);
+            boolean admitted = addSkeleton(program, root, authority, methods,
+                    failureMethods,
+                    protocolAnchors, stateAnchors,
+                    "STATIC_AUTHORITY_SKELETON");
+            if (!admitted) {
+                addAuthorityEnvelope(program, root, authority, methods);
             }
         }
+
+        List<String> nestedEndpoints = new ArrayList<>(
+                program.nestedContextEndpoints);
+        Collections.sort(nestedEndpoints);
+        for (String endpoint : nestedEndpoints) {
+            if (!selected.contains(endpoint) || constructor(endpoint)) {
+                continue;
+            }
+            addSkeleton(program, endpoint, "NESTED_CALL",
+                    forwardClosure(endpoint, outgoing,
+                            program.executionContextAuthorities),
+                    failureMethods, protocolAnchors, stateAnchors,
+                    "STATIC_NESTED_CONTEXT_FRAGMENT");
+        }
+    }
+
+    private static boolean addSkeleton(
+            StaticProgram program, String root, String authority,
+            List<String> methods, Set<String> failureMethods,
+            Set<String> protocolAnchors, Set<String> stateAnchors,
+            String planningMode) {
+        List<String> failure = intersections(methods, failureMethods);
+        List<String> protocol = intersections(methods, protocolAnchors);
+        List<String> state = intersections(methods, stateAnchors);
+        List<String> anchors = union(failure, protocol, state);
+        if (anchors.isEmpty()) {
+            return false;
+        }
+        String identity = authority + "\n" + root;
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("schemaVersion", REGION_SCHEMA_VERSION);
+        row.put("kind", SKELETON_KIND);
+        row.put("regionId", "REGION."
+                + UUID.nameUUIDFromBytes(identity.getBytes(
+                StandardCharsets.UTF_8)));
+        row.put("rootMethod", root);
+        row.put("rootAuthority", authority);
+        row.put("anchorMethod", anchors.get(0));
+        row.put("anchorMethods", anchors);
+        row.put("methods", methods);
+        row.put("selection", !failure.isEmpty()
+                ? "EXCEPTION_CONTEXT"
+                : !protocol.isEmpty()
+                ? "PROTOCOL_CONTEXT" : "STATE_CONTEXT");
+        row.put("planningMode", planningMode);
+        program.regions.add(row);
+        return true;
+    }
+
+    private static void addAuthorityEnvelope(
+            StaticProgram program, String root, String authority,
+            List<String> methods) {
+        String identity = authority + "\n" + root;
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("schemaVersion", REGION_SCHEMA_VERSION);
+        row.put("kind", SKELETON_KIND);
+        row.put("regionId", "REGION."
+                + UUID.nameUUIDFromBytes(identity.getBytes(
+                StandardCharsets.UTF_8)));
+        row.put("rootMethod", root);
+        row.put("rootAuthority", authority);
+        row.put("anchorMethod", "");
+        row.put("anchorMethods", Collections.emptyList());
+        row.put("methods", methods);
+        row.put("selection", "AUTHORITY_ENVELOPE");
+        row.put("planningMode", "STATIC_AUTHORITY_ENVELOPE");
+        program.regions.add(row);
     }
 
     private static void addIfSelected(Set<String> target,
@@ -106,67 +169,136 @@ final class SymbolicRegionPlanner {
         }
     }
 
-    @SafeVarargs
     private static List<String> intersections(List<String> ordered,
-                                              Set<String>... candidates) {
+                                              Set<String> candidates) {
         List<String> result = new ArrayList<>();
         for (String value : ordered) {
-            for (Set<String> candidate : candidates) {
-                if (candidate.contains(value)) {
-                    result.add(value);
-                    break;
-                }
+            if (candidates.contains(value)) {
+                result.add(value);
             }
         }
         return result;
     }
 
-    private static boolean boundary(String transfer) {
-        return "PROTOCOL_TRANSFER".equals(transfer)
-                || "DYNAMIC_DISPATCH".equals(transfer);
-    }
-
-    private static List<List<String>> components(
-            Set<String> selected, Map<String, Set<String>> neighbors) {
-        List<String> ordered = new ArrayList<>(selected);
-        Collections.sort(ordered);
+    private static List<String> forwardClosure(
+            String root, Map<String, Set<String>> outgoing,
+            Map<String, String> authorities) {
         Set<String> visited = new LinkedHashSet<>();
-        List<List<String>> result = new ArrayList<>();
-        for (String seed : ordered) {
-            if (!visited.add(seed)) {
+        Deque<String> work = new ArrayDeque<>();
+        work.add(root);
+        while (!work.isEmpty()) {
+            String method = work.removeFirst();
+            if (!visited.add(method)) {
                 continue;
             }
-            List<String> component = new ArrayList<>();
-            Deque<String> work = new ArrayDeque<>();
-            work.add(seed);
-            while (!work.isEmpty()) {
-                String method = work.removeFirst();
-                component.add(method);
-                List<String> next = new ArrayList<>(neighbors.get(method));
-                Collections.sort(next);
-                for (String candidate : next) {
-                    if (visited.add(candidate)) {
-                        work.addLast(candidate);
-                    }
+            List<String> next = new ArrayList<>(outgoing.getOrDefault(method,
+                    Collections.emptySet()));
+            Collections.sort(next);
+            for (String candidate : next) {
+                if (!root.equals(candidate)
+                        && authorities.containsKey(candidate)) {
+                    continue;
                 }
+                work.addLast(candidate);
             }
-            Collections.sort(component);
-            result.add(component);
         }
+        List<String> result = new ArrayList<>(visited);
+        Collections.sort(result);
         return result;
     }
 
-    private static String root(List<String> methods,
-                               Map<String, Set<String>> parents,
-                               String fallback) {
-        for (String method : methods) {
-            Set<String> incoming = new LinkedHashSet<>(parents.get(method));
-            incoming.retainAll(methods);
-            if (incoming.isEmpty()) {
-                return method;
+    @SafeVarargs
+    private static List<String> union(List<String>... groups) {
+        Set<String> unique = new LinkedHashSet<>();
+        for (List<String> group : groups) {
+            unique.addAll(group);
+        }
+        return new ArrayList<>(unique);
+    }
+
+    private static boolean constructor(String method) {
+        return method != null && (method.contains(" <init>(")
+                || method.contains(" <clinit>("));
+    }
+
+    private static String invocationTarget(Map<String, Object> edge) {
+        if ("DYNAMIC_DISPATCH".equals(text(edge.get("transferKind")))
+                && "dispatch_activation".equals(text(edge.get("kind")))) {
+            String activation = text(edge.get("toCell"));
+            if (activation.endsWith(".activation")) {
+                return activation.substring(0,
+                        activation.length() - ".activation".length());
             }
         }
-        return fallback;
+        return text(edge.get("invoke"));
+    }
+
+    /**
+     * Finds declared state read by the failure slice, then admits only roots
+     * that access that state.  The old rule treated every selected heap access
+     * as a region anchor, which turned broad call-graph scaffolding into
+     * hundreds of unrelated region candidates.
+     */
+    private static Set<String> failureRelevantState(
+            Collection<Map<String, Object>> edges) {
+        Map<String, List<Map<String, Object>>> incoming =
+                new LinkedHashMap<>();
+        Deque<String> work = new ArrayDeque<>();
+        for (Map<String, Object> edge : edges) {
+            String target = text(edge.get("toCell"));
+            if (!target.isEmpty()) {
+                incoming.computeIfAbsent(target,
+                        ignored -> new ArrayList<>()).add(edge);
+            }
+            if (target.contains("#exception:")) {
+                work.addLast(target);
+            }
+        }
+
+        Set<String> visited = new LinkedHashSet<>();
+        Set<String> demanded = new LinkedHashSet<>();
+        while (!work.isEmpty()) {
+            String cell = work.removeFirst();
+            if (!visited.add(cell)) continue;
+            for (Map<String, Object> edge : incoming.getOrDefault(cell,
+                    Collections.emptyList())) {
+                String transfer = text(edge.get("transferKind"));
+                String source = text(edge.get("fromCell"));
+                if ("HEAP_READ".equals(transfer)
+                        && declaredField(source)) {
+                    demanded.add(source);
+                }
+                if (!source.isEmpty()) work.addLast(source);
+            }
+        }
+        return demanded;
+    }
+
+    private static String stateDeclaration(Map<String, Object> edge,
+                                           String transfer) {
+        String cell = text(edge.get("HEAP_READ".equals(transfer)
+                ? "fromCell" : "toCell"));
+        return declaredField(cell) ? cell : "";
+    }
+
+    private static boolean declaredField(String cell) {
+        return cell.startsWith("<") && cell.endsWith(">")
+                && cell.contains(":") && !cell.contains("(");
+    }
+
+    static boolean validRootAuthority(String authority) {
+        if (authority == null) {
+            return false;
+        }
+        switch (authority) {
+            case "THREAD_ENTRY":
+            case "TASK_ENTRY":
+            case "MAIN_ENTRY":
+            case "RPC_HANDLER":
+                return true;
+            default:
+                return false;
+            }
     }
 
     private static String text(Object value) {

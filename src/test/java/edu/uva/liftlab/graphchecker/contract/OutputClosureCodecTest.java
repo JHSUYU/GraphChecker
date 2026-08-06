@@ -56,6 +56,43 @@ public class OutputClosureCodecTest {
     }
 
     @Test
+    public void captureSpecPreservesBoundedOutputOccurrence() {
+        JsonObject activation = canonicalActivation("REGION.1.out.0",
+                "<P: int out>", "DF.1");
+        JsonObject member = activation.getAsJsonObject("outputClosure")
+                .getAsJsonArray("members").get(0).getAsJsonObject();
+        JsonObject output = member.getAsJsonObject("output");
+        JsonObject capture = member.getAsJsonObject("slice")
+                .getAsJsonArray("captureBindings").get(0).getAsJsonObject();
+        capture.addProperty("captureKind",
+                OutputCaptureSpec.FIELD_WRITE_STATE);
+        capture.addProperty("definitionMethod", "<P: void run()>");
+        capture.addProperty("definitionUnitIndex", 7);
+        for (JsonObject value : Arrays.asList(output, capture)) {
+            value.addProperty("outputSiteId",
+                    "FIELD_WRITE_STATE:<P: void run()>#u7:<P: int out>");
+            value.addProperty("outputOccurrence", 3);
+            value.addProperty("replayOccurrence", 3);
+        }
+
+        OutputCaptureSpec spec = OutputClosureCodec.captureSpecs(
+                OutputClosureCodec.decode(activation)).get(0);
+        assertTrue(spec.occurrenceScoped());
+        assertEquals("FIELD_WRITE_STATE:<P: void run()>#u7:<P: int out>",
+                spec.outputSiteId());
+        assertEquals(3, spec.outputOccurrence());
+        assertEquals(3, spec.replayOccurrence());
+
+        for (JsonObject value : Arrays.asList(output, capture)) {
+            value.addProperty("outputOccurrence", 9);
+            value.addProperty("replayOccurrence", 9);
+        }
+        expectFailure(() -> OutputClosureCodec.captureSpecs(
+                OutputClosureCodec.decode(activation)),
+                "outside the bounded replay");
+    }
+
+    @Test
     public void memberOrderIsCanonicalAndPartOfOneJointContract() {
         OutputClosureContract left = OutputClosureCodec.decode(
                 canonicalActivation("REGION.1.out.0", "<P: int x>", "DF.1"));

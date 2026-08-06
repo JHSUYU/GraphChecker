@@ -162,7 +162,8 @@ public final class OutputClosureCodec {
             String javaType, JsonObject slice) {
         JsonObject normalizedSlice = slice == null
                 ? null : slice.deepCopy();
-        requireArray(normalizedSlice, "captureBindings");
+        JsonArray captures = requireArray(normalizedSlice,
+                "captureBindings");
         JsonArray encodedEdges = requireArray(normalizedSlice,
                 "causalEdges");
         List<JsonObject> causalEdges = new ArrayList<>();
@@ -182,6 +183,17 @@ public final class OutputClosureCodec {
         output.addProperty("cell", cell);
         output.addProperty("kind", kind);
         output.addProperty("javaTypeDescriptor", descriptor);
+        if (captures.size() > 0
+                && hasOutputOccurrenceIdentity(
+                captures.get(0).getAsJsonObject())) {
+            JsonObject capture = captures.get(0).getAsJsonObject();
+            output.addProperty("outputSiteId",
+                    requireText(capture, "outputSiteId"));
+            output.addProperty("outputOccurrence", requireIntAtLeast(
+                    capture, "outputOccurrence", 1));
+            output.addProperty("replayOccurrence", requireIntAtLeast(
+                    capture, "replayOccurrence", 1));
+        }
         JsonObject member = new JsonObject();
         member.add("output", output);
         member.add("slice", normalizedSlice);
@@ -241,7 +253,52 @@ public final class OutputClosureCodec {
         JsonArray bindings = requireArray(slice, "captureBindings");
         validateCaptureLedger(bindings, port, cell, path,
                 descriptor);
+        validateOutputOccurrenceIdentity(output, bindings, path);
         return new OutputClosureContract.Member(output, slice);
+    }
+
+    /**
+     * Optional compatibility extension for repeated output/capture endpoints.
+     * Once any part declares it, the output and every capture must agree on
+     * the same positive activation-local ordinal and static site.  Dynamic
+     * call/event/object/value identifiers are intentionally not involved.
+     */
+    private static void validateOutputOccurrenceIdentity(
+            JsonObject output, JsonArray bindings, String path) {
+        boolean declared = hasOutputOccurrenceIdentity(output);
+        for (JsonElement element : bindings) {
+            declared |= hasOutputOccurrenceIdentity(
+                    element.getAsJsonObject());
+        }
+        if (!declared) return;
+
+        String siteId = requireText(output, "outputSiteId");
+        int occurrence = requireIntAtLeast(output,
+                "outputOccurrence", 1);
+        int replay = requireIntAtLeast(output,
+                "replayOccurrence", 1);
+        if (occurrence != replay
+                || replay > LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS) {
+            throw new IllegalArgumentException(path
+                    + " output occurrence is outside the bounded replay");
+        }
+        for (JsonElement element : bindings) {
+            JsonObject capture = element.getAsJsonObject();
+            if (!siteId.equals(requireText(capture, "outputSiteId"))
+                    || occurrence != requireIntAtLeast(capture,
+                    "outputOccurrence", 1)
+                    || replay != requireIntAtLeast(capture,
+                    "replayOccurrence", 1)) {
+                throw new IllegalArgumentException(path
+                        + " capture output occurrence identity mismatch");
+            }
+        }
+    }
+
+    private static boolean hasOutputOccurrenceIdentity(JsonObject value) {
+        return value.has("outputSiteId")
+                || value.has("outputOccurrence")
+                || value.has("replayOccurrence");
     }
 
     private static void validateSliceShape(
@@ -281,12 +338,75 @@ public final class OutputClosureCodec {
                 throw new IllegalArgumentException(
                         path + " capture identity is inconsistent");
             }
-            if (binding.has("captureKind")) {
-                throw new IllegalArgumentException(
-                        path + " contains retired captureKind");
+            String captureKind = text(binding, "captureKind");
+            if (OutputCaptureSpec.CALL_ARGUMENT.equals(captureKind)) {
+                validateCallArgumentEndpoint(binding, path, descriptor);
+            } else if (OutputCaptureSpec.MUTATION_STATE.equals(
+                    captureKind)) {
+                validateMutationStateEndpoint(binding, cell, path,
+                        descriptor);
+            } else if (OutputCaptureSpec.FIELD_WRITE_STATE.equals(
+                    captureKind)) {
+                validateFieldWriteStateEndpoint(binding, cell, path,
+                        descriptor);
+            } else if (captureKind.isEmpty()) {
+                if (hasOutputOccurrenceIdentity(binding)) {
+                    throw new IllegalArgumentException(path
+                            + " bounded heap outputs require an exact-site "
+                            + "captureKind");
+                }
+                validateExitFieldEndpoint(binding, cell, path, descriptor);
+            } else {
+                throw new IllegalArgumentException(path
+                        + " captureKind is unsupported: " + captureKind);
             }
-            validateExitFieldEndpoint(binding, cell, path, descriptor);
         }
+    }
+
+    private static void validateCallArgumentEndpoint(
+            JsonObject binding, String path, String descriptor) {
+        String javaType = requireText(binding, "javaType");
+        if (!descriptor.equals(javaTypeDescriptor(javaType))
+                || requireIntAtLeast(binding, "definitionUnitIndex", 0) < 0
+                || requireIntAtLeast(binding, "argumentIndex", 0) < 0) {
+            throw new IllegalArgumentException(
+                    path + " call-argument capture is inconsistent");
+        }
+        requireText(binding, "definitionMethod");
+        requireText(binding, "declaredCallee");
+    }
+
+    private static void validateMutationStateEndpoint(
+            JsonObject binding, String cell, String path,
+            String descriptor) {
+        validateExactHeapEndpoint(binding, cell, path, descriptor);
+        requireText(binding, "declaredCallee");
+    }
+
+    private static void validateFieldWriteStateEndpoint(
+            JsonObject binding, String cell, String path,
+            String descriptor) {
+        validateExactHeapEndpoint(binding, cell, path, descriptor);
+    }
+
+    private static void validateExactHeapEndpoint(
+            JsonObject binding, String cell, String path,
+            String descriptor) {
+        if (!hasOutputOccurrenceIdentity(binding)) {
+            throw new IllegalArgumentException(path
+                    + " exact heap capture has no bounded occurrence");
+        }
+        DeclaredField field = FieldPathSpec.declaredField(
+                requireText(binding, "fieldSignature"));
+        String javaType = requireText(binding, "javaType");
+        if (field == null || !cell.equals(field.signature())
+                || !field.type().equals(javaType)
+                || !descriptor.equals(javaTypeDescriptor(javaType))) {
+            throw new IllegalArgumentException(path
+                    + " exact heap capture is inconsistent");
+        }
+        requireText(binding, "definitionMethod");
+        requireIntAtLeast(binding, "definitionUnitIndex", 0);
     }
 
     private static void validateExitFieldEndpoint(
@@ -314,6 +434,27 @@ public final class OutputClosureCodec {
             throw new IllegalArgumentException(
                     path + ".javaTypeDescriptor is invalid: " + value);
         }
+    }
+
+    private static int requireIntAtLeast(
+            JsonObject object, String name, int minimum) {
+        JsonElement value = object == null ? null : object.get(name);
+        if (value == null || !value.isJsonPrimitive()
+                || !value.getAsJsonPrimitive().isNumber()) {
+            throw new IllegalArgumentException(name + " must be an integer");
+        }
+        int result;
+        try {
+            result = value.getAsInt();
+        } catch (RuntimeException malformed) {
+            throw new IllegalArgumentException(name + " must be an integer",
+                    malformed);
+        }
+        if (result < minimum) {
+            throw new IllegalArgumentException(name + " must be >= "
+                    + minimum);
+        }
+        return result;
     }
 
     private static List<JsonObject> causalEdges(JsonObject envelope) {

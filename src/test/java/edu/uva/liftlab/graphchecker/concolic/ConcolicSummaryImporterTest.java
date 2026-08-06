@@ -4,15 +4,20 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 public class ConcolicSummaryImporterTest {
     @Rule
@@ -36,7 +41,7 @@ public class ConcolicSummaryImporterTest {
         ClosureGoalKind.TARGET_REACH_CLOSURE.writeToTask(task);
         task.add("inputActions", new JsonArray());
         task.add("branches", new JsonArray());
-        LoopBoundPolicy.cfgBackedges(2).writeTo(task);
+        LoopBoundPolicy.cfgBackedges(8).writeTo(task);
 
         JsonObject region = new JsonObject();
         region.addProperty("regionId", "REGION.CUT");
@@ -49,9 +54,10 @@ public class ConcolicSummaryImporterTest {
         JsonObject pathCut = new JsonObject();
         pathCut.addProperty("kind", "LOOP_BOUND");
         pathCut.addProperty("backedgeId", "<L: void run()>#backedge:u4->u1");
-        pathCut.addProperty("maxBackedgeTraversals", 2);
-        pathCut.addProperty("attemptedTraversal", 3);
-        pathCut.addProperty("reason", "MAX_BACKEDGE_TRAVERSALS_EXCEEDED");
+        pathCut.addProperty("maxBackedgeTraversals", 8);
+        pathCut.addProperty("maxLoopBodyIterations", 8);
+        pathCut.addProperty("attemptedTraversal", 4);
+        pathCut.addProperty("reason", "MAX_LOOP_BODY_ITERATIONS_REACHED");
         cut.add("pathCut", pathCut);
         // Even a VM-complete prefix must not be admitted as a relation.
         JsonObject engine = new JsonObject();
@@ -77,5 +83,347 @@ public class ConcolicSummaryImporterTest {
         List<JsonObject> rejected = ArtifactIO.readJsonl(diagnostics);
         assertEquals("LOOP_BOUND_PATH_CUT",
                 rejected.get(0).get("code").getAsString());
+    }
+
+    @Test
+    public void exactOutputBoundaryImportsAsNormalBoundedPrefix()
+            throws Exception {
+        Path directory = folder.newFolder("output-boundary-import").toPath();
+        Path results = directory.resolve("results.jsonl");
+        Path tasks = directory.resolve("tasks.jsonl");
+        Path regions = directory.resolve("regions.jsonl");
+        Path output = directory.resolve("summaries.jsonl");
+        Path diagnostics = directory.resolve("diagnostics.jsonl");
+
+        JsonObject task = outputBoundaryTask(2);
+        JsonObject raw = outputBoundaryResult(2);
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", "REGION.BOUNDARY");
+        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(task));
+        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
+        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+
+        ConcolicSummaryImporter.ImportResult imported =
+                ConcolicSummaryImporter.importSummaries(results, tasks,
+                        regions, output, diagnostics);
+
+        assertEquals(1, imported.rawResultCount);
+        assertEquals(1, imported.validSummaryCount);
+        assertEquals(0, imported.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(output).get(0);
+        assertTrue(summary.get("normalExit").getAsBoolean());
+        assertTrue(summary.get("boundedExit").getAsBoolean());
+        assertTrue(summary.get("relationallyComplete").getAsBoolean());
+        assertEquals(2, summary.getAsJsonObject("outputExpressions").size());
+    }
+
+    @Test
+    public void incompleteOutputBoundaryIsRejectedFailClosed()
+            throws Exception {
+        Path directory = folder.newFolder("incomplete-boundary").toPath();
+        Path results = directory.resolve("results.jsonl");
+        Path tasks = directory.resolve("tasks.jsonl");
+        Path regions = directory.resolve("regions.jsonl");
+        Path output = directory.resolve("summaries.jsonl");
+        Path diagnostics = directory.resolve("diagnostics.jsonl");
+
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", "REGION.BOUNDARY");
+        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
+                outputBoundaryTask(2)));
+        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
+        ArtifactIO.replaceJsonl(results, Collections.singletonList(
+                outputBoundaryResult(1)));
+
+        ConcolicSummaryImporter.ImportResult imported =
+                ConcolicSummaryImporter.importSummaries(results, tasks,
+                        regions, output, diagnostics);
+
+        assertEquals(0, imported.validSummaryCount);
+        assertEquals(1, imported.diagnosticCount);
+        assertEquals("INCOMPLETE_OUTPUT_BOUNDARY",
+                ArtifactIO.readJsonl(diagnostics).get(0)
+                        .get("code").getAsString());
+    }
+
+    @Test
+    public void matchingStableSeedBranchIdentityIsImported()
+            throws Exception {
+        PathImport imported = importPath("matching-seed",
+                pathTask(false), pathResult(true, true));
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        assertEquals(1, ArtifactIO.readJsonl(imported.output).size());
+    }
+
+    @Test
+    public void seedOutcomeMismatchIsRejectedFailClosed()
+            throws Exception {
+        PathImport imported = importPath("wrong-seed-outcome",
+                pathTask(false), pathResult(true, false));
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals(1, imported.result.diagnosticCount);
+        assertEquals(0, ArtifactIO.readJsonl(imported.output).size());
+        JsonObject diagnostic = ArtifactIO.readJsonl(
+                imported.diagnostics).get(0);
+        assertEquals("PATH_SEED_MISMATCH",
+                diagnostic.get("code").getAsString());
+        assertTrue(diagnostic.get("detail").getAsString()
+                .contains("wrong outcome"));
+    }
+
+    @Test
+    public void replaySourceMustReachRequestedOppositeOutcome()
+            throws Exception {
+        PathImport imported = importPath("wrong-replay-source",
+                pathTask(true), pathResult(true, true));
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals(1, imported.result.diagnosticCount);
+        assertEquals("PATH_SEED_MISMATCH", ArtifactIO.readJsonl(
+                imported.diagnostics).get(0).get("code").getAsString());
+    }
+
+    @Test
+    public void matchingReplaySourceIsImported()
+            throws Exception {
+        PathImport imported = importPath("matching-replay-source",
+                pathTask(true), pathResult(true, false));
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+    }
+
+    @Test
+    public void missingSeedBranchMappingIsRejectedFailClosed()
+            throws Exception {
+        PathImport imported = importPath("missing-seed-event",
+                pathTask(false), pathResult(false, true));
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals("PATH_SEED_MISMATCH", ArtifactIO.readJsonl(
+                imported.diagnostics).get(0).get("code").getAsString());
+        assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                .get("detail").getAsString().contains("missing"));
+    }
+
+    private PathImport importPath(String name, JsonObject task,
+                                  JsonObject raw) throws Exception {
+        Path directory = folder.newFolder(name).toPath();
+        Path results = directory.resolve("results.jsonl");
+        Path tasks = directory.resolve("tasks.jsonl");
+        Path regions = directory.resolve("regions.jsonl");
+        Path output = directory.resolve("summaries.jsonl");
+        Path diagnostics = directory.resolve("diagnostics.jsonl");
+        raw.addProperty("taskId", task.get("taskId").getAsString());
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", "REGION.SEED");
+        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(task));
+        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
+        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+        return new PathImport(ConcolicSummaryImporter.importSummaries(
+                results, tasks, regions, output, diagnostics), output,
+                diagnostics);
+    }
+
+    private static JsonObject pathTask(boolean replay) {
+        JsonObject task = new JsonObject();
+        task.addProperty("taskId", replay ? "TASK.REPLAY" : "TASK.SEED");
+        task.addProperty("goalId", "GOAL.SEED");
+        task.addProperty("regionId", "REGION.SEED");
+        task.addProperty("regionInstanceId", "REGION.SEED@canonical");
+        task.addProperty("pathSeedKey", "PATH.SEED.STABLE");
+        ClosureGoalKind.TARGET_REACH_CLOSURE.writeToTask(task);
+        task.add("inputActions", new JsonArray());
+        JsonObject branch = new JsonObject();
+        branch.addProperty("siteId", seedSite());
+        branch.addProperty("method", seedMethod());
+        branch.addProperty("unitIndex", 3);
+        branch.addProperty("policy", "EXPLORE");
+        JsonObject occurrence = new JsonObject();
+        occurrence.addProperty("occurrence", 1);
+        occurrence.addProperty("outcome", true);
+        JsonArray occurrences = new JsonArray();
+        occurrences.add(occurrence);
+        branch.add("occurrences", occurrences);
+        JsonArray branches = new JsonArray();
+        branches.add(branch);
+        task.add("branches", branches);
+        LoopBoundPolicy.cfgBackedges(8).writeTo(task);
+        if (replay) {
+            task.add("replayContract", BranchReplayContract.flip(
+                    Collections.<BranchWitness>emptyList(),
+                    branchWitness(true)).toJson());
+        }
+        return task;
+    }
+
+    private static JsonObject pathResult(boolean includeMapping,
+                                         boolean outcome) {
+        JsonObject raw = new JsonObject();
+        raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.addProperty("taskId", "TASK.SEED");
+        raw.addProperty("exitKind", "NORMAL");
+        raw.addProperty("exceptionType", "");
+        JsonObject engine = new JsonObject();
+        engine.addProperty("complete", true);
+        engine.addProperty("aborted", false);
+        JsonArray path = new JsonArray();
+        if (includeMapping) path.add(branchPredicate(outcome));
+        engine.add("pathCondition", path);
+        raw.add("engineSummary", engine);
+        raw.add("unresolvedInputs", new JsonArray());
+        raw.add("symbolizedInputs", new JsonArray());
+        raw.add("outputCaptures", new JsonArray());
+        JsonArray mappings = new JsonArray();
+        if (includeMapping) {
+            JsonObject mapping = new JsonObject();
+            mapping.addProperty("siteId", seedSite());
+            mapping.addProperty("method", seedMethod());
+            mapping.addProperty("unitIndex", 3);
+            mapping.addProperty("occurrence", 1);
+            mapping.addProperty("rawPathConditionBaseline", 0);
+            mapping.addProperty("rawPathConditionSize", 1);
+            mapping.add("witness", branchWitness(outcome).toJson());
+            mappings.add(mapping);
+        }
+        raw.add("branchMappings", mappings);
+        return raw;
+    }
+
+    private static BranchWitness branchWitness(boolean outcome) {
+        return BranchWitness.vmPc(seedSite(), seedMethod(), 3, 1, outcome,
+                branchPredicate(outcome), 0, new JsonObject());
+    }
+
+    private static JsonObject branchPredicate(boolean outcome) {
+        JsonObject left = new JsonObject();
+        left.addProperty("_type", "SymbolExpression");
+        left.addProperty("_exp", "REGION.SEED.in.value");
+        JsonObject right = new JsonObject();
+        right.addProperty("_type", "ConstExpr");
+        right.addProperty("_exp", "Y_I_0");
+        JsonObject predicate = new JsonObject();
+        predicate.addProperty("_type", "BinaryExpression");
+        predicate.addProperty("_op", outcome ? ">" : "<=");
+        predicate.add("_left", left);
+        predicate.add("_right", right);
+        return predicate;
+    }
+
+    private static String seedMethod() {
+        return "<test.Worker: void run()>";
+    }
+
+    private static String seedSite() {
+        return seedMethod() + "#u3";
+    }
+
+    private static final class PathImport {
+        private final ConcolicSummaryImporter.ImportResult result;
+        private final Path output;
+        private final Path diagnostics;
+
+        private PathImport(ConcolicSummaryImporter.ImportResult result,
+                           Path output, Path diagnostics) {
+            this.result = result;
+            this.output = output;
+            this.diagnostics = diagnostics;
+        }
+    }
+
+    private static JsonObject outputBoundaryTask(int outputCount) {
+        String region = "REGION.BOUNDARY";
+        String instance = region + "@test#call1";
+        String method = "<test.Worker: void run()>";
+        List<OutputClosureContract> members = new ArrayList<>();
+        for (int index = 0; index < outputCount; index++) {
+            String port = region + ".out." + index;
+            String cell = "<test.State: int value" + index + ">";
+            String site = method + "#u" + (index + 1);
+            JsonObject binding = new JsonObject();
+            binding.addProperty("captureBindingId", "CAPTURE." + index);
+            binding.addProperty("captureKind",
+                    OutputCaptureSpec.FIELD_WRITE_STATE);
+            binding.addProperty("outputPort", port);
+            binding.addProperty("outputCell", cell);
+            binding.addProperty("fieldSignature", cell);
+            binding.addProperty("javaType", "int");
+            binding.addProperty("definitionMethod", method);
+            binding.addProperty("definitionUnitIndex", index + 1);
+            binding.addProperty("outputSiteId", site);
+            binding.addProperty("outputOccurrence", 1);
+            binding.addProperty("replayOccurrence", 1);
+
+            JsonArray bindings = new JsonArray();
+            bindings.add(binding);
+            JsonObject slice = new JsonObject();
+            slice.addProperty("outputPort", port);
+            slice.addProperty("outputCell", cell);
+            slice.add("inputPorts", new JsonArray());
+            slice.add("sites", strings(site));
+            slice.add("staticSites", strings(site));
+            slice.add("methods", strings(method));
+            slice.add("causalEdgeIds", new JsonArray());
+            slice.add("causalEdges", new JsonArray());
+            slice.add("captureBindings", bindings);
+            slice.add("captureBindingIssues", new JsonArray());
+            members.add(OutputClosureCodec.singleton(region, instance, 1L,
+                    port, cell, "HEAP_STATE", "int", slice));
+        }
+
+        JsonObject task = new JsonObject();
+        task.addProperty("taskId", "TASK.BOUNDARY");
+        task.addProperty("goalId", "GOAL.BOUNDARY");
+        task.addProperty("regionId", region);
+        task.addProperty("regionInstanceId", instance);
+        task.addProperty("rootCallId", 1L);
+        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(task);
+        task.add("inputActions", new JsonArray());
+        task.add("branches", new JsonArray());
+        LoopBoundPolicy.cfgBackedges(
+                LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS).writeTo(task);
+        OutputClosureCodec.writeTo(task, OutputClosureCodec.merge(members));
+        return task;
+    }
+
+    private static JsonObject outputBoundaryResult(int capturedCount) {
+        JsonObject raw = new JsonObject();
+        raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.addProperty("taskId", "TASK.BOUNDARY");
+        raw.addProperty("exitKind", "OUTPUT_BOUNDARY");
+        raw.addProperty("exceptionType", "");
+        JsonObject engine = new JsonObject();
+        engine.addProperty("complete", true);
+        engine.addProperty("aborted", false);
+        engine.add("pathCondition", new JsonArray());
+        raw.add("engineSummary", engine);
+        raw.add("unresolvedInputs", new JsonArray());
+        raw.add("symbolizedInputs", new JsonArray());
+        raw.add("branchMappings", new JsonArray());
+        JsonArray captures = new JsonArray();
+        for (int index = 0; index < capturedCount; index++) {
+            JsonObject capture = new JsonObject();
+            capture.addProperty("captureBindingId", "CAPTURE." + index);
+            capture.addProperty("outputSiteId",
+                    "<test.Worker: void run()>#u" + (index + 1));
+            capture.addProperty("outputOccurrence", 1);
+            capture.addProperty("replayOccurrence", 1);
+            JsonObject expression = new JsonObject();
+            expression.addProperty("_type", "ConstExpr");
+            expression.addProperty("_exp", "Y_I_" + index);
+            capture.add("expression", expression);
+            captures.add(capture);
+        }
+        raw.add("outputCaptures", captures);
+        return raw;
+    }
+
+    private static JsonArray strings(String... values) {
+        JsonArray result = new JsonArray();
+        for (String value : values) result.add(value);
+        return result;
     }
 }

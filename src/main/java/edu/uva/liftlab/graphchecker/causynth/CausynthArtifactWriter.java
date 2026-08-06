@@ -7,7 +7,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.zip.GZIPOutputStream;
 
 /** Writes the stable JSON/JSONL artifact set for one static analysis run. */
@@ -45,8 +47,35 @@ final class CausynthArtifactWriter {
         if (edgeParent != null) {
             Files.createDirectories(edgeParent);
         }
+        List<Map<String, Object>> canonicalEdges = canonicalRegionEdges(
+                program.regionEdges);
+        program.regionEdges.clear();
+        program.regionEdges.addAll(canonicalEdges);
         writeJsonl(regions, program.regions);
         writeJsonl(regionEdges, program.regionEdges);
+    }
+
+    /**
+     * The edge id is the canonical semantic identity. Repeated identical
+     * payloads are harmless aggregation duplicates; two different payloads
+     * under one id are an ambiguous artifact and must fail closed.
+     */
+    private static List<Map<String, Object>> canonicalRegionEdges(
+            List<Map<String, Object>> edges) throws IOException {
+        Map<String, Map<String, Object>> byId = new LinkedHashMap<>();
+        for (Map<String, Object> edge : edges) {
+            String edgeId = edge.get("edgeId") == null ? ""
+                    : String.valueOf(edge.get("edgeId"));
+            if (edgeId.isEmpty()) {
+                throw new IOException("runtime region edge has no edgeId");
+            }
+            Map<String, Object> previous = byId.putIfAbsent(edgeId, edge);
+            if (previous != null && !previous.equals(edge)) {
+                throw new IOException("conflicting runtime region edge "
+                        + "payload for edgeId " + edgeId);
+            }
+        }
+        return new java.util.ArrayList<>(byId.values());
     }
 
     private static void writeJson(Path output, Object value)

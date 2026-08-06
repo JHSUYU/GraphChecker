@@ -6,9 +6,9 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
+import edu.uva.liftlab.graphchecker.concolic.InitialContainerObservation;
 import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -60,6 +60,12 @@ public final class PathObservation {
                 raw.get("pathCondition"), alpha);
         this.relationPathCondition = projectRelationPathCondition(
                 raw, scope, branchMappings);
+        String containerCapacityIssue = InitialContainerObservation
+                .failureRelevantCapacityIssue(relationPathCondition,
+                        raw.get("outputExpressions"));
+        if (!containerCapacityIssue.isEmpty()) {
+            throw new IllegalArgumentException(containerCapacityIssue);
+        }
         this.relationGuardKey = CanonicalJson.sha256(alphaCanonical(
                 relationPathCondition, new AlphaNormalizer(raw)));
         this.relationKey = stablePathKey(raw, scope,
@@ -100,6 +106,19 @@ public final class PathObservation {
     public String relationKey() { return relationKey; }
     public JsonArray edgeBindings() {
         return array(raw, "edgeBindings").deepCopy();
+    }
+
+    public String logicalRegionId() {
+        return string(raw, "logicalRegionId");
+    }
+
+    public String summaryReuseKey() {
+        return string(raw, "summaryReuseKey");
+    }
+
+    public JsonObject occurrenceInstantiationCatalog() {
+        return object(raw, RegionInstancePlan.OCCURRENCE_CATALOG)
+                .deepCopy();
     }
 
     public boolean hasExactOutputSet(Set<String> outputPorts) {
@@ -241,22 +260,112 @@ public final class PathObservation {
             return full.deepCopy();
         }
         Map<Integer, SummaryBranchMapping> owners = new LinkedHashMap<>();
+        Set<Integer> selected = new LinkedHashSet<>();
         for (SummaryBranchMapping mapping : mappings) {
             if (mapping.isWitnessed()) {
                 owners.put(mapping.summaryPcIndex(), mapping);
+                if (mapping.isExplore()
+                        && scope.branchSites.contains(mapping.siteId())) {
+                    selected.add(mapping.summaryPcIndex());
+                }
             }
         }
+
+        // The execution task fixes non-selected inputs (including loop
+        // cardinality) to their witnessed concrete values.  A relation guard
+        // therefore contains the selected symbolic decisions plus only the
+        // local definitions on which those decisions depend.  Canonical
+        // region inputs and nondeterministic environment values are boundary
+        // leaves, not definitions to chase back into unrelated VM activity.
+        Set<String> demanded = new LinkedHashSet<>();
+        for (Integer position : selected) {
+            addNonBoundaryTokens(demanded,
+                    dependencyTokens(full.get(position)));
+        }
+        Set<Integer> dependencies = new LinkedHashSet<>();
+        boolean changed;
+        do {
+            changed = false;
+            for (int index = full.size() - 1; index >= 0; index--) {
+                if (selected.contains(index) || owners.containsKey(index)
+                        || dependencies.contains(index)) {
+                    continue;
+                }
+                Set<String> tokens = dependencyTokens(full.get(index));
+                if (!overlaps(tokens, demanded)) continue;
+                dependencies.add(index);
+                int before = demanded.size();
+                addNonBoundaryTokens(demanded, tokens);
+                changed |= demanded.size() != before;
+            }
+        } while (changed);
+
         JsonArray projected = new JsonArray();
         for (int index = 0; index < full.size(); index++) {
-            SummaryBranchMapping owner = owners.get(index);
-            if (owner != null
-                    && !scope.branchSites.contains(owner.siteId())) {
-                continue;
+            if (selected.contains(index) || dependencies.contains(index)) {
+                projected.add(full.get(index).deepCopy());
             }
-            // Unowned conditions are solver context, not proven branch noise.
-            projected.add(full.get(index).deepCopy());
         }
         return projected;
+    }
+
+    private static void addNonBoundaryTokens(Set<String> target,
+                                             Set<String> tokens) {
+        for (String token : tokens) {
+            if (!boundaryToken(token)) target.add(token);
+        }
+    }
+
+    private static boolean boundaryToken(String token) {
+        if (token.startsWith("PLACEHOLDER:")) return true;
+        if (!token.startsWith("SYMBOL:")) return false;
+        String symbol = token.substring("SYMBOL:".length());
+        return symbol.contains("REGION.")
+                && (symbol.contains(".in.") || symbol.contains(".out."));
+    }
+
+    private static boolean overlaps(Set<String> left, Set<String> right) {
+        for (String token : left) {
+            if (right.contains(token)) return true;
+        }
+        return false;
+    }
+
+    private static Set<String> dependencyTokens(JsonElement expression) {
+        Set<String> result = new LinkedHashSet<>();
+        collectDependencyTokens(expression, result);
+        return result;
+    }
+
+    private static void collectDependencyTokens(JsonElement expression,
+                                                Set<String> result) {
+        if (expression == null || expression.isJsonNull()) return;
+        if (expression.isJsonArray()) {
+            for (JsonElement child : expression.getAsJsonArray()) {
+                collectDependencyTokens(child, result);
+            }
+            return;
+        }
+        if (!expression.isJsonObject()) return;
+        JsonObject object = expression.getAsJsonObject();
+        String type = string(object, "_type");
+        if ("SymbolExpression".equals(type)) {
+            String symbol = string(object, "_exp");
+            if (!symbol.isEmpty() && !"N".equals(symbol)
+                    && !"V".equals(symbol)) {
+                result.add("SYMBOL:" + symbol);
+            }
+        } else if ("PlaceholderExpression".equals(type)) {
+            String function = string(object, "_place_holder_func");
+            String count = object.has("_count")
+                    ? object.get("_count").getAsString() : "-1";
+            if (!function.isEmpty()) {
+                result.add("PLACEHOLDER:" + function + "#" + count);
+            }
+        }
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            collectDependencyTokens(entry.getValue(), result);
+        }
     }
 
     private static String alphaCanonical(

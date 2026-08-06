@@ -10,11 +10,16 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertTrue;
 
 public class CausynthTraceRecorderTest {
     @Rule
@@ -37,8 +42,8 @@ public class CausynthTraceRecorderTest {
             CausynthTraceRecorder.recordField("FIELD_READ", method, 7,
                     "<example.Root: java.lang.Object child>",
                     methodReceiver, fieldReceiver, value, "");
-            CausynthTraceRecorder.recordRpcEndpoint("SEND", "TEST_RPC",
-                    "wire-1", "example.send");
+            CausynthTraceRecorder.recordRpc("SEND", "TEST_RPC",
+                    "native-1", null);
             CausynthTraceRecorder.exitActiveMethod(null, "");
             shutdown();
 
@@ -65,8 +70,8 @@ public class CausynthTraceRecorderTest {
             assertNotEquals(0, field.get("valueObjectId").getAsInt());
             assertNotEquals(field.get("fieldReceiverObjectId").getAsInt(),
                     field.get("valueObjectId").getAsInt());
-            assertFalse(field.has("valueFingerprint"));
-            assertEquals("wire-1", rpc.get("wireId").getAsString());
+            assertEquals("native-1",
+                    rpc.get("correlationId").getAsString());
             assertEquals(call, rpc.get("callId").getAsLong());
         } finally {
             shutdown();
@@ -77,6 +82,102 @@ public class CausynthTraceRecorderTest {
                 System.setProperty("causynth.trace.output.dir", previous);
             }
         }
+    }
+
+    @Test
+    public void selectedSkeletonKeepsStaticPotentialMethods() throws Exception {
+        String root = "<example.Root: void run()>";
+        String observed = "<example.Root: void observed()>";
+        String latent = "<example.Root: void latent()>";
+        Path candidates = folder.newFile("candidate-skeletons.jsonl")
+                .toPath();
+        Path selected = folder.newFile("selected-skeletons.jsonl").toPath();
+        Files.write(candidates, Collections.singletonList(
+                "{\"schemaVersion\":3,\"kind\":\"REGION_SKELETON\","
+                        + "\"regionId\":\"REGION.1\","
+                        + "\"rootMethod\":\"" + root + "\","
+                        + "\"anchorMethod\":\"" + observed + "\","
+                        + "\"methods\":[\"" + root + "\",\""
+                        + observed + "\",\"" + latent + "\"]}"),
+                StandardCharsets.UTF_8);
+
+        Map<String, Object> activation = new LinkedHashMap<>();
+        activation.put("regionId", "REGION.1");
+        activation.put("rootMethod", root);
+        activation.put("selection", "STATE_CONTEXT");
+        activation.put("anchorMethod", observed);
+        activation.put("anchorMethods", Collections.singletonList(observed));
+        activation.put("observedMethods", Arrays.asList(root, observed));
+        invokeWriteSelectedSkeletons(candidates, selected,
+                Collections.singletonList(activation));
+
+        JsonObject result = JsonParser.parseString(Files.readAllLines(
+                selected, StandardCharsets.UTF_8).get(0)).getAsJsonObject();
+        assertEquals(3, result.getAsJsonArray("methods").size());
+        assertEquals(latent, result.getAsJsonArray("methods").get(2)
+                .getAsString());
+        assertEquals(2, result.getAsJsonArray("baselineObservedMethods")
+                .size());
+        assertEquals(observed,
+                result.getAsJsonArray("baselineObservedMethods").get(1)
+                        .getAsString());
+    }
+
+    @Test
+    public void selectedSkeletonMergesCoalescedStaticTemplates()
+            throws Exception {
+        String root = "<example.Root: void run()>";
+        String stateAnchor = "<example.State: void read()>";
+        String helperRoot = "<example.Helper: void call()>";
+        String failureAnchor = "<example.Helper: void fail()>";
+        Path candidates = folder.newFile("coalesced-candidates.jsonl")
+                .toPath();
+        Path selected = folder.newFile("coalesced-selected.jsonl").toPath();
+        Files.write(candidates, Arrays.asList(
+                "{\"schemaVersion\":3,\"kind\":\"REGION_SKELETON\","
+                        + "\"regionId\":\"REGION.root\","
+                        + "\"rootMethod\":\"" + root + "\","
+                        + "\"anchorMethod\":\"" + stateAnchor + "\","
+                        + "\"methods\":[\"" + root + "\",\""
+                        + stateAnchor + "\"]}",
+                "{\"schemaVersion\":3,\"kind\":\"REGION_SKELETON\","
+                        + "\"regionId\":\"REGION.failure\","
+                        + "\"rootMethod\":\"" + helperRoot + "\","
+                        + "\"anchorMethod\":\"" + failureAnchor + "\","
+                        + "\"methods\":[\"" + helperRoot + "\",\""
+                        + failureAnchor + "\"]}"), StandardCharsets.UTF_8);
+
+        Map<String, Object> activation = new LinkedHashMap<>();
+        activation.put("regionId", "REGION.root");
+        activation.put("regionIds", Arrays.asList(
+                "REGION.root", "REGION.failure"));
+        activation.put("rootMethod", root);
+        activation.put("selection", "EXCEPTION_CONTEXT");
+        activation.put("anchorMethod", failureAnchor);
+        activation.put("anchorMethods",
+                Collections.singletonList(failureAnchor));
+        activation.put("observedMethods", Arrays.asList(root, failureAnchor));
+        invokeWriteSelectedSkeletons(candidates, selected,
+                Collections.singletonList(activation));
+
+        List<String> lines = Files.readAllLines(selected,
+                StandardCharsets.UTF_8);
+        assertEquals(1, lines.size());
+        JsonObject result = JsonParser.parseString(lines.get(0))
+                .getAsJsonObject();
+        assertEquals(4, result.getAsJsonArray("methods").size());
+        assertEquals(failureAnchor, result.get("anchorMethod").getAsString());
+    }
+
+    private static void invokeWriteSelectedSkeletons(
+            Path candidates, Path selected,
+            List<Map<String, Object>> activations) throws Exception {
+        Method method = CausynthTraceRecorder.class.getDeclaredMethod(
+                "writeSelectedSkeletons", java.io.File.class,
+                java.io.File.class, java.util.Collection.class);
+        method.setAccessible(true);
+        method.invoke(null, candidates.toFile(), selected.toFile(),
+                activations);
     }
 
     private static void shutdown() throws Exception {
@@ -92,4 +193,13 @@ public class CausynthTraceRecorderTest {
         method.setAccessible(true);
         method.invoke(null);
     }
+
+    private static void restore(String property, String value) {
+        if (value == null) {
+            System.clearProperty(property);
+        } else {
+            System.setProperty(property, value);
+        }
+    }
+
 }

@@ -35,7 +35,9 @@ Supported scalar relations include:
   emptiness;
 - exact branch site, occurrence, concrete outcome and ordered condition-index
   ownership from the VM;
-- fixed-bound `for` control flow through ordinary branch occurrences.
+- fixed-bound `for`, `while`, and `do-while` control flow: at most eight body
+  iterations, with a path cut immediately before a ninth body entry
+  body can begin.
 
 Unsupported operators or malformed width/type information produce a semantic
 gap. In particular, a diagnostic term is not enough to make a candidate
@@ -114,12 +116,14 @@ Callback mutators (`compute*`, `merge`, `replaceAll`) and bulk mutation are not
 modeled. Iterator `remove` and backed-view `clear` are the only supported
 view mutations; other live-view mutations abort with one explicit reason.
 
-There is no Java-side element ledger, finite snapshot, engine array binding,
-Map-entry projection or container-specific dynamic binding. Initial container
-state is activation-local; only operations demanded by an executed path are
-observed. This supports variable-length collections and arrays allocated from a
-symbolic length without enumerating a container before execution; an existing
-Java array keeps its concrete length.
+There is no Java-side element ledger, engine array binding, Map-entry
+projection or container-specific dynamic binding. Initial container state is
+activation-local and relevance-first: only cells demanded by the failure slice
+are retained, with a fixed capacity of eight unique cells per logical input
+port. A ninth relevant cell is a materialization gap. A complete region-end
+snapshot has no relevance proof, so a physical size above eight also fails
+closed instead of truncating. Variable-length containers may still execute;
+only their symbolic snapshot boundary is bounded.
 
 ## Replay admission
 

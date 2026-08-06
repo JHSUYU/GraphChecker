@@ -129,19 +129,28 @@ public final class RegionPathWorklist {
             JsonObject manifest = manifest(!seenPaths.isEmpty(),
                     observedRegions, observedScopes);
             List<JsonObject> relations = new ArrayList<>();
-            if (State.CLOSED.name().equals(string(manifest, "state"))) {
-                relations.addAll(closedRelations(observedScopes));
-                if (!gaps.isEmpty()) {
-                    relations.clear();
-                    manifest.addProperty("state", State.GAPPED.name());
-                    manifest.add("gaps", GSON.toJsonTree(gaps));
-                }
+            List<JsonObject> observedRelations = new ArrayList<>();
+            if (State.PENDING.name().equals(string(manifest, "state"))) {
+                observedRelations.addAll(outputRelations(observedScopes,
+                        true));
             }
-            return new Result(tasks, manifest, relations);
+            if (State.CLOSED.name().equals(string(manifest, "state"))) {
+                relations.addAll(outputRelations(observedScopes, false));
+            }
+            if (!gaps.isEmpty()) {
+                tasks.clear();
+                relations.clear();
+                observedRelations.clear();
+                manifest.addProperty("state", State.GAPPED.name());
+                manifest.add("gaps", GSON.toJsonTree(gaps));
+            }
+            return new Result(tasks, manifest, relations,
+                    observedRelations);
         }
 
-        private List<JsonObject> closedRelations(
-                Map<String, PathObservation.Scope> observedScopes) {
+        private List<JsonObject> outputRelations(
+                Map<String, PathObservation.Scope> observedScopes,
+                boolean observedOnly) {
             if (observedScopes.size() != 1) {
                 return Collections.emptyList();
             }
@@ -193,13 +202,15 @@ public final class RegionPathWorklist {
                 return Collections.emptyList();
             }
             boolean projectRelationGuards = true;
-            Map<String, String> relationByGuard = new LinkedHashMap<>();
-            for (PathObservation path : validPaths) {
-                String prior = relationByGuard.putIfAbsent(
-                        path.relationGuardKey(), path.relationKey());
-                if (prior != null && !prior.equals(path.relationKey())) {
-                    projectRelationGuards = false;
-                    break;
+            {
+                Map<String, String> relationByGuard = new LinkedHashMap<>();
+                for (PathObservation path : validPaths) {
+                    String prior = relationByGuard.putIfAbsent(
+                            path.relationGuardKey(), path.relationKey());
+                    if (prior != null && !prior.equals(path.relationKey())) {
+                        projectRelationGuards = false;
+                        break;
+                    }
                 }
             }
             Map<String, PathObservation> caseByPath = new LinkedHashMap<>();
@@ -215,9 +226,13 @@ public final class RegionPathWorklist {
                 return Collections.emptyList();
             }
 
-            RelationSummary merged = RelationSummary.guardedPathMerge(
-                    scope.outputClosure(),
-                    caseByPath.values(), bindings, projectRelationGuards);
+            RelationSummary merged = observedOnly
+                    ? RelationSummary.observedPathMerge(
+                    scope.outputClosure(), caseByPath.values(), bindings,
+                    State.PENDING.name(), projectRelationGuards)
+                    : RelationSummary.guardedPathMerge(
+                    scope.outputClosure(), caseByPath.values(), bindings,
+                    projectRelationGuards);
             return Collections.singletonList(merged.toJson());
         }
 
@@ -426,12 +441,15 @@ public final class RegionPathWorklist {
         public final List<JsonObject> tasks;
         public final JsonObject manifest;
         public final List<JsonObject> relations;
+        public final List<JsonObject> observedRelations;
 
         private Result(List<JsonObject> tasks, JsonObject manifest,
-                       List<JsonObject> relations) {
+                       List<JsonObject> relations,
+                       List<JsonObject> observedRelations) {
             this.tasks = tasks;
             this.manifest = manifest;
             this.relations = relations;
+            this.observedRelations = observedRelations;
         }
     }
 

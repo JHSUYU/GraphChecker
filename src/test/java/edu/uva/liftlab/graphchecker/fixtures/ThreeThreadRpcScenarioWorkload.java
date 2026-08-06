@@ -2,12 +2,6 @@ package edu.uva.liftlab.graphchecker.fixtures;
 
 import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -212,24 +206,14 @@ public final class ThreeThreadRpcScenarioWorkload {
         private final CountDownLatch bReady = new CountDownLatch(1);
         private volatile int a;
         private volatile int b;
-        private volatile long aPublisherThreadId;
-        private volatile long bPublisherThreadId;
-        private volatile int aReceivedValue;
-        private volatile int bReceivedValue;
-        private volatile long aConsumerThreadId;
-        private volatile long bConsumerThreadId;
-        private volatile int aReceiveCount;
-        private volatile int bReceiveCount;
 
         public void publishA(int value) {
             a = value;
-            aPublisherThreadId = Thread.currentThread().getId();
             aReady.countDown();
         }
 
         public void publishB(int value) {
             b = value;
-            bPublisherThreadId = Thread.currentThread().getId();
             bReady.countDown();
         }
 
@@ -237,22 +221,14 @@ public final class ThreeThreadRpcScenarioWorkload {
             if (!aReady.await(JOIN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
                 throw new IllegalStateException("RPC A timed out");
             }
-            int received = a;
-            aReceivedValue = received;
-            aConsumerThreadId = Thread.currentThread().getId();
-            aReceiveCount++;
-            return received;
+            return a;
         }
 
         public int getRPCFromB() throws InterruptedException {
             if (!bReady.await(JOIN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
                 throw new IllegalStateException("RPC B timed out");
             }
-            int received = b;
-            bReceivedValue = received;
-            bConsumerThreadId = Thread.currentThread().getId();
-            bReceiveCount++;
-            return received;
+            return b;
         }
     }
 
@@ -584,67 +560,6 @@ public final class ThreeThreadRpcScenarioWorkload {
         }
     }
 
-    public static final class RpcObservation {
-        private final String channel;
-        private final int publishedValue;
-        private final int receivedValue;
-        private final long publisherThreadId;
-        private final long consumerThreadId;
-        private final String valueFingerprint;
-
-        RpcObservation(String channel, int publishedValue, int receivedValue,
-                       long publisherThreadId, long consumerThreadId) {
-            this.channel = channel;
-            this.publishedValue = publishedValue;
-            this.receivedValue = receivedValue;
-            this.publisherThreadId = publisherThreadId;
-            this.consumerThreadId = consumerThreadId;
-            this.valueFingerprint = fingerprint(channel, publishedValue,
-                    receivedValue);
-        }
-
-        public String getChannel() {
-            return channel;
-        }
-
-        public int getPublishedValue() {
-            return publishedValue;
-        }
-
-        public int getReceivedValue() {
-            return receivedValue;
-        }
-
-        public long getPublisherThreadId() {
-            return publisherThreadId;
-        }
-
-        public long getConsumerThreadId() {
-            return consumerThreadId;
-        }
-
-        public String getValueFingerprint() {
-            return valueFingerprint;
-        }
-
-        public boolean isRuntimeValueEqualityObserved() {
-            return publishedValue == receivedValue
-                    && publisherThreadId != consumerThreadId;
-        }
-
-        private String toJson() {
-            return "{\"channel\":\"" + channel + "\","
-                    + "\"publishedValue\":" + publishedValue + ","
-                    + "\"receivedValue\":" + receivedValue + ","
-                    + "\"publisherThreadId\":" + publisherThreadId + ","
-                    + "\"consumerThreadId\":" + consumerThreadId + ","
-                    + "\"valueEqualityObserved\":"
-                    + isRuntimeValueEqualityObserved() + ","
-                    + "\"valueFingerprint\":\"" + valueFingerprint
-                    + "\"}";
-        }
-    }
-
     public static final class RunResult {
         private final Variant variant;
         private final Boolean b1;
@@ -655,13 +570,12 @@ public final class ThreeThreadRpcScenarioWorkload {
         private final long[] workerThreadIds;
         private final String failureThread;
         private final Throwable failure;
-        private final List<RpcObservation> rpcObservations;
         private final boolean producerConcurrencyObserved;
         private final boolean consumerStartedAfterProducerThreadsTerminated;
 
         RunResult(Variant variant, Boolean b1, Boolean b2, int a, int b,
                   long[] workerThreadIds, String failureThread,
-                  Throwable failure, List<RpcObservation> observations,
+                  Throwable failure,
                   boolean producerConcurrencyObserved,
                   boolean consumerStartedAfterProducerThreadsTerminated) {
             this.variant = variant;
@@ -673,8 +587,6 @@ public final class ThreeThreadRpcScenarioWorkload {
             this.workerThreadIds = workerThreadIds.clone();
             this.failureThread = failureThread;
             this.failure = failure;
-            this.rpcObservations = Collections.unmodifiableList(
-                    new ArrayList<>(observations));
             this.producerConcurrencyObserved = producerConcurrencyObserved;
             this.consumerStartedAfterProducerThreadsTerminated =
                     consumerStartedAfterProducerThreadsTerminated;
@@ -716,10 +628,6 @@ public final class ThreeThreadRpcScenarioWorkload {
             return failure;
         }
 
-        public List<RpcObservation> getRpcObservations() {
-            return rpcObservations;
-        }
-
         public boolean isProducerConcurrencyObserved() {
             return producerConcurrencyObserved;
         }
@@ -729,13 +637,6 @@ public final class ThreeThreadRpcScenarioWorkload {
         }
 
         public String toJson() {
-            StringBuilder observations = new StringBuilder();
-            for (RpcObservation observation : rpcObservations) {
-                if (observations.length() > 0) {
-                    observations.append(',');
-                }
-                observations.append(observation.toJson());
-            }
             return "{\"kind\":\"THREE_THREAD_RPC_SCENARIO_RESULT\","
                     + "\"variant\":\"" + variant.name() + "\","
                     + "\"b1\":" + b1 + ",\"b2\":" + b2 + ","
@@ -749,8 +650,7 @@ public final class ThreeThreadRpcScenarioWorkload {
                     + ',' + workerThreadIds[1] + ',' + workerThreadIds[2]
                     + "],\"failureThread\":"
                     + (failureThread == null ? "null" : "\""
-                    + failureThread + "\"") + ",\"rpcObservations\":["
-                    + observations + "]}";
+                    + failureThread + "\"") + "}";
         }
     }
 
@@ -795,24 +695,13 @@ public final class ThreeThreadRpcScenarioWorkload {
         }
 
         int a = workers.consumer.received
-                ? workers.consumer.receivedA : bus.aReceivedValue;
+                ? workers.consumer.receivedA : bus.a;
         int b = workers.consumer.received
-                ? workers.consumer.receivedB : bus.bReceivedValue;
-        List<RpcObservation> observations = new ArrayList<>();
-        if (bus.aReceiveCount == 1) {
-            observations.add(new RpcObservation("A", bus.a,
-                    bus.aReceivedValue, bus.aPublisherThreadId,
-                    bus.aConsumerThreadId));
-        }
-        if (bus.bReceiveCount == 1) {
-            observations.add(new RpcObservation("B", bus.b,
-                    bus.bReceivedValue, bus.bPublisherThreadId,
-                    bus.bConsumerThreadId));
-        }
+                ? workers.consumer.receivedB : bus.b;
         return new RunResult(variant, b1, b2, a, b,
                 new long[]{workers.producerA.getId(),
                         workers.producerB.getId(), workers.consumer.getId()},
-                failureThread.get(), failure.get(), observations,
+                failureThread.get(), failure.get(),
                 concurrencyGate.bothWorkersEnteredConcurrently(),
                 producersTerminated);
     }
@@ -859,22 +748,6 @@ public final class ThreeThreadRpcScenarioWorkload {
             thread.interrupt();
             throw new IllegalStateException("worker did not terminate: "
                     + thread.getName());
-        }
-    }
-
-    private static String fingerprint(String channel, int published,
-                                      int received) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(("int:" + channel + ':' + published
-                    + ':' + received).getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder("sha256:");
-            for (byte value : bytes) {
-                result.append(String.format("%02x", value & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 unavailable", impossible);
         }
     }
 

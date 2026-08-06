@@ -18,7 +18,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
@@ -28,6 +27,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
@@ -125,28 +125,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** Records a method observation when rich call-frame evidence is unnecessary. */
-    public static void record(String method, Object receiver) {
-        if (method == null) {
-            return;
-        }
-        initialize();
-        long id = EVENT_COUNTER.incrementAndGet();
-        if (id > maxEvents || contextOnlyConcolicReplay) {
-            return;
-        }
-        Thread thread = Thread.currentThread();
-        RuntimeRegionPlanner.MethodEvent event =
-                new RuntimeRegionPlanner.MethodEvent(id, testName,
-                        inferProcessName(method, thread.getName()),
-                        thread.getName(), thread.getId(), method,
-                        identity(receiver), runtimeType(receiver),
-                        id, 0L, 0L);
-        synchronized (LOCK) {
-            writeTraceLine(event);
-        }
-    }
-
     /** Rich method-entry event used by graph-directed symbolic instrumentation. */
     public static long enterMethod(String method, Object receiver) {
         if (method == null) {
@@ -168,11 +146,17 @@ public final class CausynthTraceRecorder {
         ActiveCallSite parentSite = sites.peek();
         long parentCallId = parent == null ? 0L : parent.callId;
         long parentSiteId = parentSite == null ? 0L : parentSite.invocationId;
+        RuntimeTraceContext.View context = parent == null
+                ? RuntimeTraceContext.enterRoot(receiver)
+                : RuntimeTraceContext.current();
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName, process,
                         threadName, tid, method, objectId,
-                        runtimeType(receiver), id, parentCallId, parentSiteId);
-        calls.push(new ActiveCall(id, parentSiteId, method));
+                        runtimeType(receiver), id, parentCallId, parentSiteId,
+                        context.ownerId, context.laneId, context.spanId,
+                        context.parentSpanId, context.remoteParentSpanId);
+        calls.push(new ActiveCall(id, parentSiteId, method,
+                context.spanId, parent == null));
         if (contextOnlyConcolicReplay) {
             return id;
         }
@@ -192,9 +176,13 @@ public final class CausynthTraceRecorder {
         Deque<ActiveCall> calls = ACTIVE_CALLS.get();
         ActiveCall parent = calls.peek();
         long parentCallId = parent == null ? 0L : parent.callId;
+        RuntimeTraceContext.View context = parent == null
+                ? RuntimeTraceContext.enterRoot(receiver)
+                : RuntimeTraceContext.current();
         // Keep the nesting stack balanced even after the trace budget has
         // been exhausted; the silent exit hook must not pop the parent.
-        calls.push(new ActiveCall(id, 0L, method));
+        calls.push(new ActiveCall(id, 0L, method, context.spanId,
+                parent == null));
         if (id > maxEvents) {
             return id;
         }
@@ -204,7 +192,9 @@ public final class CausynthTraceRecorder {
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
                         inferProcessName(method, threadName), threadName,
                         thread.getId(), method, 0, "", id,
-                        parentCallId, 0L);
+                        parentCallId, 0L, context.ownerId, context.laneId,
+                        context.spanId, context.parentSpanId,
+                        context.remoteParentSpanId);
         if (!contextOnlyConcolicReplay) {
             synchronized (LOCK) {
                 writeTraceLine(event);
@@ -238,6 +228,9 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(receiver);
         event.invocationId = event.id;
         emitExecutionEvent(event);
+        if (isThreadStart(declaredCallee, receiver)) {
+            RuntimeTraceContext.captureAsync(receiver);
+        }
         if (event.id > 0L) {
             ACTIVE_CALL_SITES.get().push(new ActiveCallSite(event.id, ownerCallId,
                     event.siteId, event.method, event.declaredCallee));
@@ -259,6 +252,10 @@ public final class CausynthTraceRecorder {
         event.runtimeType = runtimeType(value);
         event.objectId = identity(value);
         event.primitiveValue = safe(primitiveValue);
+        if (argumentIndex == 0 && isAsyncTaskSubmission(
+                site == null ? "" : site.declaredCallee, value)) {
+            RuntimeTraceContext.captureAsync(value);
+        }
         emitExecutionEvent(event);
     }
 
@@ -318,6 +315,9 @@ public final class CausynthTraceRecorder {
         event.primitiveValue = safe(primitiveValue);
         emitExecutionEvent(event);
         removeCall(resolvedCallId);
+        if (call != null && call.rootContext) {
+            RuntimeTraceContext.exitRoot(call.spanId);
+        }
     }
 
     /** Normal exit resolved from the current thread-local call stack. */
@@ -343,6 +343,9 @@ public final class CausynthTraceRecorder {
             }
         }
         removeCall(resolvedCallId);
+        if (call != null && call.rootContext) {
+            RuntimeTraceContext.exitRoot(call.spanId);
+        }
     }
 
     /**
@@ -365,6 +368,9 @@ public final class CausynthTraceRecorder {
         if (call != null) {
             closeCallSites(call.callId, callSiteExit);
             removeCall(call.callId);
+            if (call.rootContext) {
+                RuntimeTraceContext.exitRoot(call.spanId);
+            }
         }
     }
 
@@ -406,10 +412,11 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** Records one transport endpoint without inspecting the payload. */
-    public static void recordRpcEndpoint(String direction, String transport,
-                                         String wireId, String endpoint) {
-        if (direction == null || transport == null || wireId == null) {
+    /** Records an RPC boundary/span and an optional receiver-side owner. */
+    public static void recordRpc(String direction, String transport,
+                                 String correlationId, Object localOwner) {
+        if (direction == null || transport == null
+                || correlationId == null) {
             return;
         }
         initialize();
@@ -424,15 +431,19 @@ public final class CausynthTraceRecorder {
         ActiveCall call = ACTIVE_CALLS.get().peek();
         ActiveCallSite site = ACTIVE_CALL_SITES.get().peek();
         String method = call == null ? "" : call.method;
+        RuntimeTraceContext.View context = RuntimeTraceContext.rpc(direction,
+                transport, correlationId, localOwner);
         RuntimeRegionPlanner.ProtocolEvent event =
                 new RuntimeRegionPlanner.ProtocolEvent(id,
                         safe(direction).toUpperCase(), safe(transport),
-                        safe(wireId), safe(endpoint),
+                        safe(correlationId),
                         inferProcessName(method, thread.getName()),
                         thread.getName(), thread.getId(), method,
                         call == null ? 0L : call.callId,
                         site == null ? 0L : site.invocationId,
-                        site == null ? "" : site.declaredCallee);
+                        site == null ? "" : site.declaredCallee,
+                        context.ownerId, context.laneId, context.spanId,
+                        context.parentSpanId, context.remoteParentSpanId);
         synchronized (LOCK) {
             writeProtocolTraceLine(event);
         }
@@ -515,6 +526,23 @@ public final class CausynthTraceRecorder {
         if (found != null) {
             ACTIVE_CALLS.get().remove(found);
         }
+    }
+
+    private static boolean isThreadStart(String declaredCallee,
+                                         Object receiver) {
+        return receiver instanceof Thread
+                && safe(declaredCallee).contains(": void start()>");
+    }
+
+    private static boolean isAsyncTaskSubmission(String declaredCallee,
+                                                 Object task) {
+        if (!(task instanceof Runnable) && !(task instanceof Callable)) {
+            return false;
+        }
+        String signature = safe(declaredCallee);
+        return signature.contains(" execute(")
+                || signature.contains(" submit(")
+                || signature.contains(" schedule(");
     }
 
     private static void removeCallSite(long invocationId) {
@@ -740,22 +768,30 @@ public final class CausynthTraceRecorder {
             for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
                 observedMethods.add(event.method);
             }
+            RuntimeRegionPlanner.Result activationGraph =
+                    RuntimeRegionPlanner.planSkeletonGraph(
+                            selectedSkeletons, trace.methods);
             long refinementStart = System.nanoTime();
             RuntimeRefinedGraphBuilder.Result refinement =
                     RuntimeRefinedGraphBuilder.refine(candidateGraph,
-                            selectedSkeletons, trace.methods, trace.execution,
+                            selectedSkeletons,
+                            activationGraph.runtimeInstances,
+                            trace.methods, trace.execution,
                             trace.fields, trace.protocol,
                             refinedGraph.toPath());
             long refinementMillis = elapsedMillis(refinementStart);
             long candidatePlanningStart = System.nanoTime();
-            RuntimeSelectedRegionFinalizer.finalizeRegions(
+            RuntimeSelectedRegionFinalizer.Result closure =
+                    RuntimeSelectedRegionFinalizer.finalizeRegions(
                     refinedGraph, selectedSkeletons, regionFile,
                     regionEdgeFile,
-                    observedMethods);
+                    observedMethods, activationGraph.runtimeInstances,
+                    branchObservations(trace.execution));
             long candidatePlanningMillis =
                     elapsedMillis(candidatePlanningStart);
             writeRuntimeRegionPlans(planOutputDirectory, refinedGraph,
-                    regionFile, regionEdgeFile, trace);
+                    regionFile, regionEdgeFile, trace,
+                    activationGraph.runtimeInstances);
             writeFile(new File(planOutputDirectory,
                             "runtime_refinement_manifest.json"),
                     CausynthJson.objectWithoutNulls(
@@ -770,8 +806,52 @@ public final class CausynthTraceRecorder {
                             "activationCount", refinement.activationCount,
                             "edgeCount", refinement.edgeCount,
                             "runtimeBoundEdgeCount",
-                            refinement.runtimeBoundEdgeCount));
+                            refinement.runtimeBoundEdgeCount,
+                            "candidateRegionInstanceCount",
+                            closure.candidateInstanceCount,
+                            "targetRegionInstanceCount",
+                            closure.targetInstanceCount,
+                            "retainedRegionInstanceCount",
+                            closure.retainedInstanceCount,
+                            "retainedRegionDefinitionCount",
+                            closure.retainedRegionCount,
+                            "retainedCausalEdgeCount",
+                            closure.retainedEdgeCount,
+                            "regionCatalogScope",
+                            closure.regionCatalogScope,
+                            "directlySchedulable",
+                            closure.directlySchedulable,
+                            "perTargetClosures",
+                            closure.targetClosures));
         }
+    }
+
+    /** Compact, lossless BRANCH rows used to bind fatal sites to activations. */
+    private static List<Map<String, Object>> branchObservations(
+            Collection<RuntimeRegionPlanner.RuntimeEvent> events) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (events == null) return result;
+        for (RuntimeRegionPlanner.RuntimeEvent event : events) {
+            if (!"BRANCH".equals(event.kind) || event.outcome == null
+                    || event.callId <= 0L || event.siteId.isEmpty()) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("kind", "BRANCH");
+            row.put("eventSeq", event.seq);
+            row.put("method", event.method);
+            row.put("callId", event.callId);
+            row.put("siteId", event.siteId);
+            row.put("outcome", event.outcome);
+            if (event.successorIndex != null) {
+                row.put("successorIndex", event.successorIndex);
+            }
+            if (!event.branchKind.isEmpty()) {
+                row.put("branchKind", event.branchKind);
+            }
+            result.add(row);
+        }
+        return result;
     }
 
     /** Emits only static region skeletons and their concrete activation graph. */
@@ -836,17 +916,54 @@ public final class CausynthTraceRecorder {
             File candidates, File output,
             Collection<Map<String, Object>> runtimeInstances)
             throws IOException {
-        Map<String, Map<String, Integer>> rootCounts = new LinkedHashMap<>();
-        Map<String, Map<String, Set<String>>> methodsByRoot =
+        Map<String, String> rootByRegion = new LinkedHashMap<>();
+        Map<String, Set<String>> methodsByRegion = new LinkedHashMap<>();
+        Map<String, Integer> activationCounts = new LinkedHashMap<>();
+        Map<String, String> selectionByRegion = new LinkedHashMap<>();
+        Map<String, String> anchorByRegion = new LinkedHashMap<>();
+        Map<String, Set<String>> anchorsByRegion = new LinkedHashMap<>();
+        Map<String, Set<String>> sourceRegionsByRegion =
                 new LinkedHashMap<>();
         for (Map<String, Object> instance : runtimeInstances) {
             String region = String.valueOf(instance.get("regionId"));
             String root = String.valueOf(instance.get("rootMethod"));
-            rootCounts.computeIfAbsent(region,
-                    ignored -> new LinkedHashMap<>()).merge(root, 1,
-                    Integer::sum);
-            Set<String> observed = methodsByRoot.computeIfAbsent(region,
-                    ignored -> new LinkedHashMap<>()).computeIfAbsent(root,
+            String previous = rootByRegion.putIfAbsent(region, root);
+            if (previous != null && !previous.equals(root)) {
+                throw new IOException("one region definition resolved to "
+                        + "multiple execution-context roots: " + region);
+            }
+            activationCounts.merge(region, 1, Integer::sum);
+            Set<String> sourceRegions = sourceRegionsByRegion
+                    .computeIfAbsent(region,
+                            ignored -> new LinkedHashSet<>());
+            Object encodedRegions = instance.get("regionIds");
+            if (encodedRegions instanceof Collection<?>) {
+                for (Object sourceRegion
+                        : (Collection<?>) encodedRegions) {
+                    sourceRegions.add(String.valueOf(sourceRegion));
+                }
+            }
+            if (sourceRegions.isEmpty()) {
+                sourceRegions.add(region);
+            }
+            String selection = String.valueOf(instance.get("selection"));
+            String previousSelection = selectionByRegion.get(region);
+            if (previousSelection == null
+                    || selectionRank(selection)
+                    > selectionRank(previousSelection)) {
+                selectionByRegion.put(region, selection);
+                anchorByRegion.put(region,
+                        String.valueOf(instance.get("anchorMethod")));
+            }
+            Set<String> runtimeAnchors = anchorsByRegion.computeIfAbsent(
+                    region, ignored -> new LinkedHashSet<>());
+            Object encodedAnchors = instance.get("anchorMethods");
+            if (encodedAnchors instanceof Collection<?>) {
+                for (Object anchor : (Collection<?>) encodedAnchors) {
+                    runtimeAnchors.add(String.valueOf(anchor));
+                }
+            }
+            Set<String> observed = methodsByRegion.computeIfAbsent(region,
                     ignored -> new LinkedHashSet<>());
             Object methods = instance.get("observedMethods");
             if (methods instanceof Collection<?>) {
@@ -855,13 +972,9 @@ public final class CausynthTraceRecorder {
                 }
             }
         }
-        File parent = output.getParentFile();
-        if (parent != null) {
-            Files.createDirectories(parent.toPath());
-        }
-        try (BufferedReader reader = skeletonReader(candidates);
-             BufferedWriter writer = Files.newBufferedWriter(output.toPath(),
-                     StandardCharsets.UTF_8)) {
+        List<JsonObject> candidateRows = new ArrayList<>();
+        Map<String, JsonObject> candidateByRegion = new LinkedHashMap<>();
+        try (BufferedReader reader = skeletonReader(candidates)) {
             String line;
             while ((line = reader.readLine()) != null) {
                 if (line.trim().isEmpty()) {
@@ -869,32 +982,98 @@ public final class CausynthTraceRecorder {
                 }
                 JsonObject row = JsonParser.parseString(line)
                         .getAsJsonObject();
+                candidateRows.add(row);
+                candidateByRegion.put(string(row, "regionId"), row);
+            }
+        }
+
+        File parent = output.getParentFile();
+        if (parent != null) {
+            Files.createDirectories(parent.toPath());
+        }
+        try (BufferedWriter writer = Files.newBufferedWriter(output.toPath(),
+                     StandardCharsets.UTF_8)) {
+            for (JsonObject candidate : candidateRows) {
+                JsonObject row = candidate.deepCopy();
                 String region = string(row, "regionId");
-                Map<String, Integer> counts = rootCounts.get(region);
-                if (counts == null || counts.isEmpty()) {
+                String selectedRoot = rootByRegion.get(region);
+                if (selectedRoot == null) {
                     continue;
                 }
-                String selectedRoot = "";
-                int selectedCount = -1;
-                for (Map.Entry<String, Integer> entry : counts.entrySet()) {
-                    if (entry.getValue() > selectedCount) {
-                        selectedRoot = entry.getKey();
-                        selectedCount = entry.getValue();
+                if (!selectedRoot.equals(string(row, "rootMethod"))) {
+                    throw new IOException("runtime changed authoritative "
+                            + "region root: " + region);
+                }
+                Set<String> observedMethods = methodsByRegion.get(region);
+                String selectedAnchor = anchorByRegion.get(region);
+                if (selectedAnchor == null
+                        || !observedMethods.contains(selectedAnchor)) {
+                    throw new IOException("selected region anchor was not "
+                            + "observed inside its activation: " + region);
+                }
+                for (String anchor : anchorsByRegion.get(region)) {
+                    if (!observedMethods.contains(anchor)) {
+                        throw new IOException("selected region admission "
+                                + "anchor was not observed inside its "
+                                + "activation: " + region + " " + anchor);
                     }
                 }
-                row.addProperty("rootMethod", selectedRoot);
-                JsonArray selectedMethods = new JsonArray();
-                for (String method : methodsByRoot.get(region).get(
-                        selectedRoot)) {
-                    selectedMethods.add(method);
+                Set<String> potentialMethods = new LinkedHashSet<>();
+                for (String sourceRegion : sourceRegionsByRegion
+                        .getOrDefault(region,
+                                Collections.singleton(region))) {
+                    JsonObject source = candidateByRegion.get(sourceRegion);
+                    if (source == null) {
+                        throw new IOException("runtime activation references "
+                                + "unknown static region: " + sourceRegion);
+                    }
+                    for (JsonElement method
+                            : source.getAsJsonArray("methods")) {
+                        potentialMethods.add(method.getAsString());
+                    }
                 }
-                row.add("methods", selectedMethods);
+                if (!potentialMethods.contains(selectedRoot)
+                        || !potentialMethods.contains(selectedAnchor)) {
+                    throw new IOException("coalesced static region methods "
+                            + "must contain runtime root and anchor: "
+                            + region);
+                }
+                JsonArray encodedPotentialMethods = new JsonArray();
+                for (String method : potentialMethods) {
+                    encodedPotentialMethods.add(method);
+                }
+                row.add("methods", encodedPotentialMethods);
+                JsonArray baselineObservedMethods = new JsonArray();
+                for (String method : observedMethods) {
+                    baselineObservedMethods.add(method);
+                }
+                row.add("baselineObservedMethods",
+                        baselineObservedMethods);
+                row.addProperty("selection", selectionByRegion.get(region));
+                row.addProperty("anchorMethod", anchorByRegion.get(region));
+                JsonArray selectedAnchors = new JsonArray();
+                for (String anchor : anchorsByRegion.get(region)) {
+                    selectedAnchors.add(anchor);
+                }
+                row.add("anchorMethods", selectedAnchors);
+                row.addProperty("runtimeActivationCount",
+                        activationCounts.get(region));
                 row.addProperty("planningMode",
-                        "RUNTIME_SELECTED_ACTIVATION_SKELETON");
+                        "RUNTIME_BOUND_AUTHORITY_SKELETON");
                 writer.write(row.toString());
                 writer.write('\n');
             }
         }
+    }
+
+    private static int selectionRank(String selection) {
+        if (selection != null && selection.startsWith("EXCEPTION")) {
+            return 3;
+        }
+        if (selection != null && selection.startsWith("PROTOCOL")) {
+            return 2;
+        }
+        return 1;
     }
 
     private static BufferedReader skeletonReader(File file)
@@ -941,6 +1120,7 @@ public final class CausynthTraceRecorder {
         EVENT_COUNTER.set(0L);
         ACTIVE_CALLS.remove();
         ACTIVE_CALL_SITES.remove();
+        RuntimeTraceContext.resetForTests();
         OBJECT_IDS.clear();
         nextObjectId = 1;
         contextOnlyConcolicReplay = false;
@@ -997,7 +1177,12 @@ public final class CausynthTraceRecorder {
                             string(row, "receiverType"),
                             longInteger(row, "callId", seq),
                             longInteger(row, "parentCallId", 0L),
-                            longInteger(row, "parentSiteId", 0L)));
+                            longInteger(row, "parentSiteId", 0L),
+                            longInteger(row, "ownerId", 0L),
+                            longInteger(row, "laneId", 0L),
+                            longInteger(row, "spanId", 0L),
+                            longInteger(row, "parentSpanId", 0L),
+                            longInteger(row, "remoteParentSpanId", 0L)));
                 } else if (!skeletonOnly && ("FIELD_READ".equals(eventKind)
                         || "FIELD_WRITE".equals(eventKind))) {
                     String method = string(row, "method");
@@ -1020,15 +1205,19 @@ public final class CausynthTraceRecorder {
                             "RPC_SEND".equals(eventKind)
                                     ? "SEND" : "RECEIVE",
                             string(row, "transport"),
-                            string(row, "wireId"),
-                            string(row, "endpoint"),
+                            string(row, "correlationId"),
                             string(row, "process"),
                             string(row, "threadName"),
                             longInteger(row, "tid", 0L),
                             string(row, "method"),
                             longInteger(row, "callId", 0L),
                             longInteger(row, "invocationId", 0L),
-                            string(row, "declaredCallee")));
+                            string(row, "declaredCallee"),
+                            longInteger(row, "ownerId", 0L),
+                            longInteger(row, "laneId", 0L),
+                            longInteger(row, "spanId", 0L),
+                            longInteger(row, "parentSpanId", 0L),
+                            longInteger(row, "remoteParentSpanId", 0L)));
                 } else if (!skeletonOnly && isExecutionEventKind(eventKind)) {
                     trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
                             longInteger(row, "seq", 0L), eventKind,
@@ -1080,7 +1269,12 @@ public final class CausynthTraceRecorder {
                 "receiverType", event.receiverType,
                 "callId", event.callId,
                 "parentCallId", event.parentCallId,
-                "parentSiteId", event.parentSiteId);
+                "parentSiteId", event.parentSiteId,
+                "ownerId", event.ownerId,
+                "laneId", event.laneId,
+                "spanId", event.spanId,
+                "parentSpanId", event.parentSpanId,
+                "remoteParentSpanId", event.remoteParentSpanId);
     }
 
     private static void writeFieldTraceLine(
@@ -1107,15 +1301,19 @@ public final class CausynthTraceRecorder {
                         ? "RPC_SEND" : "RPC_RECEIVE",
                 "seq", event.seq,
                 "transport", event.transport,
-                "wireId", event.wireId,
-                "endpoint", event.endpoint,
+                "correlationId", event.correlationId,
                 "process", event.process,
                 "threadName", event.threadName,
                 "tid", event.tid,
                 "method", event.method,
                 "callId", event.callId,
                 "invocationId", event.invocationId,
-                "declaredCallee", event.declaredCallee);
+                "declaredCallee", event.declaredCallee,
+                "ownerId", event.ownerId,
+                "laneId", event.laneId,
+                "spanId", event.spanId,
+                "parentSpanId", event.parentSpanId,
+                "remoteParentSpanId", event.remoteParentSpanId);
     }
 
     private static void writeExecutionTraceLine(ExecutionEvent event) {
@@ -1244,21 +1442,63 @@ public final class CausynthTraceRecorder {
     /** Binds frozen static regions to concrete same-thread invocations. */
     private static void writeRuntimeRegionPlans(
             File directory, File staticGraph, File regionFile,
-            File regionEdgeFile, TraceData trace) throws IOException {
+            File regionEdgeFile, TraceData trace,
+            Collection<Map<String, Object>> runtimeSeeds) throws IOException {
         RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
                 regionFile,
-                regionEdgeFile, staticGraph, trace.methods,
+                regionEdgeFile, staticGraph, runtimeSeeds, trace.methods,
                 trace.execution, trace.fields);
+        copyObservedFatalTargets(runtimeSeeds, planned.runtimeInstances);
         writeRuntimePlanArtifacts(directory,
                 planned.edgeValidationsJsonl(), planned.regionPlansJsonl(),
                 planned.runtimeInstances);
     }
 
-    private static void writeRuntimePlanArtifacts(
-            File directory,
-            String edgeValidations, String regionPlans) throws IOException {
-        writeRuntimePlanArtifacts(directory, edgeValidations, regionPlans,
-                "");
+    /** Preserves target-site evidence when the planner normalizes activations. */
+    private static void copyObservedFatalTargets(
+            Collection<Map<String, Object>> seeds,
+            Collection<Map<String, Object>> planned) {
+        Map<String, Map<String, Object>> byRegionAndCall =
+                new LinkedHashMap<>();
+        for (Map<String, Object> seed : seeds == null
+                ? Collections.<Map<String, Object>>emptyList() : seeds) {
+            byRegionAndCall.put(runtimeActivationKey(seed), seed);
+        }
+        for (Map<String, Object> activation : planned == null
+                ? Collections.<Map<String, Object>>emptyList() : planned) {
+            Map<String, Object> seed = byRegionAndCall.get(
+                    runtimeActivationKey(activation));
+            if (seed == null) continue;
+            List<Map<String, Object>> evidence = mapRows(
+                    seed.get("observedFatalTargets"));
+            if (!evidence.isEmpty()) {
+                activation.put("observedFatalTargets", evidence);
+            }
+            Object sites = seed.get("observedFatalTargetSites");
+            if (sites instanceof Collection<?>) {
+                activation.put("observedFatalTargetSites",
+                        new ArrayList<>((Collection<?>) sites));
+            }
+        }
+    }
+
+    private static String runtimeActivationKey(Map<String, Object> row) {
+        return String.valueOf(row.get("regionId")) + "\n"
+                + String.valueOf(row.get("rootCallId"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> mapRows(Object value) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (value instanceof Collection<?>) {
+            for (Object item : (Collection<?>) value) {
+                if (item instanceof Map<?, ?>) {
+                    result.add(new LinkedHashMap<>(
+                            (Map<String, Object>) item));
+                }
+            }
+        }
+        return result;
     }
 
     private static void writeRuntimePlanArtifacts(
@@ -1342,7 +1582,6 @@ public final class CausynthTraceRecorder {
         private Boolean outcome;
         private String branchKind = "";
         private Integer successorIndex;
-
     }
 
     private static final class TraceData {
@@ -1368,11 +1607,16 @@ public final class CausynthTraceRecorder {
         private final long callId;
         private final long parentSiteId;
         private final String method;
+        private final long spanId;
+        private final boolean rootContext;
 
-        private ActiveCall(long callId, long parentSiteId, String method) {
+        private ActiveCall(long callId, long parentSiteId, String method,
+                           long spanId, boolean rootContext) {
             this.callId = callId;
             this.parentSiteId = parentSiteId;
             this.method = safe(method);
+            this.spanId = spanId;
+            this.rootContext = rootContext;
         }
     }
 

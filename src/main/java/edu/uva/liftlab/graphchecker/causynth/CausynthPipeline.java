@@ -4,8 +4,9 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.A
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicBranchSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.CallArgumentOutputCapture;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ExactHeapOutputCapture;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.RootedOutputCapture;
-import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
@@ -72,13 +73,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.intValue;
-import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.stringValue;
-import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 
 /**
  * Annotation-directed static backward data-flow analysis.
@@ -94,8 +90,6 @@ public final class CausynthPipeline {
             "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder";
     private static final String CONCOLIC_REGION_RUNTIME_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
-    private static final Pattern METHOD_SIGNATURE = Pattern.compile(
-            "<[^:]+:\\s+.+\\s+[^\\s(]+\\((.*)\\)>");
     private final GraphCheckerOptions options;
     private final Map<SootField, SootMethod> exitFieldReaders =
             new IdentityHashMap<>();
@@ -295,14 +289,22 @@ public final class CausynthPipeline {
                 plan.materializations();
         List<RootedOutputCapture> outputCaptureSelection =
                 plan.outputCaptures();
+        List<CallArgumentOutputCapture> callArgumentOutputs =
+                plan.callArgumentOutputs();
+        List<ExactHeapOutputCapture> exactHeapOutputs =
+                plan.exactHeapOutputs();
         String outputCaptureReceiverClass = plan.receiverClass();
         String signature = plan.rootMethod();
         Set<String> instrumentationMethods =
                 new LinkedHashSet<>(plan.instrumentationMethods());
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
         taggedMethods.addAll(materializationSelection.localMethods());
+        taggedMethods.addAll(materializationSelection.methodArgumentMethods());
         taggedMethods.addAll(materializationSelection.accessorCallerMethods());
         taggedMethods.addAll(instrumentationMethods);
+        for (ExactHeapOutputCapture capture : exactHeapOutputs) {
+            taggedMethods.add(capture.method());
+        }
         for (String methodSignature : taggedMethods) {
             try {
                 SootMethod method = Scene.v().getMethod(methodSignature);
@@ -314,6 +316,10 @@ public final class CausynthPipeline {
         }
         int boundedBackedges = instrumentConcolicLoopBounds(
                 instrumentationMethods, plan.loopBound());
+        // Exact mutation captures must be installed before root-exit hooks.
+        // When the definition method is the root itself, this guarantees the
+        // completed mutation state is emitted while its region is still active.
+        instrumentConcolicExactHeapOutputs(exactHeapOutputs, refs);
         try {
             SootMethod method = Scene.v().getMethod(signature);
             if (method == null || !method.isConcrete()) {
@@ -461,14 +467,258 @@ public final class CausynthPipeline {
                             + signature, exception);
         }
         instrumentConcolicAccessorCallContexts(materializationSelection, refs);
+        instrumentConcolicCallArgumentOutputs(callArgumentOutputs, refs);
+        instrumentConcolicMethodArguments(materializationSelection, refs);
         instrumentConcolicFieldWrites(instrumentationMethods,
                 materializationSelection, refs);
         instrumentConcolicMaterializations(materializationSelection, refs);
         instrumentConcolicBranches(branchSelection, refs);
         LOG.info("Instrumented symbolic-region root {} for concolic replay; "
-                        + "bounded {} CFG backedges at {} traversals each",
+                        + "bounded {} CFG backedges at {} loop-body "
+                        + "iterations each",
                 signature, boundedBackedges,
                 plan.loopBound().maxBackedgeTraversals());
+    }
+
+    /** Captures the exact value presented at a configured protocol call. */
+    private void instrumentConcolicCallArgumentOutputs(
+            Collection<CallArgumentOutputCapture> captures,
+            HookCatalog refs) {
+        for (CallArgumentOutputCapture capture : captures) {
+            final SootMethod method;
+            try {
+                method = Scene.v().getMethod(capture.method());
+            } catch (RuntimeException missing) {
+                throw new IllegalStateException(
+                        "OUTPUT_CAPTURE_CALLER_UNAVAILABLE: "
+                                + capture.captureBindingId(), missing);
+            }
+            if (method == null || !method.isConcrete()) {
+                throw new IllegalStateException(
+                        "OUTPUT_CAPTURE_CALLER_NOT_CONCRETE: "
+                                + capture.captureBindingId());
+            }
+            Body body = method.retrieveActiveBody();
+            Stmt selected = null;
+            for (Unit unit : snapshotUnits(body)) {
+                if (originalUnitIndex(unit) != capture.unitIndex()) continue;
+                if (selected != null || !(unit instanceof Stmt)) {
+                    throw new IllegalStateException(
+                            "OUTPUT_CAPTURE_CALLSITE_NOT_UNIQUE: "
+                                    + capture.captureBindingId());
+                }
+                selected = (Stmt) unit;
+            }
+            if (selected == null || !selected.containsInvokeExpr()) {
+                throw new IllegalStateException(
+                        "OUTPUT_CAPTURE_CALLSITE_UNAVAILABLE: "
+                                + capture.captureBindingId());
+            }
+            InvokeExpr invoke = selected.getInvokeExpr();
+            if (!capture.declaredCallee().equals(
+                    invoke.getMethodRef().getSignature())
+                    || capture.argumentIndex() < 0
+                    || capture.argumentIndex() >= invoke.getArgCount()) {
+                throw new IllegalStateException(
+                        "OUTPUT_CAPTURE_CALL_ARGUMENT_MISMATCH: "
+                                + capture.captureBindingId());
+            }
+            List<Unit> before = new ArrayList<>();
+            Value value = objectArg(body,
+                    invoke.getArg(capture.argumentIndex()), before);
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.PAUSE_OBSERVATION))));
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RECORD_CALL_ARGUMENT_OUTPUT),
+                            StringConstant.v(capture.captureBindingId()),
+                            value)));
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RESUME_OBSERVATION))));
+            insertBeforeSequence(body, selected, before);
+        }
+    }
+
+    /** Captures one exact heap definition at its activation-local site. */
+    private void instrumentConcolicExactHeapOutputs(
+            Collection<ExactHeapOutputCapture> captures,
+            HookCatalog refs) {
+        for (ExactHeapOutputCapture capture : captures) {
+            final SootMethod method;
+            try {
+                method = Scene.v().getMethod(capture.method());
+            } catch (RuntimeException missing) {
+                throw exactHeapCaptureFailure(capture,
+                        "DEFINITION_METHOD_UNAVAILABLE", missing);
+            }
+            if (method == null || !method.isConcrete()) {
+                throw exactHeapCaptureFailure(capture,
+                        "DEFINITION_METHOD_NOT_CONCRETE", null);
+            }
+            Body body = method.retrieveActiveBody();
+            Stmt selected = null;
+            for (Unit unit : snapshotUnits(body)) {
+                if (originalUnitIndex(unit) != capture.unitIndex()) continue;
+                if (selected != null || !(unit instanceof Stmt)) {
+                    throw exactHeapCaptureFailure(capture,
+                            "DEFINITION_SITE_NOT_UNIQUE", null);
+                }
+                selected = (Stmt) unit;
+            }
+            if (selected == null) {
+                throw exactHeapCaptureFailure(capture,
+                        "DEFINITION_SITE_UNAVAILABLE", null);
+            }
+            if (capture.mutationState()) {
+                if (capture.definitionInvocationScoped()) {
+                    instrumentConcolicMutationMethodEntry(body, capture,
+                            refs);
+                }
+                instrumentConcolicMutationStateOutput(body, selected,
+                        capture, refs);
+                instrumentConcolicMutationMethodCompletion(body, capture,
+                        refs);
+            } else if (capture.fieldWriteState()) {
+                instrumentConcolicFieldWriteStateOutput(body, selected,
+                        capture, refs);
+            } else {
+                throw exactHeapCaptureFailure(capture,
+                        "CAPTURE_KIND_UNSUPPORTED", null);
+            }
+        }
+    }
+
+    /** Starts the bounded mutator ordinal at each definition invocation. */
+    private void instrumentConcolicMutationMethodEntry(
+            Body body, ExactHeapOutputCapture capture, HookCatalog refs) {
+        Unit entry = safeInstrumentationEntry(body, body.getMethod());
+        if (entry == null) {
+            throw exactHeapCaptureFailure(capture,
+                    "DEFINITION_METHOD_ENTRY_UNAVAILABLE", null);
+        }
+        List<Unit> before = new ArrayList<>();
+        before.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        refs.ref(Hook.PAUSE_OBSERVATION))));
+        before.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        refs.ref(
+                                Hook.BEGIN_MUTATION_METHOD_STATE_OUTPUT),
+                        StringConstant.v(capture.captureBindingId()))));
+        before.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        refs.ref(Hook.RESUME_OBSERVATION))));
+        insertBeforeSequence(body, entry, before);
+    }
+
+    private void instrumentConcolicMutationStateOutput(
+            Body body, Stmt selected, ExactHeapOutputCapture capture,
+            HookCatalog refs) {
+        if (!selected.containsInvokeExpr()
+                || !(selected.getInvokeExpr()
+                instanceof InstanceInvokeExpr)
+                || !capture.declaredCallee().equals(selected
+                .getInvokeExpr().getMethodRef().getSignature())) {
+            throw exactHeapCaptureFailure(capture,
+                    "MUTATOR_CALLSITE_MISMATCH", null);
+        }
+        Value receiver = ((InstanceInvokeExpr) selected.getInvokeExpr())
+                .getBase();
+        List<Unit> after = new ArrayList<>();
+        after.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        refs.ref(Hook.PAUSE_OBSERVATION))));
+        Value container = objectArg(body, receiver, after);
+        after.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        refs.ref(Hook.RECORD_MUTATION_STATE_OUTPUT),
+                        StringConstant.v(capture.captureBindingId()),
+                        container)));
+        after.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        refs.ref(Hook.RESUME_OBSERVATION))));
+        // insertAfter means the hook is reached only after a normal mutator
+        // return; exceptional calls never manufacture an output definition.
+        insertAfterSequence(body, selected, after);
+    }
+
+    /**
+     * Flushes a selected mutation receiver only after the definition method
+     * has completed all of its writes.  Exceptional exits deliberately have
+     * no completion hook and therefore fail output validation closed.
+     */
+    private void instrumentConcolicMutationMethodCompletion(
+            Body body, ExactHeapOutputCapture capture, HookCatalog refs) {
+        boolean normalExit = false;
+        for (Unit unit : snapshotUnits(body)) {
+            if (!(unit instanceof ReturnStmt)
+                    && !(unit instanceof ReturnVoidStmt)) {
+                continue;
+            }
+            normalExit = true;
+            List<Unit> before = new ArrayList<>();
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.PAUSE_OBSERVATION))));
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(
+                                    Hook.RECORD_MUTATION_METHOD_EXIT_STATE_OUTPUT),
+                            StringConstant.v(capture.captureBindingId()))));
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RESUME_OBSERVATION))));
+            insertBeforeSequence(body, unit, before);
+        }
+        if (!normalExit) {
+            throw exactHeapCaptureFailure(capture,
+                    "DEFINITION_METHOD_HAS_NO_NORMAL_EXIT", null);
+        }
+    }
+
+    private void instrumentConcolicFieldWriteStateOutput(
+            Body body, Stmt selected, ExactHeapOutputCapture capture,
+            HookCatalog refs) {
+        if (!(selected instanceof AssignStmt)
+                || !(((AssignStmt) selected).getLeftOp()
+                instanceof InstanceFieldRef)) {
+            throw exactHeapCaptureFailure(capture,
+                    "FIELD_ASSIGNMENT_MISMATCH", null);
+        }
+        InstanceFieldRef field = (InstanceFieldRef) ((AssignStmt) selected)
+                .getLeftOp();
+        String signature = CausynthStaticFacts.declaredFieldSignature(
+                field.getFieldRef());
+        if (!capture.fieldSignature().equals(signature)) {
+            throw exactHeapCaptureFailure(capture,
+                    "FIELD_SIGNATURE_MISMATCH", null);
+        }
+        List<Unit> after = new ArrayList<>();
+        after.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        refs.ref(Hook.PAUSE_OBSERVATION))));
+        Value owner = objectArg(body, field.getBase(), after);
+        Value value = boxedCaptureValue(body, field, field.getType(), after);
+        after.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        refs.ref(Hook.RECORD_FIELD_WRITE_STATE_OUTPUT),
+                        StringConstant.v(capture.captureBindingId()),
+                        owner, value)));
+        after.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        refs.ref(Hook.RESUME_OBSERVATION))));
+        insertAfterSequence(body, selected, after);
+    }
+
+    private static IllegalStateException exactHeapCaptureFailure(
+            ExactHeapOutputCapture capture, String reason,
+            RuntimeException cause) {
+        String message = "OUTPUT_CAPTURE_" + reason + ": "
+                + capture.captureBindingId();
+        return cause == null ? new IllegalStateException(message)
+                : new IllegalStateException(message, cause);
     }
 
     /** Records exact heap definitions without enabling the runtime trace. */
@@ -619,11 +869,17 @@ public final class CausynthPipeline {
             // getter consumes the field.
             before.add(Jimple.v().newInvokeStmt(
                     Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.PAUSE_OBSERVATION))));
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.MATERIALIZE_FIELD),
                             StringConstant.v(target.implementationMethod),
                             IntConstant.v(-1), receiver,
                             StringConstant.v(target.fieldSignature),
                             StringConstant.v(target.fieldName))));
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RESUME_OBSERVATION))));
             insertBeforeSequence(body, selected, before);
 
             Unit normalExit = Jimple.v().newInvokeStmt(
@@ -751,6 +1007,27 @@ public final class CausynthPipeline {
                         insertBeforeSequence(body, stmt, before);
                     }
 
+                    InvokeExpr invoke = stmt.containsInvokeExpr()
+                            ? stmt.getInvokeExpr() : null;
+                    if (associativeReadInvoke(invoke)) {
+                        InstanceInvokeExpr read = (InstanceInvokeExpr) invoke;
+                        List<Unit> before = new ArrayList<>();
+                        before.add(Jimple.v().newInvokeStmt(
+                                Jimple.v().newStaticInvokeExpr(
+                                        refs.ref(Hook.PAUSE_OBSERVATION))));
+                        Value container = objectArg(body, read.getBase(),
+                                before);
+                        Value key = objectArg(body, read.getArg(0), before);
+                        before.add(Jimple.v().newInvokeStmt(
+                                Jimple.v().newStaticInvokeExpr(
+                                        refs.ref(Hook.MATERIALIZE_ASSOCIATIVE_READ),
+                                        container, key)));
+                        before.add(Jimple.v().newInvokeStmt(
+                                Jimple.v().newStaticInvokeExpr(
+                                        refs.ref(Hook.RESUME_OBSERVATION))));
+                        insertBeforeSequence(body, stmt, before);
+                    }
+
                     if (!(stmt instanceof AssignStmt)) {
                         continue;
                     }
@@ -795,6 +1072,100 @@ public final class CausynthPipeline {
                     }
                 }
             }
+        }
+    }
+
+    private void instrumentConcolicMethodArguments(
+            ConcolicMaterializationSelection selection,
+            HookCatalog refs) {
+        for (String signature : selection.methodArgumentMethods()) {
+            SootMethod method = Scene.v().getMethod(signature);
+            if (method == null || !method.isConcrete()) {
+                throw new IllegalStateException(
+                        "Selected method-argument owner is not concrete: "
+                                + signature);
+            }
+            Body body = method.retrieveActiveBody();
+            Unit insertionPoint = safeInstrumentationEntry(body, method);
+            if (method.isConstructor() && insertionPoint == null) {
+                throw new IllegalStateException(
+                        "Selected constructor argument has no safe entry: "
+                                + signature);
+            }
+            List<Unit> entry = new ArrayList<>();
+            for (Integer index : selection.methodArguments(signature)) {
+                if (index == null || index < 0
+                        || index >= method.getParameterCount()) {
+                    throw new IllegalStateException(
+                            "Selected method argument is out of range: "
+                                    + signature + "#param" + index);
+                }
+                Value parameter = body.getParameterLocal(index);
+                Value primitiveValue = primitiveValueString(body,
+                        parameter, entry);
+                if (PrimitiveWrapper.forType(parameter.getType()) != null) {
+                    addPrimitiveMethodArgumentMaterialization(body, parameter,
+                            signature, index, primitiveValue, entry,
+                            refs.ref(Hook.MATERIALIZE_METHOD_ARGUMENT),
+                            refs.ref(Hook.PAUSE_OBSERVATION),
+                            refs.ref(Hook.RESUME_OBSERVATION));
+                    continue;
+                }
+                Value objectValue = objectArg(body, parameter, entry);
+                Local modeled = newTraceLocal(body,
+                        RefType.v("java.lang.Object"),
+                        "$causynthMethodArgumentModel");
+                entry.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.PAUSE_OBSERVATION))));
+                entry.add(Jimple.v().newAssignStmt(modeled,
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.MATERIALIZE_METHOD_ARGUMENT),
+                                StringConstant.v(signature),
+                                IntConstant.v(index), objectValue,
+                                primitiveValue)));
+                entry.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.RESUME_OBSERVATION))));
+                Value converted = parameter.getType() instanceof RefType
+                        && "java.lang.Object".equals(((RefType)
+                        parameter.getType()).getClassName())
+                        ? modeled : Jimple.v().newCastExpr(modeled,
+                        parameter.getType());
+                entry.add(Jimple.v().newAssignStmt(parameter, converted));
+                entry.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.PAUSE_OBSERVATION))));
+                entry.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.SYMBOLIZE_METHOD_ARGUMENT),
+                                StringConstant.v(signature),
+                                IntConstant.v(index), parameter,
+                                primitiveValue)));
+                entry.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.RESUME_OBSERVATION))));
+            }
+            insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+        }
+    }
+
+    private static boolean associativeReadInvoke(InvokeExpr invoke) {
+        if (!(invoke instanceof InstanceInvokeExpr)
+                || !"get".equals(invoke.getMethodRef().name())
+                || invoke.getArgCount() != 1
+                || !"java.lang.Object".equals(invoke.getMethodRef()
+                .parameterType(0).toString())
+                || !"java.lang.Object".equals(invoke.getMethodRef()
+                .returnType().toString())) {
+            return false;
+        }
+        Type receiverType = ((InstanceInvokeExpr) invoke).getBase().getType();
+        try {
+            return Scene.v().getOrMakeFastHierarchy().canStoreType(
+                    receiverType, RefType.v("java.util.Map"));
+        } catch (RuntimeException incompleteHierarchy) {
+            return "java.util.Map".equals(receiverType.toString());
         }
     }
 
@@ -1033,6 +1404,21 @@ public final class CausynthPipeline {
                         primitiveValue));
     }
 
+    private static void addPrimitiveMethodArgumentMaterialization(
+            Body body, Value parameter, String method, int argumentIndex,
+            Value primitiveValue, List<Unit> units,
+            SootMethodRef materializeArgument,
+            SootMethodRef pauseObservation,
+            SootMethodRef resumeObservation) {
+        addPrimitiveRoundTrip(body, parameter, units,
+                "$causynthMethodArgument",
+                pauseObservation, resumeObservation,
+                boxed -> Jimple.v().newStaticInvokeExpr(materializeArgument,
+                        StringConstant.v(method),
+                        IntConstant.v(argumentIndex), boxed,
+                        primitiveValue));
+    }
+
     private static boolean addPrimitiveRoundTrip(
             Body body, Value primitive, List<Unit> units, String localPrefix,
             SootMethodRef pauseObservation, SootMethodRef resumeObservation,
@@ -1083,19 +1469,21 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Splits every normal CFG backedge in the selected execution scope through
-     * one observation-only runtime hook.  Dominance is computed before this
-     * pass mutates the body, and only units in the original-index namespace
-     * participate.  Consequently later concolic branch instrumentation cannot
-     * mistake the synthetic transfer for a workload branch.
+     * Bounds natural-loop body entries rather than eagerly cutting at a
+     * latch. A guarded loop may return to its header after body {@code K}; it
+     * is cut only if the header chooses the edge into body {@code K+1}. This
+     * preserves a normal method exit when a concrete K-element iterator is
+     * exhausted exactly at the configured bound.
      */
     int instrumentConcolicLoopBounds(
             Set<String> methods, LoopBoundPolicy policy) {
         if (policy == null) {
             throw new IllegalArgumentException("loop bound policy is required");
         }
-        SootMethodRef checkBackedge = HookCatalog.concolic()
-                .ref(Hook.CHECK_LOOP_BACKEDGE);
+        HookCatalog hooks = HookCatalog.concolic();
+        SootMethodRef checkBackedge = hooks.ref(Hook.CHECK_LOOP_BACKEDGE);
+        SootMethodRef recordBackedge = hooks.ref(Hook.RECORD_LOOP_BACKEDGE);
+        SootMethodRef checkBodyEntry = hooks.ref(Hook.CHECK_LOOP_BODY_ENTRY);
         int instrumented = 0;
         for (String methodSignature : methods) {
             final SootMethod method;
@@ -1127,60 +1515,241 @@ public final class CausynthPipeline {
                 }
             }
 
+            List<CfgNaturalLoop> loops = groupNaturalLoops(backedges);
             Unit safeEntry = safeInstrumentationEntry(body, method);
-            for (CfgBackedge backedge : backedges) {
-                if (method.isConstructor()
-                        && (safeEntry == null || !unitAtOrAfter(
-                        body, safeEntry, backedge.source))) {
-                    throw new IllegalStateException(
-                            "CFG_BACKEDGE_BEFORE_CONSTRUCTOR_INITIALIZATION: "
-                                    + backedge.identity(method));
+            for (CfgNaturalLoop loop : loops) {
+                List<CfgEdge> continuations = continuationEdges(
+                        body, graph, dominators, original, loop);
+                String loopId = loop.identity(method);
+                for (CfgBackedge backedge : loop.backedges) {
+                    if (method.isConstructor()
+                            && (safeEntry == null || !unitAtOrAfter(
+                            body, safeEntry, backedge.source))) {
+                        throw new IllegalStateException(
+                                "CFG_BACKEDGE_BEFORE_CONSTRUCTOR_"
+                                        + "INITIALIZATION: "
+                                        + backedge.identity(method));
+                    }
+                    boolean entersBody = removeEdge(continuations,
+                            backedge.source, backedge.target);
+                    List<SootMethodRef> edgeHooks = new ArrayList<>();
+                    edgeHooks.add(!loop.hasContinuationGuard
+                            ? checkBackedge : recordBackedge);
+                    if (entersBody) edgeHooks.add(checkBodyEntry);
+                    splitCfgEdge(body, method, backedge.source,
+                            backedge.target, loopId,
+                            policy.maxBackedgeTraversals(), edgeHooks);
+                    instrumented++;
                 }
-                splitCfgBackedge(body, method, backedge,
-                        policy.maxBackedgeTraversals(), checkBackedge);
-                instrumented++;
+                for (CfgEdge continuation : continuations) {
+                    splitCfgEdge(body, method, continuation.source,
+                            continuation.target, loopId,
+                            policy.maxBackedgeTraversals(),
+                            Collections.singletonList(checkBodyEntry));
+                }
             }
         }
         return instrumented;
     }
 
-    private static void splitCfgBackedge(
-            Body body, SootMethod method, CfgBackedge backedge,
-            int maxTraversals, SootMethodRef checkBackedge) {
+    private static List<CfgNaturalLoop> groupNaturalLoops(
+            List<CfgBackedge> backedges) {
+        List<CfgNaturalLoop> loops = new ArrayList<>();
+        for (CfgBackedge backedge : backedges) {
+            CfgNaturalLoop match = null;
+            for (CfgNaturalLoop loop : loops) {
+                if (loop.header == backedge.target) {
+                    match = loop;
+                    break;
+                }
+            }
+            if (match == null) {
+                match = new CfgNaturalLoop(backedge.target,
+                        backedge.targetIndex);
+                loops.add(match);
+            }
+            match.backedges.add(backedge);
+        }
+        return loops;
+    }
+
+    private static List<CfgEdge> continuationEdges(
+            Body body, BriefUnitGraph graph,
+            MHGDominatorsFinder<Unit> dominators, List<Unit> original,
+            CfgNaturalLoop loop) {
+        Set<Unit> members = naturalLoopMembers(graph, loop);
+        List<CfgEdge> result = continuationEdgesFrom(
+                body, loop.header, members);
+        if (!result.isEmpty()) {
+            loop.hasContinuationGuard = true;
+            return result;
+        }
+        // A do-while guard is itself a conditional backedge.
+        result = new ArrayList<>();
+        for (CfgBackedge backedge : loop.backedges) {
+            result.addAll(continuationEdgesFrom(
+                    body, backedge.source, members));
+        }
+        if (!result.isEmpty()) {
+            loop.hasContinuationGuard = true;
+            return deduplicateEdges(result);
+        }
+        // Jimple often places hasNext() evaluation immediately before the
+        // actual IfStmt, so the dominance header is not itself the guard.
+        // Select the first loop-exit branch that dominates every latch.
+        for (Unit candidate : original) {
+            if (!members.contains(candidate)) continue;
+            boolean dominatesEveryLatch = true;
+            for (CfgBackedge backedge : loop.backedges) {
+                if (!dominators.isDominatedBy(
+                        backedge.source, candidate)) {
+                    dominatesEveryLatch = false;
+                    break;
+                }
+            }
+            if (!dominatesEveryLatch) continue;
+            result = continuationEdgesFrom(body, candidate, members);
+            if (!result.isEmpty()) {
+                loop.hasContinuationGuard = true;
+                return deduplicateEdges(result);
+            }
+        }
+        return Collections.emptyList();
+    }
+
+    private static Set<Unit> naturalLoopMembers(
+            BriefUnitGraph graph, CfgNaturalLoop loop) {
+        Set<Unit> members = Collections.newSetFromMap(
+                new IdentityHashMap<Unit, Boolean>());
+        members.add(loop.header);
+        List<Unit> work = new ArrayList<>();
+        for (CfgBackedge backedge : loop.backedges) {
+            if (members.add(backedge.source)) work.add(backedge.source);
+        }
+        for (int index = 0; index < work.size(); index++) {
+            Unit current = work.get(index);
+            for (Unit predecessor : graph.getPredsOf(current)) {
+                if (members.add(predecessor)
+                        && predecessor != loop.header) {
+                    work.add(predecessor);
+                }
+            }
+        }
+        return members;
+    }
+
+    private static List<CfgEdge> continuationEdgesFrom(
+            Body body, Unit candidate, Set<Unit> loopMembers) {
+        CausynthBranchShape shape = CausynthBranchShape.from(body, candidate);
+        if (shape == null || shape.successorCount() < 2) {
+            return Collections.emptyList();
+        }
+        boolean outside = false;
+        List<CfgEdge> inside = new ArrayList<>();
+        for (Unit successor : shape.successors) {
+            if (loopMembers.contains(successor)) {
+                inside.add(new CfgEdge(candidate, successor));
+            } else {
+                outside = true;
+            }
+        }
+        return outside && !inside.isEmpty()
+                ? deduplicateEdges(inside) : Collections.emptyList();
+    }
+
+    private static List<CfgEdge> deduplicateEdges(List<CfgEdge> edges) {
+        List<CfgEdge> result = new ArrayList<>();
+        for (CfgEdge edge : edges) {
+            boolean duplicate = false;
+            for (CfgEdge retained : result) {
+                if (retained.source == edge.source
+                        && retained.target == edge.target) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) result.add(edge);
+        }
+        return result;
+    }
+
+    private static boolean removeEdge(
+            List<CfgEdge> edges, Unit source, Unit target) {
+        boolean removed = false;
+        for (int index = edges.size() - 1; index >= 0; index--) {
+            CfgEdge edge = edges.get(index);
+            if (edge.source == source && edge.target == target) {
+                edges.remove(index);
+                removed = true;
+            }
+        }
+        return removed;
+    }
+
+    private static void splitCfgEdge(
+            Body body, SootMethod method, Unit source, Unit target,
+            String loopId, int maxTraversals,
+            List<SootMethodRef> hookRefs) {
         List<UnitBox> matchingTargets = new ArrayList<>();
-        for (UnitBox targetBox : backedge.source.getUnitBoxes()) {
-            if (targetBox.getUnit() == backedge.target) {
+        for (UnitBox targetBox : source.getUnitBoxes()) {
+            if (targetBox.getUnit() == target) {
                 matchingTargets.add(targetBox);
             }
         }
-        boolean fallThrough = backedge.source.fallsThrough()
-                && body.getUnits().getSuccOf(backedge.source)
-                == backedge.target;
+        boolean fallThrough = source.fallsThrough()
+                && body.getUnits().getSuccOf(source) == target;
         if (matchingTargets.isEmpty() && !fallThrough) {
             throw new IllegalStateException(
-                    "Could not split CFG backedge "
-                            + backedge.identity(method));
+                    "Could not split CFG loop edge " + loopId
+                            + " in " + method.getSignature());
         }
 
-        String edgeId = backedge.identity(method);
-        Unit hook = Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(checkBackedge,
-                        StringConstant.v(edgeId),
-                        IntConstant.v(maxTraversals)));
-        Unit transfer = Jimple.v().newGotoStmt(backedge.target);
+        List<Unit> bridge = new ArrayList<>();
+        for (SootMethodRef hookRef : hookRefs) {
+            bridge.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(hookRef,
+                            StringConstant.v(loopId),
+                            IntConstant.v(maxTraversals))));
+        }
+        Unit first = bridge.get(0);
+        Unit transfer = Jimple.v().newGotoStmt(target);
         // Appending keeps the throwing hook outside every pre-existing
         // application trap.  The root's synthetic catch-all is added later
         // and therefore still owns the cut signal.
-        body.getUnits().add(hook);
+        for (Unit hook : bridge) body.getUnits().add(hook);
         body.getUnits().add(transfer);
         for (UnitBox targetBox : matchingTargets) {
-            targetBox.setUnit(hook);
+            targetBox.setUnit(first);
         }
         if (fallThrough) {
-            // Only this concrete fallthrough edge is redirected; the bridge
-            // itself cannot throw while it is inside an application trap.
-            body.getUnits().insertAfter(Jimple.v().newGotoStmt(hook),
-                    backedge.source);
+            body.getUnits().insertAfter(Jimple.v().newGotoStmt(first),
+                    source);
+        }
+    }
+
+    private static final class CfgEdge {
+        private final Unit source;
+        private final Unit target;
+
+        private CfgEdge(Unit source, Unit target) {
+            this.source = source;
+            this.target = target;
+        }
+    }
+
+    private static final class CfgNaturalLoop {
+        private final Unit header;
+        private final int headerIndex;
+        private final List<CfgBackedge> backedges = new ArrayList<>();
+        private boolean hasContinuationGuard;
+
+        private CfgNaturalLoop(Unit header, int headerIndex) {
+            this.header = header;
+            this.headerIndex = headerIndex;
+        }
+
+        private String identity(SootMethod method) {
+            return method.getSignature() + "#loop:u" + headerIndex;
         }
     }
 
@@ -1851,17 +2420,6 @@ public final class CausynthPipeline {
                 .declaringClass().getName());
     }
 
-    private static void insertBeforeOrAppend(Body body, Unit anchor,
-                                             List<Unit> units) {
-        if (anchor == null) {
-            for (Unit unit : units) {
-                body.getUnits().add(unit);
-            }
-            return;
-        }
-        insertBeforeSequence(body, anchor, units);
-    }
-
     private static void insertBeforeSequence(Body body, Unit anchor,
                                              List<Unit> units) {
         for (Unit unit : units) {
@@ -2170,18 +2728,6 @@ public final class CausynthPipeline {
         return false;
     }
 
-    private static SootMethodRef traceRecorderMethodRef() {
-        SootClass recorder = Scene.v().getSootClassUnsafe(TRACE_RECORDER_CLASS);
-        if (recorder == null) {
-            recorder = new SootClass(TRACE_RECORDER_CLASS, Modifier.PUBLIC);
-            recorder.setPhantomClass();
-            Scene.v().addClass(recorder);
-        }
-        return Scene.v().makeMethodRef(recorder, "record",
-                Arrays.asList(RefType.v("java.lang.String"), RefType.v("java.lang.Object")),
-                VoidType.v(), true);
-    }
-
     private static SootMethodRef traceRecorderFieldMethodRef() {
         SootClass recorder = Scene.v().getSootClassUnsafe(TRACE_RECORDER_CLASS);
         if (recorder == null) {
@@ -2230,12 +2776,20 @@ public final class CausynthPipeline {
         EXIT_ACCESSOR_CALL_CONTEXT,
         MATERIALIZE_ARGUMENT,
         SYMBOLIZE_ARGUMENT,
+        MATERIALIZE_METHOD_ARGUMENT,
+        SYMBOLIZE_METHOD_ARGUMENT,
         MATERIALIZE_REFERENCE,
         MATERIALIZE_PRIMITIVE,
         MATERIALIZE_STATIC_PRIMITIVE_FIELD,
         MATERIALIZE_FIELD,
+        MATERIALIZE_ASSOCIATIVE_READ,
         RECORD_FIELD_WRITE,
         RECORD_REGION_EXIT_FIELD_OUTPUT,
+        RECORD_CALL_ARGUMENT_OUTPUT,
+        BEGIN_MUTATION_METHOD_STATE_OUTPUT,
+        RECORD_MUTATION_STATE_OUTPUT,
+        RECORD_MUTATION_METHOD_EXIT_STATE_OUTPUT,
+        RECORD_FIELD_WRITE_STATE_OUTPUT,
         PAUSE_OBSERVATION,
         RESUME_OBSERVATION,
         PAUSE_VM_PATH_CONDITION,
@@ -2245,6 +2799,8 @@ public final class CausynthPipeline {
         RESOLVE_BRANCH,
         RESOLVE_SWITCH_BRANCH,
         CHECK_LOOP_BACKEDGE,
+        RECORD_LOOP_BACKEDGE,
+        CHECK_LOOP_BODY_ENTRY,
         EXIT_REGION_FRAME,
         THROW_REGION_FRAME
     }
@@ -2335,6 +2891,12 @@ public final class CausynthPipeline {
                     .add(Hook.SYMBOLIZE_ARGUMENT, runtime, "symbolizeArgument",
                             VoidType.v(), LongType.v(), IntType.v(), object,
                             string)
+                    .add(Hook.MATERIALIZE_METHOD_ARGUMENT, runtime,
+                            "materializeMethodArgument", object, string,
+                            IntType.v(), object, string)
+                    .add(Hook.SYMBOLIZE_METHOD_ARGUMENT, runtime,
+                            "symbolizeMethodArgument", VoidType.v(), string,
+                            IntType.v(), object, string)
                     .add(Hook.MATERIALIZE_REFERENCE, runtime,
                             "materializeReference", object, string,
                             IntType.v(), string, object)
@@ -2347,10 +2909,29 @@ public final class CausynthPipeline {
                     .add(Hook.MATERIALIZE_FIELD, runtime, "materializeField",
                             VoidType.v(), string, IntType.v(), object, string,
                             string)
+                    .add(Hook.MATERIALIZE_ASSOCIATIVE_READ, runtime,
+                            "materializeAssociativeRead", VoidType.v(),
+                            object, object)
                     .add(Hook.RECORD_FIELD_WRITE, runtime,
                             "recordFieldWrite", VoidType.v(), object, string)
                     .add(Hook.RECORD_REGION_EXIT_FIELD_OUTPUT, runtime,
                             "recordRegionExitFieldOutput", VoidType.v(),
+                            string, object, object)
+                    .add(Hook.RECORD_CALL_ARGUMENT_OUTPUT, runtime,
+                            "recordCallArgumentOutput", VoidType.v(),
+                            string, object)
+                    .add(Hook.BEGIN_MUTATION_METHOD_STATE_OUTPUT, runtime,
+                            "beginMutationMethodStateOutput", VoidType.v(),
+                            string)
+                    .add(Hook.RECORD_MUTATION_STATE_OUTPUT, runtime,
+                            "recordMutationStateOutput", VoidType.v(),
+                            string, object)
+                    .add(Hook.RECORD_MUTATION_METHOD_EXIT_STATE_OUTPUT,
+                            runtime,
+                            "recordMutationMethodExitStateOutput",
+                            VoidType.v(), string)
+                    .add(Hook.RECORD_FIELD_WRITE_STATE_OUTPUT, runtime,
+                            "recordFieldWriteStateOutput", VoidType.v(),
                             string, object, object)
                     .add(Hook.PAUSE_OBSERVATION, runtime, "pauseObservation",
                             VoidType.v())
@@ -2374,6 +2955,12 @@ public final class CausynthPipeline {
                             string, IntType.v())
                     .add(Hook.CHECK_LOOP_BACKEDGE, runtime,
                             "checkLoopBackedge", VoidType.v(), string,
+                            IntType.v())
+                    .add(Hook.RECORD_LOOP_BACKEDGE, runtime,
+                            "recordLoopBackedge", VoidType.v(), string,
+                            IntType.v())
+                    .add(Hook.CHECK_LOOP_BODY_ENTRY, runtime,
+                            "checkLoopBodyEntry", VoidType.v(), string,
                             IntType.v())
                     .add(Hook.EXIT_REGION_FRAME, runtime, "exitRegionFrame",
                             VoidType.v(), string, object, string)
@@ -2467,11 +3054,6 @@ public final class CausynthPipeline {
         }
     }
 
-
-    private static boolean methodSignature(String value) {
-        return value != null && value.startsWith("<")
-                && METHOD_SIGNATURE.matcher(value).find();
-    }
 
     private static boolean concolicInstrumentationEnabled() {
         return Boolean.parseBoolean(firstNonBlank(

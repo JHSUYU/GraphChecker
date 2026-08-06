@@ -141,7 +141,7 @@ run_case() {
     "${pipeline}" clean && \
     CAUSYNTH_WORKFLOW_CONFIG="${config}" \
     GRAPH_CHECKER_SKIP_BUILD=true \
-    "${pipeline}" candidate) >"${log}" 2>&1
+    "${pipeline}" full) >"${log}" 2>&1
   process_status=$?
   if [[ -s "${root}/candidate/candidate_result_manifest.json" ]]; then
     observed=$(jq -r '.reachability // "UNKNOWN"' \

@@ -48,9 +48,14 @@ void SymStrBuilder::print() {
 
 void SymStrBuilder::set_sym_exp(int field_offset, Expression *exp) {
   // StringBuilder state is represented by its append/concat reference
-  // expression.  Treating arbitrary implementation fields as symbolic would
-  // mix that model with AbstractStringBuilder's mutable backing array.
-  ShouldNotCallThis();
+  // expression.  Once a builder has that shadow, ordinary append execution
+  // still writes AbstractStringBuilder.value/count.  Those implementation
+  // fields must stay concrete: recording them would mix the field model with
+  // the atomic append model, while rejecting them crashes unrelated code that
+  // happens to format a symbolic value.  Keep the existing reference
+  // expression; finish_method_helper updates it at the append boundary.
+  (void) field_offset;
+  (void) exp;
 }
 
 bool SymStrBuilder::invoke_method_helper(MethodSymbolizerHandle &handle) {

@@ -74,6 +74,9 @@ public final class ConcolicPathFlipPlanner {
                 "region_path_worklist.jsonl"), result.tasks);
         ArtifactIO.replaceJsonl(directory.resolve(
                 "merged_region_summaries.jsonl"), result.relations);
+        ArtifactIO.replaceJsonl(directory.resolve(
+                "observed_region_summaries.jsonl"),
+                result.observedRelations);
         ArtifactIO.replace(directory.resolve("region_path_manifest.json"),
                 PRETTY.toJson(result.manifest) + System.lineSeparator());
     }

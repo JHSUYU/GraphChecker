@@ -387,7 +387,6 @@ bool ConcolicMngr::snapshotContainerExpression(
   }
 
   oop target = container();
-  if (ctx->find_container_state(target) != NULL) return true;
   objArrayOop snapshot_values = objArrayOop(values());
   objArrayOop snapshot_keys = NULL;
   if (!keys.is_null()) {
@@ -404,6 +403,7 @@ bool ConcolicMngr::snapshotContainerExpression(
         || snapshot_values->length() != ((arrayOop)target)->length()) {
       return false;
     }
+    if (ctx->find_container_state(target) != NULL) return true;
     arrayOop array = arrayOop(target);
     ctx->container_state(target, "INDEXED");
     for (int index = 0; index < snapshot_values->length(); ++index) {

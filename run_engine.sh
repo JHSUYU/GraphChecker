@@ -54,7 +54,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|refined_regions|candidate_graph|refined_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_region_instance_id|schedule_target_site|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|refined_regions|candidate_graph|refined_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -94,9 +94,6 @@ reset_config() {
   runtime_edge_validations=""
   schedule_output_dir=""
   schedule_summaries=""
-  schedule_region_id=""
-  schedule_region_instance_id=""
-  schedule_target_site=""
   raw_concolic_results=""
   import_task_plan=""
   imported_summaries=""
@@ -177,10 +174,6 @@ apply_environment_overrides() {
   apply_env_override runtime_edge_validations CAUSYNTH_EDGE_VALIDATIONS
   apply_env_override schedule_output_dir CAUSYNTH_SCHEDULE_OUTPUT_DIR
   apply_env_override schedule_summaries CAUSYNTH_SCHEDULE_SUMMARIES
-  apply_env_override schedule_region_id CAUSYNTH_SCHEDULE_REGION_ID
-  apply_env_override schedule_region_instance_id \
-    CAUSYNTH_SCHEDULE_REGION_INSTANCE_ID
-  apply_env_override schedule_target_site CAUSYNTH_SCHEDULE_TARGET_SITE
   apply_env_override raw_concolic_results CAUSYNTH_RAW_RESULTS
   apply_env_override import_task_plan CAUSYNTH_IMPORT_TASK_PLAN
   apply_env_override imported_summaries CAUSYNTH_IMPORTED_SUMMARIES
@@ -537,10 +530,6 @@ do_schedule() {
     require_file "scheduler summaries" "${schedule_summaries}"
     args+=(--summaries "${schedule_summaries}")
   fi
-  [[ -z "${schedule_region_id}" ]] || args+=(--region-id "${schedule_region_id}")
-  [[ -z "${schedule_region_instance_id}" ]] \
-    || args+=(--region-instance-id "${schedule_region_instance_id}")
-  [[ -z "${schedule_target_site}" ]] || args+=(--target-site "${schedule_target_site}")
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
     "${args[@]}" "$@"
 }
@@ -608,7 +597,22 @@ do_reach() {
     --max-valuations "${reach_max_valuations}" "$@"
 }
 
-do_workload() {
+run_configured_workload() {
+  local -a workload_env
+  workload_env=("CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}")
+  if [[ -n "${causynth_protocol_stubs}" ]]; then
+    workload_env+=("CAUSYNTH_PROTOCOL_STUBS=${causynth_protocol_stubs}")
+  fi
+  if [[ "${dry_run}" == true ]]; then
+    print_command env "${workload_env[@]}" \
+      bash -lc "${workload_command}"
+  else
+    (cd "${workload_work_dir}" && \
+      env "${workload_env[@]}" bash -lc "${workload_command}")
+  fi
+}
+
+do_regions() {
   [[ -n "${workload_command}" ]] || die "workload_command is empty"
   require_directory "workload working" "${workload_work_dir}"
   local trace_dir
@@ -620,20 +624,8 @@ do_workload() {
   ensure_output_directory "${trace_dir}"
   ensure_output_directory "${skeleton_pass}"
 
-  run_workload_command() {
-    if [[ "${dry_run}" == true ]]; then
-      print_command env \
-        "CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}" \
-        bash -lc "${workload_command}"
-    else
-      (cd "${workload_work_dir}" && \
-        CAUSYNTH_CUSTOM_JDK_HOME="${custom_jdk_home}" \
-        bash -lc "${workload_command}")
-    fi
-  }
-
   # Pass 1: method activation envelopes only.
-  run_workload_command
+  run_configured_workload
   run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
     --trace-dir "${trace_dir}" \
     --region-skeletons "${candidate_skeletons}" \
@@ -650,6 +642,13 @@ do_workload() {
     mv "${trace_dir}/streaming_trace_manifest.json" \
       "${skeleton_pass}/streaming_trace_manifest.json"
   fi
+}
+
+do_workload() {
+  do_regions
+  local trace_dir
+  trace_dir=$(dirname "${runtime_region_plan}")
+  local selected_skeletons="${trace_dir}/skeleton-pass/region_skeletons.jsonl"
 
   # Pass 2: re-instrument only selected region methods, then collect rich
   # calls, branches, arguments and every direct declared-field access. Keep
@@ -659,7 +658,7 @@ do_workload() {
     CAUSYNTH_TRACE_MODE=region-state \
       CAUSYNTH_REGION_SKELETONS="${selected_skeletons}" \
       do_analyze
-    run_workload_command
+    run_configured_workload
     run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
       --trace-dir "${trace_dir}" \
       --candidate-graph "${candidate_graph}" \
@@ -682,7 +681,7 @@ do_workload() {
     CAUSYNTH_TRACE_MODE=region-state \
       CAUSYNTH_REGION_SKELETONS="${selected_skeletons}" \
       do_analyze
-    run_workload_command
+    run_configured_workload
     run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
       --trace-dir "${trace_dir}" \
       --candidate-graph "${candidate_graph}" \

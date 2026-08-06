@@ -266,6 +266,8 @@ public final class OutputClosureContract {
             return Collections.unmodifiableSortedSet(result);
         }
 
+        public SortedSet<String> staticSites() { return staticSites; }
+
         public SortedSet<String> methods() { return methods; }
 
         public SortedSet<String> causalEdgeIds() { return edges; }

@@ -4,6 +4,7 @@ import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.artifact;
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
@@ -77,7 +78,8 @@ public final class BooleanReachConditionExtractor {
         JsonObject report = new JsonObject();
         report.addProperty("schemaVersion", 3);
         report.addProperty("kind", "BOOLEAN_REACH_CONDITION_REPORT");
-        report.addProperty("trustState", "CANDIDATE_ONLY");
+        report.addProperty("trustState", firstNonBlank(
+                string(manifest, "trustState"), "CANDIDATE_ONLY"));
 
         List<String> gaps = new ArrayList<>();
         validateCompositionAuthority(manifest, gaps);
@@ -164,10 +166,16 @@ public final class BooleanReachConditionExtractor {
         boolean commonManifest = manifest != null
                 && integer(manifest, "schemaVersion", -1) == 2
                 && "CONCOLIC_COMPOSED_SMT".equals(string(manifest, "kind"));
+        boolean closedCandidate = "CANDIDATE_ONLY".equals(
+                string(manifest, "trustState"));
+        boolean observedCandidate = "OBSERVED_PATH_UNDERAPPROX".equals(
+                string(manifest, "trustState"))
+                && "EXISTENTIAL_OBSERVED_PATHS".equals(
+                string(manifest, "compositionMode"))
+                && !bool(manifest, "pathSetComplete", true);
         if (!commonManifest
                 || !"CANDIDATE_READY".equals(string(manifest, "state"))
-                || !"CANDIDATE_ONLY".equals(string(manifest,
-                "trustState"))) {
+                || !(closedCandidate || observedCandidate)) {
             gaps.add("COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE");
         }
         JsonElement occurrences = manifest == null ? null

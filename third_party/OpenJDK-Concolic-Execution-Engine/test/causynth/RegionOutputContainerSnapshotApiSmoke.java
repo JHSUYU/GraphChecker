@@ -22,6 +22,18 @@ public final class RegionOutputContainerSnapshotApiSmoke {
                 "map snapshot rejected");
         map.put(Integer.valueOf(9), Integer.valueOf(13));
 
+        Map<Integer, Integer> trackedMap =
+                new LinkedHashMap<Integer, Integer>();
+        trackedMap.put(Integer.valueOf(53), Integer.valueOf(59));
+        require(System.trackContainerExpression(trackedMap, "inputMap"),
+                "tracked map rejected");
+        trackedMap.remove(Integer.valueOf(53));
+        trackedMap.put(Integer.valueOf(61), Integer.valueOf(67));
+        require(System.snapshotContainerExpression(trackedMap,
+                        new Object[]{Integer.valueOf(61)},
+                        new Object[]{Integer.valueOf(67)}, 1),
+                "tracked map snapshot rejected");
+
         List<Integer> list = new ArrayList<Integer>();
         list.add(Integer.valueOf(17));
         list.add(Integer.valueOf(19));
@@ -58,6 +70,8 @@ public final class RegionOutputContainerSnapshotApiSmoke {
 
         require(relation(map, "\"operation\":\"PUT\"", true),
                 "map relation");
+        require(relation(trackedMap, "\"operation\":\"PUT\"", true),
+                "tracked map relation");
         require(relation(list, "\"operation\":\"APPEND\"", true),
                 "list relation");
         require(relation(linkedList, "\"operation\":\"APPEND\"", true),

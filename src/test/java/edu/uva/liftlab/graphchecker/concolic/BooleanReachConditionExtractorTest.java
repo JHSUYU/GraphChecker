@@ -101,6 +101,29 @@ public class BooleanReachConditionExtractorTest {
                 .get("javaTypeDescriptor").getAsString());
     }
 
+    @Test
+    public void observedPathCandidateCanBeCheckedWithoutBecomingClosedProof()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject manifest = manifest("", "", "");
+        manifest.addProperty("trustState", "OBSERVED_PATH_UNDERAPPROX");
+        manifest.addProperty("compositionMode",
+                "EXISTENTIAL_OBSERVED_PATHS");
+        manifest.addProperty("pathSetComplete", false);
+
+        JsonObject report = BooleanReachConditionExtractor.extract(
+                "(set-logic ALL)\n(assert true)\n", manifest,
+                Collections.<JsonObject>emptyList(),
+                new BooleanReachConditionExtractor.Z3Solver("z3", 5_000L),
+                4, 16);
+
+        assertEquals("CANDIDATE_READY", report.get("state").getAsString());
+        assertEquals("REACHABLE", report.getAsJsonObject("reachCondition")
+                .get("reachability").getAsString());
+        assertEquals("OBSERVED_PATH_UNDERAPPROX",
+                report.get("trustState").getAsString());
+    }
+
     private static JsonObject manifest(String instance, String portTerm,
                                        String solverTerm) {
         JsonObject result = new JsonObject();

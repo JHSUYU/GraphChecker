@@ -7,7 +7,6 @@ import java.util.Collections;
 import java.util.List;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -56,8 +55,10 @@ public final class ExecutionTask {
             LoopBoundPolicy loopBound,
             boolean ready) {
         JsonObject task = new JsonObject();
-        goal.plan().writeTaskIdentityTo(task);
+        goal.writeTaskIdentityTo(task);
         goal.writeTaskPayloadTo(task);
+        task.add(RegionInstancePlan.OCCURRENCE_CATALOG,
+                goal.occurrenceInstantiationCatalog());
         task.addProperty("taskId", taskId);
         task.addProperty("goalKind", goal.kind().name());
         task.add(InputActionCatalog.FIELD, inputActions.deepCopy());
@@ -69,6 +70,33 @@ public final class ExecutionTask {
         JsonObject admission = new JsonObject();
         admission.addProperty("state", ready ? "EXECUTABLE" : "BLOCKED");
         task.add("admission", admission);
+        return new ExecutionTask(task);
+    }
+
+    public static ExecutionTask createProjectedOutput(
+            RegionInstancePlan.Goal goal,
+            String taskId,
+            JsonArray inputActions,
+            JsonArray branches,
+            JsonArray edgeBindings,
+            LoopBoundPolicy loopBound,
+            boolean ready,
+            OutputClosureContract outputClosure,
+            JsonObject occurrenceCatalog,
+            JsonObject producerProjection) {
+        if (goal == null || !goal.kind().capturesOutputRelation()
+                || outputClosure == null || occurrenceCatalog == null
+                || producerProjection == null) {
+            throw new IllegalArgumentException("projected output task "
+                    + "requires goal, closure, occurrence catalog and "
+                    + "producer projection");
+        }
+        JsonObject task = create(goal, taskId, inputActions, branches,
+                edgeBindings, loopBound, ready).json();
+        task.add(OutputClosureContract.FIELD, outputClosure.toJson());
+        task.add(RegionInstancePlan.OCCURRENCE_CATALOG,
+                occurrenceCatalog.deepCopy());
+        task.add("producerProjection", producerProjection.deepCopy());
         return new ExecutionTask(task);
     }
 
@@ -105,10 +133,6 @@ public final class ExecutionTask {
         return string(object(encoded, "rootSelector"), "method");
     }
 
-    public int rootOrdinal() {
-        return integer(object(encoded, "rootSelector"), "ordinal", 1);
-    }
-
     public JsonObject rootSelector() {
         return object(encoded, "rootSelector").deepCopy();
     }
@@ -131,6 +155,27 @@ public final class ExecutionTask {
 
     public JsonArray edgeBindings() {
         return array(encoded, "edgeBindings").deepCopy();
+    }
+
+    public String logicalRegionId() {
+        return string(encoded, "logicalRegionId");
+    }
+
+    public String summaryReuseKey() {
+        return string(encoded, "summaryReuseKey");
+    }
+
+    public String pathSeedKey() {
+        return string(encoded, "pathSeedKey");
+    }
+
+    public JsonObject occurrenceInstantiationCatalog() {
+        return object(encoded, RegionInstancePlan.OCCURRENCE_CATALOG)
+                .deepCopy();
+    }
+
+    public JsonObject producerProjection() {
+        return object(encoded, "producerProjection").deepCopy();
     }
 
     public JsonElement replayContract() {

@@ -46,10 +46,11 @@ bool SymStrUtils::invoke_method_helper(MethodSymbolizerHandle &handle) {
   guarantee(handle.get_callee_method()->is_static(), "should be");
 
   const std::string &callee_name = handle.get_callee_name();
-  bool need_symbolize = true;
+  bool need_symbolize = false;
   need_recording = false;
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
     need_recording = handle.general_check_param_symbolized();
+    need_symbolize = need_recording;
     if (need_recording) {
       SymStrUtils::prepare_param(handle);
     }
@@ -57,7 +58,8 @@ bool SymStrUtils::invoke_method_helper(MethodSymbolizerHandle &handle) {
     std::map<std::string, bool>::iterator iter =
         skip_method_names.find(callee_name);
     if (iter != skip_method_names.end()) {
-      need_symbolize = iter->second;
+      need_symbolize = iter->second
+          && handle.general_check_param_symbolized();
       if (!need_symbolize) {
         bool recording = handle.general_check_param_symbolized();
 //        handle.get_callee_method()->print_name(tty);

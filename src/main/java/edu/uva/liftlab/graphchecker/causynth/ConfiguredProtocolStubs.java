@@ -30,14 +30,17 @@ final class ConfiguredProtocolStubs {
     private final Map<String, List<ProtocolStubMapping>> byClient;
     private final Map<String, List<ProtocolStubMapping>> byServer;
     private final Set<String> clientOwners;
+    private final List<ProtocolStubMapping> mappings;
 
     private ConfiguredProtocolStubs(
             Map<String, List<ProtocolStubMapping>> byClient,
             Map<String, List<ProtocolStubMapping>> byServer,
-            Set<String> clientOwners) {
+            Set<String> clientOwners,
+            List<ProtocolStubMapping> mappings) {
         this.byClient = byClient;
         this.byServer = byServer;
         this.clientOwners = clientOwners;
+        this.mappings = mappings;
     }
 
     static ConfiguredProtocolStubs fromConfiguration(
@@ -58,6 +61,7 @@ final class ConfiguredProtocolStubs {
         Map<String, List<ProtocolStubMapping>> byServer =
                 new LinkedHashMap<>();
         Set<String> clientOwners = new LinkedHashSet<>();
+        List<ProtocolStubMapping> mappings = new ArrayList<>();
         try (BufferedReader reader = Files.newBufferedReader(path,
                 StandardCharsets.UTF_8)) {
             String line;
@@ -83,12 +87,22 @@ final class ConfiguredProtocolStubs {
                 }
                 byClient.computeIfAbsent(mapping.clientStub,
                         ignored -> new ArrayList<>()).add(mapping);
+                for (ProtocolStubMapping existing : byServer.getOrDefault(
+                        mapping.serverStub, Collections.emptyList())) {
+                    if (existing.serverContext != mapping.serverContext) {
+                        throw new IOException("Conflicting serverContext for "
+                                + mapping.serverStub + " at " + path + ":"
+                                + lineNumber);
+                    }
+                }
                 byServer.computeIfAbsent(mapping.serverStub,
                         ignored -> new ArrayList<>()).add(mapping);
                 clientOwners.add(mapping.clientOwner);
+                mappings.add(mapping);
             }
         }
-        return new ConfiguredProtocolStubs(byClient, byServer, clientOwners);
+        return new ConfiguredProtocolStubs(byClient, byServer, clientOwners,
+                Collections.unmodifiableList(mappings));
     }
 
     List<ProtocolStubMapping> targets(String clientStub) {
@@ -99,13 +113,43 @@ final class ConfiguredProtocolStubs {
         return byServer.getOrDefault(serverStub, Collections.emptyList());
     }
 
+    List<ProtocolStubMapping> mappings() {
+        return mappings;
+    }
+
+    boolean isExecutionEntryServerStub(String method) {
+        if (method == null) {
+            return false;
+        }
+        for (ProtocolStubMapping mapping : sources(method)) {
+            if (mapping.serverContext
+                    == ProtocolServerContext.EXECUTION_ENTRY) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    boolean isNestedCallServerStub(String method) {
+        if (method == null) {
+            return false;
+        }
+        for (ProtocolStubMapping mapping : sources(method)) {
+            if (mapping.serverContext == ProtocolServerContext.NESTED_CALL) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     boolean isClientOwner(String owner) {
         return clientOwners.contains(owner);
     }
 
     private static ConfiguredProtocolStubs empty() {
         return new ConfiguredProtocolStubs(new LinkedHashMap<>(),
-                new LinkedHashMap<>(), new LinkedHashSet<>());
+                new LinkedHashMap<>(), new LinkedHashSet<>(),
+                Collections.emptyList());
     }
 
     private static ProtocolStubMapping parse(JsonObject row,
@@ -155,9 +199,23 @@ final class ConfiguredProtocolStubs {
         if (id.isEmpty()) {
             id = clientStub + " -> " + serverStub;
         }
+        String encodedServerContext = string(row, "serverContext");
+        ProtocolServerContext serverContext;
+        if (encodedServerContext.isEmpty()) {
+            serverContext = ProtocolServerContext.EXECUTION_ENTRY;
+        } else {
+            try {
+                serverContext = ProtocolServerContext.valueOf(
+                        encodedServerContext);
+            } catch (IllegalArgumentException invalid) {
+                throw new IllegalArgumentException("serverContext must be "
+                        + "EXECUTION_ENTRY or NESTED_CALL: "
+                        + encodedServerContext, invalid);
+            }
+        }
         return new ProtocolStubMapping(id, string(row, "transport"),
                 clientStub, serverStub, client.getDeclaringClass().getName(),
-                request, response);
+                request, response, serverContext);
     }
 
     private static ProtocolPortMapping port(
@@ -197,6 +255,11 @@ final class ConfiguredProtocolStubs {
     }
 }
 
+enum ProtocolServerContext {
+    EXECUTION_ENTRY,
+    NESTED_CALL
+}
+
 final class ProtocolStubMapping {
     final String id;
     final String transport;
@@ -205,11 +268,13 @@ final class ProtocolStubMapping {
     final String clientOwner;
     final List<ProtocolPortMapping> request;
     final boolean response;
+    final ProtocolServerContext serverContext;
 
     ProtocolStubMapping(String id, String transport, String clientStub,
                         String serverStub, String clientOwner,
                         List<ProtocolPortMapping> request,
-                        boolean response) {
+                        boolean response,
+                        ProtocolServerContext serverContext) {
         this.id = id;
         this.transport = transport;
         this.clientStub = clientStub;
@@ -218,6 +283,7 @@ final class ProtocolStubMapping {
         this.request = Collections.unmodifiableList(
                 new ArrayList<>(request));
         this.response = response;
+        this.serverContext = serverContext;
     }
 }
 
@@ -225,6 +291,7 @@ final class ProtocolPortMapping {
     final String name;
     final int clientArgument;
     final int serverParameter;
+
     ProtocolPortMapping(String name, int clientArgument,
                         int serverParameter) {
         this.name = name;

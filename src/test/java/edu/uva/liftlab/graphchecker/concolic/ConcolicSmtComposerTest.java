@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
+import org.junit.Assume;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -12,6 +13,7 @@ import org.junit.rules.TemporaryFolder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
 
@@ -76,9 +78,9 @@ public class ConcolicSmtComposerTest {
         assertTrue(result.smtLib, result.smtLib.contains(
                 "port__REGION_1_out_0__instance__REGION_1_Test_call10"));
         assertTrue(result.smtLib, result.smtLib.contains(
-                "edge_binding_REGION_1_to_REGION_0_0"));
+                "state_writer_value__EDGE_SHARED"));
         assertTrue(result.smtLib, result.smtLib.contains(
-                "edge_binding_REGION_1_to_REGION_1_1"));
+                "state_writer_value__resolved_state_channel"));
         assertFalse(result.smtLib, result.smtLib.contains(
                 "port__REGION_1_out_0__instance__REGION_1_Test_call99"));
         assertEquals(1, result.manifest.getAsJsonArray(
@@ -120,6 +122,369 @@ public class ConcolicSmtComposerTest {
                 "(= " + holderPort + " (VInt 20))"));
         assertFalse(result.smtLib.contains(
                 "(= " + outerPort + " " + holderPort + ")"));
+    }
+
+    @Test
+    public void logicalSummaryIsAlphaRenamedForEveryExactOccurrence()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String firstInstance = "REGION.1@Test#call10";
+        String secondInstance = "REGION.1@Test#call20";
+        JsonObject firstToSecond = binding("EDGE.FIRST.SECOND",
+                firstInstance, "REGION.1.out.0", secondInstance,
+                "REGION.1.in.1", 10, 20);
+        JsonObject secondToFatal = binding("EDGE.SECOND.FATAL",
+                secondInstance, "REGION.1.out.1", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+
+        RelationSummary logical = logicalSummary(
+                summary("LOGICAL", firstInstance, 10, 7,
+                        Collections.singletonList("REGION.1.in.0"),
+                        Arrays.asList(firstToSecond, secondToFatal)),
+                occurrence(firstInstance, 10, "REGION.1.in.0",
+                        "REGION.1.out.0", "EDGE.FIRST.SECOND"),
+                occurrence(secondInstance, 20, "REGION.1.in.1",
+                        "REGION.1.out.1", "EDGE.FIRST.SECOND",
+                        "EDGE.SECOND.FATAL"));
+        JsonObject repeatedRegion = region("REGION.1", true, true);
+        repeatedRegion.getAsJsonArray("symbolicInputs").add(
+                port("REGION.1.in.1", true));
+        repeatedRegion.getAsJsonArray("outputs").add(
+                port("REGION.1.out.1", false));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(logical), Arrays.asList(
+                        region("REGION.0", true, false), repeatedRegion),
+                secondToFatal);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "port__REGION_1_out_0__instance__REGION_1_Test_call10"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "port__REGION_1_out_1__instance__REGION_1_Test_call20"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "port__REGION_1_in_1__instance__REGION_1_Test_call20"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "port__REGION_1_out_0__instance__REGION_1_Test_call20"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "case_selector__region_REGION_1_instance_"
+                        + "REGION_1_Test_call10_case_CASE_LOGICAL"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "case_selector__region_REGION_1_instance_"
+                        + "REGION_1_Test_call20_case_CASE_LOGICAL"));
+        assertEquals(2, result.manifest.getAsJsonArray(
+                "resolvedEdgeBindings").size());
+        if (z3Available()) {
+            ConcolicConstraintSolver.SolverOutput solved =
+                    ConcolicConstraintSolver.run(Paths.get("z3"),
+                            result.smtLib, 10_000L);
+            assertEquals(solved.diagnostic(), "sat", solved.status());
+        }
+    }
+
+    @Test
+    public void vmClockPlaceholdersAreScopedPerExactOccurrence()
+            throws Exception {
+        String firstInstance = "REGION.1@Test#call10";
+        String secondInstance = "REGION.1@Test#call20";
+        String fatalInstance = "REGION.0@Test#call30";
+        JsonObject firstToSecond = binding("EDGE.TIME.FIRST",
+                firstInstance, "REGION.1.out.0", secondInstance,
+                "REGION.1.in.1", 10, 20);
+        JsonObject secondToFatal = binding("EDGE.TIME.SECOND",
+                secondInstance, "REGION.1.out.1", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+
+        RelationSummary logical = logicalSummary(
+                summary("TIME", firstInstance, 10, currentTimePlaceholder(),
+                        Collections.singletonList("REGION.1.in.0"),
+                        Arrays.asList(firstToSecond, secondToFatal), "long"),
+                occurrence(firstInstance, 10, "REGION.1.in.0",
+                        "REGION.1.out.0", "EDGE.TIME.FIRST"),
+                occurrence(secondInstance, 20, "REGION.1.in.1",
+                        "REGION.1.out.1", "EDGE.TIME.FIRST",
+                        "EDGE.TIME.SECOND"));
+        JsonObject repeatedRegion = region("REGION.1", "long", "long");
+        repeatedRegion.getAsJsonArray("symbolicInputs").add(
+                port("REGION.1.in.1", true, "long"));
+        repeatedRegion.getAsJsonArray("outputs").add(
+                port("REGION.1.out.1", false, "long"));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(logical), Arrays.asList(
+                        region("REGION.0", "long", ""), repeatedRegion),
+                secondToFatal);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        assertEquals(result.smtLib, 2,
+                count(result.smtLib, "(declare-const environment__"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "environment__region_REGION_1_instance_"
+                        + "REGION_1_Test_call10_case_CASE_TIME__"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "environment__region_REGION_1_instance_"
+                        + "REGION_1_Test_call20_case_CASE_TIME__"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void occurrenceInstantiationSelectsEachLedgerBindingOnce()
+            throws Exception {
+        String firstInstance = "REGION.1@Test#call10";
+        String secondInstance = "REGION.1@Test#call20";
+        String fatalInstance = "REGION.0@Test#call30";
+        JsonObject firstToSecond = binding("EDGE.FIRST.SECOND",
+                firstInstance, "REGION.1.out.0", secondInstance,
+                "REGION.1.in.1", 10, 20);
+        JsonObject secondToFatal = binding("EDGE.SECOND.FATAL",
+                secondInstance, "REGION.1.out.1", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+        RelationSummary logical = logicalSummary(
+                summary("LOGICAL-BINDINGS", firstInstance, 10, 7,
+                        Collections.singletonList("REGION.1.in.0"),
+                        Arrays.asList(firstToSecond, secondToFatal)),
+                occurrence(firstInstance, 10, "REGION.1.in.0",
+                        "REGION.1.out.0", "EDGE.FIRST.SECOND"),
+                occurrence(secondInstance, 20, "REGION.1.in.1",
+                        "REGION.1.out.1", "EDGE.FIRST.SECOND",
+                        "EDGE.SECOND.FATAL"));
+
+        Class<?> type = Class.forName(ConcolicSmtComposer.class.getName()
+                + "$OccurrenceInstantiator");
+        java.lang.reflect.Method expand = type.getDeclaredMethod(
+                "expand", RelationSummary.class);
+        expand.setAccessible(true);
+        java.util.List<RelationSummary> instantiated =
+                (java.util.List<RelationSummary>) expand.invoke(null,
+                        logical);
+
+        assertEquals(2, instantiated.size());
+        for (RelationSummary occurrenceSummary : instantiated) {
+            int expected = firstInstance.equals(
+                    occurrenceSummary.regionInstanceId()) ? 1 : 2;
+            assertEquals(expected, occurrenceSummary.edgeBindings().size());
+            java.util.Set<String> ids = new java.util.LinkedHashSet<>();
+            for (JsonObject edge : occurrenceSummary.edgeBindings()) {
+                assertTrue(ids.add(edge.get("edgeId").getAsString()));
+            }
+        }
+
+        RelationSummary incomplete = logicalSummary(
+                summary("INCOMPLETE-BINDINGS", firstInstance, 10, 7,
+                        Collections.singletonList("REGION.1.in.0"),
+                        Arrays.asList(firstToSecond, secondToFatal)),
+                occurrence(firstInstance, 10, "REGION.1.in.0",
+                        "REGION.1.out.0", "EDGE.FIRST.SECOND"),
+                occurrence(secondInstance, 20, "REGION.1.in.1",
+                        "REGION.1.out.1", "EDGE.SECOND.FATAL"));
+        try {
+            expand.invoke(null, incomplete);
+            org.junit.Assert.fail("incomplete binding ledger must fail");
+        } catch (java.lang.reflect.InvocationTargetException expected) {
+            assertTrue(expected.getCause().getMessage().contains(
+                    "binding-id ledger is incomplete"));
+        }
+    }
+
+    @Test
+    public void malformedLogicalOccurrenceCatalogFailsClosed()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call10";
+        JsonObject edge = binding("EDGE.BAD", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 10, 30);
+        JsonObject malformedOccurrence = occurrence(producerInstance, 10,
+                "REGION.1.in.0", "REGION.1.out.0", "EDGE.BAD");
+        malformedOccurrence.add("outputPortMap", new JsonArray());
+        RelationSummary logical = logicalSummary(summary("BAD",
+                producerInstance, 10, 7,
+                Collections.singletonList("REGION.1.in.0"),
+                Collections.singletonList(edge)), malformedOccurrence);
+
+        boolean rejected = false;
+        try {
+            compose(fatalInstance, Collections.singletonList(logical), edge);
+        } catch (java.io.IOException expected) {
+            rejected = expected.getMessage().contains(
+                    "Malformed relation summary");
+        }
+        assertTrue("malformed catalog must fail before SMT emission",
+                rejected);
+    }
+
+    @Test
+    public void selectedSharedStateReadMustUseItsVmWriter()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.VERSION", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("VERSION",
+                        producerInstance, 20, 10,
+                        Collections.<String>emptyList(),
+                        Collections.singletonList(edge))), edge);
+
+        String suffix = "EDGE_VERSION__REGION_0_Test_call30_REGION_0_in_0";
+        String read = "state_read_position__" + suffix;
+        String write = "state_write_position__" + suffix + "_0";
+        String producer = "port__REGION_1_out_0__instance__"
+                + "REGION_1_Test_call20";
+        String consumer = "port__REGION_0_in_0__instance__"
+                + "REGION_0_Test_call30";
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(declare-const " + read + " Int)"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(declare-const " + write + " Int)"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(= " + write + " 20)"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(= " + read + " 30)"));
+
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "state_initial_value__"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "state_initial_before_writers__"));
+        assertUnsat(result.smtLib, "(assert (< " + read + " " + write
+                + "))\n");
+        assertUnsat(result.smtLib, "(assert (< " + write + " " + read
+                + "))\n(assert (distinct " + consumer + " " + producer
+                + "))\n");
+    }
+
+    @Test
+    public void sameLaneProgramOrderForcesWriterBeforeReader()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.PROGRAM.ORDER", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        edge.addProperty("readerLaneId", "lane.writer");
+        edge.addProperty("programOrderRequired", true);
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("PROGRAM_ORDER",
+                        producerInstance, 20, 10,
+                        Collections.<String>emptyList(),
+                        Collections.singletonList(edge))), edge);
+
+        String suffix = "EDGE_PROGRAM_ORDER__REGION_0_Test_call30_"
+                + "REGION_0_in_0";
+        String read = "state_read_position__" + suffix;
+        String write = "state_write_position__" + suffix + "_0";
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "state_program_order__" + suffix));
+        assertUnsat(result.smtLib, "(assert (< " + read + " " + write
+                + "))\n");
+    }
+
+    @Test
+    public void sameLaneWritersKeepProgramOrderInsideInterleaving()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String fatalInstance = "REGION.0@Test#call30";
+        String firstInstance = "REGION.1@Test#call10";
+        String secondInstance = "REGION.1@Test#call20";
+        JsonObject first = binding("EDGE.FIRST", firstInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 10, 30);
+        JsonObject second = binding("EDGE.SECOND", secondInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        first.addProperty("writerLaneId", "lane.shared");
+        second.addProperty("writerLaneId", "lane.shared");
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Arrays.asList(
+                        summary("FIRST", firstInstance, 10, 1,
+                                Collections.<String>emptyList(),
+                                Collections.singletonList(first)),
+                        summary("SECOND", secondInstance, 20, 2,
+                                Collections.<String>emptyList(),
+                                Collections.singletonList(second))),
+                first, second);
+
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "state_writer_program_order__versioned_state_channel"));
+        assertTrue(result.smtLib, result.smtLib.matches("(?s).*\\(< "
+                + "state_write_position__versioned_state_channel[^ ]+_0 "
+                + "state_write_position__versioned_state_channel[^ )]+_1"
+                + "\\).*"));
+
+        String suffix = "versioned_state_channel__"
+                + "REGION_0_Test_call30_REGION_0_in_0__"
+                + "REGION_0_Test_call30_REGION_0_in_0";
+        String read = "state_read_position__" + suffix;
+        String firstWrite = "state_write_position__" + suffix + "_0";
+        String secondWrite = "state_write_position__" + suffix + "_1";
+        String secondProducer = "port__REGION_1_out_0__instance__"
+                + "REGION_1_Test_call20";
+        String consumer = "port__REGION_0_in_0__instance__"
+                + "REGION_0_Test_call30";
+        String secondIsLatest = "(assert (< " + firstWrite + " "
+                + secondWrite + "))\n(assert (< " + secondWrite + " "
+                + read + "))\n";
+        assertSat(result.smtLib, secondIsLatest);
+        assertUnsat(result.smtLib, secondIsLatest
+                + "(assert (distinct " + consumer + " "
+                + secondProducer + "))\n");
+    }
+
+    @Test
+    public void repeatedAccessesOnOneStaticEdgeRemainDistinctWriters()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject first = binding("EDGE.REPEATED", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 10, 30);
+        JsonObject second = binding("EDGE.REPEATED", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("REPEATED",
+                        producerInstance, 20, 1,
+                        Collections.<String>emptyList(),
+                        Arrays.asList(first, second))), first, second);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "state_write_position__versioned_state_channel"));
+        assertTrue(result.smtLib, result.smtLib.matches("(?s).*\\(distinct "
+                + "state_read_position__versioned_state_channel[^ ]+ "
+                + "state_write_position__versioned_state_channel[^ ]+_0 "
+                + "state_write_position__versioned_state_channel[^ )]+_1"
+                + "\\).*"));
+    }
+
+    @Test
+    public void protocolCausalityIsSymbolic()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = protocolBinding("EDGE.RPC", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0",
+                100, 200, 300);
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("RPC", producerInstance,
+                        20, 10, Collections.<String>emptyList(),
+                        Collections.singletonList(edge))), edge);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "rpc_caller_before_send__"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "rpc_send_before_receive__"));
+        String suffix = "edge_binding_REGION_1_to_REGION_0_0__example_rpc";
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(= rpc_caller_position__" + suffix + " 100)"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(= rpc_send_position__" + suffix + " 200)"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(= rpc_receive_position__" + suffix + " 300)"));
+        assertFalse(result.smtLib, result.smtLib.contains("irrelevant"));
     }
 
     @Test
@@ -236,7 +601,7 @@ public class ConcolicSmtComposerTest {
                 "(= port__REGION_1_out_0__instance__REGION_1_Test_call10"
                         + " (VInt (- 15)))"));
         assertTrue(result.smtLib, result.smtLib.contains(
-                "edge_binding_REGION_1_to_REGION_1_1"));
+                "state_writer_value__resolved_state_channel"));
     }
 
     @Test
@@ -270,6 +635,99 @@ public class ConcolicSmtComposerTest {
                     result.smtLib.contains("(V" + tag + " (value"
                             + tag + " Int))"));
         }
+    }
+
+    @Test
+    public void observedSnapshotObjectCannotAliasNull() throws Exception {
+        Assume.assumeTrue(z3Available());
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.SNAPSHOT", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        JsonObject cleared = associativeOperation("CLEAR",
+                associativeState("UNUSED_MAP"));
+        JsonObject snapshot = associativeOperation("PUT", cleared,
+                integer(11745), reference(
+                        "M_L'example/Key'_124", "example/Key"));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("SNAPSHOT",
+                        producerInstance, 20, snapshot,
+                        Collections.<String>emptyList(),
+                        Collections.singletonList(edge), "java.util.Map")),
+                Arrays.asList(region("REGION.0", "java.util.Map", ""),
+                        region("REGION.1", "", "java.util.Map")), edge);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "observed_snapshot_reference_non_null_"));
+        String output = "port__REGION_1_out_0__instance__"
+                + "REGION_1_Test_call20";
+        String nullLookup = "(assert (= (valueRef (assoc_read " + output
+                + " (VInt 11745))) nullRef))\n";
+        String query = result.smtLib.replace("(check-sat)",
+                nullLookup + "(check-sat)");
+        ConcolicConstraintSolver.SolverOutput solved =
+                ConcolicConstraintSolver.run(Paths.get("z3"), query,
+                        10_000L);
+        assertEquals(solved.diagnostic(), "unsat", solved.status());
+    }
+
+    @Test
+    public void trustedRpcProjectionBindsOneBoundedObjectArrayState()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = protocolBinding("EDGE.ARRAY.PROJECTION",
+                producerInstance, "REGION.1.out.0", fatalInstance,
+                "REGION.0.in.0", 20, 21, 30);
+        JsonObject cleared = associativeOperation("CLEAR",
+                associativeState("UNUSED_MAP"));
+        JsonObject withValue = associativeOperation("PUT", cleared,
+                integer(7),
+                reference("M_L'example/Key'_7", "example/Key"));
+        JsonObject withTwoValues = associativeOperation("PUT", withValue,
+                integer(11),
+                reference("M_L'example/Key'_11", "example/Key"));
+        JsonObject values = associativeOperation("VALUE_VIEW",
+                withTwoValues);
+        JsonObject iterator = associativeOperation("ITERATOR", values);
+        JsonObject selected0 = associativeOperation("NEXT", iterator,
+                integer(0));
+        JsonObject selected1 = associativeOperation("NEXT", iterator,
+                integer(1));
+        JsonObject firstWrite = indexedOperation("WRITE",
+                indexedOperation("STATE", reference(
+                        "AL_5-0", "L"),
+                        integer(2)), integer(0), selected0);
+        JsonObject snapshot = indexedOperation("WRITE", firstWrite,
+                integer(1), selected1);
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("ARRAY.PROJECTION",
+                        producerInstance, 20, snapshot,
+                        Collections.<String>emptyList(),
+                        Collections.singletonList(edge),
+                        "example.Key[]")),
+                Arrays.asList(region("REGION.0", "example.Key[]", ""),
+                        region("REGION.1", "", "example.Key[]")), edge);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        String producer = "port__REGION_1_out_0__instance__"
+                + "REGION_1_Test_call20";
+        String consumer = "port__REGION_0_in_0__instance__"
+                + "REGION_0_Test_call30";
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(declare-const " + producer + " IndexedState)"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(declare-const " + consumer + " IndexedState)"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(= " + producer + " " + consumer + ")"));
+        assertTrue(result.smtLib, result.smtLib.contains("assoc_value_at"));
+        assertTrue(result.smtLib, count(result.smtLib,
+                "(indexed_write ") >= 2);
     }
 
     @Test
@@ -437,6 +895,55 @@ public class ConcolicSmtComposerTest {
         return RelationSummary.decode(row);
     }
 
+    private static RelationSummary logicalSummary(
+            RelationSummary canonical, JsonObject... occurrences) {
+        JsonObject row = canonical.toJson();
+        row.addProperty("logicalRegionId", "REGION.1@owner7");
+        row.addProperty("summaryReuseKey", "REGION.1@owner7");
+        JsonObject catalog = new JsonObject();
+        catalog.addProperty("schemaVersion", 1);
+        catalog.addProperty("kind",
+                "LOGICAL_SUMMARY_OCCURRENCE_CATALOG");
+        catalog.addProperty("logicalRegionId", "REGION.1@owner7");
+        catalog.addProperty("summaryReuseKey", "REGION.1@owner7");
+        catalog.addProperty("canonicalRegionInstanceId",
+                canonical.regionInstanceId());
+        catalog.addProperty("canonicalRootCallId",
+                canonical.outputClosure().producer().rootCallId());
+        JsonArray encoded = new JsonArray();
+        for (JsonObject occurrence : occurrences) encoded.add(occurrence);
+        catalog.add("occurrences", encoded);
+        row.add("occurrenceInstantiationCatalog", catalog);
+        return RelationSummary.decode(row);
+    }
+
+    private static JsonObject occurrence(
+            String instance, long rootCall, String exactInput,
+            String exactOutput, String... bindingIds) {
+        JsonObject occurrence = new JsonObject();
+        occurrence.addProperty("regionInstanceId", instance);
+        occurrence.addProperty("rootCallId", rootCall);
+        occurrence.addProperty("ownerId", 7);
+        occurrence.addProperty("laneId", rootCall);
+        occurrence.addProperty("spanId", rootCall + 100);
+        JsonObject input = new JsonObject();
+        input.addProperty("canonicalPort", "REGION.1.in.0");
+        input.addProperty("exactPort", exactInput);
+        JsonArray inputs = new JsonArray();
+        inputs.add(input);
+        occurrence.add("inputPortMap", inputs);
+        JsonObject output = new JsonObject();
+        output.addProperty("canonicalPort", "REGION.1.out.0");
+        output.addProperty("exactPort", exactOutput);
+        JsonArray outputs = new JsonArray();
+        outputs.add(output);
+        occurrence.add("outputPortMap", outputs);
+        JsonArray bindings = new JsonArray();
+        for (String id : bindingIds) bindings.add(id);
+        occurrence.add("bindingIds", bindings);
+        return occurrence;
+    }
+
     private static JsonObject emptySlice(String port, String cell) {
         JsonObject slice = new JsonObject();
         slice.addProperty("outputPort", port);
@@ -477,21 +984,29 @@ public class ConcolicSmtComposerTest {
                 Collections.<BranchWitness>emptyList(), witness).toJson());
 
         JsonArray merges = new JsonArray();
+        JsonArray equalities = new JsonArray();
         for (JsonObject firstHop : firstHops) {
             JsonObject relation = new JsonObject();
             relation.addProperty("edgeId",
                     firstHop.get("edgeId").getAsString());
-            relation.addProperty("fromEndpoint", "REGION.1.out.0");
-            relation.addProperty("toEndpoint", "REGION.0.in.0");
+            relation.addProperty("fromEndpoint",
+                    firstHop.get("fromOutputPort").getAsString());
+            relation.addProperty("toEndpoint",
+                    firstHop.get("toInputPort").getAsString());
             JsonArray selected = new JsonArray();
             selected.add(firstHop.deepCopy());
             relation.add("selectedBindings", selected);
-            merges.add(relation);
+            if ("TRUSTED_CONFIGURED_RPC_MAPPING_V1".equals(
+                    firstHop.get("evidenceKind").getAsString())) {
+                equalities.add(relation);
+            } else {
+                merges.add(relation);
+            }
         }
         JsonObject context = new JsonObject();
         context.addProperty("regionInstanceId", fatalInstance);
         context.add("equalityClasses", new JsonArray());
-        context.add("equalityRelations", new JsonArray());
+        context.add("equalityRelations", equalities);
         context.add("versionedStateMerges", merges);
         context.add("alternativeWriterGroups", new JsonArray());
         fatal.add("symbolicContext", context);
@@ -514,9 +1029,36 @@ public class ConcolicSmtComposerTest {
         binding.addProperty("schemaVersion", 3);
         binding.addProperty("correlationAuthority",
                 "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
+        binding.addProperty("writerLaneId", "lane.writer");
+        binding.addProperty("readerLaneId", "lane.reader");
+        binding.addProperty("programOrderRequired", false);
         binding.addProperty("writerEventSeq", writer);
         binding.addProperty("readerEventSeq", reader);
         binding.addProperty("receiverObjectId", 7);
+        return binding;
+    }
+
+    private static JsonObject protocolBinding(
+            String edgeId, String fromInstance, String fromPort,
+            String toInstance, String toPort, long caller, long send,
+            long receive) {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("edgeId", edgeId);
+        binding.addProperty("fromRegion", "REGION.1");
+        binding.addProperty("toRegion", regionOf(toPort));
+        binding.addProperty("fromRegionInstance", fromInstance);
+        binding.addProperty("toRegionInstance", toInstance);
+        binding.addProperty("fromOutputPort", fromPort);
+        binding.addProperty("toInputPort", toPort);
+        binding.addProperty("evidenceKind",
+                "TRUSTED_CONFIGURED_RPC_MAPPING_V1");
+        binding.addProperty("schemaVersion", 3);
+        binding.addProperty("mappingId", "example.rpc");
+        binding.addProperty("correlationAuthority",
+                "TRUSTED_CONFIGURED_RPC_MAPPING_V1");
+        binding.addProperty("callerSiteEventSeq", caller);
+        binding.addProperty("sendEventSeq", send);
+        binding.addProperty("receiveEventSeq", receive);
         return binding;
     }
 
@@ -566,6 +1108,23 @@ public class ConcolicSmtComposerTest {
         return result;
     }
 
+    private static JsonObject currentTimePlaceholder() {
+        JsonObject result = new JsonObject();
+        result.addProperty("_type", "PlaceholderExpression");
+        result.addProperty("_place_holder_func", "currentTimeMills");
+        result.addProperty("_count", 1);
+        result.addProperty("_java_type", "J");
+        return result;
+    }
+
+    private static JsonObject reference(String symbol, String javaType) {
+        JsonObject result = new JsonObject();
+        result.addProperty("_type", "SymbolExpression");
+        result.addProperty("_java_type", javaType);
+        result.addProperty("_exp", symbol);
+        return result;
+    }
+
     private static JsonObject typedIntegral(String javaType, int value) {
         JsonObject result = new JsonObject();
         result.addProperty("_type", "ConstExpr");
@@ -580,6 +1139,29 @@ public class ConcolicSmtComposerTest {
         identity.addProperty("_java_type", "L");
         identity.addProperty("_exp", symbol);
         return associativeOperation("STATE", identity);
+    }
+
+    private static JsonObject indexedState(String symbol) {
+        JsonObject identity = new JsonObject();
+        identity.addProperty("_type", "SymbolExpression");
+        identity.addProperty("_java_type", "[");
+        identity.addProperty("_exp", symbol);
+        return indexedOperation("STATE", identity);
+    }
+
+    private static JsonObject indexedOperation(
+            String operation, JsonObject receiver,
+            JsonObject... arguments) {
+        JsonObject result = new JsonObject();
+        result.addProperty("_type", "ContainerRelation");
+        result.addProperty("shape", "INDEXED");
+        result.addProperty("operation", operation);
+        result.addProperty("_java_type", "L");
+        result.add("receiver", receiver);
+        JsonArray encoded = new JsonArray();
+        for (JsonObject argument : arguments) encoded.add(argument);
+        result.add("arguments", encoded);
+        return result;
     }
 
     private static JsonObject associativeRead(
@@ -625,5 +1207,41 @@ public class ConcolicSmtComposerTest {
         StringBuilder value = new StringBuilder();
         for (JsonObject row : rows) value.append(row).append('\n');
         Files.write(path, value.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static boolean z3Available() {
+        try {
+            Process process = new ProcessBuilder("z3", "-version").start();
+            return process.waitFor() == 0;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static int count(String text, String needle) {
+        int count = 0;
+        for (int index = 0; (index = text.indexOf(needle, index)) >= 0;
+             index += needle.length()) {
+            count++;
+        }
+        return count;
+    }
+
+    private static void assertUnsat(String smt, String extra)
+            throws Exception {
+        String query = smt.replace("(check-sat)", extra + "(check-sat)");
+        ConcolicConstraintSolver.SolverOutput solved =
+                ConcolicConstraintSolver.run(Paths.get("z3"), query,
+                        10_000L);
+        assertEquals(solved.diagnostic(), "unsat", solved.status());
+    }
+
+    private static void assertSat(String smt, String extra)
+            throws Exception {
+        String query = smt.replace("(check-sat)", extra + "(check-sat)");
+        ConcolicConstraintSolver.SolverOutput solved =
+                ConcolicConstraintSolver.run(Paths.get("z3"), query,
+                        10_000L);
+        assertEquals(solved.diagnostic(), "sat", solved.status());
     }
 }

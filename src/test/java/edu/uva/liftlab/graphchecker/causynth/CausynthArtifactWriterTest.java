@@ -5,6 +5,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -44,6 +45,50 @@ public class CausynthArtifactWriterTest {
                         StandardCharsets.UTF_8))) {
             assertEquals(CausynthJson.write(skeleton), reader.readLine());
             assertEquals(null, reader.readLine());
+        }
+    }
+
+    @Test
+    public void regionWriterDeduplicatesIdenticalCanonicalEdges()
+            throws Exception {
+        Path output = temporary.newFolder("region-edges").toPath();
+        StaticProgram program = new StaticProgram();
+        Map<String, Object> edge = new LinkedHashMap<>();
+        edge.put("edgeId", "EDGE.1");
+        edge.put("fromPort", "REGION.a.out.1");
+        edge.put("toPort", "REGION.b.in.1");
+        program.regionEdges.add(edge);
+        program.regionEdges.add(new LinkedHashMap<>(edge));
+
+        Path regions = output.resolve("regions.jsonl");
+        Path edges = output.resolve("edges.jsonl");
+        CausynthArtifactWriter.writeRegions(regions, edges, program);
+
+        assertEquals(1, Files.readAllLines(edges,
+                StandardCharsets.UTF_8).size());
+        assertEquals(1, program.regionEdges.size());
+    }
+
+    @Test
+    public void regionWriterRejectsConflictingCanonicalEdgePayloads()
+            throws Exception {
+        Path output = temporary.newFolder("conflicting-edges").toPath();
+        StaticProgram program = new StaticProgram();
+        Map<String, Object> first = new LinkedHashMap<>();
+        first.put("edgeId", "EDGE.1");
+        first.put("writerOccurrence", 1);
+        Map<String, Object> conflicting = new LinkedHashMap<>(first);
+        conflicting.put("writerOccurrence", 2);
+        program.regionEdges.add(first);
+        program.regionEdges.add(conflicting);
+
+        try {
+            CausynthArtifactWriter.writeRegions(
+                    output.resolve("regions.jsonl"),
+                    output.resolve("edges.jsonl"), program);
+            throw new AssertionError("conflicting edge must fail closed");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage().contains("EDGE.1"));
         }
     }
 }

@@ -52,6 +52,10 @@ public final class RegionStringConversionApiSmoke {
 
         StringBuilder builder = new StringBuilder();
         builder.append("key=").append(integer.intValue());
+        // The previous append makes the builder symbolic.  A later append
+        // executes concrete AbstractStringBuilder.value/count writes while
+        // preserving the builder's reference-level concat model.
+        builder.append("!");
         String builderBeforeToString = System.getSymbolicExpression(builder);
         String builderValue = builder.toString();
 

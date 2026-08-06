@@ -6,22 +6,29 @@ import com.google.gson.JsonObject;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 
 /**
  * Evidence gate shared by graph discovery and SMT preparation.
  *
  * <p>A port map may be useful for locating another region without proving a
- * value relation.  Automatic composition is deliberately stricter: equality
- * requires an observed complete runtime value fingerprint, and shared state
- * requires a confirmed concrete write/read pair.  Static protocol contracts,
- * endpoint order, and domain-specific mapping names never satisfy this gate.</p>
+ * value relation. Protocol equality is admitted only for the exact dynamic
+ * endpoint occurrences named by a trusted configured RPC mapping and an
+ * observed caller/send/receive lineage. Shared state requires a confirmed
+ * concrete write/read pair as evidence that the channel exists; its observed
+ * event sequence is not an SMT schedule.</p>
  */
 public final class AutomaticRegionEdge {
     static final int RUNTIME_EDGE_SCHEMA_VERSION = 3;
     static final String RUNTIME_EDGE_KIND =
             "RUNTIME_FIELD_FLOW";
-    static final String COMPLETE_VALUE_EQUALITY =
-            "COMPLETE_VALUE_EQUALITY_V1";
+    static final String RUNTIME_PROTOCOL_EDGE_KIND =
+            "RUNTIME_PROTOCOL_FLOW";
+    static final String CONFIGURED_PROTOCOL_AUTHORITY =
+            "TRUSTED_CONFIGURED_RPC_MAPPING_V1";
+    static final String CONFIGURED_PROTOCOL_EQUALITY =
+            CONFIGURED_PROTOCOL_AUTHORITY;
     static final String FIELD_ASSIGNMENT_READ_FROM =
             "FIELD_ASSIGNMENT_READ_FROM_V1";
     static final String CONTAINER_MUTATION_READ_FROM =
@@ -38,7 +45,6 @@ public final class AutomaticRegionEdge {
         if (edge == null
                 || integer(edge, "schemaVersion", -1)
                 != RUNTIME_EDGE_SCHEMA_VERSION
-                || !RUNTIME_EDGE_KIND.equals(string(edge, "kind"))
                 || string(edge, "edgeId").isEmpty()
                 || string(edge, "fromRegion").isEmpty()
                 || string(edge, "toRegion").isEmpty()
@@ -47,19 +53,29 @@ public final class AutomaticRegionEdge {
                 || string(edge, "toPort").isEmpty()) {
             return "";
         }
-        String relation = "CONFIRMED_RUNTIME_IDENTITY".equals(
-                string(edge, "state")) ? "READ_FROM" : "";
+        String edgeKind = string(edge, "kind");
+        String state = string(edge, "state");
+        String relation = RUNTIME_EDGE_KIND.equals(edgeKind)
+                && "CONFIRMED_RUNTIME_IDENTITY".equals(state)
+                ? "READ_FROM"
+                : RUNTIME_PROTOCOL_EDGE_KIND.equals(edgeKind)
+                && "CONFIRMED_TRUSTED_CONFIGURED_RPC".equals(state)
+                ? "EQUALITY" : "";
         JsonElement bindings = edge.get("bindings");
         if (relation.isEmpty() || bindings == null || !bindings.isJsonArray()
                 || bindings.getAsJsonArray().size() == 0) {
             return "";
         }
         for (JsonElement element : bindings.getAsJsonArray()) {
-            if (!element.isJsonObject()
-                    || ("READ_FROM".equals(relation)
-                    ? !trustedReadFromEvidence(element.getAsJsonObject())
-                    : !trustedRuntimeValueEqualityEvidence(
-                    element.getAsJsonObject()))) {
+            if (!element.isJsonObject()) {
+                return "";
+            }
+            JsonObject binding = element.getAsJsonObject();
+            if (("READ_FROM".equals(relation)
+                    ? !trustedReadFromEvidence(binding)
+                    : !trustedRuntimeValueEqualityEvidence(binding))
+                    || "EQUALITY".equals(relation)
+                    && !exactEndpoints(edge, binding)) {
                 return "";
             }
         }
@@ -68,9 +84,10 @@ public final class AutomaticRegionEdge {
 
     /**
      * Validates one runtime summary binding before it is admitted downstream.
-     * Direct field assignments retain their original exact event contract;
-     * container mutations additionally require a completed mutator call and
-     * the same process-local container identity on both field reads.
+     * Direct field assignments require exact channel endpoints. Container
+     * mutations additionally require a completed mutator call and concrete
+     * container endpoints. Cross-lane trace order and value equality are not
+     * admission constraints; the bounded merge chooses the version.
      */
     public static boolean trustedRuntimeReadFromBinding(JsonObject binding) {
         return trustedReadFromEvidence(binding);
@@ -80,10 +97,8 @@ public final class AutomaticRegionEdge {
      * Validates a value-equality summary edge independently of READ_FROM.
      *
      * <p>RPC and other serialization transports normally allocate a new
-     * receiver-side object, so process-local object identity is neither
-     * available nor required. Automatic composition instead requires the two
-     * exact region instances and canonical ports, a complete runtime
-     * fingerprint on both endpoints, and their concrete trace order.</p>
+     * receiver-side object. The configured port mapping is the value-equality
+     * authority.</p>
      */
     public static boolean trustedRuntimeValueEqualityBinding(
             JsonObject binding) {
@@ -99,14 +114,23 @@ public final class AutomaticRegionEdge {
     public static boolean trustedRuntimeValueEqualityEvidence(
             JsonObject evidence) {
         if (evidence == null
-                || !COMPLETE_VALUE_EQUALITY.equals(string(evidence,
+                || integer(evidence, "schemaVersion", -1) != 3
+                || !CONFIGURED_PROTOCOL_EQUALITY.equals(string(evidence,
                 "evidenceKind"))
                 || string(evidence, "fromRegionInstance").isEmpty()
                 || string(evidence, "toRegionInstance").isEmpty()
-                || string(evidence, "valueFingerprint").isEmpty()) {
+                || string(evidence, "fromOutputPort").isEmpty()
+                || string(evidence, "toInputPort").isEmpty()
+                || string(evidence, "mappingId").isEmpty()
+                || !CONFIGURED_PROTOCOL_AUTHORITY.equals(firstNonBlank(
+                string(evidence, "correlationAuthority"),
+                string(evidence, "authority")))) {
             return false;
         }
-        return ordered(evidence);
+        long caller = longInteger(evidence, "callerSiteEventSeq", -1L);
+        long send = longInteger(evidence, "sendEventSeq", -1L);
+        long receive = longInteger(evidence, "receiveEventSeq", -1L);
+        return caller >= 0L && caller < send && send < receive;
     }
 
     /** Runtime evidence admitted for recursive summary composition. */
@@ -128,7 +152,8 @@ public final class AutomaticRegionEdge {
                     && !string(evidence, "fromOutputPort").isEmpty()
                     && !string(evidence, "toInputPort").isEmpty()
                     && longInteger(evidence, "receiverObjectId", 0L) != 0L
-                    && ordered(evidence);
+                    && observedChannelOrder(evidence,
+                            longInteger(evidence, "writerEventSeq", -1L));
         }
         if (!CONTAINER_MUTATION_READ_FROM.equals(kind)
                 || string(evidence, "mutatorDeclaredCallee").isEmpty()) {
@@ -146,16 +171,42 @@ public final class AutomaticRegionEdge {
                 "readerValueObjectId", 0L);
         return fieldRead >= 0L && enter > fieldRead
                 && completion > enter && writer == completion
-                && longInteger(evidence, "readerEventSeq", -1L) > completion
                 && fieldReceiver != 0L
                 && longInteger(evidence, "mutationInvocationId", 0L) > 0L
                 && writerContainer != 0L
-                && writerContainer == readerContainer;
+                && readerContainer != 0L
+                && observedChannelOrder(evidence, completion);
     }
 
-    private static boolean ordered(JsonObject evidence) {
-        long writer = longInteger(evidence, "writerEventSeq", -1L);
-        return writer >= 0L
-                && longInteger(evidence, "readerEventSeq", -1L) > writer;
+    private static boolean observedChannelOrder(JsonObject evidence,
+                                                long writer) {
+        long reader = longInteger(evidence, "readerEventSeq", -1L);
+        if (writer < 0L || reader < 0L
+                || !trustedProgramOrderMetadata(evidence)) {
+            return false;
+        }
+        return !bool(evidence, "programOrderRequired", false)
+                || writer < reader;
+    }
+
+    private static boolean trustedProgramOrderMetadata(JsonObject evidence) {
+        if (!evidence.has("programOrderRequired")) return false;
+        String writerLane = string(evidence, "writerLaneId");
+        String readerLane = string(evidence, "readerLaneId");
+        if (writerLane.isEmpty() || readerLane.isEmpty()) return false;
+        boolean required = bool(evidence, "programOrderRequired", false);
+        return required == writerLane.equals(readerLane);
+    }
+
+    private static boolean exactEndpoints(JsonObject edge,
+                                          JsonObject binding) {
+        return string(edge, "fromRegion").equals(
+                string(binding, "fromRegion"))
+                && string(edge, "toRegion").equals(
+                string(binding, "toRegion"))
+                && string(edge, "fromPort").equals(
+                string(binding, "fromOutputPort"))
+                && string(edge, "toPort").equals(
+                string(binding, "toInputPort"));
     }
 }

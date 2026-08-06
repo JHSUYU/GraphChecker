@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import com.google.gson.JsonObject;
+import com.google.gson.Gson;
 import org.junit.Test;
 
 import java.util.Arrays;
@@ -47,5 +48,44 @@ public class MaterializationSpecTest {
         port.add("materialization", materialization);
 
         MaterializationSpec.decode(port);
+    }
+
+    @Test
+    public void nestedAccessorPreservesExactRootLeafAndFullPath() {
+        String root = "<wire.Response: model.Key currentKey>";
+        String leaf = "<model.KeyBase: int keyId>";
+        MaterializationSpec spec = MaterializationSpec.accessorReturn(
+                "int", root, leaf,
+                Arrays.asList("currentKey", "keyId"), METHOD, 9,
+                "<wire.Response: model.Key currentKey()>",
+                "<wire.Response: model.Key currentKey()>");
+
+        assertEquals(root, spec.rootField());
+        assertEquals(leaf, spec.leafField());
+        assertEquals(Arrays.asList("currentKey", "keyId"), spec.path());
+        assertEquals(root, spec.actionFields().get(
+                "accessFieldSignature"));
+        assertEquals(leaf, spec.actionFields().get(
+                "leafFieldSignature"));
+        assertEquals(Arrays.asList("currentKey", "keyId"),
+                spec.actionFields().get("fieldPath"));
+
+        JsonObject port = new JsonObject();
+        port.add("materialization", new Gson().toJsonTree(
+                spec.toMap()).getAsJsonObject());
+        MaterializationSpec decoded = MaterializationSpec.decode(port);
+        assertEquals(root, decoded.rootField());
+        assertEquals(leaf, decoded.leafField());
+        assertEquals(spec.path(), decoded.path());
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void nestedAccessorRejectsTruncatedPath() {
+        MaterializationSpec.accessorReturn(
+                "int", "<wire.Response: model.Key currentKey>",
+                "<model.KeyBase: int keyId>",
+                Collections.singletonList("keyId"), METHOD, 9,
+                "<wire.Response: model.Key currentKey()>",
+                "<wire.Response: model.Key currentKey()>");
     }
 }

@@ -89,6 +89,57 @@ public class BranchReplayContractTest {
         assertEquals(binding, context.expressions().get(0));
     }
 
+    @Test
+    public void solverContextKeepsOnlyTransitiveTargetDependencies() {
+        JsonObject unrelated = predicate("==", symbol("INIT.tmp"),
+                symbol("INIT.value"));
+        JsonObject inputBinding = predicate("==", symbol("LOCAL.expiry"),
+                symbol("REGION.3.in.expiry"));
+        JsonObject transitiveBinding = predicate("==",
+                symbol("LOCAL.compare"), symbol("LOCAL.expiry"));
+        JsonObject target = predicate("<", symbol("LOCAL.compare"),
+                symbol("ENV.now"));
+        JsonArray path = new JsonArray();
+        path.add(unrelated);
+        path.add(inputBinding);
+        path.add(transitiveBinding);
+        path.add(target);
+
+        SolverPathContext context = SolverPathContext.fromPath(path,
+                Collections.<Integer>emptySet(), 3);
+
+        assertEquals(2, context.size());
+        assertEquals(inputBinding, context.expressions().get(0));
+        assertEquals(transitiveBinding, context.expressions().get(1));
+    }
+
+    @Test
+    public void solverContextAlsoKeepsPrefixDecisionDependencies() {
+        JsonObject unrelated = predicate("==", symbol("INIT.tmp"),
+                symbol("INIT.value"));
+        JsonObject prefixBinding = predicate("==", symbol("LOCAL.guard"),
+                symbol("REGION.3.in.guard"));
+        JsonObject prefixBranch = predicate(">", symbol("LOCAL.guard"),
+                symbol("CONST.zero"));
+        JsonObject targetBinding = predicate("==",
+                symbol("LOCAL.expiry"), symbol("REGION.3.in.expiry"));
+        JsonObject target = predicate("<", symbol("LOCAL.expiry"),
+                symbol("ENV.now"));
+        JsonArray path = new JsonArray();
+        path.add(unrelated);
+        path.add(prefixBinding);
+        path.add(prefixBranch);
+        path.add(targetBinding);
+        path.add(target);
+
+        SolverPathContext context = SolverPathContext.fromPath(path,
+                Collections.singleton(2), 4);
+
+        assertEquals(2, context.size());
+        assertEquals(prefixBinding, context.expressions().get(0));
+        assertEquals(targetBinding, context.expressions().get(1));
+    }
+
     private static BranchWitness witness(String site, int unit,
                                          int occurrence, boolean outcome,
                                          String operator) {

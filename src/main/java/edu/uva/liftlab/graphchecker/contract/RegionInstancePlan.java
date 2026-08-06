@@ -3,14 +3,19 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
@@ -18,6 +23,8 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Once-decoded execution goals for one concrete region invocation. */
 public final class RegionInstancePlan {
+    public static final String OCCURRENCE_CATALOG =
+            "occurrenceInstantiationCatalog";
     private final JsonObject encoded;
     private final List<Goal> goals;
 
@@ -61,9 +68,29 @@ public final class RegionInstancePlan {
         return string(encoded, "regionInstanceId");
     }
 
-    public int rootOrdinal() {
-        return integer(object(encoded, "rootSelector"), "ordinal",
-                Integer.MAX_VALUE);
+    public String logicalRegionId() {
+        String logical = string(encoded, "logicalRegionId");
+        return logical.isEmpty() ? regionInstanceId() : logical;
+    }
+
+    public int logicalInstanceCount() {
+        return integer(encoded, "logicalInstanceCount", 1);
+    }
+
+    public JsonArray occurrences() {
+        return array(encoded, "occurrences").deepCopy();
+    }
+
+    public boolean containsRegionInstance(String instance) {
+        if (regionInstanceId().equals(instance)) return true;
+        for (JsonElement element : array(encoded, "occurrences")) {
+            if (element.isJsonObject()
+                    && instance.equals(string(element.getAsJsonObject(),
+                    "regionInstanceId"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public List<Goal> goals() {
@@ -73,6 +100,10 @@ public final class RegionInstancePlan {
     void writeTaskIdentityTo(JsonObject target) {
         target.addProperty("regionId", regionId());
         target.addProperty("regionInstanceId", regionInstanceId());
+        target.addProperty("logicalRegionId", logicalRegionId());
+        target.addProperty("logicalInstanceCount", logicalInstanceCount());
+        target.addProperty("summaryReuseKey", firstNonBlank(
+                string(encoded, "summaryReuseKey"), logicalRegionId()));
         copyIfPresent(encoded, target, "rootSelector");
         copyIfPresent(encoded, target, "targetMethod");
         if (encoded.has("rootCallId")) {
@@ -114,6 +145,10 @@ public final class RegionInstancePlan {
 
         public String goalId() {
             return string(encoded, "goalId");
+        }
+
+        public String pathSeedKey() {
+            return string(encoded, "pathSeedKey");
         }
 
         public ClosureGoalKind kind() {
@@ -166,10 +201,10 @@ public final class RegionInstancePlan {
                     OutputClosureCodec.decode(encoded);
             OutputClosureContract.Producer producer = contract.producer();
             if (!plan.regionId().equals(producer.regionId())
-                    || !plan.regionInstanceId().equals(
+                    || !executionRegionInstanceId().equals(
                     producer.regionInstanceId())
-                    || plan.encoded.has("rootCallId")
-                    && longInteger(plan.encoded, "rootCallId", 0L)
+                    || executionRootCallId() >= 0L
+                    && executionRootCallId()
                     != producer.rootCallId()) {
                 throw new IllegalArgumentException(
                         "outputClosure producer conflicts with artifact scope");
@@ -200,8 +235,448 @@ public final class RegionInstancePlan {
             return array(encoded, "edgeBindings");
         }
 
+        /**
+         * Compact exact-occurrence adapter for one shared VM relation.
+         * Full occurrence plans remain in the planner artifact; executable
+         * tasks carry only identities, exact causal binding ids and the
+         * canonical-to-exact port bijection required by composition.
+         */
+        public JsonObject occurrenceInstantiationCatalog() {
+            JsonObject result = new JsonObject();
+            result.addProperty("schemaVersion", 1);
+            result.addProperty("kind",
+                    "LOGICAL_SUMMARY_OCCURRENCE_CATALOG");
+            result.addProperty("logicalRegionId", plan.logicalRegionId());
+            result.addProperty("summaryReuseKey", firstNonBlank(
+                    string(plan.encoded, "summaryReuseKey"),
+                    plan.logicalRegionId()));
+            result.addProperty("canonicalRegionInstanceId",
+                    executionRegionInstanceId());
+            if (executionRootCallId() >= 0L) {
+                result.addProperty("canonicalRootCallId",
+                        executionRootCallId());
+            }
+
+            String semanticKey = semanticGoalKey(encoded);
+            List<JsonObject> sourceOccurrences = occurrenceRows();
+            JsonArray catalog = new JsonArray();
+            for (JsonObject occurrence : sourceOccurrences) {
+                JsonObject exactGoal = exactGoal(occurrence, semanticKey);
+                if (exactGoal.size() == 0) continue;
+                JsonObject item = occurrenceIdentity(occurrence);
+                item.add("inputPortMap", portMap(
+                        array(encoded, "symbolize"),
+                        array(exactGoal, "symbolize"), false,
+                        string(occurrence, "regionInstanceId")));
+                item.add("outputPortMap", portMap(
+                        closureMembers(encoded), closureMembers(exactGoal),
+                        true, string(occurrence, "regionInstanceId")));
+                item.add("bindingIds", bindingIds(
+                        string(occurrence, "regionInstanceId")));
+                catalog.add(item);
+            }
+            if (catalog.size() == 0) {
+                throw new IllegalArgumentException(
+                        "logical summary goal has no exact occurrence: "
+                                + goalId());
+            }
+            boolean canonicalFound = false;
+            Set<String> instances = new LinkedHashSet<>();
+            for (JsonElement element : catalog) {
+                JsonObject occurrence = element.getAsJsonObject();
+                String instance = string(occurrence, "regionInstanceId");
+                if (!instances.add(instance)) {
+                    throw new IllegalArgumentException(
+                            "duplicate summary occurrence " + instance);
+                }
+                canonicalFound |= executionRegionInstanceId().equals(
+                        instance);
+            }
+            if (!canonicalFound) {
+                throw new IllegalArgumentException(
+                        "canonical execution occurrence is missing from "
+                                + "logical summary catalog: "
+                                + executionRegionInstanceId());
+            }
+            result.add("occurrences", catalog);
+            return result;
+        }
+
+        private List<JsonObject> occurrenceRows() {
+            List<JsonObject> result = new ArrayList<>();
+            for (JsonElement element : array(plan.encoded,
+                    "occurrences")) {
+                if (element.isJsonObject()) {
+                    result.add(element.getAsJsonObject());
+                }
+            }
+            if (result.isEmpty()) {
+                JsonObject singleton = plan.encoded.deepCopy();
+                singleton.add("closureGoals", new JsonArray());
+                singleton.getAsJsonArray("closureGoals")
+                        .add(encoded.deepCopy());
+                result.add(singleton);
+            }
+            result.sort(Comparator.comparingLong(value ->
+                    longInteger(value, "rootCallId", Long.MAX_VALUE)));
+            return result;
+        }
+
+        private JsonObject exactGoal(JsonObject occurrence,
+                                     String semanticKey) {
+            List<JsonObject> matches = new ArrayList<>();
+            for (JsonElement element : array(occurrence,
+                    "closureGoals")) {
+                if (element.isJsonObject()
+                        && semanticKey.equals(semanticGoalKey(
+                        element.getAsJsonObject()))) {
+                    matches.add(element.getAsJsonObject());
+                }
+            }
+            if (matches.size() > 1) {
+                String contract = exactExecutionContract(matches.get(0));
+                for (int index = 1; index < matches.size(); index++) {
+                    if (!contract.equals(exactExecutionContract(
+                            matches.get(index)))) {
+                        throw new IllegalArgumentException(
+                                "conflicting exact goals for occurrence "
+                                        + string(occurrence,
+                                        "regionInstanceId"));
+                    }
+                }
+                // Planner aggregation can repeat an otherwise identical
+                // exact goal through several selected outputs.  Goal ids do
+                // not change the VM contract, so collapse those duplicates
+                // deterministically.  Any contract difference above remains
+                // fail-closed.
+                matches.sort(Comparator
+                        .comparing((JsonObject value) ->
+                                string(value, "goalId"))
+                        .thenComparing(CanonicalJson::render));
+            }
+            return matches.isEmpty() ? new JsonObject() : matches.get(0);
+        }
+
+        /**
+         * Stable VM contract for duplicate exact-goal detection.
+         *
+         * <p>Absolute trace positions and heap identities are evidence for
+         * this run, not part of a replayable relation.  Everything else that
+         * can affect materialization, branch selection, output capture or
+         * causal composition is retained.  Arrays whose wire meaning is a
+         * set are sorted before comparison.</p>
+         */
+        private static String exactExecutionContract(JsonObject goal) {
+            JsonObject contract = new JsonObject();
+            for (Map.Entry<String, JsonElement> field
+                    : goal.entrySet()) {
+                String name = field.getKey();
+                if ("goalId".equals(name)
+                        || "baselineObservedMethods".equals(name)
+                        || runtimeIdentityField(name)) {
+                    continue;
+                }
+                contract.add(name, stableContractValue(
+                        name, field.getValue()));
+            }
+            return CanonicalJson.render(contract);
+        }
+
+        private static JsonElement stableContractValue(
+                String field, JsonElement value) {
+            if (value == null || value.isJsonNull()
+                    || value.isJsonPrimitive()) {
+                return value == null ? com.google.gson.JsonNull.INSTANCE
+                        : value.deepCopy();
+            }
+            if (value.isJsonObject()) {
+                JsonObject result = new JsonObject();
+                for (Map.Entry<String, JsonElement> entry
+                        : value.getAsJsonObject().entrySet()) {
+                    String name = entry.getKey();
+                    if ("goalId".equals(name)
+                            || runtimeIdentityField(name)) {
+                        continue;
+                    }
+                    result.add(name, stableContractValue(
+                            name, entry.getValue()));
+                }
+                return result;
+            }
+
+            List<JsonElement> elements = new ArrayList<>();
+            for (JsonElement element : value.getAsJsonArray()) {
+                // The containing field decides whether this array is a set;
+                // nested arrays (notably ordered field paths) keep order.
+                elements.add(stableContractValue("", element));
+            }
+            if (setValuedContractField(field)) {
+                elements.sort(Comparator.comparing(CanonicalJson::render));
+            }
+            JsonArray result = new JsonArray();
+            for (JsonElement element : elements) result.add(element);
+            return result;
+        }
+
+        private static boolean setValuedContractField(String field) {
+            return "runtimeDefinitionMethods".equals(field)
+                    || "symbolize".equals(field)
+                    || "branches".equals(field)
+                    || "edgeBindings".equals(field)
+                    || "members".equals(field)
+                    || "causalEdges".equals(field)
+                    || "inputPorts".equals(field)
+                    || "sites".equals(field)
+                    || "staticSites".equals(field)
+                    || "methods".equals(field)
+                    || "causalEdgeIds".equals(field)
+                    || "captureBindings".equals(field)
+                    || "captureBindingIssues".equals(field)
+                    || "operandCells".equals(field)
+                    || "occurrences".equals(field)
+                    || "runtimeAccesses".equals(field)
+                    || "dependencyCells".equals(field)
+                    || "fieldPaths".equals(field)
+                    || "blockers".equals(field);
+        }
+
+        private static boolean runtimeIdentityField(String field) {
+            String normalized = field == null ? ""
+                    : field.trim().toLowerCase(java.util.Locale.ROOT);
+            return normalized.equals("activationid")
+                    || normalized.endsWith("callid")
+                    || normalized.endsWith("invocationid")
+                    || normalized.endsWith("seq")
+                    || normalized.endsWith("objectid")
+                    || normalized.endsWith("objectids")
+                    || normalized.endsWith("rootcallid")
+                    || normalized.endsWith("regioninstanceid")
+                    || normalized.equals("fromregioninstance")
+                    || normalized.equals("toregioninstance")
+                    || normalized.endsWith("ownerid")
+                    || normalized.endsWith("laneid")
+                    || normalized.endsWith("spanid")
+                    || normalized.endsWith("threadid");
+        }
+
+        private JsonObject occurrenceIdentity(JsonObject occurrence) {
+            JsonObject result = new JsonObject();
+            copyIfPresent(occurrence, result, "regionInstanceId");
+            copyIfPresent(occurrence, result, "activationId");
+            copyIfPresent(occurrence, result, "rootCallId");
+            copyIfPresent(occurrence, result, "ownerId");
+            copyIfPresent(occurrence, result, "laneId");
+            copyIfPresent(occurrence, result, "spanId");
+            copyIfPresent(occurrence, result, "parentSpanId");
+            copyIfPresent(occurrence, result, "remoteParentSpanId");
+            if (string(result, "regionInstanceId").isEmpty()) {
+                throw new IllegalArgumentException(
+                        "summary occurrence requires regionInstanceId");
+            }
+            return result;
+        }
+
+        private JsonArray bindingIds(String instance) {
+            Set<String> ids = new LinkedHashSet<>();
+            for (JsonElement element : edgeBindings()) {
+                if (!element.isJsonObject()) continue;
+                JsonObject binding = element.getAsJsonObject();
+                if (!instance.equals(string(binding,
+                        "fromRegionInstance"))
+                        && !instance.equals(string(binding,
+                        "toRegionInstance"))) {
+                    continue;
+                }
+                String id = string(binding, "edgeId");
+                if (id.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "exact occurrence binding requires edgeId: "
+                                    + instance);
+                }
+                ids.add(id);
+            }
+            JsonArray result = new JsonArray();
+            for (String id : ids) result.add(id);
+            return result;
+        }
+
+        private static JsonArray closureMembers(JsonObject goal) {
+            return array(object(goal, OutputClosureContract.FIELD),
+                    "members");
+        }
+
+        private static JsonArray portMap(JsonArray canonical,
+                                         JsonArray exact,
+                                         boolean output,
+                                         String occurrenceInstance) {
+            Map<String, String> exactByShape = indexPorts(exact, output,
+                    "exact", occurrenceInstance);
+            Set<String> canonicalShapes = new LinkedHashSet<>();
+            JsonArray result = new JsonArray();
+            for (JsonElement element : canonical) {
+                if (!element.isJsonObject()) continue;
+                JsonObject port = element.getAsJsonObject();
+                String shape = portShape(port, output);
+                if (!canonicalShapes.add(shape)) {
+                    throw new IllegalArgumentException(
+                            "ambiguous canonical port shape for "
+                                    + occurrenceInstance + ": " + shape);
+                }
+                String canonicalPort = portId(port, output);
+                String exactPort = exactByShape.get(shape);
+                if (canonicalPort.isEmpty() || exactPort == null
+                        || exactPort.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "missing exact port mapping for "
+                                    + occurrenceInstance + ": " + shape);
+                }
+                JsonObject mapping = new JsonObject();
+                mapping.addProperty("canonicalPort", canonicalPort);
+                mapping.addProperty("exactPort", exactPort);
+                result.add(mapping);
+            }
+            return result;
+        }
+
+        private static Map<String, String> indexPorts(
+                JsonArray ports, boolean output, String label,
+                String occurrenceInstance) {
+            Map<String, String> result = new LinkedHashMap<>();
+            for (JsonElement element : ports) {
+                if (!element.isJsonObject()) continue;
+                JsonObject port = element.getAsJsonObject();
+                String shape = portShape(port, output);
+                String prior = result.putIfAbsent(shape,
+                        portId(port, output));
+                if (prior != null) {
+                    throw new IllegalArgumentException("ambiguous " + label
+                            + " port shape for " + occurrenceInstance
+                            + ": " + shape);
+                }
+            }
+            return result;
+        }
+
+        private static String portId(JsonObject port, boolean output) {
+            JsonObject value = output ? object(port, "output") : port;
+            return firstNonBlank(string(value, "portId"),
+                    string(value, "symbol"));
+        }
+
+        private static String portShape(JsonObject port, boolean output) {
+            JsonObject value = output ? object(port, "output") : port;
+            JsonObject shape = new JsonObject();
+            copyShape(value, shape, "cell");
+            copyShape(value, shape, "kind");
+            copyShape(value, shape, "javaTypeDescriptor");
+            copyShape(value, shape, "location");
+            copyShape(value, shape, "javaType");
+            copyShape(value, shape, "sourceKind");
+            copyShape(value, shape, "rootKind");
+            copyShape(value, shape, "rootParameterIndex");
+            copyShape(value, shape, "argumentIndex");
+            copyShape(value, shape, "index");
+            copyShape(value, shape, "bindingMode");
+            copyShape(value, shape, "dependencyRole");
+            copyShape(value, shape, "fieldPath");
+            copyShape(value, shape, "fieldPaths");
+            copyShape(value, shape, "outputSiteId");
+            copyShape(value, shape, "outputOccurrence");
+            // Repeated accessor/container reads can intentionally expose the
+            // same declared field several times in one bounded activation.
+            // Their invocation-local ordinal plus static call/declaration
+            // identity is the stable slot key across exact occurrences.
+            // Runtime call/object/value ids are deliberately excluded.
+            copyShape(value, shape, "accessorOccurrence");
+            copyShape(value, shape, "replayOccurrence");
+            copyShape(value, shape, "containerAccessOrdinal");
+            copyShape(value, shape, "siteId");
+            copyShape(value, shape, "unitIndex");
+            copyShape(value, shape, "callerMethod");
+            copyShape(value, shape, "declaredCallee");
+            copyShape(value, shape, "implementationMethod");
+            copyShape(value, shape, "accessorCallerMethod");
+            copyShape(value, shape, "accessorCallUnitIndex");
+            copyShape(value, shape, "accessorDeclaredCallee");
+            copyShape(value, shape, "accessorImplementationMethod");
+            copyShape(value, shape, "declaredFieldSignature");
+            copyShape(value, shape, "accessFieldSignature");
+            copyShape(value, shape, "leafFieldSignature");
+            copyShape(value, shape, "fieldPathDeclarations");
+            copyShape(value, shape, "accessSites");
+            copyShape(value, shape, "materialization");
+            if (output) {
+                JsonObject slice = object(port, "slice");
+                copyShape(slice, shape, "methods");
+                copyShape(slice, shape, "sites");
+                copyShape(slice, shape, "staticSites");
+            }
+            return CanonicalJson.render(shape);
+        }
+
+        private static String semanticGoalKey(JsonObject goal) {
+            String kind = string(goal, "kind");
+            String pathSeed = string(goal, "pathSeedKey");
+            if ("TARGET_REACH_CLOSURE".equals(kind)) {
+                return kind + "\n" + pathSeed;
+            }
+            List<String> members = new ArrayList<>();
+            for (JsonElement element : closureMembers(goal)) {
+                if (element.isJsonObject()) {
+                    members.add(portShape(element.getAsJsonObject(), true));
+                }
+            }
+            Collections.sort(members);
+            return kind + "\n" + pathSeed + "\n" + members;
+        }
+
+        private static void copyShape(JsonObject source, JsonObject target,
+                                      String field) {
+            if (source.has(field)) {
+                target.add(field, source.get(field).deepCopy());
+            }
+        }
+
+        public String executionRegionInstanceId() {
+            String instance = string(object(encoded,
+                    "executionOccurrence"), "regionInstanceId");
+            return instance.isEmpty() ? plan.regionInstanceId() : instance;
+        }
+
+        public long executionRootCallId() {
+            JsonObject occurrence = object(encoded, "executionOccurrence");
+            if (occurrence.has("rootCallId")) {
+                return longInteger(occurrence, "rootCallId", -1L);
+            }
+            return plan.encoded.has("rootCallId")
+                    ? longInteger(plan.encoded, "rootCallId", -1L) : -1L;
+        }
+
+        void writeTaskIdentityTo(JsonObject target) {
+            plan.writeTaskIdentityTo(target);
+            JsonObject occurrence = object(encoded, "executionOccurrence");
+            if (occurrence.size() == 0) return;
+            target.addProperty("regionInstanceId",
+                    executionRegionInstanceId());
+            copyIfPresent(occurrence, target, "rootSelector");
+            copyIfPresent(occurrence, target, "targetMethod");
+            copyIfPresent(occurrence, target, "rootCallId");
+            copyIfPresent(occurrence, target, "ownerId");
+            copyIfPresent(occurrence, target, "laneId");
+            copyIfPresent(occurrence, target, "spanId");
+            copyIfPresent(occurrence, target, "parentSpanId");
+            copyIfPresent(occurrence, target, "remoteParentSpanId");
+            copyIfPresent(occurrence, target, "process");
+            copyIfPresent(occurrence, target, "thread");
+            copyIfPresent(occurrence, target, "threadId");
+        }
+
         void writeTaskPayloadTo(JsonObject target) {
             target.addProperty("goalId", goalId());
+            if (encoded.has("pathSeedKey")) {
+                target.add("pathSeedKey",
+                        encoded.get("pathSeedKey").deepCopy());
+            }
             if (kind().capturesOutputRelation()) {
                 OutputClosureContract contract = outputClosure();
                 if (contract != null) {

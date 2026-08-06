@@ -5,6 +5,8 @@ import soot.Value;
 import soot.ValueBox;
 import soot.SootField;
 import soot.SootFieldRef;
+import soot.jimple.ArrayRef;
+import soot.jimple.DefinitionStmt;
 import soot.jimple.FieldRef;
 import soot.jimple.InstanceFieldRef;
 import soot.jimple.Stmt;
@@ -154,6 +156,8 @@ final class CausynthStaticFacts {
         final List<String> fieldUses;
         final List<InstanceFieldAccess> instanceFieldDefs;
         final List<InstanceFieldAccess> instanceFieldUses;
+        final ArrayAccess arrayDef;
+        final ArrayAccess arrayUse;
         final String invoke;
         final boolean isReturn;
         final boolean isThrow;
@@ -171,6 +175,12 @@ final class CausynthStaticFacts {
             this.fieldUses = fieldRefs(unit.getUseBoxes());
             this.instanceFieldDefs = instanceFieldRefs(unit.getDefBoxes());
             this.instanceFieldUses = instanceFieldRefs(unit.getUseBoxes());
+            DefinitionStmt definition = unit instanceof DefinitionStmt
+                    ? (DefinitionStmt) unit : null;
+            this.arrayDef = definition == null
+                    ? null : arrayAccess(definition.getLeftOp());
+            this.arrayUse = definition == null
+                    ? null : arrayAccess(definition.getRightOp());
             this.invoke = invokeSignature(unit);
             String lower = unitText.trim().toLowerCase(Locale.ROOT);
             this.isReturn = lower.startsWith("return");
@@ -228,6 +238,15 @@ final class CausynthStaticFacts {
             return values;
         }
 
+        private static ArrayAccess arrayAccess(Value value) {
+            if (!(value instanceof ArrayRef)) {
+                return null;
+            }
+            ArrayRef ref = (ArrayRef) value;
+            return new ArrayAccess(ref.getBase().toString(),
+                    ref.getIndex().toString(), ref.getType().toString());
+        }
+
         private static int lineOf(Unit unit) {
             for (Tag tag : unit.getTags()) {
                 if (tag instanceof SourceLineNumberTag) {
@@ -248,6 +267,19 @@ final class CausynthStaticFacts {
         InstanceFieldAccess(String base, String field) {
             this.base = base;
             this.field = field;
+        }
+    }
+
+    /** One top-level Jimple array load or store operand. */
+    static final class ArrayAccess {
+        final String base;
+        final String index;
+        final String elementType;
+
+        ArrayAccess(String base, String index, String elementType) {
+            this.base = base;
+            this.index = index;
+            this.elementType = elementType;
         }
     }
 
