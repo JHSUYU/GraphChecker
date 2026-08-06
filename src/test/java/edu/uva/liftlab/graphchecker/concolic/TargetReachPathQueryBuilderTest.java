@@ -62,6 +62,61 @@ public class TargetReachPathQueryBuilderTest {
     }
 
     @Test
+    public void oppositeOutcomeWitnessStatesFatalBranchAsComplement()
+            throws Exception {
+        // The flip that would have concretely taken the fatal direction can
+        // be abandoned as an UNSUPPORTED exploration gap.  The closed path
+        // still proves its decided prefix; the fatal branch condition itself
+        // stays symbolic as the complement of the witnessed predicate.
+        JsonObject summary = summary(true);
+        JsonArray mappings = new JsonArray();
+        mappings.add(SummaryBranchMapping.witnessed(
+                witness(false, predicate(CANONICAL_PORT)), 0,
+                SummaryBranchMapping.Policy.EXPLORE).toJson());
+        summary.add("branchMappings", mappings);
+        File summaries = jsonl("complement-summaries.jsonl", summary);
+        File manifest = json("complement-manifest.json", manifest());
+        File seed = jsonl("complement-seed.jsonl", seedQuery());
+        File output = folder.newFile("complement-reach.jsonl");
+
+        JsonObject query = TargetReachPathQueryBuilder.build(
+                TargetReachPathQueryBuilder.Arguments.parse(new String[]{
+                        "--summaries", summaries.getPath(),
+                        "--path-manifest", manifest.getPath(),
+                        "--seed-query", seed.getPath(),
+                        "--target-instance", SELECTED,
+                        "--exception-type", "example.InvalidKey",
+                        "--output", output.getPath()}));
+
+        JsonObject path = query.getAsJsonArray("paths").get(0)
+                .getAsJsonObject();
+        assertEquals("SYMBOLIC_COMPLEMENT_OF_WITNESSED_TARGET_V1",
+                path.get("fatalBranchConditionAuthority").getAsString());
+        String constraints = path.get("constraints").toString();
+        assertTrue(constraints, constraints.contains("\"!=\""));
+        assertTrue(constraints, constraints.contains(EXACT_PORT));
+
+        // A path that already witnessed the fatal outcome keeps its own
+        // complete witnessed condition set.
+        JsonObject witnessed = TargetReachPathQueryBuilder.build(
+                TargetReachPathQueryBuilder.Arguments.parse(new String[]{
+                        "--summaries", jsonl("witnessed-summaries.jsonl",
+                                summary(true)).getPath(),
+                        "--path-manifest", json("witnessed-manifest.json",
+                                manifest()).getPath(),
+                        "--seed-query", jsonl("witnessed-seed.jsonl",
+                                seedQuery()).getPath(),
+                        "--target-instance", SELECTED,
+                        "--exception-type", "example.InvalidKey",
+                        "--output", folder.newFile("witnessed-reach.jsonl")
+                                .getPath()}))
+                .getAsJsonArray("paths").get(0).getAsJsonObject();
+        assertEquals("WITNESSED_TARGET_OUTCOME_V1",
+                witnessed.get("fatalBranchConditionAuthority")
+                        .getAsString());
+    }
+
+    @Test
     public void missingSelectedSummaryOccurrenceFailsClosed()
             throws Exception {
         File summaries = jsonl("missing-summaries.jsonl", summary(false));

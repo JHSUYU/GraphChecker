@@ -136,15 +136,36 @@ public final class TargetReachPathQueryBuilder {
                 throw new IOException("Malformed target branch mapping: "
                         + observation.branchMappingIssue());
             }
-            if (!reachedTarget(summary, targetSite, targetOccurrence,
-                    desiredOutcome)) {
+            SummaryBranchMapping targetMapping = targetSiteMapping(
+                    observation, targetSite, targetOccurrence);
+            if (targetMapping == null) {
                 continue;
             }
 
             JsonObject path = new JsonObject();
+            final JsonArray constraints;
+            if (targetMapping.witness().sourceTakenOutcome()
+                    == desiredOutcome) {
+                constraints = array(summary, "pathCondition").deepCopy();
+                path.addProperty("fatalBranchConditionAuthority",
+                        "WITNESSED_TARGET_OUTCOME_V1");
+            } else {
+                // The flip solver only proposes fresh paths; it is not a
+                // semantic authority.  A path that witnessed the target
+                // decision with the opposite outcome still proves the exact
+                // decided prefix, and the fatal branch condition itself
+                // stays symbolic: it is the complement of this path's own
+                // witnessed predicate, decided at the reach stage.
+                constraints = observation.prefixBefore(
+                        targetMapping.summaryPcIndex());
+                constraints.add(BranchPredicateAlgebra.complement(
+                        targetMapping.witness()
+                                .sourceSatisfiedPredicate()));
+                path.addProperty("fatalBranchConditionAuthority",
+                        "SYMBOLIC_COMPLEMENT_OF_WITNESSED_TARGET_V1");
+            }
             String pathKey = observation.pathKey();
-            path.add("constraints", remap(
-                    array(summary, "pathCondition"),
+            path.add("constraints", remap(constraints,
                     selected.exactInputByCanonical));
             JsonObject previous = pathsByKey.put(pathKey, path);
             if (previous != null && !previous.equals(path)) {
@@ -191,20 +212,18 @@ public final class TargetReachPathQueryBuilder {
         return result;
     }
 
-    private static boolean reachedTarget(
-            JsonObject summary, String siteId, int occurrence,
-            boolean desiredOutcome) {
+    /** The witnessed decision of the exact target site, or null. */
+    private static SummaryBranchMapping targetSiteMapping(
+            PathObservation observation, String siteId, int occurrence) {
         for (SummaryBranchMapping mapping
-                : SummaryBranchMapping.fromSummary(summary)) {
+                : observation.branchMappings()) {
             if (mapping.isWitnessed()
                     && siteId.equals(mapping.siteId())
-                    && occurrence == mapping.occurrence()
-                    && desiredOutcome
-                    == mapping.witness().sourceTakenOutcome()) {
-                return true;
+                    && occurrence == mapping.occurrence()) {
+                return mapping;
             }
         }
-        return false;
+        return null;
     }
 
     private static SelectedOccurrence selectedOccurrence(
