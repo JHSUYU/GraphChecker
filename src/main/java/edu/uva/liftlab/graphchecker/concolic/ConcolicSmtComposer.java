@@ -1536,6 +1536,8 @@ public final class ConcolicSmtComposer {
                 new LinkedHashSet<>();
         private final Set<String> declaredOutputVersionChoices =
                 new LinkedHashSet<>();
+        private final Set<String> declaredReferenceIdentities =
+                new LinkedHashSet<>();
         private final Set<String> suppliedInputs = new LinkedHashSet<>();
         private final Map<String, JsonObject> canonicalPortOccurrences =
                 new LinkedHashMap<>();
@@ -3287,7 +3289,7 @@ public final class ConcolicSmtComposer {
                                     + index,
                             "(= " + selector + " " + guard + ")");
                     currentGuard = selector;
-                    bindOutputExpressions(region, item);
+                    bindOutputExpressions(region, item, outputClosure);
                 } finally {
                     currentGuard = previousGuard;
                     restoreSymbolScope(previousScope);
@@ -3308,7 +3310,8 @@ public final class ConcolicSmtComposer {
         }
 
         private void bindOutputExpressions(String region,
-                                           JsonObject summary) {
+                                           JsonObject summary,
+                                           OutputClosureContract closure) {
             JsonObject outputs = object(summary, "outputExpressions");
             for (Map.Entry<String, JsonElement> entry
                     : outputs.entrySet()) {
@@ -3327,32 +3330,86 @@ public final class ConcolicSmtComposer {
                 }
                 bindPort(port, value);
             }
-            bindReferenceIdentityOutputs(region, summary);
+            bindReferenceIdentityOutputs(region, summary, closure);
         }
 
         /**
-         * States what a reference-only output cannot answer.
+         * Passes a reference-only output on as the alias it recorded.
          *
          * <p>A reference the custom VM never symbolised was recorded by
          * identity: the producer says which object it handed on, and nothing
-         * about any value inside it.  That is enough to pass the alias along,
-         * but a consumer reading a scalar leaf below the reference needs that
-         * leaf to have its own producer.  When it does not, the composition
-         * says so by name instead of leaving the port to become a free
-         * variable the producer never constrained.</p>
+         * about any value inside it.  Naming that object is exactly what the
+         * relation states, so the port is bound to one constant per recorded
+         * identity - equal producers hand on equal objects, and a concrete
+         * object is not null.  No value is claimed to live inside it.</p>
+         *
+         * <p>What such an alias cannot answer is a consumer reading a scalar
+         * leaf below the reference: that leaf needs its own producer.  So
+         * every other output this closure demands is checked one leaf at a
+         * time, and only a leaf left without a producer is reported.  A leaf
+         * that has its own versioned writer is already constrained and the
+         * alias is all that was missing.</p>
          */
-        private void bindReferenceIdentityOutputs(String region,
-                                                  JsonObject summary) {
+        private void bindReferenceIdentityOutputs(
+                String region, JsonObject summary,
+                OutputClosureContract closure) {
             JsonObject identities = object(summary,
                     "outputReferenceIdentities");
-            for (String port : identities.keySet()) {
-                if (!ports.contains(port)
-                        || boundPorts.contains(currentOccurrence(port))) {
+            if (identities.size() == 0) return;
+            for (Map.Entry<String, JsonElement> entry
+                    : identities.entrySet()) {
+                String port = entry.getKey();
+                if (!ports.contains(port)) continue;
+                if (!bindConcreteReferenceIdentity(port, entry.getValue())) {
+                    heapGap("ConcreteReferenceIdentityWithoutLeafProducer@"
+                            + region + ":" + port);
                     continue;
                 }
-                heapGap("ConcreteReferenceIdentityWithoutLeafProducer@"
-                        + region + ":" + port);
+                for (String demanded : closure.outputPorts()) {
+                    if (identities.has(demanded)
+                            || !ports.contains(demanded)
+                            || boundPorts.contains(
+                            currentOccurrence(demanded))) {
+                        continue;
+                    }
+                    heapGap("ConcreteReferenceIdentityWithoutLeafProducer@"
+                            + region + ":" + demanded);
+                }
             }
+        }
+
+        /**
+         * Binds one port to the object a concrete reference identity names.
+         *
+         * <p>The constant is derived from the recorded identity, so two
+         * producers that recorded the same object reach the same constant and
+         * the alias travels.  Two different records stay merely unequated:
+         * nothing asserts they denote different objects.</p>
+         */
+        private boolean bindConcreteReferenceIdentity(String port,
+                                                      JsonElement identity) {
+            if (identity == null || !identity.isJsonObject()) return false;
+            JsonObject record = identity.getAsJsonObject();
+            if (!ConcolicSummaryImporter
+                    .CONCRETE_REFERENCE_IDENTITY_AUTHORITY.equals(
+                    string(record, "authority"))) {
+                return false;
+            }
+            String constant = "reference_identity__"
+                    + scopeToken(CanonicalJson.render(record));
+            if (declaredReferenceIdentities.add(constant)) {
+                declare(constant, Sort.REF);
+                String previousGuard = currentGuard;
+                currentGuard = "";
+                try {
+                    assertNamed(constant + "_non_null",
+                            "(distinct " + constant + " nullRef)");
+                } finally {
+                    currentGuard = previousGuard;
+                }
+            }
+            bindPort(port, new Term(constant, Sort.REF));
+            return boundPorts.contains(currentOccurrence(port));
         }
 
         /**

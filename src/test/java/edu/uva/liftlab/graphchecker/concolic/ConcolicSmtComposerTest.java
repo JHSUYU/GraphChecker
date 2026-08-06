@@ -884,6 +884,154 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void concreteReferenceIdentityBindsTheAliasItRecorded()
+            throws Exception {
+        // The producer never symbolised this reference; it recorded which
+        // object it handed on.  Naming that object is the whole relation, so
+        // the port is bound to it and nothing else is demanded of the closure.
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.REF", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 10, 11);
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(referenceIdentitySummary(
+                        producerInstance, edge, false)),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)), edge);
+
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "ConcreteReferenceIdentityWithoutLeafProducer"));
+        assertTrue(result.smtLib,
+                result.smtLib.contains("reference_identity__"));
+        assertTrue(result.smtLib, result.smtLib.contains("nullRef"));
+    }
+
+    @Test
+    public void demandedLeafWithoutProducerStillFailsClosed()
+            throws Exception {
+        // The alias says which object was handed on and nothing about what is
+        // inside it.  A second demanded output with no producer is exactly the
+        // leaf the alias cannot answer, so it is still reported by name.
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.REF", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 10, 11);
+
+        JsonObject producerRegion = region("REGION.1", true, true);
+        producerRegion.getAsJsonArray("outputs").add(
+                port("REGION.1.out.1", false, "java.util.Map"));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(referenceIdentitySummary(
+                        producerInstance, edge, true)),
+                Arrays.asList(region("REGION.0", true, false),
+                        producerRegion), edge);
+
+        assertTrue(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "ConcreteReferenceIdentityWithoutLeafProducer@"
+                                + "REGION.1:REGION.1.out.1"));
+    }
+
+    private static RelationSummary referenceIdentitySummary(
+            String instance, JsonObject edge, boolean demandUnboundLeaf) {
+        JsonObject slice = emptySlice("REGION.1.out.0",
+                "<Test: int output>");
+        OutputClosureContract closure;
+        if (demandUnboundLeaf) {
+            JsonObject leafSlice = emptySlice("REGION.1.out.1",
+                    "<Test: java.util.Map leaf>");
+            closure = OutputClosureCodec.decode(joint(instance, slice,
+                    leafSlice));
+        } else {
+            closure = OutputClosureCodec.singleton("REGION.1", instance, 20,
+                    "REGION.1.out.0", "<Test: int output>", "REGION_OUTPUT",
+                    "int", slice);
+        }
+
+        JsonObject row = new JsonObject();
+        row.addProperty("summaryId", "SUMMARY.REF");
+        row.addProperty("regionId", "REGION.1");
+        row.addProperty("regionInstanceId", instance);
+        row.addProperty("rootCallId", 20);
+        OutputClosureCodec.writeTo(row, closure);
+        JsonArray bindings = new JsonArray();
+        bindings.add(edge.deepCopy());
+        row.add("edgeBindings", bindings);
+
+        JsonObject identity = new JsonObject();
+        identity.addProperty("authority",
+                "CONCRETE_REFERENCE_IDENTITY_RELATION_V1");
+        identity.addProperty("fieldSignature", "<Test: Held held>");
+        identity.addProperty("javaType", "Test$Held");
+        identity.addProperty("runtimeType", "Test$Held");
+        identity.addProperty("objectId", 1);
+        JsonObject identities = new JsonObject();
+        identities.add("REGION.1.out.0", identity);
+
+        JsonObject path = new JsonObject();
+        path.addProperty("caseId", "CASE.REF");
+        path.addProperty("sourceTaskId", "TASK.REF");
+        JsonObject guard = new JsonObject();
+        guard.addProperty("kind", "PATH_CONDITION");
+        guard.add("conditions", new JsonArray());
+        path.add("guard", guard);
+        JsonObject expressions = new JsonObject();
+        if (demandUnboundLeaf) {
+            // A demanded leaf whose recorded value cannot bind its scalar
+            // port has no producer the composition can use.
+            expressions.add("REGION.1.out.1", indexedState("AL_9-0", 2));
+        }
+        path.add("outputExpressions", expressions);
+        path.add("outputReferenceIdentities", identities);
+        JsonArray cases = new JsonArray();
+        cases.add(path);
+        JsonObject relation = new JsonObject();
+        relation.addProperty("schemaVersion", 1);
+        relation.addProperty("kind", "GUARDED_PATH_MERGE");
+        relation.add("cases", cases);
+        row.add("regionRelation", relation);
+        row.addProperty("relationallyComplete", true);
+        return RelationSummary.decode(row);
+    }
+
+    private static JsonObject joint(String instance, JsonObject... slices) {
+        JsonObject producer = new JsonObject();
+        producer.addProperty("regionId", "REGION.1");
+        producer.addProperty("regionInstanceId", instance);
+        producer.addProperty("rootCallId", 20);
+        JsonArray members = new JsonArray();
+        for (JsonObject slice : slices) {
+            JsonObject output = new JsonObject();
+            output.addProperty("portId",
+                    slice.get("outputPort").getAsString());
+            output.addProperty("cell",
+                    slice.get("outputCell").getAsString());
+            output.addProperty("kind", "REGION_OUTPUT");
+            output.addProperty("javaTypeDescriptor",
+                    slice.get("outputCell").getAsString().contains("Map")
+                            ? "Ljava/util/Map;" : "I");
+            JsonObject member = new JsonObject();
+            member.add("output", output);
+            JsonObject memberSlice = slice.deepCopy();
+            memberSlice.remove("causalEdges");
+            member.add("slice", memberSlice);
+            members.add(member);
+        }
+        JsonObject closure = new JsonObject();
+        closure.addProperty("schemaVersion", 2);
+        closure.addProperty("kind", "OUTPUT_CLOSURE_CONTRACT");
+        closure.add("producer", producer);
+        closure.add("causalEdges", new JsonArray());
+        closure.add("members", members);
+        JsonObject row = new JsonObject();
+        row.add("outputClosure", closure);
+        return row;
+    }
+
+    @Test
     public void mergedCaseOutputExpressionReachesTheStringCodec()
             throws Exception {
         // A merged relation publishes output expressions per guarded case,
