@@ -4152,6 +4152,26 @@ public final class ConcolicRegionRuntime {
                             signature);
                 }
             }
+            // A port materialized through several hops carries one declared
+            // field per hop.  Every prefix of that path is symbolized on its
+            // own, so register each prefix against the declaration of the
+            // field it ends at; otherwise only a one-hop path could name its
+            // exact leaf and a deeper port would symbolize nothing.
+            List<String> pathDeclarations = FieldPathSpec.stringArray(json,
+                    "fieldPathDeclarations");
+            if (pathDeclarations.size() == this.fieldPath.size()) {
+                for (int hop = 0; hop < pathDeclarations.size(); hop++) {
+                    String signature = pathDeclarations.get(hop);
+                    DeclaredField declared = FieldPathSpec.declaredField(
+                            signature);
+                    if (declared == null || !declared.name().equals(
+                            this.fieldPath.get(hop))) {
+                        continue;
+                    }
+                    leafFieldSignaturesByPath.putIfAbsent(joinFieldPath(
+                            this.fieldPath.subList(0, hop + 1)), signature);
+                }
+            }
             if (!this.fieldPath.isEmpty()
                     && FieldPathSpec.declaredField(
                     explicitLeafSignature) != null) {
@@ -5132,9 +5152,14 @@ public final class ConcolicRegionRuntime {
                 throws Exception {
             DeclaredField field = FieldPathSpec.declaredField(
                     safe(fieldSignature));
-            if (symbolizeExactField == null || field == null) {
+            if (symbolizeExactField == null) {
                 throw new UnsupportedOperationException(
                         "custom concolic exact-field API is unavailable");
+            }
+            if (field == null) {
+                throw new UnsupportedOperationException(
+                        "no exact declared field for symbolized leaf: "
+                                + safe(fieldSignature));
             }
             symbolizeExactField.invoke(null, owner, field.owner(),
                     field.name(), javaTypeDescriptor(field.type()), prefix);
