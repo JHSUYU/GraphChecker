@@ -631,7 +631,7 @@ public class RuntimeSelectedRegionFinalizerTest {
     }
 
     @Test
-    public void semanticAccessorRetainsOnlyEightRelevantSlotsPerStream()
+    public void semanticAccessorRetainsOnlyTheCapacityPerStream()
             throws Exception {
         File skeleton = skeleton("bounded-accessor-skeleton.jsonl");
         String field = "<example.KeyBase: long value>";
@@ -640,7 +640,9 @@ public class RuntimeSelectedRegionFinalizerTest {
         String accessorSite = METHOD + "#u11";
         String guardSite = METHOD + "#u14";
         List<Map<String, Object>> bindings = new ArrayList<>();
-        for (int occurrence = 8; occurrence >= 1; occurrence--) {
+        for (int occurrence = LoopBoundPolicy
+                .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY;
+                occurrence >= 1; occurrence--) {
             bindings.add(object(
                     "regionId", "REGION.1", "rootCallId", 11,
                     "callId", 11, "invocationId", 100 + occurrence,

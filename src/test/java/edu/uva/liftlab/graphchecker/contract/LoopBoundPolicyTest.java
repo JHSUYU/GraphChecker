@@ -17,7 +17,9 @@ public class LoopBoundPolicyTest {
 
         assertEquals(8, decoded.maxBackedgeTraversals());
         assertEquals("CFG_BACKEDGE:8:CUT_PATH", decoded.identity());
-        assertEquals(8,
+        // Raised on evidence: the demanded HDFS-11741 encryption key is a
+        // byte[20], and the loop bound is a separate contract.
+        assertEquals(32,
                 LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY);
     }
 

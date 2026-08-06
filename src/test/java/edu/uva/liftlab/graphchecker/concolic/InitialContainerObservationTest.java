@@ -85,33 +85,36 @@ public class InitialContainerObservationTest {
     }
 
     @Test
-    public void relevanceSelectedSnapshotAllowsEightUniqueCellsOnly() {
-        JsonArray eight = new JsonArray();
-        JsonArray nine = new JsonArray();
-        for (int index = 0; index < 9; index++) {
+    public void relevanceSelectedSnapshotAllowsTheCapacityOnly() {
+        int capacity = LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY;
+        JsonArray atCapacity = new JsonArray();
+        JsonArray beyond = new JsonArray();
+        for (int index = 0; index < capacity + 1; index++) {
             JsonObject cell = equality("REGION.container.in.values",
                     "int", "int", index);
-            nine.add(cell);
-            if (index < 8) eight.add(cell.deepCopy());
+            beyond.add(cell);
+            if (index < capacity) atCapacity.add(cell.deepCopy());
         }
 
         assertTrue(InitialContainerObservation
-                .failureRelevantCapacityIssue(eight).isEmpty());
+                .failureRelevantCapacityIssue(atCapacity).isEmpty());
         assertTrue(InitialContainerObservation
-                .failureRelevantCapacityIssue(nine).contains(
+                .failureRelevantCapacityIssue(beyond).contains(
                         "SYMBOLIC_CONTAINER_RELEVANT_CELL_"
                                 + "CAPACITY_EXCEEDED"));
     }
 
     @Test
-    public void pathObservationRejectsNineFailureRelevantCells() {
+    public void pathObservationRejectsOneCellBeyondTheCapacity() {
         JsonObject summary = new JsonObject();
         summary.addProperty("goalId", "GOAL.container.capacity");
         summary.addProperty("regionId", "REGION.container");
         ClosureGoalKind.TARGET_REACH_CLOSURE.writeToTask(summary);
         LoopBoundPolicy.cfgBackedges(8).writeTo(summary);
         JsonArray path = new JsonArray();
-        for (int index = 0; index < 9; index++) {
+        for (int index = 0; index
+                < LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY + 1;
+                index++) {
             path.add(equality("REGION.container.in.values",
                     "int", "int", index));
         }

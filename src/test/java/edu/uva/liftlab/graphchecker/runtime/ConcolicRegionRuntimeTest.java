@@ -383,7 +383,7 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void completeContainerSnapshotsFailClosedAboveEightCells() {
+    public void completeContainerSnapshotsFailClosedAboveCapacity() {
         ConcolicRegionRuntime.requireCompleteContainerSnapshotCapacity(
                 new int[LoopBoundPolicy
                         .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY]);
@@ -396,7 +396,8 @@ public class ConcolicRegionRuntimeTest {
             assertTrue(expected.getMessage().contains(
                     "BOUND_INSUFFICIENT"));
             assertTrue(expected.getMessage().contains(
-                    "symbolic snapshot capacity is 8"));
+                    "symbolic snapshot capacity is " + LoopBoundPolicy
+                            .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY));
         }
     }
 

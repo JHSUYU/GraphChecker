@@ -77,10 +77,13 @@ policy: at most eight loop-body iterations. A ninth body entry is cut; a loop
 that exits at its guard after exactly eight bodies still returns normally.
 
 Container materialization is also relevance-first. The current implementation
-keeps up to eight distinct failure-relevant cells per logical input port. Eight is
-a resource default, not a modeled collection length; if a real slice needs
-more, the cap should be raised based on evidence. Exceeding the cap fails
-closed instead of silently discarding a relevant cell.
+keeps up to thirty-two distinct failure-relevant cells per logical input port.
+That number is a resource default, not a modeled collection length; if a real
+slice needs more, the cap should be raised based on evidence. It was raised
+from eight on exactly such evidence: the HDFS-11741 slice demands the
+balancer's `DataEncryptionKey.encryptionKey`, a `byte[20]` whose bytes are
+what the failure compares. Exceeding the cap fails closed instead of silently
+discarding a relevant cell.
 
 The custom VM owns scalar/container symbolic expressions and final region
 outputs. Java planning code chooses what to execute and symbolize but does not

@@ -11,8 +11,16 @@ public final class LoopBoundPolicy {
     public static final String FIELD = "loopBound";
     /** No {@code for}, {@code while}, or {@code do-while} body may run more. */
     public static final int MAX_LOOP_BODY_ITERATIONS = 8;
-    /** Maximum failure-relevant cells retained for one symbolic container. */
-    public static final int SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY = 8;
+    /**
+     * Maximum failure-relevant cells retained for one symbolic container.
+     *
+     * <p>A resource default, not a modeled collection length.  HDFS-11741
+     * demands the balancer's {@code DataEncryptionKey.encryptionKey}, and
+     * that key is a {@code byte[20]}: the failure is precisely a mismatch of
+     * those bytes, so a cap below twenty could only refuse the slice the
+     * failure is stated over.</p>
+     */
+    public static final int SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY = 32;
     // A guarded body-entry hook denies body nine after eight bodies have run.
     // The encoded field name is historical; the value is a body bound.
     private static final int SCHEMA_VERSION = 1;
