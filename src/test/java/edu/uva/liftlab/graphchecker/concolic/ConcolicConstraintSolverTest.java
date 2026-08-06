@@ -33,6 +33,129 @@ public class ConcolicConstraintSolverTest {
     }
 
     @Test
+    public void splitElementAndParseIntRoundTripSolvesTheIntegerPrefix()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        // Reconstruct the HDFS-11741 SASL round trip: a username built as
+        // concat(toString(keyId), " ", blockPoolId, " ", nonce), split on the
+        // space delimiter, whose element zero is parsed back to an int.  A
+        // sound encoding must recover keyId exactly rather than leave it free.
+        String keyIdRaw = "M_I_field_REGION.3.in.0_java/lang/Integer";
+        JsonObject keyId = new JsonObject();
+        keyId.addProperty("_type", "SymbolExpression");
+        keyId.addProperty("_java_type", "I");
+        keyId.addProperty("_exp", keyIdRaw);
+
+        JsonObject username = strConcat(
+                strToString(keyId), strLiteral(" "), strLiteral("BP-x"),
+                strLiteral(" "), strLiteral("FebwCRNH0bY="));
+        JsonObject split = splitElement(username, " ", 0, "11745");
+        JsonObject parse = parseInt(split, 11745);
+
+        JsonObject roundTrip = new JsonObject();
+        roundTrip.addProperty("_type", "BinaryExpression");
+        roundTrip.add("_left", parse);
+        roundTrip.addProperty("_op", "==");
+        roundTrip.add("_right", constInt(11745));
+
+        // A standalone split of the same round trip exercises splitElementTerm
+        // directly (parseInt collapses to the source integer), so the query
+        // also proves java_int_to_string is emitted and inverted by z3.
+        JsonObject standaloneSplit = splitElement(strConcat(
+                strToString(keyId), strLiteral(" "), strLiteral("BP-x"),
+                strLiteral(" "), strLiteral("FebwCRNH0bY=")), " ", 0, "11745");
+        JsonObject splitEquals = new JsonObject();
+        splitEquals.addProperty("_type", "OpStrExpression");
+        splitEquals.addProperty("_name", "equals");
+        JsonArray equalsParams = new JsonArray();
+        equalsParams.add(standaloneSplit);
+        equalsParams.add(strLiteral("11745"));
+        splitEquals.add("_param_list", equalsParams);
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(roundTrip, splitEquals), activation(),
+                Paths.get("z3"), 10_000L);
+
+        assertEquals(result.smtLib, "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertTrue(result.smtLib,
+                result.smtLib.contains("java_int_to_string"));
+        assertFalse(result.smtLib,
+                result.smtLib.contains("METHOD_SEMANTICS_MISSING"));
+        assertFalse(result.smtLib,
+                result.smtLib.contains("MODEL_SEMANTICS_MISSING"));
+        assertEquals(1, result.modelAssignments.size());
+        JsonObject assignment = result.modelAssignments.get(0)
+                .getAsJsonObject();
+        assertEquals("REGION.3.in.0",
+                assignment.get("inputSymbol").getAsString());
+        assertEquals(11745, assignment.get("value").getAsInt());
+    }
+
+    private static JsonObject constInt(int value) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "ConstExpr");
+        expression.addProperty("_java_type", "I");
+        expression.addProperty("_exp", "Y_I_" + value);
+        return expression;
+    }
+
+    private static JsonObject strLiteral(String content) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "ConStringSymbolExp");
+        expression.addProperty("_java_type", "java/lang/String");
+        expression.addProperty("_exp", "Y_L'String'_" + content);
+        return expression;
+    }
+
+    private static JsonObject strToString(JsonObject integer) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "OpStrExpression");
+        expression.addProperty("_name", "toString");
+        JsonArray params = new JsonArray();
+        params.add(integer);
+        expression.add("_param_list", params);
+        return expression;
+    }
+
+    private static JsonObject strConcat(JsonObject... parts) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "OpStrExpression");
+        expression.addProperty("_name", "concat");
+        JsonArray params = new JsonArray();
+        for (JsonObject part : parts) params.add(part);
+        expression.add("_param_list", params);
+        return expression;
+    }
+
+    private static JsonObject splitElement(JsonObject receiver,
+                                           String delimiter, int index,
+                                           String recordedElement) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "MethodExpression");
+        expression.addProperty("_name", "java/lang/String splitElement");
+        JsonArray params = new JsonArray();
+        params.add(receiver);
+        params.add(strLiteral(delimiter));
+        params.add(constInt(index));
+        expression.add("_param_list", params);
+        expression.add("_res_exp", strLiteral(recordedElement));
+        return expression;
+    }
+
+    private static JsonObject parseInt(JsonObject argument,
+                                       int recordedValue) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "MethodExpression");
+        expression.addProperty("_name", "java/lang/Integer parseInt");
+        JsonArray params = new JsonArray();
+        params.add(argument);
+        expression.add("_param_list", params);
+        expression.add("_res_exp", constInt(recordedValue));
+        return expression;
+    }
+
+    @Test
     public void contradictoryPrefixAndFlipAreUnsat() throws Exception {
         Assume.assumeTrue(z3Available());
         JsonObject task = task(binary(">", 3));

@@ -204,6 +204,9 @@ public final class ConcolicConstraintSolver {
         private final Set<String> controlledSymbols = new LinkedHashSet<>();
         private final Set<String> additionalModelNames =
                 new LinkedHashSet<>();
+        private final Set<String> javaIntRangeAssertions =
+                new LinkedHashSet<>();
+        private boolean usesJavaIntString;
         private Set<String> currentConstraintSymbols;
 
         private Encoder(SparseContainerBoundaries containerBoundaries) {
@@ -1383,8 +1386,276 @@ public final class ConcolicConstraintSolver {
         private Term methodTerm(JsonObject expression, String origin) {
             String method = firstNonBlank(string(expression, "_name"),
                     "unknown_method");
+            // splitElement and parseInt carry the same structural round-trip
+            // semantics the composition encoder proves; this mirrors
+            // ConcolicSmtComposer.parseIntTerm / splitElementTerm so the two
+            // encoders agree on these java.lang methods.  Every other method
+            // stays fail-closed as METHOD_SEMANTICS_MISSING.
+            if (isJavaParseInt(method)) {
+                return parseIntTerm(expression, origin);
+            }
+            if (isJavaSplitElement(method)) {
+                return splitElementTerm(expression, origin);
+            }
             unsupported.add(origin + ":METHOD_SEMANTICS_MISSING:" + method);
             return null;
+        }
+
+        /**
+         * Mirror of {@link ConcolicSmtComposer}'s {@code parseIntTerm}.
+         * Recognizes {@code parseInt(splitElement(concat(toString(i), delim,
+         * suffix...), delim, [limit], 0)[, 10]) == i} and returns {@code i}.
+         * A free parse/split UF would permit models Java cannot execute, so a
+         * structural proof is required; anything else is a codec gap.
+         */
+        private Term parseIntTerm(JsonObject expression, String origin) {
+            JsonArray params = array(expression, "_param_list");
+            if (params.size() != 1 && params.size() != 2) {
+                return codecGap("java/lang/Integer.parseInt", "ARITY", origin);
+            }
+            if (params.size() == 2) {
+                Integer radix = exactIntLiteral(params.get(1));
+                if (radix == null || radix != 10) {
+                    return codecGap("java/lang/Integer.parseInt",
+                            "RADIX_NOT_LITERAL_10", origin);
+                }
+            }
+            SplitPrefix match = exactSplitPrefix(params.get(0));
+            if (!match.complete()) {
+                return codecGap("java/lang/Integer.parseInt",
+                        "ROUNDTRIP_NOT_PROVED_" + match.gap, origin);
+            }
+            Term integer = term(match.integerExpression, Sort.INT,
+                    origin + ":parseInt");
+            if (integer == null || integer.sort != Sort.INT) {
+                return codecGap("java/lang/Integer.parseInt",
+                        "ROUNDTRIP_SOURCE_NOT_INT", origin);
+            }
+            assertJavaIntRange(integer);
+            return integer;
+        }
+
+        /** Mirror of {@link ConcolicSmtComposer}'s {@code splitElementTerm}. */
+        private Term splitElementTerm(JsonObject expression, String origin) {
+            SplitPrefix match = exactSplitPrefix(expression);
+            if (!match.complete()) {
+                return codecGap("java/lang/String.splitElement", match.gap,
+                        origin);
+            }
+            Term integer = term(match.integerExpression, Sort.INT,
+                    origin + ":splitElement");
+            if (integer == null || integer.sort != Sort.INT) {
+                return codecGap("java/lang/String.splitElement",
+                        "ROUNDTRIP_SOURCE_NOT_INT", origin);
+            }
+            assertJavaIntRange(integer);
+            return javaIntString(integer);
+        }
+
+        private Term codecGap(String operation, String gap, String origin) {
+            unsupported.add(origin + ":MODEL_SEMANTICS_MISSING:" + operation
+                    + ":" + gap);
+            return null;
+        }
+
+        /**
+         * Mirror of {@link ConcolicSmtComposer}'s {@code exactSplitPrefix}.
+         * The composer first chases cross-region String equality edges before
+         * matching; the path-flip solver works inside a single region and has
+         * no such edge index, so the split receiver must already be a
+         * syntactic {@code concat(toString(int), delim, suffix...)}.
+         */
+        private SplitPrefix exactSplitPrefix(JsonElement expression) {
+            if (expression == null || !expression.isJsonObject()) {
+                return SplitPrefix.gap("NOT_METHOD_EXPRESSION");
+            }
+            JsonObject split = expression.getAsJsonObject();
+            if (!"MethodExpression".equals(string(split, "_type"))
+                    || !isJavaSplitElement(string(split, "_name"))) {
+                return SplitPrefix.gap("NOT_STRING_SPLIT_ELEMENT");
+            }
+            JsonArray params = array(split, "_param_list");
+            if (params.size() != 3 && params.size() != 4) {
+                return SplitPrefix.gap("SPLIT_ARITY");
+            }
+            Integer index = exactIntLiteral(params.get(params.size() - 1));
+            if (index == null || index != 0) {
+                return SplitPrefix.gap("INDEX_NOT_LITERAL_0");
+            }
+            String delimiter = exactStringLiteral(params.get(1));
+            String delimiterGap = decimalDelimiterGap(delimiter);
+            if (!delimiterGap.isEmpty()) return SplitPrefix.gap(delimiterGap);
+            if (params.size() == 4) {
+                Integer limit = exactIntLiteral(params.get(2));
+                // Java split(..., 1) returns the entire receiver and therefore
+                // does not preserve the decimal prefix as element zero.  Zero,
+                // negative limits, and positive limits greater than one do.
+                if (limit == null || limit == 1) {
+                    return SplitPrefix.gap("LIMIT_DOES_NOT_PRESERVE_PREFIX");
+                }
+            }
+            List<JsonElement> flattened = new ArrayList<>();
+            if (!flattenConcat(params.get(0), flattened)) {
+                return SplitPrefix.gap("CONCAT_PREFIX_AND_SUFFIX_REQUIRED");
+            }
+            // Concatenation commonly starts from the builder identity "".
+            // Removing only exact empty literals is semantics-preserving;
+            // symbolic or non-empty prefixes remain proof gaps.
+            List<JsonElement> parts = new ArrayList<>();
+            for (JsonElement part : flattened) {
+                if (!"".equals(exactStringLiteral(part))) parts.add(part);
+            }
+            if (parts.size() < 3) {
+                return SplitPrefix.gap("CONCAT_PREFIX_AND_SUFFIX_REQUIRED");
+            }
+            JsonElement first = parts.get(0);
+            if (first == null || !first.isJsonObject()) {
+                return SplitPrefix.gap("PREFIX_NOT_INT_TO_STRING");
+            }
+            JsonObject toString = first.getAsJsonObject();
+            JsonArray toStringParams = array(toString, "_param_list");
+            if (!"OpStrExpression".equals(string(toString, "_type"))
+                    || !"toString".equals(string(toString, "_name"))
+                    || bool(toString, "_is_not", false)
+                    || toStringParams.size() != 1
+                    || !isPrimitiveIntExpression(toStringParams.get(0))) {
+                return SplitPrefix.gap("PREFIX_NOT_PRIMITIVE_INT_TO_STRING");
+            }
+            String concatenatedDelimiter = exactStringLiteral(parts.get(1));
+            if (concatenatedDelimiter == null
+                    || !delimiter.equals(concatenatedDelimiter)) {
+                return SplitPrefix.gap("SPLIT_CONCAT_DELIMITER_MISMATCH");
+            }
+            for (int indexOfSuffix = 2; indexOfSuffix < parts.size();
+                 indexOfSuffix++) {
+                if (!provablyStringValued(parts.get(indexOfSuffix))) {
+                    return SplitPrefix.gap("SUFFIX_NOT_STRING_VALUED");
+                }
+            }
+            return SplitPrefix.complete(toStringParams.get(0));
+        }
+
+        private boolean flattenConcat(JsonElement expression,
+                                      List<JsonElement> result) {
+            if (expression == null || !expression.isJsonObject()) {
+                return false;
+            }
+            JsonObject object = expression.getAsJsonObject();
+            if (!"OpStrExpression".equals(string(object, "_type"))
+                    || !"concat".equals(string(object, "_name"))
+                    || bool(object, "_is_not", false)) {
+                return false;
+            }
+            JsonArray params = array(object, "_param_list");
+            if (params.size() == 0) return false;
+            for (JsonElement parameter : params) {
+                if (parameter != null && parameter.isJsonObject()
+                        && "OpStrExpression".equals(string(
+                        parameter.getAsJsonObject(), "_type"))
+                        && "concat".equals(string(
+                        parameter.getAsJsonObject(), "_name"))) {
+                    if (!flattenConcat(parameter, result)) return false;
+                } else {
+                    result.add(parameter);
+                }
+            }
+            return true;
+        }
+
+        private boolean provablyStringValued(JsonElement expression) {
+            if (expression == null || !expression.isJsonObject()) return false;
+            JsonObject object = expression.getAsJsonObject();
+            String type = string(object, "_type");
+            if ("ConStringSymbolExp".equals(type)) return true;
+            if ("SymbolExpression".equals(type)
+                    || "ConSymbolExp".equals(type)
+                    || "ConstExpr".equals(type)) {
+                return sortOfJava(string(object, "_java_type")) == Sort.STRING;
+            }
+            if (!"OpStrExpression".equals(type)
+                    || bool(object, "_is_not", false)) return false;
+            String operation = string(object, "_name");
+            if ("toString".equals(operation)) {
+                JsonArray params = array(object, "_param_list");
+                return params.size() == 1
+                        && isPrimitiveIntExpression(params.get(0));
+            }
+            if (!"concat".equals(operation)) return false;
+            JsonArray params = array(object, "_param_list");
+            if (params.size() == 0) return false;
+            for (JsonElement parameter : params) {
+                if (!provablyStringValued(parameter)) return false;
+            }
+            return true;
+        }
+
+        private boolean isPrimitiveIntExpression(JsonElement expression) {
+            if (expression == null || !expression.isJsonObject()) return false;
+            String javaType = string(expression.getAsJsonObject(),
+                    "_java_type");
+            return "I".equals(javaType) || "int".equals(javaType);
+        }
+
+        private Integer exactIntLiteral(JsonElement expression) {
+            if (expression == null || !expression.isJsonObject()) return null;
+            JsonObject object = expression.getAsJsonObject();
+            String type = string(object, "_type");
+            if (!("ConstExpr".equals(type) || "ConSymbolExp".equals(type))) {
+                return null;
+            }
+            String javaType = string(object, "_java_type");
+            if (!("I".equals(javaType) || "int".equals(javaType))) {
+                return null;
+            }
+            String value = constantPayload(string(object, "_exp"));
+            if (!value.matches("-?[0-9]+")) return null;
+            try {
+                return Integer.valueOf(value);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+
+        private String exactStringLiteral(JsonElement expression) {
+            if (expression == null || !expression.isJsonObject()) return null;
+            JsonObject object = expression.getAsJsonObject();
+            String type = string(object, "_type");
+            if (!("ConStringSymbolExp".equals(type)
+                    || "ConstExpr".equals(type)
+                    || "ConSymbolExp".equals(type))) return null;
+            if (sortOfJava(string(object, "_java_type")) != Sort.STRING) {
+                return null;
+            }
+            return constantPayload(string(object, "_exp"));
+        }
+
+        private String decimalDelimiterGap(String value) {
+            if (value == null || value.length() != 1) {
+                return "REGEX_NOT_SAFE_SINGLE_LITERAL";
+            }
+            char delimiter = value.charAt(0);
+            if (Character.isISOControl(delimiter)) {
+                return "REGEX_NOT_SAFE_SINGLE_LITERAL";
+            }
+            if ("\\.^$|?*+()[]{}".indexOf(delimiter) >= 0) {
+                return "REGEX_NOT_SAFE_SINGLE_LITERAL";
+            }
+            if (Character.isDigit(delimiter) || delimiter == '-') {
+                return "DELIMITER_OCCURS_IN_JAVA_INT_TEXT";
+            }
+            return "";
+        }
+
+        private Term javaIntString(Term integer) {
+            usesJavaIntString = true;
+            return Term.nonNullString("(java_int_to_string "
+                    + integer.text + ")");
+        }
+
+        private void assertJavaIntRange(Term integer) {
+            if (!javaIntRangeAssertions.add(integer.text)) return;
+            assertions.add("(and (<= (- 2147483648) " + integer.text
+                    + ") (<= " + integer.text + " 2147483647))");
         }
 
         private String finish() {
@@ -1402,6 +1673,16 @@ public final class ConcolicConstraintSolver {
                     .append('\n');
             result.append(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION)
                     .append('\n');
+            if (usesJavaIntString) {
+                // SMT-LIB's str.from_int is defined only for non-negative
+                // integers; Java's decimal Integer.toString additionally emits
+                // a leading '-'.  Mirrors ConcolicSmtComposer's preamble so the
+                // split/parseInt round trip is ordinary string semantics rather
+                // than an unconstrained UF.
+                result.append("(define-fun java_int_to_string ((i Int)) "
+                        + "String (ite (< i 0) (str.++ \"-\" "
+                        + "(str.from_int (- i))) (str.from_int i)))\n");
+            }
             for (Map.Entry<String, Sort> declaration
                     : declarations.entrySet()) {
                 result.append("(declare-const ").append(declaration.getKey())
@@ -2456,6 +2737,37 @@ public final class ConcolicConstraintSolver {
             }
         }
         return result;
+    }
+
+    private static boolean isJavaParseInt(String name) {
+        return "java/lang/Integer parseInt".equals(firstNonBlank(name));
+    }
+
+    private static boolean isJavaSplitElement(String name) {
+        return "java/lang/String splitElement".equals(firstNonBlank(name));
+    }
+
+    /** Mirror of {@link ConcolicSmtComposer}'s {@code SplitPrefix}. */
+    private static final class SplitPrefix {
+        private final JsonElement integerExpression;
+        private final String gap;
+
+        private SplitPrefix(JsonElement integerExpression, String gap) {
+            this.integerExpression = integerExpression;
+            this.gap = firstNonBlank(gap);
+        }
+
+        private static SplitPrefix complete(JsonElement integerExpression) {
+            return new SplitPrefix(integerExpression, "");
+        }
+
+        private static SplitPrefix gap(String gap) {
+            return new SplitPrefix(null, gap);
+        }
+
+        private boolean complete() {
+            return integerExpression != null && gap.isEmpty();
+        }
     }
 
     private static JsonObject baseRecord(String queryKey) {
