@@ -139,6 +139,51 @@ public class SeedBackwardStaticAnalyzerTest {
     }
 
     @Test
+    public void configuredClientStubCallsiteActivatesItsImplementation()
+            throws Exception {
+        RpcFixture fixture = rpcFixture(true, false);
+        Path mappings = Files.createTempFile("client-stub-implementation",
+                ".jsonl");
+        try {
+            String row = "{\"schemaVersion\":1,"
+                    + "\"kind\":\"PROTOCOL_STUB_MAPPING\","
+                    + "\"id\":\"test.client.rpc\","
+                    + "\"transport\":\"TEST_RPC\","
+                    + "\"clientStub\":\""
+                    + fixture.client.getSignature() + "\","
+                    + "\"serverStub\":\""
+                    + fixture.server.getSignature() + "\","
+                    + "\"request\":[{\"name\":\"payload\","
+                    + "\"clientArgument\":1,\"serverParameter\":0}],"
+                    + "\"response\":true}\n";
+            Files.write(mappings, row.getBytes(StandardCharsets.UTF_8));
+            System.setProperty("causynth.protocol.stubs",
+                    mappings.toString());
+
+            StaticProgram program = analyze(fixture);
+            // The stub that decodes the reply in the caller's process is
+            // entered by an ordinary call, so an envelope rooted at the
+            // caller must be able to reach it.
+            assertTrue(program.edges.stream().anyMatch(candidate ->
+                    "dispatch_activation".equals(candidate.get("kind"))
+                            && "DYNAMIC_DISPATCH".equals(
+                            candidate.get("transferKind"))
+                            && (fixture.clientImplementation.getSignature()
+                            + ".activation").equals(
+                            candidate.get("toCell"))));
+            // The server stub is entered by the transport, never by this
+            // call site.
+            assertFalse(program.edges.stream().anyMatch(candidate ->
+                    "dispatch_activation".equals(candidate.get("kind"))
+                            && (fixture.server.getSignature()
+                            + ".activation").equals(
+                            candidate.get("toCell"))));
+        } finally {
+            Files.deleteIfExists(mappings);
+        }
+    }
+
+    @Test
     public void nestedProtocolServerCallIsNotAnExecutionContextEntry()
             throws Exception {
         RpcFixture fixture = rpcFixture();
@@ -981,6 +1026,17 @@ public class SeedBackwardStaticAnalyzerTest {
     }
 
     private static RpcFixture rpcFixture(boolean concreteClientInvocation) {
+        return rpcFixture(concreteClientInvocation,
+                concreteClientInvocation);
+    }
+
+    /**
+     * Builds one configured-RPC program.  The two switches are independent so
+     * a call site may name the declared client stub while a concrete
+     * implementation of that stub still exists elsewhere in the program.
+     */
+    private static RpcFixture rpcFixture(boolean withImplementation,
+                                         boolean invokeImplementation) {
         SootClass object = libraryClass("java.lang.Object");
         SootClass runtimeException = libraryClass(
                 "java.lang.RuntimeException");
@@ -1007,7 +1063,7 @@ public class SeedBackwardStaticAnalyzerTest {
 
         SootMethod clientImplementation = null;
         SootClass concreteClient = null;
-        if (concreteClientInvocation) {
+        if (withImplementation) {
             concreteClient = applicationClass(
                     "example.RemoteClient", object);
             concreteClient.addInterface(protocol);
@@ -1066,7 +1122,7 @@ public class SeedBackwardStaticAnalyzerTest {
 
         SootClass callerOwner = applicationClass(
                 "example.ProtocolCaller", object);
-        RefType remoteType = RefType.v(concreteClientInvocation
+        RefType remoteType = RefType.v(invokeImplementation
                 ? concreteClient.getName() : protocol.getName());
         SootField remote = new SootField("remote",
                 remoteType,
@@ -1090,7 +1146,7 @@ public class SeedBackwardStaticAnalyzerTest {
         callerBody.getUnits().add(Jimple.v().newAssignStmt(inputLocal,
                 Jimple.v().newStaticFieldRef(input.makeRef())));
         callerBody.getUnits().add(Jimple.v().newAssignStmt(result,
-                concreteClientInvocation
+                invokeImplementation
                         ? Jimple.v().newVirtualInvokeExpr(remoteLocal,
                         clientImplementation.makeRef(), IntConstant.v(0),
                         inputLocal)

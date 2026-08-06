@@ -2628,6 +2628,8 @@ final class SeedBackwardStaticAnalyzer {
         if (mappings.isEmpty()) {
             return;
         }
+        expandProtocolClientImplementations(callerMethod, fact, callee,
+                mappings);
         int count = 0;
         for (ProtocolStubMapping mapping : mappings) {
             String target = mapping.serverStub;
@@ -2656,6 +2658,55 @@ final class SeedBackwardStaticAnalyzer {
                 propagateProtocolReturn(mapping, "rpc_return",
                         callerMethod, fact, target, defs, callerRelevant,
                         targetRelevant, false);
+            }
+        }
+    }
+
+    /**
+     * Binds a configured client stub call site to the concrete stub that
+     * actually runs on the caller's side of the transport.
+     *
+     * <p>A configured client stub is deliberately withheld from ordinary
+     * dispatch expansion so protocol compatibility cannot turn every
+     * interface call into an RPC edge.  The side effect is that the stub
+     * implementation which decodes the reply — and therefore rebuilds the
+     * transferred object graph in the caller's process — is reached by no
+     * call edge at all, so no execution envelope can ever contain it and the
+     * rebuilt state has no producer.  The transport itself remains a
+     * protocol transfer to the server stub; this edge only restores the
+     * ordinary call relation from the call site to the code it enters.</p>
+     *
+     * <p>An implementation the configuration already names as a server stub
+     * is excluded: it is entered by the transport, not by this call.</p>
+     */
+    private void expandProtocolClientImplementations(
+            String callerMethod, Fact fact, MethodSig callee,
+            List<ProtocolStubMapping> mappings) {
+        Set<String> expanded = new LinkedHashSet<>();
+        int count = 0;
+        for (ProtocolStubMapping mapping : mappings) {
+            for (String implementation : protocolClientTargets(mapping)) {
+                if (implementation.equals(mapping.clientStub)
+                        || implementation.equals(callee.raw)
+                        || !protocolStubs.sources(implementation).isEmpty()
+                        || !expanded.add(implementation)) {
+                    continue;
+                }
+                if (count++ >= MAX_DISPATCH_TARGETS_PER_CALL) {
+                    return;
+                }
+                SootMethod implementationMethod =
+                        methodsBySignature.get(implementation);
+                if (implementationMethod == null
+                        || !implementationMethod.isConcrete()) {
+                    continue;
+                }
+                if (selectedMethods.size() < maxMethods) {
+                    loadMethod(implementationMethod);
+                }
+                selectActivationCaller("dispatch_activation", implementation,
+                        callerMethod, fact);
+                selectedMethods.add(implementation);
             }
         }
     }
