@@ -1171,6 +1171,45 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void splitElementIntegerNamesTheProducersOwnPortWitness()
+            throws Exception {
+        // The rendered int belongs to the producer's relation, so it must be
+        // lowered onto the producer invocation's port witness.  Reading it in
+        // the fatal invocation would mint a second, unconstrained occurrence
+        // of the same port and let the solver pick any value for it.
+        ConcolicSmtComposer.Result result = composeUsername(0);
+
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "MODEL_SEMANTICS_MISSING"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "sym__port__REGION_1_Test_call20_REGION_1_in_0__int"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "sym__port__REGION_0_Test_call30_REGION_1_in_0__int"));
+    }
+
+    @Test
+    public void splitElementKeepsGapForAProducerLocalInteger()
+            throws Exception {
+        // A region local symbol is named only inside the invocation that
+        // stated it.  There is no witness for it to enter, so the codec must
+        // keep its gap rather than invent a free integer here.
+        JsonObject local = new JsonObject();
+        local.addProperty("_type", "SymbolExpression");
+        local.addProperty("_java_type", "I");
+        local.addProperty("_exp", "M_I_local");
+        JsonObject username = strConcat(strToString(local), strLiteral(" "),
+                strLiteral("BP-x"), strLiteral(" "), strLiteral("nonce"));
+
+        ConcolicSmtComposer.Result result = composeUsername(username, 0);
+
+        assertTrue(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "java/lang/String.splitElement:"
+                                + "PRODUCER_INT_NOT_PORT_BACKED"));
+    }
+
+    @Test
     public void splitElementProvesAnElementPastTheFirst() throws Exception {
         // concat(toString(keyId), " ", "BP-x", " ", "nonce") splits on the
         // space into three elements.  Element one is the literal between the

@@ -2890,12 +2890,12 @@ public final class ConcolicSmtComposer {
             // parseInt inverts Integer.toString only when the element is
             // that rendering and nothing else; any surrounding text would
             // make Java throw rather than return this integer.
-            JsonElement source = match.singleIntegerSource();
+            SplitPiece source = match.singleIntegerPiece();
             if (source == null) {
                 return codecGap("java/lang/Integer.parseInt",
                         "ROUNDTRIP_ELEMENT_NOT_ONE_INT_RENDERING", Sort.INT);
             }
-            Term integer = term(source, Sort.INT);
+            Term integer = integerPieceTerm(source);
             if (integer.sort != Sort.INT) {
                 return codecGap("java/lang/Integer.parseInt",
                         "ROUNDTRIP_SOURCE_NOT_INT", Sort.INT);
@@ -2917,7 +2917,7 @@ public final class ConcolicSmtComposer {
                     pieces.add(quote(piece.text));
                     continue;
                 }
-                Term integer = term(piece.integerSource, Sort.INT);
+                Term integer = integerPieceTerm(piece);
                 if (integer.sort != Sort.INT) {
                     return codecGap("java/lang/String.splitElement",
                             "ROUNDTRIP_SOURCE_NOT_INT", Sort.STRING);
@@ -3001,16 +3001,18 @@ public final class ConcolicSmtComposer {
                 }
             }
 
-            JsonElement receiver = resolveExactEqualityBoundExpression(
+            ScopedExpression receiver = resolveExactEqualityBoundExpression(
                     params.get(0));
             List<JsonElement> parts = new ArrayList<>();
-            if (!flattenConcat(receiver, parts)) {
+            if (!flattenConcat(receiver.expression, parts)) {
                 return SplitSegment.gap("CONCAT_RECEIVER_REQUIRED");
             }
-            return splitConcatElement(parts, delimiter.charAt(0), index);
+            return splitConcatElement(parts, receiver.invocation,
+                    delimiter.charAt(0), index);
         }
 
         private SplitSegment splitConcatElement(List<JsonElement> parts,
+                                                InvocationKey invocation,
                                                 char delimiter, int index) {
             List<SplitPiece> element = new ArrayList<>();
             int segment = 0;
@@ -3044,7 +3046,12 @@ public final class ConcolicSmtComposer {
                             "DELIMITER_OCCURS_IN_JAVA_INT_TEXT");
                 }
                 if (segment == index) {
-                    element.add(SplitPiece.integer(rendered));
+                    if (!invocation.equals(currentInvocation)
+                            && !invocationIndependentInteger(rendered)) {
+                        return SplitSegment.gap(
+                                "PRODUCER_INT_NOT_PORT_BACKED");
+                    }
+                    element.add(SplitPiece.integer(rendered, invocation));
                 }
             }
             // Java keeps a final element only when it has characters.
@@ -3059,6 +3066,40 @@ public final class ConcolicSmtComposer {
         /** An empty run between delimiters adds no characters. */
         private static void addText(List<SplitPiece> element, String text) {
             if (!text.isEmpty()) element.add(SplitPiece.text(text));
+        }
+
+        /**
+         * Whether an int expression means the same thing in every
+         * invocation.  A literal always does, and a port names one formal
+         * relation variable whose witness {@link #integerPieceTerm} selects
+         * by entering the stating invocation.  Anything else - a region
+         * local symbol above all - is named only inside the invocation that
+         * stated it, and lowering it elsewhere would invent a free value.
+         */
+        private boolean invocationIndependentInteger(
+                JsonElement expression) {
+            if (exactIntLiteral(expression) != null) return true;
+            if (expression == null || !expression.isJsonObject()) {
+                return false;
+            }
+            JsonObject object = expression.getAsJsonObject();
+            return "SymbolExpression".equals(string(object, "_type"))
+                    && !findPort(string(object, "_exp")).isEmpty();
+        }
+
+        /** Lowers a split piece's int in the invocation that states it. */
+        private Term integerPieceTerm(SplitPiece piece) {
+            if (piece.integerInvocation == null
+                    || piece.integerInvocation.equals(currentInvocation)) {
+                return term(piece.integerSource, Sort.INT);
+            }
+            InvocationKey previous =
+                    enterInvocation(piece.integerInvocation);
+            try {
+                return term(piece.integerSource, Sort.INT);
+            } finally {
+                restoreInvocation(previous);
+            }
         }
 
         /** The int a {@code String.valueOf(int)} style part renders. */
@@ -3082,18 +3123,19 @@ public final class ConcolicSmtComposer {
          * port by the ordinary merge assertion; this lookup merely exposes
          * its syntax to a structural codec proof.
          */
-        private JsonElement resolveExactEqualityBoundExpression(
+        private ScopedExpression resolveExactEqualityBoundExpression(
                 JsonElement expression) {
             JsonElement current = expression;
             Set<PortOccurrence> visited = new LinkedHashSet<>();
-            String instance = currentInvocation.instanceId;
+            InvocationKey invocation = currentInvocation;
             while (current != null && current.isJsonObject()) {
                 JsonObject object = current.getAsJsonObject();
                 if (!"SymbolExpression".equals(string(object, "_type"))) {
                     break;
                 }
                 String port = findPort(string(object, "_exp"));
-                PortOccurrence occurrence = occurrence(instance, port);
+                PortOccurrence occurrence =
+                        occurrence(invocation.instanceId, port);
                 if (port.isEmpty() || !visited.add(occurrence)
                         || ambiguousEqualityBoundExpressionPorts.contains(
                         occurrence)) {
@@ -3103,9 +3145,11 @@ public final class ConcolicSmtComposer {
                         exactEqualityBoundExpressions.get(occurrence);
                 if (binding == null) break;
                 current = binding.expression;
-                instance = binding.sourceInstance;
+                invocation = new InvocationKey(
+                        regionOf(binding.outputPort),
+                        binding.sourceInstance);
             }
-            return current;
+            return new ScopedExpression(current, invocation);
         }
 
         private boolean flattenConcat(JsonElement expression,
@@ -4841,18 +4885,28 @@ public final class ConcolicSmtComposer {
     private static final class SplitPiece {
         private final String text;
         private final JsonElement integerSource;
+        /**
+         * The invocation whose relation states {@link #integerSource}.  A
+         * producer expression names the producer's ports, so lowering it in
+         * the reader's invocation would mint a second, unconstrained
+         * occurrence of them instead of the witness the producer binds.
+         */
+        private final InvocationKey integerInvocation;
 
-        private SplitPiece(String text, JsonElement integerSource) {
+        private SplitPiece(String text, JsonElement integerSource,
+                           InvocationKey integerInvocation) {
             this.text = text;
             this.integerSource = integerSource;
+            this.integerInvocation = integerInvocation;
         }
 
         private static SplitPiece text(String text) {
-            return new SplitPiece(text, null);
+            return new SplitPiece(text, null, null);
         }
 
-        private static SplitPiece integer(JsonElement source) {
-            return new SplitPiece("", source);
+        private static SplitPiece integer(JsonElement source,
+                                          InvocationKey invocation) {
+            return new SplitPiece("", source, invocation);
         }
     }
 
@@ -4882,9 +4936,22 @@ public final class ConcolicSmtComposer {
         }
 
         /** The int this element renders when it renders nothing else. */
-        private JsonElement singleIntegerSource() {
+        private SplitPiece singleIntegerPiece() {
             return pieces != null && pieces.size() == 1
-                    ? pieces.get(0).integerSource : null;
+                    && pieces.get(0).integerSource != null
+                    ? pieces.get(0) : null;
+        }
+    }
+
+    /** An expression together with the invocation whose relation states it. */
+    private static final class ScopedExpression {
+        private final JsonElement expression;
+        private final InvocationKey invocation;
+
+        private ScopedExpression(JsonElement expression,
+                                 InvocationKey invocation) {
+            this.expression = expression;
+            this.invocation = invocation;
         }
     }
 
