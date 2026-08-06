@@ -289,6 +289,28 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void witnessingAReplaysSourceSiteDoesNotConsumeItsContract() {
+        String expiry = "<test.Keys: void removeExpired()>#u14";
+        BranchReplayContract contract = BranchReplayContract.flip(
+                Collections.<BranchWitness>emptyList(),
+                replayWitness(expiry, 1, true));
+        ConcolicRegionRuntime.ReplayProgress progress =
+                new ConcolicRegionRuntime.ReplayProgress(contract);
+
+        // The site has executed, so every demanded branch site is observed
+        // and the pre-replay half of the boundary is satisfied.  The replay
+        // itself has consumed nothing yet, so the window must stay open.
+        assertTrue(ConcolicRegionRuntime.demandedBranchSitesObserved(
+                Collections.singletonList(expiry),
+                Collections.singleton(expiry)));
+        assertFalse(progress.complete());
+
+        // Only the demanded outcome closes it.
+        assertTrue(progress.observe(expiry, 1, false));
+        assertTrue(progress.complete());
+    }
+
+    @Test
     public void eachBoundedAccessorOccurrenceKeepsItsOwnSymbol() {
         // The replay counts its accessor calls from one, so the demanded
         // occurrence is the one bounded to a single helper activation.

@@ -1776,6 +1776,10 @@ public final class ConcolicRegionRuntime {
             boolean replayTargetMatched = active.observeReplayBranch(
                     siteId(method, unitIndex), prepared.occurrence,
                     observedOutcome);
+            // The contract may have just been consumed, which is the other
+            // half of a replay's boundary; the witness hook above ran before
+            // this branch reached the contract and could not see it.
+            finishAtExactOutputBoundary(active);
             stopAfterBranch = solverWitness
                     && replayTargetMatched
                     && active.activation.stopAfterBranch(
@@ -4175,7 +4179,11 @@ public final class ConcolicRegionRuntime {
         }
 
         private boolean hasCompleteExactOutputBoundary() {
-            return demandedBranchSitesObserved(
+            // A replay contract is consumed one hook after the branch it
+            // demands is witnessed, so a window that closes on the witness
+            // alone discards the very decision the flip was solved for.
+            return replayProgress.complete()
+                    && demandedBranchSitesObserved(
                     activation.branchPolicies.keySet(),
                     witnessedOutcomes.keySet())
                     && completeExactOutputBoundary(
