@@ -83,10 +83,19 @@ public class OutputClosureCodecTest {
         assertEquals(3, spec.outputOccurrence());
         assertEquals(3, spec.replayOccurrence());
 
+        // A recorded ordinal past the replay loop bound is provenance, not a
+        // replay demand: the mutation writer of a demanded container may
+        // well have been recorded at its site's twenty-sixth execution.
         for (JsonObject value : Arrays.asList(output, capture)) {
-            value.addProperty("outputOccurrence", 9);
-            value.addProperty("replayOccurrence", 9);
+            value.addProperty("outputOccurrence", 26);
+            value.addProperty("replayOccurrence", 26);
         }
+        OutputCaptureSpec recordedPastBound = OutputClosureCodec
+                .captureSpecs(OutputClosureCodec.decode(activation)).get(0);
+        assertEquals(26, recordedPastBound.outputOccurrence());
+
+        // Internal coherence of the declared identity is still validated.
+        output.addProperty("replayOccurrence", 25);
         expectFailure(() -> OutputClosureCodec.captureSpecs(
                 OutputClosureCodec.decode(activation)),
                 "outside the bounded replay");
