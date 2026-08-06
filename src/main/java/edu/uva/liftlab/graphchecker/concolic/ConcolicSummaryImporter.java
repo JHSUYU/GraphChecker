@@ -258,7 +258,8 @@ public final class ConcolicSummaryImporter {
         }
         if (encodedReplay == null) {
             return exactSeedMismatch(task.pathSeedKey(), seed.events,
-                    observed.events);
+                    observed.events, concreteBranchOutcomes(raw),
+                    earlyStopExit(string(raw, "exitKind")));
         }
         if (!encodedReplay.isJsonObject()) {
             return "replayContract is not an object";
@@ -373,17 +374,33 @@ public final class ConcolicSummaryImporter {
      * <p>The contract is therefore stated per static site: every outcome the
      * recording witnessed at a site must also be witnessed there by the
      * replay, and the replay may not decide a site the task never planned.
-     * A site the replay drives only the other way, or never reaches, is a
-     * real witness conflict and still fails closed.</p>
+     * A site the replay drives only the other way is a real witness conflict
+     * and still fails closed.</p>
+     *
+     * <p>Coverage is attested by execution, not by solvability.  A branch the
+     * replay decided before its symbolic gate opened produces no VM event and
+     * therefore no mapping, yet it demonstrably ran; those concrete witnesses
+     * satisfy coverage while never entering the path condition.  They cannot
+     * make a site unexpected either: a concrete prefix decides branches the
+     * demanded slice never planned, and that is ordinary execution.</p>
+     *
+     * <p>An activation that deliberately stops early — at its reach target,
+     * at its output boundary, or at a loop bound — never executes the tail of
+     * the recorded region at all.  Demanding coverage of sites the task chose
+     * not to reach would reject every bounded summary, so an early stop keeps
+     * only the contradiction rules.</p>
      */
     private static String exactSeedMismatch(
             String pathSeedKey, List<BranchEvent> expected,
-            List<BranchEvent> observed) {
+            List<BranchEvent> observed,
+            Map<String, Set<Boolean>> concrete, boolean earlyStop) {
         Map<String, Set<Boolean>> wanted = outcomesBySite(expected);
         Map<String, Set<Boolean>> actual = outcomesBySite(observed);
         for (Map.Entry<String, Set<Boolean>> entry : wanted.entrySet()) {
-            Set<Boolean> found = actual.get(entry.getKey());
-            if (found == null) {
+            Set<Boolean> found = union(actual.get(entry.getKey()),
+                    concrete.get(entry.getKey()));
+            if (found.isEmpty()) {
+                if (earlyStop) continue;
                 return seedDetail(pathSeedKey, "missing " + entry.getKey());
             }
             for (Boolean outcome : entry.getValue()) {
@@ -400,6 +417,51 @@ public final class ConcolicSummaryImporter {
             }
         }
         return "";
+    }
+
+    /**
+     * Exit kinds where the activation stopped on purpose before the recorded
+     * region ended.
+     */
+    static boolean earlyStopExit(String exitKind) {
+        return "TARGET_REACHED".equals(exitKind)
+                || "OUTPUT_BOUNDARY".equals(exitKind)
+                || "BOUNDED".equals(exitKind);
+    }
+
+    /**
+     * Indexes the branches an activation executed before its symbolic gate
+     * opened.  These rows carry no path condition and no occurrence ordinal,
+     * so they can only ever answer "was this site reached, and which way".
+     */
+    public static Map<String, Set<Boolean>> concreteBranchOutcomes(
+            JsonObject raw) {
+        Map<String, Set<Boolean>> outcomes = new LinkedHashMap<>();
+        for (JsonElement element : array(raw, "concreteBranchWitnesses")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject witness = element.getAsJsonObject();
+            String site = string(witness, "siteId");
+            JsonElement outcome = witness.get("sourceTakenOutcome");
+            if (site.isEmpty() || outcome == null
+                    || !outcome.isJsonPrimitive()
+                    || !outcome.getAsJsonPrimitive().isBoolean()) {
+                continue;
+            }
+            Set<Boolean> seen = outcomes.get(site);
+            if (seen == null) {
+                seen = new LinkedHashSet<>();
+                outcomes.put(site, seen);
+            }
+            seen.add(outcome.getAsBoolean());
+        }
+        return outcomes;
+    }
+
+    private static Set<Boolean> union(Set<Boolean> first, Set<Boolean> second) {
+        Set<Boolean> result = new LinkedHashSet<>();
+        if (first != null) result.addAll(first);
+        if (second != null) result.addAll(second);
+        return result;
     }
 
     private static String replayPrefixMismatch(

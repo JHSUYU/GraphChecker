@@ -197,8 +197,10 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void missingSeedBranchMappingIsRejectedFailClosed()
+    public void unreachedSeedBranchSiteIsRejectedFailClosed()
             throws Exception {
+        // Neither a symbolic mapping nor a concrete execution witness: the
+        // replay never reached the recorded site at all.
         PathImport imported = importPath("missing-seed-event",
                 pathTask(false), pathResult(false, true));
 
@@ -207,6 +209,97 @@ public class ConcolicSummaryImporterTest {
                 imported.diagnostics).get(0).get("code").getAsString());
         assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
                 .get("detail").getAsString().contains("missing"));
+    }
+
+    @Test
+    public void concretelyExecutedSeedBranchSiteAttestsCoverage()
+            throws Exception {
+        // The branch ran before the symbolic gate opened, so it has no VM
+        // event. Execution still attests the recorded site.
+        JsonObject raw = pathResult(false, true);
+        raw.add("concreteBranchWitnesses", concreteWitnesses(true));
+
+        PathImport imported = importPath("concrete-seed-event",
+                pathTask(false), raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+    }
+
+    @Test
+    public void concreteWitnessStillFailsClosedOnTheOppositeOutcome()
+            throws Exception {
+        JsonObject raw = pathResult(false, true);
+        raw.add("concreteBranchWitnesses", concreteWitnesses(false));
+
+        PathImport imported = importPath("concrete-wrong-outcome",
+                pathTask(false), raw);
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                .get("detail").getAsString().contains("wrong outcome"));
+    }
+
+    @Test
+    public void concreteWitnessNeverMakesASiteUnexpected() throws Exception {
+        // A concrete prefix decides branches the demanded slice never
+        // planned; that is ordinary execution, not a path divergence.
+        JsonObject raw = pathResult(true, true);
+        JsonArray witnesses = concreteWitnesses(true);
+        JsonObject unplanned = witnesses.get(0).getAsJsonObject().deepCopy();
+        unplanned.addProperty("siteId", "<test.Other: void run()>#u7");
+        unplanned.addProperty("method", "<test.Other: void run()>");
+        unplanned.addProperty("unitIndex", 7);
+        witnesses.add(unplanned);
+        raw.add("concreteBranchWitnesses", witnesses);
+
+        PathImport imported = importPath("concrete-unplanned",
+                pathTask(false), raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+    }
+
+    @Test
+    public void earlyStopExitDoesNotDemandCoverageOfTheRecordedTail()
+            throws Exception {
+        // A target-reach activation stops at its target; the recorded tail of
+        // the region is never executed and cannot be witnessed.
+        JsonObject raw = pathResult(false, true);
+        raw.addProperty("exitKind", "TARGET_REACHED");
+
+        PathImport imported = importPath("early-stop-tail",
+                pathTask(false), raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+    }
+
+    @Test
+    public void earlyStopExitStillFailsClosedOnAContradiction()
+            throws Exception {
+        JsonObject raw = pathResult(true, false);
+        raw.addProperty("exitKind", "TARGET_REACHED");
+
+        PathImport imported = importPath("early-stop-contradiction",
+                pathTask(false), raw);
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                .get("detail").getAsString().contains("wrong outcome"));
+    }
+
+    private static JsonArray concreteWitnesses(boolean outcome) {
+        JsonObject witness = new JsonObject();
+        witness.addProperty("kind", "CONCRETE_BRANCH_EXECUTION_WITNESS_V1");
+        witness.addProperty("schemaVersion", 1);
+        witness.addProperty("siteId", seedSite());
+        witness.addProperty("method", seedMethod());
+        witness.addProperty("unitIndex", 3);
+        witness.addProperty("sourceTakenOutcome", outcome);
+        JsonArray witnesses = new JsonArray();
+        witnesses.add(witness);
+        return witnesses;
     }
 
     @Test

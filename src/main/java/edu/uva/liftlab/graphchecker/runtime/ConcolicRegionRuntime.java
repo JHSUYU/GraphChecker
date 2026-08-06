@@ -1068,6 +1068,23 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * Builds one concrete branch execution witness.  Deliberately carries no
+     * path condition, no VM event id and no occurrence ordinal so that the
+     * importer can only read "this site ran, and this is the way it went".
+     */
+    static JsonObject concreteBranchWitness(String method, int unitIndex,
+                                            boolean outcome) {
+        JsonObject witness = new JsonObject();
+        witness.addProperty("kind", "CONCRETE_BRANCH_EXECUTION_WITNESS_V1");
+        witness.addProperty("schemaVersion", 1);
+        witness.addProperty("siteId", siteId(method, unitIndex));
+        witness.addProperty("method", safe(method));
+        witness.addProperty("unitIndex", unitIndex);
+        witness.addProperty("sourceTakenOutcome", outcome);
+        return witness;
+    }
+
+    /**
      * Captures one real Jimple field-path read immediately before a normal
      * region return. The injected code supplies the exact leaf owner, field,
      * and value so the VM can distinguish a preserved pre-state shadow from
@@ -1587,7 +1604,18 @@ public final class ConcolicRegionRuntime {
                                         boolean observedOutcome) {
         ActiveRegion active = activeRegion();
         if (active == null) return observedOutcome;
-        if (!active.pathRecordingStarted) return observedOutcome;
+        if (!active.pathRecordingStarted) {
+            // The symbolic gate is still closed, so no VM event exists and no
+            // path condition may be read. The branch did execute, though, and
+            // a recorded site is attested by execution, not by solvability.
+            try {
+                active.recordConcreteBranchWitness(method, unitIndex,
+                        observedOutcome);
+            } catch (Throwable ignored) {
+                // Observation must never alter the workload's own outcome.
+            }
+            return observedOutcome;
+        }
         PreparedBranch prepared = active.takePreparedBranch(preparedHandle);
         if (prepared == null || !prepared.matches(method, unitIndex,
                 expression)) {
@@ -2266,6 +2294,10 @@ public final class ConcolicRegionRuntime {
         result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
         result.add("symbolizedInputs", GSON.toJsonTree(active.symbolized));
         result.add("branchMappings", GSON.toJsonTree(active.branchMappings));
+        if (!active.concreteBranchWitnesses.isEmpty()) {
+            result.add("concreteBranchWitnesses",
+                    GSON.toJsonTree(active.concreteBranchWitnesses));
+        }
         result.add("outputCaptures", GSON.toJsonTree(active.outputCaptures));
     }
 
@@ -3642,6 +3674,15 @@ public final class ConcolicRegionRuntime {
         private final List<String> unresolved = new ArrayList<>();
         private final Set<String> unresolvedUnique = new LinkedHashSet<>();
         private final List<JsonObject> branchMappings = new ArrayList<>();
+        /**
+         * Branches this activation executed before its symbolic gate opened.
+         * They are pure execution observations: no path condition, no VM
+         * event, and deliberately no occurrence ordinal, so nothing here can
+         * be mistaken for a solvable predicate.  Their only use is attesting
+         * that a recorded site really was reached.
+         */
+        private final List<JsonObject> concreteBranchWitnesses =
+                new ArrayList<>();
         private final List<JsonObject> outputCaptures = new ArrayList<>();
         private final Set<String> materialized = new LinkedHashSet<>();
         private final Set<String> appliedModelAssignments =
@@ -3729,6 +3770,27 @@ public final class ConcolicRegionRuntime {
                 witnessedOutcomes.put(siteId, outcomes);
             }
             outcomes.add(outcome);
+        }
+
+        /**
+         * Records that a branch executed while the symbolic gate was still
+         * closed.  A concrete prefix decides real branches, and a recording
+         * that saw one of them is describing execution that did happen; the
+         * replay simply has no symbolic evidence to offer about it.
+         *
+         * <p>Only the first outcome of each kind per site is kept.  How often
+         * an environment-sized loop revisits a site is not part of any
+         * contract, and bounding this ledger by the instrumented slice keeps
+         * a long concrete prefix from exhausting the replay heap.</p>
+         */
+        private void recordConcreteBranchWitness(
+                String method, int unitIndex, boolean outcome) {
+            String site = siteId(method, unitIndex);
+            Set<Boolean> seen = witnessedOutcomes.get(site);
+            if (seen != null && seen.contains(outcome)) return;
+            witnessOutcome(site, outcome);
+            concreteBranchWitnesses.add(concreteBranchWitness(
+                    method, unitIndex, outcome));
         }
 
         private String seedOutcomeConflict() {

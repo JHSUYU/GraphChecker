@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
+import edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -623,6 +624,26 @@ public class ConcolicRegionRuntimeTest {
         target.addProperty("projection", projection);
         encoded.add("containerTarget", target);
         return new ConcolicRegionRuntime.ModelAssignment(encoded);
+    }
+
+    @Test
+    public void concreteBranchWitnessIsReadableByTheImporter() {
+        JsonObject witness = ConcolicRegionRuntime.concreteBranchWitness(
+                "<test.Worker: void run()>", 3, false);
+        // A concrete witness must never look like a solvable decision.
+        assertFalse(witness.has("witness"));
+        assertFalse(witness.has("occurrence"));
+        assertFalse(witness.has("rawPathConditionSize"));
+
+        JsonArray witnesses = new JsonArray();
+        witnesses.add(witness);
+        JsonObject raw = new JsonObject();
+        raw.add("concreteBranchWitnesses", witnesses);
+
+        Map<String, Set<Boolean>> decoded =
+                ConcolicSummaryImporter.concreteBranchOutcomes(raw);
+        assertEquals(Collections.singleton(Boolean.FALSE),
+                decoded.get("<test.Worker: void run()>#u3"));
     }
 
     @Test
