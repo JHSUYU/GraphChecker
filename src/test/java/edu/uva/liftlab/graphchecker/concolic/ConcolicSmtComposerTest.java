@@ -459,6 +459,98 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void versionedOutputChannelKeepsEveryVersionChoosable()
+            throws Exception {
+        // Three exported site-local versions enter the composed channel as
+        // three guarded cases.  The solver must be free to choose any one
+        // version, and the selector partition must force exactly one.
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.VERSIONSET", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(versionedSummary(
+                        producerInstance, 3,
+                        Collections.singletonList(edge))), edge);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        String choice = "output_version_choice__"
+                + "REGION_1_Test_call20_REGION_1_out_0";
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(declare-const " + choice + " Int)"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(and (<= 1 " + choice + ") (<= " + choice + " 3))"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "region_case_selector_partition_REGION_1"));
+        assertEquals(result.smtLib, 3,
+                count(result.smtLib, "case_selector_definition_REGION_1"));
+
+        if (!z3Available()) return;
+        String consumer = "port__REGION_0_in_0__instance__"
+                + "REGION_0_Test_call30";
+        // Every exported version stays reachable at the consumer.
+        assertSat(result.smtLib, "(assert (= " + consumer + " (VInt 1)))\n");
+        assertSat(result.smtLib, "(assert (= " + consumer + " (VInt 2)))\n");
+        assertSat(result.smtLib, "(assert (= " + consumer + " (VInt 3)))\n");
+        // The choice variable owns which version the consumer observed.
+        assertUnsat(result.smtLib, "(assert (= " + choice + " 3))\n"
+                + "(assert (= " + consumer + " (VInt 1)))\n");
+        // Exactly one version: nothing outside the exported chain exists.
+        assertUnsat(result.smtLib, "(assert (and (distinct " + consumer
+                + " (VInt 1)) (distinct " + consumer
+                + " (VInt 2)) (distinct " + consumer + " (VInt 3))))\n");
+    }
+
+    private static RelationSummary versionedSummary(
+            String instance, int versionCount,
+            java.util.List<JsonObject> bindings) {
+        JsonObject slice = emptySlice("REGION.1.out.0",
+                "<Test: int output>");
+        OutputClosureContract closure = OutputClosureCodec.singleton(
+                "REGION.1", instance, 20L, "REGION.1.out.0",
+                "<Test: int output>", "REGION_OUTPUT", "int", slice);
+
+        JsonObject row = new JsonObject();
+        row.addProperty("summaryId", "SUMMARY.VERSIONSET");
+        row.addProperty("regionId", "REGION.1");
+        row.addProperty("regionInstanceId", instance);
+        row.addProperty("rootCallId", 20L);
+        OutputClosureCodec.writeTo(row, closure);
+        JsonArray encodedBindings = new JsonArray();
+        for (JsonObject binding : bindings) {
+            encodedBindings.add(binding.deepCopy());
+        }
+        row.add("edgeBindings", encodedBindings);
+        JsonObject relation = new JsonObject();
+        relation.addProperty("schemaVersion", 1);
+        relation.addProperty("kind", "GUARDED_PATH_MERGE");
+        JsonArray cases = new JsonArray();
+        for (int version = 1; version <= versionCount; version++) {
+            JsonObject item = new JsonObject();
+            item.addProperty("caseId", "CASE.VERSIONSET.V." + version);
+            item.addProperty("sourceTaskId", "TASK.VERSIONSET");
+            JsonObject guard = new JsonObject();
+            guard.addProperty("kind", "PATH_CONDITION");
+            JsonArray conditions = new JsonArray();
+            conditions.add(edu.uva.liftlab.graphchecker.contract
+                    .BoundedOutputVersions.versionSelectionCondition(
+                            "REGION.1.out.0", "<Test: void run()>#u1",
+                            version, versionCount));
+            guard.add("conditions", conditions);
+            item.add("guard", guard);
+            JsonObject outputs = new JsonObject();
+            outputs.add("REGION.1.out.0", integer(version));
+            item.add("outputExpressions", outputs);
+            cases.add(item);
+        }
+        relation.add("cases", cases);
+        row.add("regionRelation", relation);
+        row.addProperty("relationallyComplete", true);
+        return RelationSummary.decode(row);
+    }
+
+    @Test
     public void protocolCausalityIsSymbolic()
             throws Exception {
         String fatalInstance = "REGION.0@Test#call30";

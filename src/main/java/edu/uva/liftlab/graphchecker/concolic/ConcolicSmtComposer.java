@@ -4,6 +4,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.ja
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.artifact;
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 
+import edu.uva.liftlab.graphchecker.contract.BoundedOutputVersions;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
@@ -1533,6 +1534,8 @@ public final class ConcolicSmtComposer {
                 new ArrayList<>();
         private final Set<String> emittedVersionedBindings =
                 new LinkedHashSet<>();
+        private final Set<String> declaredOutputVersionChoices =
+                new LinkedHashSet<>();
         private final Set<String> suppliedInputs = new LinkedHashSet<>();
         private final Map<String, JsonObject> canonicalPortOccurrences =
                 new LinkedHashMap<>();
@@ -1658,6 +1661,9 @@ public final class ConcolicSmtComposer {
             }
             JsonObject object = expression.getAsJsonObject();
             String type = string(object, "_type");
+            if (BoundedOutputVersions.isVersionSelection(object)) {
+                return outputVersionSelection(object, origin);
+            }
             if ("MethodExpression".equals(type)) {
                 return methodConstraint(object);
             }
@@ -1665,6 +1671,43 @@ public final class ConcolicSmtComposer {
             if (term.sort == Sort.BOOL) return condition(term);
             return unknownConstraint(origin + ": non-boolean " + type,
                     expression);
+        }
+
+        /**
+         * Binds one relation case to one exported bounded output version.
+         *
+         * <p>The version choice is a solver variable per port occurrence,
+         * bounded by the site-local export.  Each expanded case's guard says
+         * {@code choice == ordinal}; with the ordinary exactly-one selector
+         * partition this makes the solver pick exactly one exported version
+         * per producer occurrence, and different alpha-renamed occurrences
+         * choose independently.</p>
+         */
+        private String outputVersionSelection(JsonObject selection,
+                                              String origin) {
+            String port = string(selection, "outputPort");
+            int ordinal = integer(selection, "versionOrdinal", -1);
+            int bound = integer(selection, "versionBound", -1);
+            if (port.isEmpty() || ordinal < 1 || bound < ordinal
+                    || !ports.contains(port)) {
+                return unknownConstraint(origin
+                        + ": malformed output version selection", selection);
+            }
+            PortOccurrence occurrence = currentOccurrence(port);
+            String choice = "output_version_choice__"
+                    + smtName(String.valueOf(occurrence));
+            if (declaredOutputVersionChoices.add(choice)) {
+                declare(choice, Sort.INT);
+                String previousGuard = currentGuard;
+                currentGuard = "";
+                try {
+                    assertNamed(choice + "_bounds", "(and (<= 1 " + choice
+                            + ") (<= " + choice + " " + bound + "))");
+                } finally {
+                    currentGuard = previousGuard;
+                }
+            }
+            return "(= " + choice + " " + ordinal + ")";
         }
 
         /** A term may denote a Java expression that is defined only under a
@@ -3162,9 +3205,12 @@ public final class ConcolicSmtComposer {
                             + ":" + index);
                     continue;
                 }
+                Set<String> casePorts = new LinkedHashSet<>(
+                        object(item, "outputExpressions").keySet());
+                casePorts.addAll(object(item,
+                        "outputReferenceIdentities").keySet());
                 if (outputClosure.outputPorts().size() > 1
-                        && !object(item, "outputExpressions").keySet().equals(
-                        outputClosure.outputPorts())) {
+                        && !casePorts.equals(outputClosure.outputPorts())) {
                     heapGap("JointOutputExpressionSetMismatch@" + region
                             + ":" + index);
                     continue;
