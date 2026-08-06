@@ -374,6 +374,27 @@ public final class RegionPathWorklist {
                 }
             }
             result.add("gaps", GSON.toJsonTree(gaps));
+            // A flip whose solver query used expression IR the path-flip
+            // encoder cannot lower is an explored-and-abandoned proposal,
+            // not a planning failure: the flip solver only proposes fresh
+            // paths, while the fatal branch condition itself stays symbolic
+            // for the reach stage.  Naming each such flip keeps the closure
+            // auditable without blocking candidates/compose/reach.
+            List<JsonObject> explorationGaps = new ArrayList<>();
+            for (JsonObject record : records.values()) {
+                if (!"UNSUPPORTED".equals(string(record, "status"))) {
+                    continue;
+                }
+                JsonObject gap = new JsonObject();
+                gap.addProperty("kind", "UNSUPPORTED_PATH_FLIP");
+                gap.addProperty("queryKey", string(record, "queryKey"));
+                gap.addProperty("reason", string(record, "reason"));
+                if (record.get("unsupported") != null) {
+                    gap.add("unsupported", record.get("unsupported"));
+                }
+                explorationGaps.add(gap);
+            }
+            result.add("explorationGaps", GSON.toJsonTree(explorationGaps));
             return result;
         }
 
@@ -456,6 +477,7 @@ public final class RegionPathWorklist {
     private static boolean terminal(JsonObject record) {
         String status = string(record, "status");
         return "UNSAT".equals(status)
+                || "UNSUPPORTED".equals(status)
                 || "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY".equals(status)
                 || "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY".equals(status);
     }

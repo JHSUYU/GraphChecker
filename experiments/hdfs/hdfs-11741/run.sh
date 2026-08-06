@@ -1215,6 +1215,17 @@ run_path_query() {
       >"${task_dir}/record.jsonl"
     return
   fi
+  # An UNSUPPORTED flip is an explored-and-abandoned exploration proposal,
+  # not a semantic authority: the fatal branch condition itself remains
+  # symbolic and is decided at the reach stage.  Record the named gap so the
+  # planner closes over it and the pipeline proceeds to candidates/compose.
+  if [[ "${solver_outcome}" == "UNSUPPORTED" ]]; then
+    jq -c '{schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD",
+      queryKey, regionId, sourcePathKey, sourceSummaryId, status,
+      reason, unsupported}' "${task_dir}/path_flip_solver_result.json" \
+      >"${task_dir}/record.jsonl"
+    return
+  fi
   [[ "${solver_outcome}" == "SAT_MODEL_READY" ]] \
     || die "path solver emitted unsupported status ${solver_outcome}"
   replay_task=$(jq -er -s \

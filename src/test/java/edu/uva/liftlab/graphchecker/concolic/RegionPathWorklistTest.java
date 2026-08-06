@@ -514,6 +514,58 @@ public class RegionPathWorklistTest {
     }
 
     @Test
+    public void unsupportedFlipClosesAsNamedExplorationGap() {
+        JsonObject summary = summary("ACT.CLOSURE.UNSUPPORTED",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject task = executionTask("ACT.CLOSURE.UNSUPPORTED",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.UNSUPPORTED", "SITE.1");
+        attachClosure(summary, closure);
+        attachClosure(task, closure);
+        RegionPathWorklist.Result pending = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                pending.manifest.get("state").getAsString());
+        assertEquals(1, pending.tasks.size());
+
+        // The flip solver could not lower the query IR.  The proposal is
+        // explored-and-abandoned: closure proceeds, and the manifest names
+        // the gap instead of failing the planning wave.
+        JsonObject record = new JsonObject();
+        record.addProperty("queryKey", pending.tasks.get(0)
+                .get("queryKey").getAsString());
+        record.addProperty("status", "UNSUPPORTED");
+        record.addProperty("reason", "UNSUPPORTED_EXPRESSION_IR");
+        JsonArray unsupported = new JsonArray();
+        unsupported.add("q_branch_0:METHOD_SEMANTICS_MISSING:test");
+        record.add("unsupported", unsupported);
+        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.singletonList(record),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                closed.manifest.get("state").getAsString());
+        assertTrue(closed.tasks.isEmpty());
+        assertTrue(closed.manifest.getAsJsonArray("gaps").isEmpty());
+        JsonArray explorationGaps = closed.manifest
+                .getAsJsonArray("explorationGaps");
+        assertEquals(1, explorationGaps.size());
+        JsonObject gap = explorationGaps.get(0).getAsJsonObject();
+        assertEquals("UNSUPPORTED_PATH_FLIP",
+                gap.get("kind").getAsString());
+        assertEquals(record.get("queryKey").getAsString(),
+                gap.get("queryKey").getAsString());
+        assertEquals("UNSUPPORTED_EXPRESSION_IR",
+                gap.get("reason").getAsString());
+        assertEquals(unsupported, gap.get("unsupported"));
+    }
+
+    @Test
     public void concreteBranchWithoutPcDoesNotBlockClosure() {
         JsonObject closure = outputClosure("REGION.3.out.0",
                 "<P: int result>", "PROOF.DEFERRED",
