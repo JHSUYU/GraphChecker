@@ -10,7 +10,22 @@ hdfs_pom="${hadoop_dir}/hadoop-hdfs-project/hadoop-hdfs/pom.xml"
 runtime_patch_file="${experiment_dir}/patches/runtime-trace-workload.patch"
 fatal_patch_file="${experiment_dir}/patches/mark-fatal-target.patch"
 workflow="${experiment_dir}/workflow.properties"
-work_root="${graphchecker_dir}/target/hdfs-11741"
+# Experiment artifacts live outside target/ so `mvn clean` can never erase
+# a multi-hour trace/schedule campaign.  Override with HDFS11741_WORK_ROOT.
+# A pre-migration tree under target/hdfs-11741 is still honored (with a
+# warning) until it is moved once:
+#   mv target/hdfs-11741 experiments-output/hdfs-11741
+legacy_work_root="${graphchecker_dir}/target/hdfs-11741"
+default_work_root="${graphchecker_dir}/experiments-output/hdfs-11741"
+if [[ -n "${HDFS11741_WORK_ROOT:-}" ]]; then
+  work_root="${HDFS11741_WORK_ROOT}"
+elif [[ ! -d "${default_work_root}" && -d "${legacy_work_root}" ]]; then
+  echo "[hdfs-11741] WARNING: using legacy work root ${legacy_work_root};" >&2
+  echo "[hdfs-11741] migrate once with: mv ${legacy_work_root} ${default_work_root}" >&2
+  work_root="${legacy_work_root}"
+else
+  work_root="${default_work_root}"
+fi
 dependency_classpath="${work_root}/dependency-classpath.txt"
 project_classpath="${work_root}/project-classpath.txt"
 seed_campaign_root="${work_root}/campaigns/auto-seeds"
@@ -607,8 +622,17 @@ do_engine_config() {
   classpath=$(tr -d '\r\n' < "${project_classpath}")
   (
     cd "${graphchecker_dir}"
+    # Path env overrides keep every engine artifact rooted at the selected
+    # work root, whichever root (default, legacy, or HDFS11741_WORK_ROOT)
+    # was chosen above.  Values already present in the environment win, so
+    # per-campaign overrides (e.g. seed instrumentation) are preserved.
     CAUSYNTH_REPO="${hadoop_dir}" \
       CAUSYNTH_CLASSPATH="${classpath}" \
+      CAUSYNTH_OUTPUT_DIR="${CAUSYNTH_OUTPUT_DIR:-${work_root}/analysis}" \
+      CAUSYNTH_INSTRUMENTED_CLASSES_DIR="${CAUSYNTH_INSTRUMENTED_CLASSES_DIR:-${work_root}/instrumented-classes}" \
+      CAUSYNTH_REGION_PLAN="${CAUSYNTH_REGION_PLAN:-${work_root}/runtime/concolic_region_plan.jsonl}" \
+      CAUSYNTH_EDGE_VALIDATIONS="${CAUSYNTH_EDGE_VALIDATIONS:-${work_root}/runtime/runtime_region_edge_validation.jsonl}" \
+      CAUSYNTH_SCHEDULE_OUTPUT_DIR="${CAUSYNTH_SCHEDULE_OUTPUT_DIR:-${work_root}/schedule}" \
       ./run_engine.sh --config "${workflow}" "${command}" "$@"
   )
 }
@@ -1834,10 +1858,10 @@ do_full() {
 do_traced_workload() {
   [[ -s "${project_classpath}" ]] \
     || die "project classpath not found; run: $0 prepare"
-  local instrumented="${graphchecker_dir}/target/hdfs-11741/instrumented-classes"
+  local instrumented="${work_root}/instrumented-classes"
   local graphchecker_jar="${graphchecker_dir}/target/GraphChecker-1.0-SNAPSHOT.jar"
-  local trace_dir="${graphchecker_dir}/target/hdfs-11741/runtime"
-  local hadoop_log_dir="${graphchecker_dir}/target/hdfs-11741/hadoop-logs"
+  local trace_dir="${work_root}/runtime"
+  local hadoop_log_dir="${work_root}/hadoop-logs"
   [[ -d "${instrumented}" ]] \
     || die "instrumented classes not found; run tasks first"
   [[ -f "${graphchecker_jar}" ]] \
