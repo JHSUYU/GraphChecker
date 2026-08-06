@@ -1512,6 +1512,26 @@ public final class ConcolicRegionRuntime {
         return true;
     }
 
+    /**
+     * True when a bounded accessor-return action accepts the occurrence the
+     * replay just counted for its accessor call site.
+     *
+     * <p>The demanded occurrence is the one bounded to a single helper
+     * activation, which both sides count the same way: the plan restarts it
+     * at one per helper call, and the replay's own accessor counter starts
+     * at one when the activation is entered.  The recording's
+     * activation-wide ordinal is not a replay identity - it counts calls
+     * this replay's own activation never made, so requiring it means the
+     * action never matches and its input is silently left concrete.
+     * Occurrences stay distinguished, so each key still gets its own
+     * symbol; only the namespace is one the replay can reproduce.</p>
+     */
+    static boolean acceptsBoundedAccessorOccurrence(
+            int boundedOccurrence, int actualOccurrence) {
+        return boundedOccurrence < 1
+                || boundedOccurrence == actualOccurrence;
+    }
+
     /** Test seam for exact-output boundary completion without a custom VM. */
     static boolean exactOutputBoundaryReachedForTests(
             JsonObject encodedTask, JsonArray encodedCaptures) {
@@ -4456,6 +4476,7 @@ public final class ConcolicRegionRuntime {
         private final String location;
         private final int index;
         private final int replayOccurrence;
+        private final int boundedAccessorOccurrence;
         private final List<List<String>> fieldPaths;
         private final String bindingMode;
         private final String method;
@@ -4487,6 +4508,8 @@ public final class ConcolicRegionRuntime {
             this.index = integer(json, "index", -1);
             this.replayOccurrence = integer(json,
                     "replayOccurrence", -1);
+            this.boundedAccessorOccurrence = integer(json,
+                    "helperActivationBoundedOccurrence", -1);
             this.bindingMode = string(json, "bindingMode");
             this.javaType = string(json, "javaType");
             JsonObject definition = json;
@@ -4793,9 +4816,10 @@ public final class ConcolicRegionRuntime {
                     || !accessorContextMatches)) {
                 return false;
             }
-            if (accessorConstrained && replayOccurrence >= 1
-                    && lightweightAccessorContextOccurrence()
-                    != replayOccurrence) {
+            if (accessorConstrained
+                    && !acceptsBoundedAccessorOccurrence(
+                    boundedAccessorOccurrence,
+                    lightweightAccessorContextOccurrence())) {
                 return false;
             }
             if (!accessField.equals(safe(actualField))) {

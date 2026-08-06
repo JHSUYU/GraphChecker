@@ -288,6 +288,30 @@ public class ConcolicRegionRuntimeTest {
                 Collections.<String>emptySet()));
     }
 
+    @Test
+    public void eachBoundedAccessorOccurrenceKeepsItsOwnSymbol() {
+        // The replay counts its accessor calls from one, so the demanded
+        // occurrence is the one bounded to a single helper activation.
+        // Every occurrence still stands on its own - the second key's
+        // accessor must not answer for the first key's.
+        assertTrue(ConcolicRegionRuntime
+                .acceptsBoundedAccessorOccurrence(1, 1));
+        assertTrue(ConcolicRegionRuntime
+                .acceptsBoundedAccessorOccurrence(7, 7));
+        assertFalse(ConcolicRegionRuntime
+                .acceptsBoundedAccessorOccurrence(2, 1));
+
+        // A recording-wide ordinal such as 12 counts calls this replay's
+        // activation never made, so demanding it would leave the input
+        // concrete for every occurrence the replay does reach.
+        assertFalse(ConcolicRegionRuntime
+                .acceptsBoundedAccessorOccurrence(12, 1));
+
+        // An action that names no occurrence stays unconstrained.
+        assertTrue(ConcolicRegionRuntime
+                .acceptsBoundedAccessorOccurrence(-1, 3));
+    }
+
     private static JsonObject exactOutputTask(int outputCount) {
         String region = "REGION.BOUNDARY";
         String instance = region + "@test#call1";
