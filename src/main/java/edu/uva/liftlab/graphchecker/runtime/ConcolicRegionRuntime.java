@@ -2742,6 +2742,13 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    private enum EntryStateVerdict { MATCHES, DIFFERS, UNDECIDED }
+
+    private static boolean referenceTypeDescriptor(String descriptor) {
+        String value = safe(descriptor);
+        return value.startsWith("L") || value.startsWith("[");
+    }
+
     private static String joinFieldPath(List<String> path) {
         if (path == null || path.isEmpty()) {
             return "";
@@ -4078,6 +4085,10 @@ public final class ConcolicRegionRuntime {
         private final String accessorImplementationMethod;
         private final List<String> fieldPath;
         private final String javaType;
+        private final boolean observedEntryState;
+        private final boolean observedNullLeaf;
+        private final boolean observedReferenceLeaf;
+        private final String observedPrimitiveValue;
         private final Set<Integer> definitionUnitIndices =
                 new LinkedHashSet<>();
         private final Map<String, String> leafFieldSignaturesByPath =
@@ -4178,6 +4189,51 @@ public final class ConcolicRegionRuntime {
                 leafFieldSignaturesByPath.put(joinFieldPath(
                         this.fieldPath), explicitLeafSignature);
             }
+            this.observedEntryState = json.has("observed")
+                    && bool(json, "observed", false);
+            this.observedPrimitiveValue = string(json, "primitiveValue");
+            DeclaredField entryLeaf = FieldPathSpec.declaredField(
+                    leafFieldSignaturesByPath.get(
+                            joinFieldPath(this.fieldPath)));
+            this.observedReferenceLeaf = entryLeaf != null
+                    && referenceTypeDescriptor(javaTypeDescriptor(
+                    entryLeaf.type()));
+            this.observedNullLeaf = json.has("valueObjectId")
+                    && !json.get("valueObjectId").isJsonNull()
+                    && integer(json, "valueObjectId", -1) == 0;
+        }
+
+        /**
+         * Returns whether this activation's live entry state agrees with the
+         * value this occurrence was observed to read.  Only a leaf that the
+         * evidence can actually decide participates; an unresolvable hop
+         * leaves the activation eligible rather than silently rejecting it.
+         */
+        private EntryStateVerdict observedEntryStateVerdict(Object receiver) {
+            if (!observedEntryState || !"RECEIVER_FIELD".equals(location)
+                    || fieldPath.isEmpty()) {
+                return EntryStateVerdict.UNDECIDED;
+            }
+            Object owner = receiver;
+            for (int hop = 0; hop < fieldPath.size(); hop++) {
+                String signature = leafFieldSignaturesByPath.get(
+                        joinFieldPath(fieldPath.subList(0, hop + 1)));
+                if (owner == null || signature == null) {
+                    return EntryStateVerdict.UNDECIDED;
+                }
+                owner = readExactField(owner, signature);
+                if (owner == MissingValue.INSTANCE) {
+                    return EntryStateVerdict.UNDECIDED;
+                }
+            }
+            if (!observedPrimitiveValue.isEmpty()) {
+                return observedPrimitiveValue.equals(String.valueOf(owner))
+                        ? EntryStateVerdict.MATCHES
+                        : EntryStateVerdict.DIFFERS;
+            }
+            if (!observedReferenceLeaf) return EntryStateVerdict.UNDECIDED;
+            return observedNullLeaf == (owner == null)
+                    ? EntryStateVerdict.MATCHES : EntryStateVerdict.DIFFERS;
         }
 
         private boolean declaresArrayInput(List<String> actualPath) {
@@ -4971,6 +5027,11 @@ public final class ConcolicRegionRuntime {
             return match;
         }
 
+        private boolean matchesObservedEntryState(Object receiver) {
+            return ConcolicRegionRuntime.matchesObservedEntryState(
+                    declaredSymbolize, receiver);
+        }
+
     }
 
     private static final class Configuration {
@@ -4987,6 +5048,7 @@ public final class ConcolicRegionRuntime {
             return compatibleRoot(task.rootMethod, rootMethod,
                     task.rootContextSelector, task.rootArgumentSelector,
                     receiver, rootArguments, Thread.currentThread().getName())
+                    && task.matchesObservedEntryState(receiver)
                     ? task : null;
         }
 
@@ -5040,6 +5102,25 @@ public final class ConcolicRegionRuntime {
             }
             return new Configuration(result, selected);
         }
+    }
+
+    /**
+     * Distinguishes several occurrences of one region template without any
+     * global invocation ordinal.  Two occurrences of the same root differ
+     * because they read different state on entry; that observed entry shape
+     * is the occurrence's identity here.  An occurrence whose evidence
+     * decides nothing stays eligible, so this only ever narrows a selection
+     * the recorded trace can actually justify.
+     */
+    private static boolean matchesObservedEntryState(
+            List<SymbolizeAction> declared, Object receiver) {
+        for (SymbolizeAction action : declared) {
+            if (action.observedEntryStateVerdict(receiver)
+                    == EntryStateVerdict.DIFFERS) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean compatibleRoot(
