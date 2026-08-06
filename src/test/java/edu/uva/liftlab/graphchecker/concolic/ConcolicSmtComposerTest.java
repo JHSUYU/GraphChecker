@@ -1171,6 +1171,111 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void splitElementProvesAnElementPastTheFirst() throws Exception {
+        // concat(toString(keyId), " ", "BP-x", " ", "nonce") splits on the
+        // space into three elements.  Element one is the literal between the
+        // first and second delimiter; the integer rendering before it cannot
+        // contain a space, so the segmentation is decided.
+        ConcolicSmtComposer.Result result = composeUsername(1);
+
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "MODEL_SEMANTICS_MISSING"));
+        assertTrue(result.smtLib, result.smtLib.contains("\"BP-x\""));
+    }
+
+    @Test
+    public void splitElementSegmentsOnDelimitersInsideOneLiteral()
+            throws Exception {
+        // The delimiters live inside a single literal part, so segmentation
+        // has to look through the literal's own characters rather than only
+        // at part boundaries.
+        JsonObject username = strConcat(strLiteral("a b c"));
+        ConcolicSmtComposer.Result result = composeUsername(username, 1);
+
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "MODEL_SEMANTICS_MISSING"));
+        assertTrue(result.smtLib, result.smtLib.contains("\"b\""));
+    }
+
+    @Test
+    public void splitElementKeepsGapWhenAnEarlierPartMayHoldTheDelimiter()
+            throws Exception {
+        // A symbolic String before the requested element could itself
+        // contain a space, so which characters element one holds is not
+        // decided and the gap stays.
+        JsonObject opaque = new JsonObject();
+        opaque.addProperty("_type", "SymbolExpression");
+        opaque.addProperty("_java_type", "java/lang/String");
+        opaque.addProperty("_exp", "REGION.1.in.1");
+        JsonObject username = strConcat(opaque, strLiteral(" "),
+                strLiteral("BP-x"), strLiteral(" "), strLiteral("nonce"));
+
+        ConcolicSmtComposer.Result result = composeUsername(username, 1);
+
+        assertTrue(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "java/lang/String.splitElement:"
+                                + "PART_NOT_PROVABLY_DELIMITER_FREE"));
+    }
+
+    @Test
+    public void splitElementKeepsGapForATrailingElement() throws Exception {
+        // The last element is not closed by a delimiter, and Java drops a
+        // trailing element that turned out empty, so nothing decides it
+        // unless the walk proves it has characters.
+        JsonObject username = strConcat(strLiteral("a"), strLiteral(" "));
+
+        ConcolicSmtComposer.Result result = composeUsername(username, 1);
+
+        assertTrue(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "java/lang/String.splitElement:"
+                                + "TRAILING_ELEMENT_MAY_BE_EMPTY"));
+    }
+
+    private ConcolicSmtComposer.Result composeUsername(int index)
+            throws Exception {
+        JsonObject keyId = new JsonObject();
+        keyId.addProperty("_type", "SymbolExpression");
+        keyId.addProperty("_java_type", "I");
+        keyId.addProperty("_exp", "REGION.1.in.0");
+        return composeUsername(strConcat(strToString(keyId), strLiteral(" "),
+                strLiteral("BP-x"), strLiteral(" "), strLiteral("nonce")),
+                index);
+    }
+
+    /** Composes the SASL username round trip reading one split element. */
+    private ConcolicSmtComposer.Result composeUsername(
+            JsonObject username, int index) throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = protocolBinding("EDGE.NAME", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0",
+                10, 11, 12);
+
+        JsonObject consumed = new JsonObject();
+        consumed.addProperty("_type", "SymbolExpression");
+        consumed.addProperty("_java_type", "java/lang/String");
+        consumed.addProperty("_exp", "REGION.0.in.0");
+        // A bare split call is its own constraint: the recorded element is
+        // asserted equal to the element the codec derives.
+        JsonArray constraints = new JsonArray();
+        constraints.add(splitElement(consumed, " ", index));
+
+        return compose(fatalInstance,
+                Collections.singletonList(summary("USERNAME",
+                        producerInstance, 20, username,
+                        Collections.singletonList("REGION.1.in.0"),
+                        Collections.singletonList(edge),
+                        "java.lang.String")),
+                Arrays.asList(region("REGION.0", "java.lang.String", ""),
+                        region("REGION.1", "int", "java.lang.String")),
+                constraints, edge);
+    }
+
+    @Test
     public void literalIndexedReadSelectsOnlyTheStoredElement()
             throws Exception {
         // select-over-store: reading index zero cannot observe what a write

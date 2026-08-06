@@ -2882,12 +2882,20 @@ public final class ConcolicSmtComposer {
                             "RADIX_NOT_LITERAL_10", Sort.INT);
                 }
             }
-            SplitPrefix match = exactSplitPrefix(params.get(0));
+            SplitSegment match = exactSplitSegment(params.get(0));
             if (!match.complete()) {
                 return codecGap("java/lang/Integer.parseInt",
                         "ROUNDTRIP_NOT_PROVED_" + match.gap, Sort.INT);
             }
-            Term integer = term(match.integerExpression, Sort.INT);
+            // parseInt inverts Integer.toString only when the element is
+            // that rendering and nothing else; any surrounding text would
+            // make Java throw rather than return this integer.
+            JsonElement source = match.singleIntegerSource();
+            if (source == null) {
+                return codecGap("java/lang/Integer.parseInt",
+                        "ROUNDTRIP_ELEMENT_NOT_ONE_INT_RENDERING", Sort.INT);
+            }
+            Term integer = term(source, Sort.INT);
             if (integer.sort != Sort.INT) {
                 return codecGap("java/lang/Integer.parseInt",
                         "ROUNDTRIP_SOURCE_NOT_INT", Sort.INT);
@@ -2897,99 +2905,172 @@ public final class ConcolicSmtComposer {
         }
 
         private Term splitElementTerm(JsonObject expression) {
-            SplitPrefix match = exactSplitPrefix(expression);
+            SplitSegment match = exactSplitSegment(expression);
             if (!match.complete()) {
                 return codecGap("java/lang/String.splitElement", match.gap,
                         Sort.STRING);
             }
-            Term integer = term(match.integerExpression, Sort.INT);
-            if (integer.sort != Sort.INT) {
-                return codecGap("java/lang/String.splitElement",
-                        "ROUNDTRIP_SOURCE_NOT_INT", Sort.STRING);
+            List<String> pieces = new ArrayList<>();
+            List<String> preconditions = new ArrayList<>();
+            for (SplitPiece piece : match.pieces) {
+                if (piece.integerSource == null) {
+                    pieces.add(quote(piece.text));
+                    continue;
+                }
+                Term integer = term(piece.integerSource, Sort.INT);
+                if (integer.sort != Sort.INT) {
+                    return codecGap("java/lang/String.splitElement",
+                            "ROUNDTRIP_SOURCE_NOT_INT", Sort.STRING);
+                }
+                assertJavaIntRange(integer);
+                Term rendered = javaIntString(integer);
+                pieces.add(rendered.text);
+                preconditions.add(rendered.precondition);
             }
-            assertJavaIntRange(integer);
-            return javaIntString(integer);
+            if (pieces.size() == 1) {
+                return Term.nonNullString(pieces.get(0),
+                        and(preconditions));
+            }
+            StringBuilder text = new StringBuilder("(str.++");
+            for (String piece : pieces) text.append(' ').append(piece);
+            return Term.nonNullString(text.append(')').toString(),
+                    and(preconditions));
         }
 
-        private SplitPrefix exactSplitPrefix(JsonElement expression) {
+        /**
+         * Reads one element out of a concatenation split on a delimiter.
+         *
+         * <p>Java's split takes a regex, so only a delimiter that is one
+         * ordinary literal character is admitted.  The concatenation is then
+         * ordinary text that can be segmented statically: an exact literal
+         * part contributes its own characters, and every delimiter inside it
+         * ends an element.  A {@code toString(int)} part renders only digits
+         * and a leading minus - exactly what {@code java_int_to_string}
+         * states - so for a delimiter outside that set it provably contains
+         * none.  Any other part might contain a delimiter and decides
+         * nothing.</p>
+         *
+         * <p>The walk must reach the delimiter that closes the requested
+         * element, because a later part could otherwise still extend it.  An
+         * element that runs to the end of the concatenation is admitted only
+         * when it is provably non-empty, since Java drops trailing empty
+         * elements.</p>
+         */
+        private SplitSegment exactSplitSegment(JsonElement expression) {
             // A split result reaches its reader through the array the VM
             // filled in, so resolve the select-over-store first: the codec
             // lowers the same selection, and this proof inspects syntax.
             JsonElement selected =
                     ContainerSmtCodec.selectedIndexedElement(expression);
             if (selected == null || !selected.isJsonObject()) {
-                return SplitPrefix.gap("NOT_METHOD_EXPRESSION");
+                return SplitSegment.gap("NOT_METHOD_EXPRESSION");
             }
             JsonObject split = selected.getAsJsonObject();
             if (!"MethodExpression".equals(string(split, "_type"))
                     || !isJavaSplitElement(string(split, "_name"))) {
-                return SplitPrefix.gap("NOT_STRING_SPLIT_ELEMENT");
+                return SplitSegment.gap("NOT_STRING_SPLIT_ELEMENT");
             }
             JsonArray params = array(split, "_param_list");
             if (params.size() != 3 && params.size() != 4) {
-                return SplitPrefix.gap("SPLIT_ARITY");
+                return SplitSegment.gap("SPLIT_ARITY");
             }
 
             Integer index = exactIntLiteral(params.get(params.size() - 1));
-            if (index == null || index != 0) {
-                return SplitPrefix.gap("INDEX_NOT_LITERAL_0");
+            if (index == null || index < 0) {
+                return SplitSegment.gap("INDEX_NOT_EXACT_LITERAL");
             }
             String delimiter = exactStringLiteral(params.get(1));
-            String delimiterGap = decimalDelimiterGap(delimiter);
-            if (!delimiterGap.isEmpty()) return SplitPrefix.gap(delimiterGap);
+            String delimiterGap = literalDelimiterGap(delimiter);
+            if (!delimiterGap.isEmpty()) {
+                return SplitSegment.gap(delimiterGap);
+            }
             if (params.size() == 4) {
                 Integer limit = exactIntLiteral(params.get(2));
-                // Java split(..., 1) returns the entire receiver and therefore
-                // does not preserve the decimal prefix as element zero.  Zero,
-                // negative limits, and positive limits greater than one do.
-                if (limit == null || limit == 1) {
-                    return SplitPrefix.gap(
-                            "LIMIT_DOES_NOT_PRESERVE_PREFIX");
+                // A positive limit applies the pattern at most limit-1
+                // times, so it has to allow the index splits that reach
+                // this element plus the one that closes it.  Zero and
+                // negative limits always split as far as the text goes.
+                if (limit == null) {
+                    return SplitSegment.gap("LIMIT_NOT_LITERAL");
+                }
+                if (limit > 0 && limit <= index + 1) {
+                    return SplitSegment.gap("LIMIT_DOES_NOT_REACH_INDEX");
                 }
             }
 
             JsonElement receiver = resolveExactEqualityBoundExpression(
                     params.get(0));
-            List<JsonElement> flattened = new ArrayList<>();
-            if (!flattenConcat(receiver, flattened)) {
-                return SplitPrefix.gap("CONCAT_PREFIX_AND_SUFFIX_REQUIRED");
-            }
-            // String concatenation commonly starts from the compiler/JDK
-            // builder identity "".  Removing only exact empty literals is a
-            // semantics-preserving normalization; symbolic or non-empty
-            // prefixes remain proof gaps.
             List<JsonElement> parts = new ArrayList<>();
-            for (JsonElement part : flattened) {
-                if (!"".equals(exactStringLiteral(part))) parts.add(part);
+            if (!flattenConcat(receiver, parts)) {
+                return SplitSegment.gap("CONCAT_RECEIVER_REQUIRED");
             }
-            if (parts.size() < 3) {
-                return SplitPrefix.gap("CONCAT_PREFIX_AND_SUFFIX_REQUIRED");
-            }
-            JsonElement first = parts.get(0);
-            if (first == null || !first.isJsonObject()) {
-                return SplitPrefix.gap("PREFIX_NOT_INT_TO_STRING");
-            }
-            JsonObject toString = first.getAsJsonObject();
-            JsonArray toStringParams = array(toString, "_param_list");
-            if (!"OpStrExpression".equals(string(toString, "_type"))
-                    || !"toString".equals(string(toString, "_name"))
-                    || bool(toString, "_is_not", false)
-                    || toStringParams.size() != 1
-                    || !isPrimitiveIntExpression(toStringParams.get(0))) {
-                return SplitPrefix.gap("PREFIX_NOT_PRIMITIVE_INT_TO_STRING");
-            }
-            String concatenatedDelimiter = exactStringLiteral(parts.get(1));
-            if (concatenatedDelimiter == null
-                    || !delimiter.equals(concatenatedDelimiter)) {
-                return SplitPrefix.gap("SPLIT_CONCAT_DELIMITER_MISMATCH");
-            }
-            for (int indexOfSuffix = 2; indexOfSuffix < parts.size();
-                 indexOfSuffix++) {
-                if (!provablyStringValued(parts.get(indexOfSuffix))) {
-                    return SplitPrefix.gap("SUFFIX_NOT_STRING_VALUED");
+            return splitConcatElement(parts, delimiter.charAt(0), index);
+        }
+
+        private SplitSegment splitConcatElement(List<JsonElement> parts,
+                                                char delimiter, int index) {
+            List<SplitPiece> element = new ArrayList<>();
+            int segment = 0;
+            for (JsonElement part : parts) {
+                String literal = exactStringLiteral(part);
+                if (literal != null) {
+                    int start = 0;
+                    while (true) {
+                        int at = literal.indexOf(delimiter, start);
+                        if (at < 0) break;
+                        if (segment == index) {
+                            addText(element,
+                                    literal.substring(start, at));
+                            return SplitSegment.of(element);
+                        }
+                        segment++;
+                        start = at + 1;
+                    }
+                    if (segment == index) {
+                        addText(element, literal.substring(start));
+                    }
+                    continue;
+                }
+                JsonElement rendered = javaIntRenderingSource(part);
+                if (rendered == null) {
+                    return SplitSegment.gap(
+                            "PART_NOT_PROVABLY_DELIMITER_FREE");
+                }
+                if (Character.isDigit(delimiter) || delimiter == '-') {
+                    return SplitSegment.gap(
+                            "DELIMITER_OCCURS_IN_JAVA_INT_TEXT");
+                }
+                if (segment == index) {
+                    element.add(SplitPiece.integer(rendered));
                 }
             }
-            return SplitPrefix.complete(toStringParams.get(0));
+            // Java keeps a final element only when it has characters.
+            if (segment == index && !element.isEmpty()) {
+                return SplitSegment.of(element);
+            }
+            return SplitSegment.gap(segment < index
+                    ? "INDEX_BEYOND_CONCAT_ELEMENTS"
+                    : "TRAILING_ELEMENT_MAY_BE_EMPTY");
+        }
+
+        /** An empty run between delimiters adds no characters. */
+        private static void addText(List<SplitPiece> element, String text) {
+            if (!text.isEmpty()) element.add(SplitPiece.text(text));
+        }
+
+        /** The int a {@code String.valueOf(int)} style part renders. */
+        private JsonElement javaIntRenderingSource(JsonElement expression) {
+            if (expression == null || !expression.isJsonObject()) return null;
+            JsonObject object = expression.getAsJsonObject();
+            JsonArray params = array(object, "_param_list");
+            if (!"OpStrExpression".equals(string(object, "_type"))
+                    || !"toString".equals(string(object, "_name"))
+                    || bool(object, "_is_not", false)
+                    || params.size() != 1
+                    || !isPrimitiveIntExpression(params.get(0))) {
+                return null;
+            }
+            return params.get(0);
         }
 
         /**
@@ -3155,7 +3236,15 @@ public final class ConcolicSmtComposer {
             return constantPayload(string(object, "_exp"));
         }
 
-        private String decimalDelimiterGap(String value) {
+        /**
+         * Admits only a delimiter that is one ordinary literal character.
+         *
+         * <p>Java splits on a regex, so a metacharacter would match text
+         * this segmentation never sees.  A delimiter made only of digits or
+         * a minus is still admitted here and refused later, but only if an
+         * integer rendering actually takes part.</p>
+         */
+        private String literalDelimiterGap(String value) {
             if (value == null || value.length() != 1) {
                 return "REGEX_NOT_SAFE_SINGLE_LITERAL";
             }
@@ -3165,9 +3254,6 @@ public final class ConcolicSmtComposer {
             }
             if ("\\.^$|?*+()[]{}".indexOf(delimiter) >= 0) {
                 return "REGEX_NOT_SAFE_SINGLE_LITERAL";
-            }
-            if (Character.isDigit(delimiter) || delimiter == '-') {
-                return "DELIMITER_OCCURS_IN_JAVA_INT_TEXT";
             }
             return "";
         }
@@ -4748,25 +4834,53 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    private static final class SplitPrefix {
-        private final JsonElement integerExpression;
+    /** One statically decided piece of a split element. */
+    private static final class SplitPiece {
+        private final String text;
+        private final JsonElement integerSource;
+
+        private SplitPiece(String text, JsonElement integerSource) {
+            this.text = text;
+            this.integerSource = integerSource;
+        }
+
+        private static SplitPiece text(String text) {
+            return new SplitPiece(text, null);
+        }
+
+        private static SplitPiece integer(JsonElement source) {
+            return new SplitPiece("", source);
+        }
+    }
+
+    /** One split element decided statically, or the reason it was not. */
+    private static final class SplitSegment {
+        private final List<SplitPiece> pieces;
         private final String gap;
 
-        private SplitPrefix(JsonElement integerExpression, String gap) {
-            this.integerExpression = integerExpression;
+        private SplitSegment(List<SplitPiece> pieces, String gap) {
+            this.pieces = pieces;
             this.gap = firstNonBlank(gap);
         }
 
-        private static SplitPrefix complete(JsonElement integerExpression) {
-            return new SplitPrefix(integerExpression, "");
+        private static SplitSegment of(List<SplitPiece> pieces) {
+            return new SplitSegment(
+                    Collections.unmodifiableList(
+                            new ArrayList<>(pieces)), "");
         }
 
-        private static SplitPrefix gap(String gap) {
-            return new SplitPrefix(null, gap);
+        private static SplitSegment gap(String gap) {
+            return new SplitSegment(null, gap);
         }
 
         private boolean complete() {
-            return integerExpression != null && gap.isEmpty();
+            return pieces != null && !pieces.isEmpty() && gap.isEmpty();
+        }
+
+        /** The int this element renders when it renders nothing else. */
+        private JsonElement singleIntegerSource() {
+            return pieces != null && pieces.size() == 1
+                    ? pieces.get(0).integerSource : null;
         }
     }
 
