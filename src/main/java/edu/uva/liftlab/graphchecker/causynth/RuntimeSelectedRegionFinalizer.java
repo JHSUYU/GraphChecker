@@ -3089,8 +3089,15 @@ public final class RuntimeSelectedRegionFinalizer {
                 if (rootCallId < 0L) continue;
                 List<Map<String, Object>> accesses = rows(
                         port.get("runtimeAccesses"));
-                if (accesses.isEmpty()) accesses =
-                        Collections.singletonList(port);
+                if (accesses.isEmpty()) {
+                    // A port without a separate access row records its own
+                    // exact access inline.  Snapshot it instead of aliasing
+                    // the port: a projection publishes the selected access
+                    // back under the port's own "runtimeAccesses", and an
+                    // alias would make the port contain itself.
+                    accesses = Collections.<Map<String, Object>>singletonList(
+                            new LinkedHashMap<String, Object>(port));
+                }
                 for (Map<String, Object> access : accesses) {
                     List<String> declarations = strings(
                             access.containsKey("fieldPathDeclarations")
