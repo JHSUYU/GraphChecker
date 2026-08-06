@@ -593,6 +593,54 @@ public class RegionPathWorklistTest {
     }
 
     @Test
+    public void rejectedFlipReplayClosesAsNamedExplorationGap() {
+        JsonObject summary = summary("ACT.CLOSURE.REJECTED",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject task = executionTask("ACT.CLOSURE.REJECTED",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.REJECTED", "SITE.1");
+        attachClosure(summary, closure);
+        attachClosure(task, closure);
+        RegionPathWorklist.Result pending = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(1, pending.tasks.size());
+
+        // The flip ran, but its bounded replay never reached the region's
+        // output relation, so the importer refused the summary.  That is an
+        // explored-and-abandoned proposal: the planner closes over it and
+        // names the gap instead of failing the wave.
+        JsonObject record = new JsonObject();
+        record.addProperty("queryKey", pending.tasks.get(0)
+                .get("queryKey").getAsString());
+        record.addProperty("status", "REPLAY_NOT_ADMITTED");
+        record.addProperty("reason",
+                "bounded replay produced no output relation");
+        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.singletonList(record),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                closed.manifest.get("state").getAsString());
+        assertTrue(closed.tasks.isEmpty());
+        assertTrue(closed.manifest.getAsJsonArray("gaps").isEmpty());
+        JsonArray explorationGaps = closed.manifest
+                .getAsJsonArray("explorationGaps");
+        assertEquals(1, explorationGaps.size());
+        JsonObject gap = explorationGaps.get(0).getAsJsonObject();
+        assertEquals("PATH_FLIP_REPLAY_NOT_ADMITTED",
+                gap.get("kind").getAsString());
+        assertEquals(record.get("queryKey").getAsString(),
+                gap.get("queryKey").getAsString());
+        assertEquals("bounded replay produced no output relation",
+                gap.get("reason").getAsString());
+    }
+
+    @Test
     public void concreteBranchWithoutPcDoesNotBlockClosure() {
         JsonObject closure = outputClosure("REGION.3.out.0",
                 "<P: int result>", "PROOF.DEFERRED",

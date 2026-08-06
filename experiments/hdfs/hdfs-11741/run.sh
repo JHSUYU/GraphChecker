@@ -1179,7 +1179,7 @@ combine_jsonl_unique() {
   mv -f "${temporary}" "${output}"
 }
 
-import_concolic_plan() {
+run_concolic_import() {
   local plan=$1
   local results=$2
   local summaries=$3
@@ -1189,7 +1189,11 @@ import_concolic_plan() {
     CAUSYNTH_IMPORTED_SUMMARIES="${summaries}" \
     CAUSYNTH_IMPORT_DIAGNOSTICS="${output_dir}/import-diagnostics.jsonl" \
     do_engine_config import
-  require_nonempty_file "imported concolic summary" "${summaries}"
+}
+
+import_concolic_plan() {
+  run_concolic_import "$@"
+  require_nonempty_file "imported concolic summary" "$3"
 }
 
 prepare_target_branch_query() {
@@ -1257,8 +1261,23 @@ run_path_query() {
     "${task_dir}/execution_task_plan.jsonl")
   replay_concolic_plan "${task_dir}/execution_task_plan.jsonl" \
     "${replay_task}" "${classes}" "${raw}" "${task_dir}"
-  import_concolic_plan "${task_dir}/execution_task_plan.jsonl" "${raw}" \
+  run_concolic_import "${task_dir}/execution_task_plan.jsonl" "${raw}" \
     "${imported}" "${task_dir}"
+  # A proposed flip whose bounded replay walked a path that never reaches the
+  # region's output relation is explored and abandoned, not a pipeline
+  # failure.  The importer's admission stays exactly as strict; the flip is
+  # named as an exploration gap so the planner closes over it and the round
+  # continues.
+  if [[ ! -s "${imported}" ]]; then
+    jq -c -s --slurpfile task "${task_dir}/execution_task_plan.jsonl" '
+      {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD",
+       queryKey: $task[0].pathQueryKey, regionId: $task[0].regionId,
+       taskId: $task[0].taskId, status: "REPLAY_NOT_ADMITTED",
+       reason: ([.[] | select(.code == "PATH_REPLAY_ADMISSION_REJECTED")
+                 | .detail] | join(";"))}
+    ' "${task_dir}/import-diagnostics.jsonl" >"${task_dir}/record.jsonl"
+    return
+  fi
   jq -e -c -s \
     --slurpfile task "${task_dir}/execution_task_plan.jsonl" '
     if length == 1 and ($task | length) == 1
