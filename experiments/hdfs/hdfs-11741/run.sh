@@ -1063,8 +1063,8 @@ run_seed_task() {
 run_seed_tasks_parallel() {
   local schedule_plan=$1
   shift
-  local spec goal_kind task_id pid status next=0
-  local -a specs=("$@") workers=() batch=()
+  local spec goal_kind task_id pid status index next=0
+  local -a specs=("$@") workers=() batch=() labels=() failures=()
   declare -A seen=()
   local -a unique=()
 
@@ -1083,6 +1083,7 @@ run_seed_tasks_parallel() {
   echo "[hdfs-11741] seeding ${#unique[@]} region campaign(s), ${region_parallelism} in parallel"
   while (( next < ${#unique[@]} )); do
     batch=()
+    labels=()
     while (( next < ${#unique[@]} \
         && ${#batch[@]} < region_parallelism )); do
       IFS=$'\t' read -r goal_kind task_id <<< "${unique[$next]}"
@@ -1094,19 +1095,29 @@ run_seed_tasks_parallel() {
       pid=$!
       workers+=("${pid}")
       batch+=("${pid}")
+      labels+=("${goal_kind} ${task_id}")
       next=$((next + 1))
     done
-    for pid in "${batch[@]}"; do
+    # One campaign that cannot seed says nothing about the others, and
+    # stopping here would hide every remaining failure behind the first.
+    # Run the whole closure, then report all of them together.
+    for index in "${!batch[@]}"; do
       set +e
-      wait "${pid}"
+      wait "${batch[$index]}"
       status=$?
       set -e
       if [[ "${status}" -ne 0 ]]; then
-        terminate_workers "${workers[@]}"
-        die "parallel region seed failed (exit ${status})"
+        failures+=("${labels[$index]} (exit ${status})")
+        echo "[hdfs-11741] region seed failed: ${labels[$index]} (exit ${status})" >&2
       fi
     done
   done
+  if (( ${#failures[@]} > 0 )); then
+    for spec in "${failures[@]}"; do
+      echo "[hdfs-11741] unseeded region campaign: ${spec}" >&2
+    done
+    die "${#failures[@]} of ${#unique[@]} region seed campaign(s) failed"
+  fi
 }
 
 combine_jsonl_unique() {
