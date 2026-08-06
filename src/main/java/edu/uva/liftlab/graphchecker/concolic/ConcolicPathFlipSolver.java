@@ -32,7 +32,11 @@ public final class ConcolicPathFlipSolver {
         Result result = solve(arguments);
         System.out.println(writeOutputs(arguments.outputDirectory, result));
         String status = string(result.solve.record, "status");
-        if (!"SAT_MODEL_READY".equals(status) && !"UNSAT".equals(status)) {
+        // UNSUPPORTED is a recorded terminal exploration outcome, not a
+        // process failure: the caller closes over it as a named exploration
+        // gap and the pipeline proceeds to candidates/compose.
+        if (!"SAT_MODEL_READY".equals(status) && !"UNSAT".equals(status)
+                && !"UNSUPPORTED".equals(status)) {
             System.exit(2);
         }
     }
