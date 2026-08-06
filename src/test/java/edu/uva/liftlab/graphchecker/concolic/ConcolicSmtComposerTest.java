@@ -1329,6 +1329,28 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void aBooleanTestedAgainstTheIntLiteralZeroIsNotASortConflict()
+            throws Exception {
+        // The JVM has no boolean comparison, so `if (!it.hasNext())`
+        // reaches the composer as a boolean compared with the int literal
+        // 0.  Calling that a sort conflict drops the guard and forces its
+        // case selector false, which alone makes the candidate unsat.
+        JsonObject flag = new JsonObject();
+        flag.addProperty("_type", "SymbolExpression");
+        flag.addProperty("_java_type", "Z");
+        flag.addProperty("_exp", "REGION.1.in.0");
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(flag, "!=", integer(0)));
+
+        ConcolicSmtComposer.Result result = composeWithConstraints(
+                constraints);
+
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains("BinarySortConflict"));
+        assertTrue(result.smtLib, result.smtLib.contains("(not "));
+    }
+
+    @Test
     public void literalIndexedReadSelectsOnlyTheStoredElement()
             throws Exception {
         // select-over-store: reading index zero cannot observe what a write

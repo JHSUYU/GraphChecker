@@ -2358,8 +2358,15 @@ public final class ConcolicSmtComposer {
             String value = constantPayload(raw);
             Sort sort = sortOfJava(javaType);
             Term result;
+            // The JVM has no boolean comparison instruction, so a boolean
+            // test compiles to a comparison against the int literal 0:
+            // `if (!it.hasNext())` reaches here as BOOL against an int 0.
+            // Reading that as a sort conflict drops the guard and forces
+            // its case false, so an integral 0/1 in a boolean position is
+            // Java's own encoding of false/true, exactly as the path
+            // solver already reads it.
             if (expected == Sort.BOOL
-                    && "Z".equals(javaTypeDescriptor(javaType))) {
+                    && (sort == Sort.BOOL || sort == Sort.INT)) {
                 if (!"0".equals(value) && !"1".equals(value)) {
                     unsupported.add("InvalidJavaBooleanLiteral:"
                             + firstNonBlank(raw, "MISSING"));
