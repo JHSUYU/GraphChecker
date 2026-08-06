@@ -991,6 +991,7 @@ replay_concolic_plan() {
         -Dcausynth.concolic.task.id="${task_id}" \
         -Dcausynth.concolic.results="${results}" \
         -Dcausynth.concolic.halt.after.selected.result=true \
+        -Dcausynth.concolic.engine.wait.millis="${HDFS11741_ENGINE_WAIT_MS:-60000}" \
         -Dcausynth.junit.ignore.timeout=true \
         -Dtest.build.data="${campaign}/test-data" \
         -Djava.io.tmpdir="${campaign}/java-tmp" \

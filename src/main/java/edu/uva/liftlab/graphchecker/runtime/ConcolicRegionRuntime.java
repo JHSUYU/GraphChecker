@@ -88,6 +88,20 @@ public final class ConcolicRegionRuntime {
     private static final AtomicLong ACCESSOR_CONTEXT_TOKEN_COUNTER =
             new AtomicLong();
     private static final AtomicBoolean ENGINE_BUSY = new AtomicBoolean();
+    private static final Object ENGINE_LOCK = new Object();
+    /**
+     * How long a region root waits for a concurrent activation to release the
+     * single symbolic engine before it gives up.  Zero disables waiting.
+     */
+    static final String ENGINE_WAIT_PROPERTY =
+            "causynth.concolic.engine.wait.millis";
+    static final long DEFAULT_ENGINE_WAIT_MILLIS = 60_000L;
+    static final String ENGINE_BUSY_TIMEOUT =
+            "ENGINE_BUSY_TIMEOUT: another concolic region held the symbolic "
+                    + "engine for the whole wait budget";
+    static final String ENGINE_BUSY_INTERRUPTED =
+            "ENGINE_BUSY_INTERRUPTED: waiting for the symbolic engine was "
+                    + "interrupted";
     private static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
     private static final ThreadLocal<Long> CURRENT_TOKEN = new ThreadLocal<>();
     /**
@@ -412,7 +426,17 @@ public final class ConcolicRegionRuntime {
         CURRENT_TOKEN.remove();
         ROOT_INVOCATION_FRAMES.remove();
         CURRENT_ACCESSOR_CALL_CONTEXT.remove();
-        ENGINE_BUSY.set(false);
+        releaseSymbolicEngine();
+    }
+
+    /** Test seam for the bounded symbolic-engine reservation. */
+    static String reserveSymbolicEngineForTests() {
+        return reserveSymbolicEngine();
+    }
+
+    /** Test seam releasing the reservation taken above. */
+    static void releaseSymbolicEngineForTests() {
+        releaseSymbolicEngine();
     }
 
     /**
@@ -435,8 +459,9 @@ public final class ConcolicRegionRuntime {
 
     private static long startSymbolicRegion(RuntimeTask activation,
                                             Object receiver) {
-        if (!reserveSymbolicEngine()) {
-            writeSkipped(activation, "another concolic region is active");
+        String contention = reserveSymbolicEngine();
+        if (!contention.isEmpty()) {
+            writeSkipped(activation, contention);
             return 0L;
         }
 
@@ -518,12 +543,64 @@ public final class ConcolicRegionRuntime {
         return token;
     }
 
-    private static boolean reserveSymbolicEngine() {
-        return ENGINE_BUSY.compareAndSet(false, true);
+    /**
+     * Reserves the single symbolic engine for this activation, waiting for a
+     * bounded budget when a concurrent activation already holds it.
+     *
+     * <p>A workload reaches one region root from several threads, and which
+     * of those activations first grabs the engine is decided by scheduling.
+     * Discarding a losing activation outright throws away the only evidence
+     * the task may ever get, because the winner can still turn out to
+     * contradict the recording and emit nothing.  Waiting lets the losers
+     * compete in turn.</p>
+     *
+     * <p>The wait is bounded on purpose: an activation that holds the engine
+     * may itself be blocked on progress only the waiting thread can make, and
+     * an unbounded wait would deadlock the workload.  The timeout is
+     * therefore a named skip reason rather than a silent retry.</p>
+     *
+     * @return an empty string once reserved, otherwise the skip reason.
+     */
+    private static String reserveSymbolicEngine() {
+        if (ENGINE_BUSY.compareAndSet(false, true)) return "";
+        long budget = engineWaitMillis();
+        if (budget <= 0L) return ENGINE_BUSY_TIMEOUT;
+        long deadline = System.currentTimeMillis() + budget;
+        synchronized (ENGINE_LOCK) {
+            while (!ENGINE_BUSY.compareAndSet(false, true)) {
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0L) return ENGINE_BUSY_TIMEOUT;
+                try {
+                    ENGINE_LOCK.wait(remaining);
+                } catch (InterruptedException interrupted) {
+                    // Thread roots are commonly interrupted during shutdown.
+                    // Preserve that signal for the workload instead of
+                    // silently consuming it inside instrumentation.
+                    Thread.currentThread().interrupt();
+                    return ENGINE_BUSY_INTERRUPTED;
+                }
+            }
+            return "";
+        }
     }
 
     private static void releaseSymbolicEngine() {
-        ENGINE_BUSY.set(false);
+        synchronized (ENGINE_LOCK) {
+            ENGINE_BUSY.set(false);
+            ENGINE_LOCK.notifyAll();
+        }
+    }
+
+    /** Wait budget for the single symbolic engine, in milliseconds. */
+    static long engineWaitMillis() {
+        String configured = safe(System.getProperty(
+                ENGINE_WAIT_PROPERTY)).trim();
+        if (configured.isEmpty()) return DEFAULT_ENGINE_WAIT_MILLIS;
+        try {
+            return Math.max(0L, Long.parseLong(configured));
+        } catch (NumberFormatException malformed) {
+            return DEFAULT_ENGINE_WAIT_MILLIS;
+        }
     }
 
     /** Called once per Java argument immediately after {@link #enterRegion}. */

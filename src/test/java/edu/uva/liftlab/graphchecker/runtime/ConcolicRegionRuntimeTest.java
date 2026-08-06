@@ -625,6 +625,80 @@ public class ConcolicRegionRuntimeTest {
         return new ConcolicRegionRuntime.ModelAssignment(encoded);
     }
 
+    @Test
+    public void engineReservationWaitsForTheHolderToRelease()
+            throws Exception {
+        ConcolicRegionRuntime.resetForTests();
+        System.setProperty(ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY,
+                "60000");
+        try {
+            assertEquals("",
+                    ConcolicRegionRuntime.reserveSymbolicEngineForTests());
+            final List<String> outcome = Collections.synchronizedList(
+                    new ArrayList<String>());
+            Thread waiter = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    outcome.add(ConcolicRegionRuntime
+                            .reserveSymbolicEngineForTests());
+                }
+            });
+            waiter.start();
+            // The waiter must not be discarded while the engine is held.
+            waiter.join(200L);
+            assertTrue(waiter.isAlive());
+            assertTrue(outcome.isEmpty());
+
+            ConcolicRegionRuntime.releaseSymbolicEngineForTests();
+            waiter.join(30_000L);
+            assertFalse(waiter.isAlive());
+            assertEquals(Collections.singletonList(""), outcome);
+        } finally {
+            System.clearProperty(
+                    ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY);
+            ConcolicRegionRuntime.resetForTests();
+        }
+    }
+
+    @Test
+    public void engineReservationTimeoutIsANamedSkipReason() {
+        ConcolicRegionRuntime.resetForTests();
+        System.setProperty(ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY, "50");
+        try {
+            assertEquals("",
+                    ConcolicRegionRuntime.reserveSymbolicEngineForTests());
+            long started = System.currentTimeMillis();
+            // A held engine may be blocked on the waiting thread itself, so
+            // the wait must expire instead of deadlocking the workload.
+            assertEquals(ConcolicRegionRuntime.ENGINE_BUSY_TIMEOUT,
+                    ConcolicRegionRuntime.reserveSymbolicEngineForTests());
+            assertTrue(System.currentTimeMillis() - started >= 50L);
+        } finally {
+            System.clearProperty(
+                    ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY);
+            ConcolicRegionRuntime.resetForTests();
+        }
+    }
+
+    @Test
+    public void engineWaitBudgetFallsBackToTheDefault() {
+        System.clearProperty(ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY);
+        assertEquals(ConcolicRegionRuntime.DEFAULT_ENGINE_WAIT_MILLIS,
+                ConcolicRegionRuntime.engineWaitMillis());
+        System.setProperty(ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY,
+                "not-a-number");
+        try {
+            assertEquals(ConcolicRegionRuntime.DEFAULT_ENGINE_WAIT_MILLIS,
+                    ConcolicRegionRuntime.engineWaitMillis());
+            System.setProperty(ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY,
+                    "0");
+            assertEquals(0L, ConcolicRegionRuntime.engineWaitMillis());
+        } finally {
+            System.clearProperty(
+                    ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY);
+        }
+    }
+
     private static final class NestedRoot {
         private final NestedHolder holder = new NestedHolder();
     }
