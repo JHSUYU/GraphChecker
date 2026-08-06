@@ -1369,11 +1369,20 @@ probe_observed_candidate() {
     CAUSYNTH_FATAL_REGION_INSTANCE_ID="${partial_probe_target_instance}" \
     do_engine_config compose \
       --composition-mode EXISTENTIAL_OBSERVED_PATHS
-  jq -e '.state == "CANDIDATE_READY"
-    and .pathSetComplete == false
-    and .trustState == "OBSERVED_PATH_UNDERAPPROX"' \
+  jq -e '.trustState == "OBSERVED_PATH_UNDERAPPROX"
+    and .pathSetComplete == false' \
     "${attempt}/composition.json" >/dev/null \
-    || die "observed-path composition is not a complete SAT candidate"
+    || die "observed-path composition lost its underapproximation scope"
+  # This probe is opportunistic: it asks whether the paths imported so far
+  # already prove the target. A cut that still carries composition gaps is
+  # not an answer, exactly like a cut the solver cannot satisfy yet, so it
+  # continues exploration instead of ending the campaign. The complete
+  # closure below composes again and reports its own gaps.
+  if ! jq -e '.state == "CANDIDATE_READY"' \
+      "${attempt}/composition.json" >/dev/null; then
+    echo "[hdfs-11741] observed-path composition still has gaps; continuing exploration"
+    return 1
+  fi
   CAUSYNTH_COMPOSED_SMT="${attempt}/candidate.smt2" \
     CAUSYNTH_COMPOSITION_MANIFEST="${attempt}/composition.json" \
     CAUSYNTH_REACH_REPORT="${attempt}/z3-result.json" \
