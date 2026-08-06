@@ -2792,10 +2792,13 @@ public final class RuntimeSelectedRegionFinalizer {
      * Resource ceiling on the accesses one static site may contribute to one
      * port.  Unlike the loop bound this states no execution semantics: it
      * exists so that a long-lived thread root cannot materialise an unbounded
-     * access array, and it fails closed by name rather than silently dropping
-     * an access the closure demanded.
+     * access array, and a port that cannot be served within it says so on the
+     * port rather than silently keeping an arbitrary subset.
      */
     static final int MAX_RETAINED_SITE_ACCESSES = 64;
+
+    /** Names a port whose demand exceeded the retained-access ceiling. */
+    static final String DEMAND_RETENTION_REFUSAL = "demandRetentionRefusal";
 
     /**
      * Keeps a bounded, demand-aware view of one port's recorded accesses.
@@ -2804,9 +2807,14 @@ public final class RuntimeSelectedRegionFinalizer {
      * site, including the ones nested calls contribute; it is not a loop body
      * counter.  Capping it is therefore a resource default, never the loop
      * bound, and an access the closure names exactly is retained however late
-     * in the activation the trace recorded it.  Silently truncating such an
-     * access would hide a producer the trace proves, so the only way to lose
-     * one is the named ceiling below.</p>
+     * in the activation the trace recorded it.</p>
+     *
+     * <p>A site whose demand exceeds the resource ceiling cannot be served
+     * honestly: keeping some arbitrary 64 of its demanded accesses would be
+     * the silent truncation this pass exists to remove.  Such a port keeps
+     * only the plain resource default and carries the refusal by name, so the
+     * leaves below it stay under-approximated and the reason travels with the
+     * artifact instead of ending the whole refinement over one hot site.</p>
      */
     private static List<Map<String, Object>> boundedRuntimeAccesses(
             Map<String, Object> port, RuntimeAccessDemand demand)
@@ -2818,6 +2826,8 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, Integer> occurrences = new LinkedHashMap<>();
         Map<String, Integer> retained = new LinkedHashMap<>();
         List<Map<String, Object>> bounded = new ArrayList<>();
+        List<Map<String, Object>> resourceDefault = new ArrayList<>();
+        String refusal = "";
         for (Map<String, Object> access : accesses) {
             String site = first(text(access.get("staticAccessSiteId")),
                     text(port.get("portId")));
@@ -2825,19 +2835,25 @@ public final class RuntimeSelectedRegionFinalizer {
             occurrences.put(site, occurrence);
             access.put("staticAccessSiteId", site);
             access.put("activationLocalStaticSiteOccurrence", occurrence);
-            if (occurrence > LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS
-                    && !demand.required(port, access)) {
-                continue;
-            }
+            boolean withinDefault =
+                    occurrence <= LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
+            if (withinDefault) resourceDefault.add(access);
+            if (!withinDefault && !demand.required(port, access)) continue;
             int kept = retained.getOrDefault(site, 0) + 1;
             retained.put(site, kept);
             if (kept > MAX_RETAINED_SITE_ACCESSES) {
-                throw new IOException("BOUND_INSUFFICIENT: static site "
-                        + site + " retains " + kept + " demanded "
-                        + "activation-local accesses; the retained-access "
-                        + "ceiling is " + MAX_RETAINED_SITE_ACCESSES);
+                if (refusal.isEmpty()) {
+                    refusal = "BOUND_INSUFFICIENT: static site " + site
+                            + " demands more than " + MAX_RETAINED_SITE_ACCESSES
+                            + " activation-local accesses";
+                }
+                continue;
             }
             bounded.add(access);
+        }
+        if (!refusal.isEmpty()) {
+            port.put(DEMAND_RETENTION_REFUSAL, refusal);
+            return resourceDefault;
         }
         return bounded;
     }

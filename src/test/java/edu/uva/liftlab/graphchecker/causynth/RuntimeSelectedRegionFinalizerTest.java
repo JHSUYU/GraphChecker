@@ -2869,9 +2869,11 @@ public class RuntimeSelectedRegionFinalizerTest {
     }
 
     @Test
-    public void tooManyDemandedAccessesAtOneSiteFailClosedByName() {
-        // Retaining every demanded access is what keeps the pass honest, so
-        // the only way to lose one is to say so.
+    public void tooManyDemandedAccessesAtOneSiteRefuseByName()
+            throws Exception {
+        // Keeping an arbitrary subset of the demanded accesses would be the
+        // silent truncation this pass exists to remove, so the port says it
+        // cannot be served and its leaves stay under-approximated.
         int total = RuntimeSelectedRegionFinalizer
                 .MAX_RETAINED_SITE_ACCESSES + 1;
         List<Map<String, Object>> accesses = new ArrayList<>();
@@ -2894,15 +2896,13 @@ public class RuntimeSelectedRegionFinalizerTest {
                         Collections.singletonList(
                         leafPort("REGION.R.in.keyId", 20L, 74965, 5000L))));
 
-        try {
-            RuntimeSelectedRegionFinalizer.demandedLeafProducerFlows(regions,
-                    new ArrayList<Map<String, Object>>(),
-                    new LinkedHashMap<String, Long>());
-            throw new AssertionError("expected a named resource refusal");
-        } catch (IOException expected) {
-            assertTrue(expected.getMessage(),
-                    expected.getMessage().startsWith("BOUND_INSUFFICIENT: "));
-        }
+        RuntimeSelectedRegionFinalizer.demandedLeafProducerFlows(regions,
+                new ArrayList<Map<String, Object>>(),
+                new LinkedHashMap<String, Long>());
+
+        String refusal = String.valueOf(writer.get(
+                RuntimeSelectedRegionFinalizer.DEMAND_RETENTION_REFUSAL));
+        assertTrue(refusal, refusal.startsWith("BOUND_INSUFFICIENT: "));
     }
 
     private static Map<String, Object> object(Object... values) {
