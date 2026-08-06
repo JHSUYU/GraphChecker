@@ -41,30 +41,7 @@ final class SymbolicRegionPlanner {
         Set<String> protocolAnchors = new LinkedHashSet<>();
         Set<String> stateAnchors = new LinkedHashSet<>();
         Set<String> demandedState = failureRelevantState(program.edges);
-        // A demanded declaration is often produced or exposed by a method the
-        // backward slice never had to enter, such as the accessor or the
-        // rebuild that materializes a received payload.  Leaving that method
-        // outside every envelope makes the leaf invisible at runtime, so the
-        // demanded state below a carrier can never reach its producer.  Admit
-        // exactly the methods that touch a demanded declaration; this stays
-        // demand-driven and never widens an envelope for unrelated code.
-        Set<String> demandedStateMethods = new LinkedHashSet<>();
-        for (Map<String, Object> edge : program.edges) {
-            String transfer = text(edge.get("transferKind"));
-            String method = text(edge.get("method"));
-            if (method.isEmpty() || selected.contains(method)
-                    || !"HEAP_READ".equals(transfer)
-                    && !"HEAP_WRITE".equals(transfer)) {
-                continue;
-            }
-            if (demandedState.contains(stateDeclaration(edge, transfer))) {
-                demandedStateMethods.add(method);
-            }
-        }
         for (String method : selected) {
-            outgoing.put(method, new LinkedHashSet<>());
-        }
-        for (String method : demandedStateMethods) {
             outgoing.put(method, new LinkedHashSet<>());
         }
         for (Map<String, Object> edge : program.edges) {
@@ -88,9 +65,7 @@ final class SymbolicRegionPlanner {
                 stateAnchors.add(method);
             }
             String callee = invocationTarget(edge);
-            if (!selected.contains(method)
-                    || !selected.contains(callee)
-                    && !demandedStateMethods.contains(callee)
+            if (!selected.contains(method) || !selected.contains(callee)
                     || method.equals(callee)
                     || "PROTOCOL_TRANSFER".equals(transfer)) {
                 continue;
