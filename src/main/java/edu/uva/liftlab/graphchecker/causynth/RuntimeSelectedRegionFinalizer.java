@@ -558,7 +558,11 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Object> port, String demand, boolean output,
             Set<Long> eventSeqs) throws IOException {
         if (!"HEAP".equals(text(port.get("transportKind")))) return;
-        List<Map<String, Object>> accesses = boundedRuntimeAccesses(port);
+        // The retained edges name their occurrences exactly, so those survive
+        // the per-site resource cap; anything else stays a bounded default.
+        List<Map<String, Object>> accesses = boundedRuntimeAccesses(port,
+                (owner, access) -> eventSeqs.contains(longNumber(
+                        access.get("eventSeq"), -1L)));
         if (accesses.isEmpty()) {
             throw new IOException("demanded heap port has no runtime access: "
                     + demand);
@@ -2355,18 +2359,24 @@ public final class RuntimeSelectedRegionFinalizer {
     private static List<Map<String, Object>> fieldFlows(
             List<Map<String, Object>> regions,
             Set<String> demandedFields,
-            Map<String, Long> laneByInstance) {
-        List<BoundPort> writes = new ArrayList<>();
+            Map<String, Long> laneByInstance) throws IOException {
+        // Reads state the demand, so they are collected first under the plain
+        // resource default; the writes that could answer them are then kept
+        // however late the trace recorded them.
         List<BoundPort> reads = new ArrayList<>();
         for (Map<String, Object> region : regions) {
-            collectPorts(writes, text(region.get("regionId")),
-                    rows(region.get("outputs")));
             collectPorts(reads, text(region.get("regionId")),
-                    rows(region.get("symbolicInputs")));
+                    rows(region.get("symbolicInputs")), NO_ACCESS_DEMAND);
+        }
+        reads.removeIf(port -> !demandedFields.contains(
+                port.leafDeclaration()));
+        RuntimeAccessDemand demand = leafReceiverDemand(reads);
+        List<BoundPort> writes = new ArrayList<>();
+        for (Map<String, Object> region : regions) {
+            collectPorts(writes, text(region.get("regionId")),
+                    rows(region.get("outputs")), demand);
         }
         writes.removeIf(port -> !demandedFields.contains(
-                port.leafDeclaration()));
-        reads.removeIf(port -> !demandedFields.contains(
                 port.leafDeclaration()));
         List<Map<String, Object>> result = new ArrayList<>();
         for (BoundPort read : reads) {
@@ -2470,7 +2480,7 @@ public final class RuntimeSelectedRegionFinalizer {
     static List<Map<String, Object>> demandedLeafProducerFlows(
             List<Map<String, Object>> regions,
             List<Map<String, Object>> regionEdges,
-            Map<String, Long> laneByInstance) {
+            Map<String, Long> laneByInstance) throws IOException {
         Set<String> closedInputs = new LinkedHashSet<>();
         for (Map<String, Object> edge : regionEdges) {
             String toRegion = text(edge.get("toRegion"));
@@ -2482,11 +2492,9 @@ public final class RuntimeSelectedRegionFinalizer {
                         toPort));
             }
         }
-        List<BoundPort> writes = new ArrayList<>();
         List<BoundPort> reads = new ArrayList<>();
         for (Map<String, Object> region : regions) {
             String regionId = text(region.get("regionId"));
-            collectPorts(writes, regionId, rows(region.get("outputs")));
             // Only a semantic scalar leaf is at stake here.  A carrier read
             // is answered by the ordinary field flow over demanded fields,
             // and widening this pass to carriers would invent relations the
@@ -2496,17 +2504,26 @@ public final class RuntimeSelectedRegionFinalizer {
                     : rows(region.get("symbolicInputs"))) {
                 if (primitiveLeaf(port)) leaves.add(port);
             }
-            collectPorts(reads, regionId, leaves);
+            collectPorts(reads, regionId, leaves, NO_ACCESS_DEMAND);
+        }
+        reads.removeIf(read -> read.receiver == 0
+                || read.leafDeclaration().isEmpty()
+                || DependencyRole.CONCRETE_STRUCTURE_CARRIER.equals(
+                read.dependencyRole)
+                || closedInputs.contains(portDemandKey(read.region,
+                read.rootCallId, read.port)));
+        // The producing write is activation-local to a long-lived root, so
+        // the trace may record it far past the resource default; demanding it
+        // by receiver and leaf is what keeps it visible here.
+        RuntimeAccessDemand demand = leafReceiverDemand(reads);
+        List<BoundPort> writes = new ArrayList<>();
+        for (Map<String, Object> region : regions) {
+            collectPorts(writes, text(region.get("regionId")),
+                    rows(region.get("outputs")), demand);
         }
         List<Map<String, Object>> result = new ArrayList<>();
         for (BoundPort read : reads) {
-            if (read.receiver == 0
-                    || closedInputs.contains(portDemandKey(read.region,
-                    read.rootCallId, read.port))) {
-                continue;
-            }
             String readField = read.leafDeclaration();
-            if (readField.isEmpty()) continue;
             Map<String, BoundPort> byWriterPort = new LinkedHashMap<>();
             for (BoundPort write : writes) {
                 if (sameInstance(write, read)
@@ -2515,9 +2532,7 @@ public final class RuntimeSelectedRegionFinalizer {
                         || write.receiver != read.receiver
                         || !write.leafDeclaration().equals(readField)
                         || sameLane(write, read, laneByInstance)
-                        && write.seq >= read.seq
-                        || DependencyRole.CONCRETE_STRUCTURE_CARRIER.equals(
-                        read.dependencyRole)) {
+                        && write.seq >= read.seq) {
                     continue;
                 }
                 String writerPort = portDemandKey(write.region,
@@ -2708,12 +2723,15 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     private static void collectPorts(List<BoundPort> target, String region,
-                                     List<Map<String, Object>> ports) {
+                                     List<Map<String, Object>> ports,
+                                     RuntimeAccessDemand demand)
+            throws IOException {
         for (Map<String, Object> port : ports) {
             if (!causalHeapPort(port)) {
                 continue;
             }
-            List<Map<String, Object>> accesses = boundedRuntimeAccesses(port);
+            List<Map<String, Object>> accesses = boundedRuntimeAccesses(
+                    port, demand);
             if (accesses.isEmpty()) {
                 accesses = Collections.singletonList(port);
             }
@@ -2758,27 +2776,97 @@ public final class RuntimeSelectedRegionFinalizer {
      * access site. Raw trace sequence numbers remain evidence only; the
      * bounded occurrence is the cross-run identity used by causal edges.
      */
+    /**
+     * Decides whether the closure names one recorded access exactly, so that
+     * the per-site resource cap must not drop it.
+     */
+    private interface RuntimeAccessDemand {
+        boolean required(Map<String, Object> port, Map<String, Object> access);
+    }
+
+    /** Nothing is demanded yet; only the resource default applies. */
+    private static final RuntimeAccessDemand NO_ACCESS_DEMAND =
+            (port, access) -> false;
+
+    /**
+     * Resource ceiling on the accesses one static site may contribute to one
+     * port.  Unlike the loop bound this states no execution semantics: it
+     * exists so that a long-lived thread root cannot materialise an unbounded
+     * access array, and it fails closed by name rather than silently dropping
+     * an access the closure demanded.
+     */
+    static final int MAX_RETAINED_SITE_ACCESSES = 64;
+
+    /**
+     * Keeps a bounded, demand-aware view of one port's recorded accesses.
+     *
+     * <p>The occurrence index counts every activation-local execution of the
+     * site, including the ones nested calls contribute; it is not a loop body
+     * counter.  Capping it is therefore a resource default, never the loop
+     * bound, and an access the closure names exactly is retained however late
+     * in the activation the trace recorded it.  Silently truncating such an
+     * access would hide a producer the trace proves, so the only way to lose
+     * one is the named ceiling below.</p>
+     */
     private static List<Map<String, Object>> boundedRuntimeAccesses(
-            Map<String, Object> port) {
+            Map<String, Object> port, RuntimeAccessDemand demand)
+            throws IOException {
         List<Map<String, Object>> accesses = new ArrayList<>(
                 rows(port.get("runtimeAccesses")));
         accesses.sort(Comparator.comparingLong(access ->
                 longNumber(access.get("eventSeq"), Long.MAX_VALUE)));
         Map<String, Integer> occurrences = new LinkedHashMap<>();
+        Map<String, Integer> retained = new LinkedHashMap<>();
         List<Map<String, Object>> bounded = new ArrayList<>();
         for (Map<String, Object> access : accesses) {
             String site = first(text(access.get("staticAccessSiteId")),
                     text(port.get("portId")));
             int occurrence = occurrences.getOrDefault(site, 0) + 1;
             occurrences.put(site, occurrence);
-            if (occurrence > LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS) {
-                continue;
-            }
             access.put("staticAccessSiteId", site);
             access.put("activationLocalStaticSiteOccurrence", occurrence);
+            if (occurrence > LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS
+                    && !demand.required(port, access)) {
+                continue;
+            }
+            int kept = retained.getOrDefault(site, 0) + 1;
+            retained.put(site, kept);
+            if (kept > MAX_RETAINED_SITE_ACCESSES) {
+                throw new IOException("BOUND_INSUFFICIENT: static site "
+                        + site + " retains " + kept + " demanded "
+                        + "activation-local accesses; the retained-access "
+                        + "ceiling is " + MAX_RETAINED_SITE_ACCESSES);
+            }
             bounded.add(access);
         }
         return bounded;
+    }
+
+    /**
+     * Demands exactly the writes that could answer a collected read: the same
+     * receiver object and the same declared leaf.  That is a necessary
+     * condition of every pairing below, so a write this excludes could never
+     * have been chosen, while a write it admits survives the resource cap.
+     */
+    private static RuntimeAccessDemand leafReceiverDemand(
+            List<BoundPort> reads) {
+        Set<String> demanded = new LinkedHashSet<>();
+        for (BoundPort read : reads) {
+            if (read.receiver != 0 && !read.leafDeclaration().isEmpty()) {
+                demanded.add(read.receiver + "\n" + read.leafDeclaration());
+            }
+        }
+        return (port, access) -> {
+            int receiver = number(access.get("fieldReceiverObjectId"),
+                    number(port.get("fieldReceiverObjectId"), 0));
+            List<String> declarations = strings(
+                    access.containsKey("fieldPathDeclarations")
+                            ? access.get("fieldPathDeclarations")
+                            : port.get("fieldPathDeclarations"));
+            return receiver != 0 && !declarations.isEmpty()
+                    && demanded.contains(receiver + "\n"
+                    + declarations.get(declarations.size() - 1));
+        };
     }
 
     private static void requireRefinedGraph(

@@ -2706,7 +2706,7 @@ public class RuntimeSelectedRegionFinalizerTest {
     }
 
     @Test
-    public void objectIdentityBindsADemandedLeafToItsRealProducer() {
+    public void objectIdentityBindsADemandedLeafToItsRealProducer() throws Exception {
         // The producer builds the object activation-locally; the consumer
         // reads that exact object's leaf after it escaped through a carrier.
         List<Map<String, Object>> regions = Arrays.asList(
@@ -2736,7 +2736,7 @@ public class RuntimeSelectedRegionFinalizerTest {
     }
 
     @Test
-    public void anAmbiguousLeafWriterLeavesTheReadUnbound() {
+    public void anAmbiguousLeafWriterLeavesTheReadUnbound() throws Exception {
         // Two distinct writer ports could have produced the value, so the
         // trace does not prove a producer and the leaf keeps its concrete
         // under-approximation.
@@ -2759,7 +2759,7 @@ public class RuntimeSelectedRegionFinalizerTest {
     }
 
     @Test
-    public void anAlreadyClosedLeafIsNotBoundTwice() {
+    public void anAlreadyClosedLeafIsNotBoundTwice() throws Exception {
         List<Map<String, Object>> regions = Arrays.asList(
                 leafRegion("REGION.W", Collections.singletonList(
                         leafPort("REGION.W.out.keyId", 10L, 74965, 100L)),
@@ -2778,7 +2778,7 @@ public class RuntimeSelectedRegionFinalizerTest {
     }
 
     @Test
-    public void aDifferentObjectIsNeverTreatedAsTheProducer() {
+    public void aDifferentObjectIsNeverTreatedAsTheProducer() throws Exception {
         List<Map<String, Object>> regions = Arrays.asList(
                 leafRegion("REGION.W", Collections.singletonList(
                         leafPort("REGION.W.out.keyId", 10L, 11111, 100L)),
@@ -2792,6 +2792,117 @@ public class RuntimeSelectedRegionFinalizerTest {
                 .demandedLeafProducerFlows(regions,
                         new ArrayList<Map<String, Object>>(),
                         new LinkedHashMap<String, Long>()).isEmpty());
+    }
+
+    /**
+     * A writer port whose one static site ran many times in a single
+     * long-lived activation.  Only {@code demandedIndex} wrote the object the
+     * consumer later reads.
+     */
+    private static Map<String, Object> leafWriterPort(
+            String portId, long rootCallId, int receiver,
+            int demandedIndex, int total) {
+        List<Map<String, Object>> accesses = new ArrayList<>();
+        for (int index = 0; index < total; index++) {
+            accesses.add(object("eventSeq", 100L + index,
+                    "process", "p", "rootCallId", rootCallId,
+                    "fieldReceiverObjectId",
+                    index == demandedIndex ? receiver : 90000 + index,
+                    "fieldPathDeclarations",
+                    Collections.singletonList(LEAF),
+                    "staticAccessSiteId", "SITE"));
+        }
+        Map<String, Object> port = leafPort(portId, rootCallId, 0, 100L);
+        port.put("runtimeAccesses", accesses);
+        return port;
+    }
+
+    @Test
+    public void aDemandedWritePastTheResourceCapStillProducesTheLeaf()
+            throws Exception {
+        // The site occurrence index accumulates over nested calls, so the one
+        // write that built the consumed object landed far past the resource
+        // default.  Truncating it would hide a producer the trace proves.
+        List<Map<String, Object>> regions = Arrays.asList(
+                leafRegion("REGION.W", Collections.singletonList(
+                        leafWriterPort("REGION.W.out.keyId", 10L, 74965,
+                                21, 29)),
+                        Collections.<Map<String, Object>>emptyList()),
+                leafRegion("REGION.R",
+                        Collections.<Map<String, Object>>emptyList(),
+                        Collections.singletonList(
+                        leafPort("REGION.R.in.keyId", 20L, 74965, 5000L))));
+
+        List<Map<String, Object>> flows =
+                RuntimeSelectedRegionFinalizer.demandedLeafProducerFlows(
+                        regions, new ArrayList<Map<String, Object>>(),
+                        new LinkedHashMap<String, Long>());
+
+        assertEquals(1, flows.size());
+        Map<String, Object> edge = flows.get(0);
+        assertEquals("REGION.W", edge.get("fromRegion"));
+        assertEquals("REGION.R", edge.get("toRegion"));
+        // The retained access keeps its true occurrence index; the cap is a
+        // resource default, not a claim about how often the site ran.
+        assertEquals(22, edge.get("writerOccurrence"));
+    }
+
+    @Test
+    public void anUndemandedLateWriteStaysBoundedByTheResourceDefault()
+            throws Exception {
+        // Nothing reads the object written at occurrence 22, so the resource
+        // default still applies and no relation is invented.
+        List<Map<String, Object>> regions = Arrays.asList(
+                leafRegion("REGION.W", Collections.singletonList(
+                        leafWriterPort("REGION.W.out.keyId", 10L, 74965,
+                                21, 29)),
+                        Collections.<Map<String, Object>>emptyList()),
+                leafRegion("REGION.R",
+                        Collections.<Map<String, Object>>emptyList(),
+                        Collections.singletonList(
+                        leafPort("REGION.R.in.keyId", 20L, 90021, 5000L))));
+
+        assertTrue(RuntimeSelectedRegionFinalizer
+                .demandedLeafProducerFlows(regions,
+                        new ArrayList<Map<String, Object>>(),
+                        new LinkedHashMap<String, Long>()).isEmpty());
+    }
+
+    @Test
+    public void tooManyDemandedAccessesAtOneSiteFailClosedByName() {
+        // Retaining every demanded access is what keeps the pass honest, so
+        // the only way to lose one is to say so.
+        int total = RuntimeSelectedRegionFinalizer
+                .MAX_RETAINED_SITE_ACCESSES + 1;
+        List<Map<String, Object>> accesses = new ArrayList<>();
+        for (int index = 0; index < total; index++) {
+            accesses.add(object("eventSeq", 100L + index,
+                    "process", "p", "rootCallId", 10L,
+                    "fieldReceiverObjectId", 74965,
+                    "fieldPathDeclarations",
+                    Collections.singletonList(LEAF),
+                    "staticAccessSiteId", "SITE"));
+        }
+        Map<String, Object> writer = leafPort("REGION.W.out.keyId", 10L, 0,
+                100L);
+        writer.put("runtimeAccesses", accesses);
+        List<Map<String, Object>> regions = Arrays.asList(
+                leafRegion("REGION.W", Collections.singletonList(writer),
+                        Collections.<Map<String, Object>>emptyList()),
+                leafRegion("REGION.R",
+                        Collections.<Map<String, Object>>emptyList(),
+                        Collections.singletonList(
+                        leafPort("REGION.R.in.keyId", 20L, 74965, 5000L))));
+
+        try {
+            RuntimeSelectedRegionFinalizer.demandedLeafProducerFlows(regions,
+                    new ArrayList<Map<String, Object>>(),
+                    new LinkedHashMap<String, Long>());
+            throw new AssertionError("expected a named resource refusal");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage(),
+                    expected.getMessage().startsWith("BOUND_INSUFFICIENT: "));
+        }
     }
 
     private static Map<String, Object> object(Object... values) {
