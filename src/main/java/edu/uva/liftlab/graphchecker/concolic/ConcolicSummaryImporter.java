@@ -359,24 +359,45 @@ public final class ConcolicSummaryImporter {
         return result;
     }
 
+    /**
+     * Attests a seed replay against the recorded branch witnesses.
+     *
+     * <p>Recording and replay are two executions of the same concurrent
+     * workload, so a site repeats as many times as the surrounding
+     * environment happens to be wide: a loop over a shared container runs
+     * once per element that execution holds.  The demanded slice constrains
+     * which way a branch goes, never how many times an environment-sized
+     * loop revisits it, so pinning the recorded occurrence ordinals rejects
+     * a faithful replay for a fact the failure never depended on.</p>
+     *
+     * <p>The contract is therefore stated per static site: every outcome the
+     * recording witnessed at a site must also be witnessed there by the
+     * replay, and the replay may not decide a site the task never planned.
+     * A site the replay drives only the other way, or never reaches, is a
+     * real witness conflict and still fails closed.</p>
+     */
     private static String exactSeedMismatch(
             String pathSeedKey, List<BranchEvent> expected,
             List<BranchEvent> observed) {
-        Map<String, BranchEvent> actual = indexEvents(observed);
-        for (BranchEvent wanted : expected) {
-            BranchEvent found = actual.remove(wanted.identity);
+        Map<String, Set<Boolean>> wanted = outcomesBySite(expected);
+        Map<String, Set<Boolean>> actual = outcomesBySite(observed);
+        for (Map.Entry<String, Set<Boolean>> entry : wanted.entrySet()) {
+            Set<Boolean> found = actual.get(entry.getKey());
             if (found == null) {
-                return seedDetail(pathSeedKey, "missing " + wanted.display());
+                return seedDetail(pathSeedKey, "missing " + entry.getKey());
             }
-            if (found.outcome != wanted.outcome) {
-                return seedDetail(pathSeedKey, "wrong outcome at "
-                        + wanted.siteOccurrence() + ": expected "
-                        + wanted.outcome + " but observed " + found.outcome);
+            for (Boolean outcome : entry.getValue()) {
+                if (!found.contains(outcome)) {
+                    return seedDetail(pathSeedKey, "wrong outcome at "
+                            + entry.getKey() + ": expected " + outcome
+                            + " but observed " + found);
+                }
             }
         }
-        if (!actual.isEmpty()) {
-            return seedDetail(pathSeedKey, "unexpected "
-                    + actual.values().iterator().next().display());
+        for (String site : actual.keySet()) {
+            if (!wanted.containsKey(site)) {
+                return seedDetail(pathSeedKey, "unexpected " + site);
+            }
         }
         return "";
     }
@@ -384,7 +405,7 @@ public final class ConcolicSummaryImporter {
     private static String replayPrefixMismatch(
             String pathSeedKey, List<BranchEvent> seedEvents,
             List<BranchEvent> observed, BranchReplayContract replay) {
-        Map<String, BranchEvent> seed = indexEvents(seedEvents);
+        Map<String, Set<Boolean>> seed = outcomesBySite(seedEvents);
         List<BranchEvent> expected = new ArrayList<>();
         for (BranchWitness witness : replay.orderedPrefix()) {
             if (witness.isPcPredicateDecision()) continue;
@@ -435,12 +456,12 @@ public final class ConcolicSummaryImporter {
                             + wanted.siteOccurrence());
                 }
             }
-            BranchEvent original = seed.get(actual.identity);
+            Set<Boolean> original = seed.get(actual.site);
             if (original == null) {
                 return seedDetail(pathSeedKey,
                         "unexpected pre-source " + actual.display());
             }
-            if (original.outcome != actual.outcome) {
+            if (!original.contains(actual.outcome)) {
                 return seedDetail(pathSeedKey,
                         "pre-source path diverged at "
                                 + actual.siteOccurrence());
@@ -454,22 +475,23 @@ public final class ConcolicSummaryImporter {
     }
 
     private static String replaySeedInconsistency(
-            Map<String, BranchEvent> seed, BranchEvent replayEvent) {
-        BranchEvent original = seed.get(replayEvent.identity);
+            Map<String, Set<Boolean>> seed, BranchEvent replayEvent) {
+        Set<Boolean> original = seed.get(replayEvent.site);
         if (original == null) {
             return "replay event is absent from task seed: "
                     + replayEvent.siteOccurrence();
         }
-        return original.outcome == replayEvent.outcome ? ""
+        return original.contains(replayEvent.outcome) ? ""
                 : "replay event conflicts with task seed at "
                 + replayEvent.siteOccurrence();
     }
 
-    private static Map<String, BranchEvent> indexEvents(
+    private static Map<String, Set<Boolean>> outcomesBySite(
             List<BranchEvent> events) {
-        Map<String, BranchEvent> result = new LinkedHashMap<>();
+        Map<String, Set<Boolean>> result = new LinkedHashMap<>();
         for (BranchEvent event : events) {
-            result.put(event.identity, event);
+            result.computeIfAbsent(event.site,
+                    ignored -> new LinkedHashSet<>()).add(event.outcome);
         }
         return result;
     }

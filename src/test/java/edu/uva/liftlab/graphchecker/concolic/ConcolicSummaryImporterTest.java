@@ -209,6 +209,26 @@ public class ConcolicSummaryImporterTest {
                 .get("detail").getAsString().contains("missing"));
     }
 
+    @Test
+    public void narrowerEnvironmentWidthKeepsTheSameSeedWitness()
+            throws Exception {
+        PathImport imported = importPath("narrower-width",
+                widthTask(2), widthResult(1));
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+    }
+
+    @Test
+    public void widerEnvironmentWidthKeepsTheSameSeedWitness()
+            throws Exception {
+        PathImport imported = importPath("wider-width",
+                widthTask(1), widthResult(3));
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+    }
+
     private PathImport importPath(String name, JsonObject task,
                                   JsonObject raw) throws Exception {
         Path directory = folder.newFolder(name).toPath();
@@ -258,6 +278,44 @@ public class ConcolicSummaryImporterTest {
                     branchWitness(true)).toJson());
         }
         return task;
+    }
+
+    private static JsonObject widthTask(int occurrenceCount) {
+        JsonObject task = pathTask(false);
+        JsonArray occurrences = task.getAsJsonArray("branches").get(0)
+                .getAsJsonObject().getAsJsonArray("occurrences");
+        while (occurrences.size() < occurrenceCount) {
+            JsonObject occurrence = new JsonObject();
+            occurrence.addProperty("occurrence", occurrences.size() + 1);
+            occurrence.addProperty("outcome", true);
+            occurrences.add(occurrence);
+        }
+        return task;
+    }
+
+    private static JsonObject widthResult(int occurrenceCount) {
+        JsonObject raw = pathResult(true, true);
+        JsonArray path = raw.getAsJsonObject("engineSummary")
+                .getAsJsonArray("pathCondition");
+        JsonArray mappings = raw.getAsJsonArray("branchMappings");
+        for (int occurrence = 2; occurrence <= occurrenceCount;
+             occurrence++) {
+            int pcIndex = path.size();
+            path.add(branchPredicate(true));
+            JsonObject mapping = new JsonObject();
+            mapping.addProperty("siteId", seedSite());
+            mapping.addProperty("method", seedMethod());
+            mapping.addProperty("unitIndex", 3);
+            mapping.addProperty("occurrence", occurrence);
+            mapping.addProperty("rawPathConditionBaseline", pcIndex);
+            mapping.addProperty("rawPathConditionSize", pcIndex + 1);
+            mapping.add("witness", BranchWitness.vmPc(seedSite(),
+                    seedMethod(), 3, occurrence, true,
+                    branchPredicate(true), pcIndex,
+                    new JsonObject()).toJson());
+            mappings.add(mapping);
+        }
+        return raw;
     }
 
     private static JsonObject pathResult(boolean includeMapping,
