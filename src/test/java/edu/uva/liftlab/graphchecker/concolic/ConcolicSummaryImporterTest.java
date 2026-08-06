@@ -1,7 +1,9 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.BoundedOutputVersions;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
@@ -15,6 +17,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.NavigableMap;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -160,6 +163,104 @@ public class ConcolicSummaryImporterTest {
         JsonObject summary = ArtifactIO.readJsonl(output).get(0);
         assertTrue(summary.get("relationallyComplete").getAsBoolean());
         assertEquals(1, summary.getAsJsonObject("outputExpressions").size());
+    }
+
+    @Test
+    public void boundedSiteLocalOutputVersionsAreAllExported()
+            throws Exception {
+        // The bounded replay wrote the captured site eight times inside one
+        // activation.  The ordinal is a site-local bounded index, so every
+        // version is exported; which one a reader observes is settled by the
+        // composed versioned channel, never by collapsing or picking here.
+        Path directory = folder.newFolder("bounded-versions").toPath();
+        Path results = directory.resolve("results.jsonl");
+        Path tasks = directory.resolve("tasks.jsonl");
+        Path regions = directory.resolve("regions.jsonl");
+        Path output = directory.resolve("summaries.jsonl");
+        Path diagnostics = directory.resolve("diagnostics.jsonl");
+
+        JsonObject raw = outputBoundaryResult(0);
+        raw.add("outputCaptures", versionedCaptures(8, false));
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", "REGION.BOUNDARY");
+        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
+                outputBoundaryTask(1)));
+        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
+        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+
+        ConcolicSummaryImporter.ImportResult imported =
+                ConcolicSummaryImporter.importSummaries(results, tasks,
+                        regions, output, diagnostics);
+
+        assertEquals(1, imported.validSummaryCount);
+        assertEquals(0, imported.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(output).get(0);
+        assertTrue(summary.get("relationallyComplete").getAsBoolean());
+        JsonObject outputs = summary.getAsJsonObject("outputExpressions");
+        assertEquals(1, outputs.size());
+        JsonObject versionSet = outputs.getAsJsonObject(
+                "REGION.BOUNDARY.out.0");
+        assertTrue(BoundedOutputVersions.isVersionSet(versionSet));
+        assertEquals("<test.Worker: void run()>#u1",
+                BoundedOutputVersions.outputSiteId(versionSet));
+        NavigableMap<Integer, JsonElement> versions =
+                BoundedOutputVersions.versions(versionSet);
+        assertEquals(8, versions.size());
+        assertEquals(Integer.valueOf(1), versions.firstKey());
+        assertEquals(Integer.valueOf(8), versions.lastKey());
+        assertEquals("Y_I_3", versions.get(3).getAsJsonObject()
+                .get("_exp").getAsString());
+    }
+
+    @Test
+    public void collidingOutputVersionOrdinalsFailClosed() throws Exception {
+        Path directory = folder.newFolder("version-collision").toPath();
+        Path results = directory.resolve("results.jsonl");
+        Path tasks = directory.resolve("tasks.jsonl");
+        Path regions = directory.resolve("regions.jsonl");
+        Path output = directory.resolve("summaries.jsonl");
+        Path diagnostics = directory.resolve("diagnostics.jsonl");
+
+        JsonObject raw = outputBoundaryResult(0);
+        raw.add("outputCaptures", versionedCaptures(2, true));
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", "REGION.BOUNDARY");
+        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
+                outputBoundaryTask(1)));
+        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
+        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+
+        ConcolicSummaryImporter.ImportResult imported =
+                ConcolicSummaryImporter.importSummaries(results, tasks,
+                        regions, output, diagnostics);
+
+        assertEquals(1, imported.diagnosticCount);
+        JsonObject diagnostic = ArtifactIO.readJsonl(diagnostics).get(0);
+        assertEquals("INCOMPLETE_RELATION",
+                diagnostic.get("code").getAsString());
+        assertTrue(diagnostic.get("detail").getAsString()
+                .contains("OUTPUT_CAPTURE_VERSION_COLLISION:"
+                        + "REGION.BOUNDARY.out.0:1"));
+    }
+
+    private static JsonArray versionedCaptures(int count,
+                                               boolean collide) {
+        JsonArray captures = new JsonArray();
+        for (int version = 1; version <= count; version++) {
+            JsonObject capture = new JsonObject();
+            capture.addProperty("captureBindingId", "CAPTURE.0");
+            capture.addProperty("outputSiteId",
+                    "<test.Worker: void run()>#u1");
+            capture.addProperty("outputOccurrence",
+                    collide ? 1 : version);
+            capture.addProperty("replayOccurrence", collide ? 1 : version);
+            JsonObject expression = new JsonObject();
+            expression.addProperty("_type", "ConstExpr");
+            expression.addProperty("_exp", "Y_I_" + version);
+            capture.add("expression", expression);
+            captures.add(capture);
+        }
+        return captures;
     }
 
     @Test

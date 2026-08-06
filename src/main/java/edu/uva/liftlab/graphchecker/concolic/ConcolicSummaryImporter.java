@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.BoundedOutputVersions;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
@@ -20,7 +21,9 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Set;
+import java.util.TreeMap;
 
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
@@ -969,7 +972,7 @@ public final class ConcolicSummaryImporter {
         }
         for (String port : closure.outputPorts()) {
             List<OutputCaptureSpec> specs = specsByPort.get(port);
-            List<JsonElement> expressions = new ArrayList<>();
+            List<JsonObject> admitted = new ArrayList<>();
             if (specs != null) {
                 for (OutputCaptureSpec spec : specs) {
                     List<JsonObject> values = captures.get(
@@ -989,18 +992,24 @@ public final class ConcolicSummaryImporter {
                                     + spec.captureBindingId());
                             continue;
                         }
-                        expressions.add(expression.deepCopy());
+                        admitted.add(value.deepCopy());
                     }
                 }
             }
-            if (expressions.size() == 1) {
-                result.add(port, expressions.get(0));
+            if (admitted.size() == 1) {
+                result.add(port, admitted.get(0).get("expression"));
+                continue;
+            }
+            if (admitted.size() > 1) {
+                JsonObject versionSet = siteLocalBoundedVersions(port,
+                        admitted, issues);
+                if (versionSet != null) result.add(port, versionSet);
                 continue;
             }
             // A reference the VM never symbolised still related an exact
             // object.  Keep it apart from the expressions so a composition
             // can only pass the alias on, never read a value out of it.
-            if (expressions.isEmpty() && specs != null) {
+            if (specs != null) {
                 JsonObject identity = admittedReferenceIdentity(specs,
                         referenceRows);
                 if (identity != null) {
@@ -1016,9 +1025,48 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             issues.add("OUTPUT_CAPTURE_COUNT:" + port + ":"
-                    + expressions.size());
+                    + admitted.size());
         }
         return result;
+    }
+
+    /**
+     * Exports every bounded occurrence version observed at one output site.
+     *
+     * <p>The recorded occurrence is a site-local bounded index inside this
+     * activation, not a cross-execution identity.  Each version becomes one
+     * guarded relation case downstream; which version a reader observes is
+     * settled by the composed versioned channel, never by collapsing here.</p>
+     */
+    private static JsonObject siteLocalBoundedVersions(
+            String port, List<JsonObject> admitted, List<String> issues) {
+        String site = null;
+        NavigableMap<Integer, JsonElement> byOrdinal = new TreeMap<>();
+        for (JsonObject capture : admitted) {
+            String captureSite = string(capture, "outputSiteId");
+            int occurrence = integer(capture, "outputOccurrence", -1);
+            if (captureSite.isEmpty() || occurrence < 1) {
+                // Legacy unscoped captures carry no site-local index, so
+                // several of them stay the original ambiguous count.
+                issues.add("OUTPUT_CAPTURE_COUNT:" + port + ":"
+                        + admitted.size());
+                return null;
+            }
+            if (site == null) {
+                site = captureSite;
+            } else if (!site.equals(captureSite)) {
+                issues.add("OUTPUT_CAPTURE_VERSION_SITE_MISMATCH:" + port
+                        + ":" + site + ":" + captureSite);
+                return null;
+            }
+            if (byOrdinal.put(occurrence,
+                    capture.get("expression")) != null) {
+                issues.add("OUTPUT_CAPTURE_VERSION_COLLISION:" + port + ":"
+                        + occurrence);
+                return null;
+            }
+        }
+        return BoundedOutputVersions.encodeVersionSet(site, byOrdinal);
     }
 
     /** Names a reference output the custom VM never symbolised. */
