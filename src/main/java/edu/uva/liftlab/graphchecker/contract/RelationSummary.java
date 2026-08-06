@@ -12,6 +12,8 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
+import java.util.TreeMap;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
@@ -108,7 +110,7 @@ public final class RelationSummary {
                         : PathObservation::pathKey));
         JsonArray cases = new JsonArray();
         for (PathObservation path : orderedCases) {
-            cases.add(pathCase(path, projectRelationGuards));
+            appendPathCases(cases, path, projectRelationGuards);
         }
 
         Map<String, JsonObject> bindingsByPayload = new LinkedHashMap<>();
@@ -246,17 +248,77 @@ public final class RelationSummary {
         return selected.deepCopy();
     }
 
+    /**
+     * Expands one imported path into its guarded relation cases.
+     *
+     * <p>A port exported as a bounded version set names several site-local
+     * write versions of one execution.  Every path-times-version combination
+     * becomes one case whose guard also selects the version, so composition
+     * keeps the full versioned choice instead of one collapsed value.</p>
+     */
+    private static void appendPathCases(JsonArray cases,
+                                        PathObservation path,
+                                        boolean projectRelationGuard) {
+        JsonObject outputs = path.outputExpressions();
+        NavigableMap<String, JsonObject> versioned = new TreeMap<>();
+        for (String port : outputs.keySet()) {
+            JsonElement value = outputs.get(port);
+            if (BoundedOutputVersions.isVersionSet(value)) {
+                versioned.put(port, value.getAsJsonObject());
+            }
+        }
+        List<Map<String, Integer>> selections = new ArrayList<>();
+        selections.add(new LinkedHashMap<String, Integer>());
+        for (Map.Entry<String, JsonObject> entry : versioned.entrySet()) {
+            List<Map<String, Integer>> expanded = new ArrayList<>();
+            for (Map<String, Integer> prefix : selections) {
+                for (Integer ordinal : BoundedOutputVersions.versions(
+                        entry.getValue()).keySet()) {
+                    Map<String, Integer> next =
+                            new LinkedHashMap<>(prefix);
+                    next.put(entry.getKey(), ordinal);
+                    expanded.add(next);
+                }
+            }
+            selections = expanded;
+        }
+        for (Map<String, Integer> selection : selections) {
+            cases.add(pathCase(path, projectRelationGuard, selection));
+        }
+    }
+
     private static JsonObject pathCase(PathObservation path,
-                                       boolean projectRelationGuard) {
+                                       boolean projectRelationGuard,
+                                       Map<String, Integer> selection) {
         JsonObject item = new JsonObject();
-        item.addProperty("caseId", "CASE." + (projectRelationGuard
-                ? path.relationKey() : path.pathKey()));
+        StringBuilder caseId = new StringBuilder("CASE.")
+                .append(projectRelationGuard
+                        ? path.relationKey() : path.pathKey());
+        JsonArray conditions = projectRelationGuard
+                ? path.relationPathCondition() : path.pathCondition();
+        JsonObject outputs = path.outputExpressions();
+        for (Map.Entry<String, Integer> chosen : selection.entrySet()) {
+            String port = chosen.getKey();
+            JsonObject versionSet = outputs.getAsJsonObject(port);
+            NavigableMap<Integer, JsonElement> versions =
+                    BoundedOutputVersions.versions(versionSet);
+            conditions.add(BoundedOutputVersions.versionSelectionCondition(
+                    port, BoundedOutputVersions.outputSiteId(versionSet),
+                    chosen.getValue(), versions.lastKey()));
+            outputs.add(port,
+                    versions.get(chosen.getValue()).deepCopy());
+            caseId.append(".V.").append(chosen.getValue());
+        }
+        item.addProperty("caseId", caseId.toString());
         JsonObject guard = new JsonObject();
         guard.addProperty("kind", "PATH_CONDITION");
-        guard.add("conditions", projectRelationGuard
-                ? path.relationPathCondition() : path.pathCondition());
+        guard.add("conditions", conditions);
         item.add("guard", guard);
-        item.add("outputExpressions", path.outputExpressions());
+        item.add("outputExpressions", outputs);
+        JsonObject identities = path.outputReferenceIdentities();
+        if (identities.size() > 0) {
+            item.add("outputReferenceIdentities", identities);
+        }
         item.addProperty("sourceTaskId", path.sourceTaskId());
         return item;
     }

@@ -99,6 +99,10 @@ public final class PathObservation {
     public JsonObject outputExpressions() {
         return object(raw, "outputExpressions").deepCopy();
     }
+    /** Reference outputs the VM related by exact object identity. */
+    public JsonObject outputReferenceIdentities() {
+        return object(raw, "outputReferenceIdentities").deepCopy();
+    }
     public JsonArray relationPathCondition() {
         return relationPathCondition.deepCopy();
     }
@@ -122,8 +126,10 @@ public final class PathObservation {
     }
 
     public boolean hasExactOutputSet(Set<String> outputPorts) {
-        return new TreeSet<>(object(raw, "outputExpressions").keySet())
-                .equals(new TreeSet<>(outputPorts));
+        Set<String> covered = new TreeSet<>(
+                object(raw, "outputExpressions").keySet());
+        covered.addAll(object(raw, "outputReferenceIdentities").keySet());
+        return covered.equals(new TreeSet<>(outputPorts));
     }
 
     public JsonArray prefixBefore(int conditionIndex) {
