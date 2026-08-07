@@ -7,6 +7,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
+import edu.uva.liftlab.graphchecker.causynth.ProtocolCarrierReconstruction;
 import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
@@ -1642,10 +1643,21 @@ final class RuntimeRegionPlanner {
             sliceOutput.put("rootMethod", definitionMethod);
             sliceOutput.put("siteId", staticAccessSiteId);
         }
-        ReturnSlice stateSlice = refinedFlow.dependencySlice(
+        ProtocolCarrierReconstruction decode =
+                ProtocolCarrierReconstruction.of(regionInputs);
+        String carrierPort = decode.responsePortFor(rootCallId,
+                outputEventSeq);
+        ReturnSlice stateSlice = carrierPort.isEmpty()
+                ? refinedFlow.dependencySlice(
                 text(plan.get("regionId")), rootCallId, declaration,
                 sliceOutput, allowed, regionInputs, regionOutputs,
-                rows(region.get("branchPolicies")), seedMethods);
+                rows(region.get("branchPolicies")), seedMethods)
+                // A write recorded inside a configured response decode window
+                // rebuilds the transferred carrier.  Its operands belong to
+                // the serialization implementation, not to this relation, so
+                // the demand penetrates to the declared response port.
+                : carrierSlice(carrierPort, definitionMethod, allowed,
+                text(region.get("rootMethod")));
         if (stateSlice == null) return null;
 
         List<String> inputPorts = new ArrayList<>(stateSlice.inputPorts);
@@ -1673,6 +1685,9 @@ final class RuntimeRegionPlanner {
                 invocationCalls, rejectionReasons, outputPort)) {
             return null;
         }
+        // Every selected leaf is known only here: accessor materializations
+        // join the frontier after the value slice.
+        addProtocolCarrierPorts(inputPorts, regionInputs, rootCallId);
 
         List<String> staticSites = new ArrayList<>(stateSlice.staticSites);
         if (!staticSites.contains(staticAccessSiteId)) {
@@ -2293,11 +2308,14 @@ final class RuntimeRegionPlanner {
         if (!captureMethod.isEmpty()) methodSet.add(captureMethod);
         List<String> methods = new ArrayList<>(methodSet);
         List<String> sites = new ArrayList<>(returnSlice.branchSites);
+        List<String> inputPorts = new ArrayList<>(returnSlice.inputPorts);
+        addProtocolCarrierPorts(inputPorts,
+                rows(region.get("symbolicInputs")), rootCallId);
 
         JsonObject slice = new JsonObject();
         slice.addProperty("outputPort", outputPort);
         slice.addProperty("outputCell", outputCell);
-        slice.add("inputPorts", stringsJson(returnSlice.inputPorts));
+        slice.add("inputPorts", stringsJson(inputPorts));
         slice.add("sites", stringsJson(sites));
         slice.add("staticSites", stringsJson(returnSlice.staticSites));
         if (!captureSite.isEmpty()
@@ -2514,6 +2532,50 @@ final class RuntimeRegionPlanner {
             }
         }
         return match;
+    }
+
+    /**
+     * Frontier of a value the caller only rebuilt from a decoded reply.  The
+     * declared response port is the whole relation; the serialization code
+     * that materialized the carrier stays outside the replay envelope.
+     */
+    private static ReturnSlice carrierSlice(String carrierPort,
+                                            String definitionMethod,
+                                            Set<String> allowed,
+                                            String rootMethod) {
+        ReturnSlice result = new ReturnSlice();
+        result.inputPorts.add(carrierPort);
+        // The definition itself stays in the relation even when it is a
+        // constructor: the replay still has to reach the write that hands
+        // the decoded value to the region.
+        if (allowed.contains(definitionMethod)) {
+            result.methods.add(definitionMethod);
+        }
+        addIfAllowed(result.methods, allowed, rootMethod);
+        return result;
+    }
+
+    /**
+     * Adds the response port every selected carrier leaf penetrates to, so a
+     * value read back out of a rebuilt carrier keeps demanding the server
+     * region that produced it.
+     */
+    private static void addProtocolCarrierPorts(
+            List<String> inputPorts, List<Map<String, Object>> regionInputs,
+            long rootCallId) {
+        if (inputPorts.isEmpty()) return;
+        Set<String> selected = new LinkedHashSet<>(inputPorts);
+        for (Map<String, Object> input : regionInputs) {
+            String carrier =
+                    ProtocolCarrierReconstruction.responsePort(input);
+            if (carrier.isEmpty()
+                    || longNumber(input.get("rootCallId"), -1L) != rootCallId
+                    || !selected.contains(text(input.get("portId")))
+                    || !selected.add(carrier)) {
+                continue;
+            }
+            inputPorts.add(carrier);
+        }
     }
 
     private static void addIfAllowed(List<String> methods,

@@ -1460,6 +1460,90 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
         }
+        markProtocolCarrierReconstructions(program, index);
+    }
+
+    /**
+     * Stops the demand closure from treating a rebuilt protocol carrier as
+     * the authoritative producer of the value it carries.
+     *
+     * <p>A write recorded between a configured request send and its own
+     * caller result is reply decoding, and a later read of a field that such
+     * a write last defined observes a decoded value.  Both penetrate to the
+     * configured response port instead of ending the chain, so the demand
+     * continues into the server region.  A carrier without an exact declared
+     * descendant projection keeps a named gap rather than an implicit
+     * equality.</p>
+     */
+    private static void markProtocolCarrierReconstructions(
+            StaticProgram program, RpcDescendantProjectionIndex index) {
+        for (Map<String, Object> region : program.regions) {
+            List<Map<String, Object>> inputs = rows(
+                    region.get("symbolicInputs"));
+            ProtocolCarrierReconstruction decode =
+                    ProtocolCarrierReconstruction.of(inputs);
+            if (decode.isEmpty()) continue;
+            String regionId = text(region.get("regionId"));
+            for (Map<String, Object> output : rows(region.get("outputs"))) {
+                if ("PROTOCOL_INPUT".equals(
+                        text(output.get("sourceKind")))) {
+                    continue;
+                }
+                long rootCallId = portRootCallId(output, true);
+                ProtocolCarrierReconstruction.Window window =
+                        decode.reconstructionOf(rootCallId,
+                                longNumber(output.get("eventSeq"), -1L));
+                if (window != null) {
+                    ProtocolCarrierReconstruction.mark(output, window,
+                            Boolean.TRUE.equals(booleanValue(output.get(
+                                    "rpcDescendantProjectionOutput"))));
+                }
+            }
+            for (Map<String, Object> input : inputs) {
+                if ("PROTOCOL_INPUT".equals(text(input.get("sourceKind")))) {
+                    continue;
+                }
+                long rootCallId = portRootCallId(input, false);
+                ProtocolCarrierReconstruction.Window window =
+                        decode.reconstructionOf(rootCallId,
+                                carrierDefinitionSeq(index, regionId,
+                                        rootCallId, input));
+                if (window != null) {
+                    ProtocolCarrierReconstruction.mark(input, window,
+                            Boolean.TRUE.equals(booleanValue(input.get(
+                                    "rpcDescendantProjectionInput"))));
+                }
+            }
+        }
+    }
+
+    /**
+     * Returns the event that last defined the exact field value one input
+     * port observes, or {@code -1} when no write to that receiver and
+     * declaration precedes the read inside the same activation.
+     */
+    private static long carrierDefinitionSeq(
+            RpcDescendantProjectionIndex index, String regionId,
+            long rootCallId, Map<String, Object> input) {
+        List<String> declarations = strings(
+                input.get("fieldPathDeclarations"));
+        if (declarations.isEmpty() || rootCallId < 0L) return -1L;
+        String declaration = declarations.get(declarations.size() - 1);
+        long readSeq = longNumber(input.get("eventSeq"), -1L);
+        int receiver = number(input.get("fieldReceiverObjectId"), 0);
+        if (readSeq < 0L || receiver == 0) return -1L;
+        long latest = -1L;
+        for (RpcDescendantCandidate candidate : index.candidates(regionId,
+                rootCallId, "HEAP_WRITE")) {
+            if (candidate.receiverObjectId != receiver
+                    || !declaration.equals(candidate.declaration)
+                    || candidate.eventSeq >= readSeq
+                    || candidate.eventSeq <= latest) {
+                continue;
+            }
+            latest = candidate.eventSeq;
+        }
+        return latest;
     }
 
     private interface RpcCandidatePredicate {
@@ -3101,6 +3185,9 @@ public final class RuntimeSelectedRegionFinalizer {
                 boundedMutationFrontiersByOutput = new LinkedHashMap<>();
         private final Map<String, List<String>> localIncoming =
                 new LinkedHashMap<>();
+        /** Demand a rebuilt protocol carrier penetrates to. */
+        private final Map<String, String> carrierDemands =
+                new LinkedHashMap<>();
         private final Map<String, Map<String, List<String>>>
                 explicitFatalSeedsBySite = new LinkedHashMap<>();
         private final Map<String, List<String>> fatalSeeds =
@@ -3185,6 +3272,11 @@ public final class RuntimeSelectedRegionFinalizer {
             if (rootCallId < 0L || portId.isEmpty()) return;
             String demand = portDemandKey(regionId, rootCallId, portId);
             (output ? outputs : inputs).put(demand, port);
+            String carrier = ProtocolCarrierReconstruction.responsePort(port);
+            if (!carrier.isEmpty()) {
+                carrierDemands.put(demand, portDemandKey(regionId,
+                        rootCallId, carrier));
+            }
             if (output) return;
             addUnique(inputsByInstance,
                     instanceKey(regionId, rootCallId), demand);
@@ -3289,18 +3381,24 @@ public final class RuntimeSelectedRegionFinalizer {
         private List<String> computeInputsForOutput(String regionId,
                                              long rootCallId,
                                              String portId) {
-            Map<String, Object> output = outputs.get(portDemandKey(regionId,
-                    rootCallId, portId));
+            String demand = portDemandKey(regionId, rootCallId, portId);
+            Map<String, Object> output = outputs.get(demand);
             if (output == null) return Collections.emptyList();
+            String carrier = carrierDemands.get(demand);
+            if (carrier != null) {
+                // The write only rebuilt the transferred carrier, so its
+                // decode-path operands are not the producer of this value.
+                return Collections.singletonList(requireCarrier(carrier));
+            }
             Set<String> result = new LinkedHashSet<>(backwardInputs(
                     regionId, rootCallId, boundaryCells(output)));
             if ("CONTAINER_MUTATION".equals(
                     text(output.get("bindingKind")))) {
                 for (String preStatePort : strings(
                         output.get("boundedContainerPreStatePorts"))) {
-                    String demand = portDemandKey(regionId, rootCallId,
+                    String preState = portDemandKey(regionId, rootCallId,
                             preStatePort);
-                    if (inputs.containsKey(demand)) result.add(demand);
+                    if (inputs.containsKey(preState)) result.add(preState);
                 }
                 for (String cell : mutationOutputCells(output)) {
                     result.addAll(boundedMutationFrontiersByOutput
@@ -3329,6 +3427,10 @@ public final class RuntimeSelectedRegionFinalizer {
                     // A region input is the boundary.  Following another
                     // write to the same declared field would re-introduce a
                     // cross-activation alias through the local slice.
+                    for (String input : boundary) {
+                        String carrier = carrierDemands.get(input);
+                        if (carrier != null) result.add(requireCarrier(carrier));
+                    }
                     continue;
                 }
                 work.addAll(localIncoming.getOrDefault(
@@ -3336,6 +3438,16 @@ public final class RuntimeSelectedRegionFinalizer {
                         Collections.<String>emptyList()));
             }
             return new ArrayList<>(result);
+        }
+
+        /** Fails closed when a declared correspondence has no exact port. */
+        private String requireCarrier(String demand) {
+            if (!inputs.containsKey(demand)) {
+                throw new IllegalStateException("protocol carrier "
+                        + "reconstruction has no configured response port: "
+                        + demand);
+            }
+            return demand;
         }
 
         private static List<String> boundaryCells(
