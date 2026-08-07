@@ -257,8 +257,11 @@ public final class ConcolicSmtComposer {
                 string(relation, "guardProjection"))
                 && "FULL_PATH_COLLISION_FALLBACK".equals(
                 string(coverage, "constraintProjectionAuthority")))
-                || integer(coverage, "observedPathCount", -1)
+                || integer(coverage, "observedCaseCount", -1)
                 != array(relation, "cases").size()
+                || integer(coverage, "observedPathCount", -1) < 1
+                || integer(coverage, "observedCaseCount", -1)
+                < integer(coverage, "observedPathCount", -1)
                 || string(coverage, "observedPathSetHash").isEmpty()) {
             throw new IOException(
                     "Malformed observed-path under-approximation");

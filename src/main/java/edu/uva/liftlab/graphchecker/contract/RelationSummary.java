@@ -112,6 +112,13 @@ public final class RelationSummary {
         for (PathObservation path : orderedCases) {
             appendPathCases(cases, path, projectRelationGuards);
         }
+        if (coverage != null) {
+            // One path yields one case per version its output boundary
+            // published, so the case count is what ties the relation to this
+            // merge; the path count and its hash stay as the provenance of
+            // which observations were merged.
+            coverage.addProperty("observedCaseCount", cases.size());
+        }
 
         Map<String, JsonObject> bindingsByPayload = new LinkedHashMap<>();
         for (JsonObject binding : edgeBindings) {
