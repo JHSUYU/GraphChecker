@@ -18,10 +18,17 @@ is now `experiments-output/`, but the habit is still worth keeping.
 
 ```bash
 HADOOP_REPO=/opt/hadoop \
-HDFS11741_REGION_JOBS=1 HDFS11741_PATH_JOBS=1 \
+HDFS11741_REGION_JOBS=$(nproc) HDFS11741_PATH_JOBS=$(nproc) \
 HDFS11741_CONCOLIC_HEAP=8g HDFS11741_ENGINE_WAIT_MS=1200000 \
   experiments/hdfs/hdfs-11741/run.sh candidates
 ```
+
+**Run the campaigns and the flips wide.** Each is its own JVM, so they share
+nothing that would contend: the single symbolic engine is contended *inside* a
+JVM, between activations on different threads, and never across them. Measured
+peak resident per concolic JVM is about 1 GB. Serialising them is a debugging
+posture — useful when a failure has to be attributable, expensive once it is —
+and leaving it on afterwards silently costs hours.
 
 `HDFS11741_ENGINE_WAIT_MS` matters: one symbolic engine serves the JVM, and a
 losing activation has to outlast the winner discovering it contradicts the
