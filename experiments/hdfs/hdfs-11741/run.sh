@@ -1049,9 +1049,16 @@ replay_concolic_plan() {
   mkdir -p "${hadoop_log_dir}" "${campaign}/test-data" \
     "${campaign}/java-tmp"
 
+  # A replay is bounded in the paths it may walk, not in what walking them
+  # costs, and the workload's own timeout is disabled so that a replay may
+  # finish its region.  Without a wall-clock budget one path can hold the
+  # round open indefinitely; with one, it ends like any other flip that costs
+  # more than it is worth -- abandoned by the caller, and named.
   set +e
   (cd "${graphchecker_dir}" && \
       env -u CAUSYNTH_CONCOLIC_TASK_ID -u CAUSYNTH_TRACE_OUTPUT_DIR \
+      timeout --signal=TERM --kill-after=60 \
+        "${HDFS11741_REPLAY_TIMEOUT_S:-2400}" \
       "${java_path}" \
         -Xint \
         -Xmx"${HDFS11741_CONCOLIC_HEAP:-2g}" \
