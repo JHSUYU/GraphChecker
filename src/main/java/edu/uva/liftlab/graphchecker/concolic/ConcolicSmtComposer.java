@@ -1810,10 +1810,23 @@ public final class ConcolicSmtComposer {
             return and(values);
         }
 
+        /**
+         * Lowers one recorded expression.
+         *
+         * <p>An operand slot the recording left out is not the Java null
+         * reference: a recorded null is its own null symbol, and the two
+         * appear side by side in the same relation.  Reading the omission
+         * as null would state the one fact the record does not carry - and
+         * it is the strongest fact available, because it decides every
+         * later read of the value.  An absent operand is therefore a named
+         * gap like any other unproven thing.</p>
+         */
         private Term term(JsonElement expression, Sort expected) {
             if (expression == null || expression.isJsonNull()
                     || !expression.isJsonObject()) {
-                return new Term("nullRef", Sort.REF);
+                unsupported.add("ABSENT_EXPRESSION");
+                return unsupportedTerm(expected == null
+                        ? Sort.REF : expected);
             }
             JsonObject object = expression.getAsJsonObject();
             String type = string(object, "_type");

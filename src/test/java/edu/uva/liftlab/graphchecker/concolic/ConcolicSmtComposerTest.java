@@ -1432,6 +1432,48 @@ public class ConcolicSmtComposerTest {
                         "MODEL_SEMANTICS_MISSING"));
     }
 
+    @Test
+    public void anOmittedContainerValueIsNamedRatherThanReadAsJavaNull()
+            throws Exception {
+        // A recording states a null reference with its own null symbol, so
+        // an operand it simply left out says nothing at all.  Reading the
+        // omission as null would decide every later read of that entry -
+        // the entry is provably null, so it can never be a String - which
+        // is the strongest possible claim from the weakest evidence.
+        JsonObject key = new JsonObject();
+        key.addProperty("_type", "SymbolExpression");
+        key.addProperty("_java_type", "java/lang/String");
+        key.addProperty("_exp", "P_L'java/lang/String'_");
+
+        JsonArray omitted = new JsonArray();
+        omitted.add(binary(associativeRead(associativeOperation("PUT",
+                associativeState("M_1"), key, null), key, "L"),
+                "!=", recordedNull()));
+        ConcolicSmtComposer.Result gapped =
+                composeWithConstraints(omitted);
+
+        JsonArray recorded = new JsonArray();
+        recorded.add(binary(associativeRead(associativeOperation("PUT",
+                associativeState("M_1"), key, recordedNull()), key, "L"),
+                "!=", recordedNull()));
+        ConcolicSmtComposer.Result stated =
+                composeWithConstraints(recorded);
+
+        assertTrue(gapped.manifest.toString(),
+                gapped.manifest.toString().contains("ABSENT_EXPRESSION"));
+        assertFalse(stated.manifest.toString(),
+                stated.manifest.toString().contains("ABSENT_EXPRESSION"));
+    }
+
+    /** The recorder's own encoding of a null reference. */
+    private static JsonObject recordedNull() {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "SymbolExpression");
+        expression.addProperty("_java_type", "");
+        expression.addProperty("_exp", "N");
+        return expression;
+    }
+
     private ConcolicSmtComposer.Result composeWithConstraints(
             JsonArray constraints) throws Exception {
         String fatalInstance = "REGION.0@Test#call30";

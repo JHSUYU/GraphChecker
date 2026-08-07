@@ -165,7 +165,20 @@ exhaustion — cause unknown. Currently recorded as
 — `JAVA_STRING_REFERENCE_IDENTITY:==` (Java reference equality between strings
 of different origin; string *content* semantics are implemented) and
 `splitElement:CONCAT_RECEIVER_REQUIRED` (split is implemented only for a
-receiver that flattens to a concat chain).
+receiver that flattens to a concat chain). **Both are consequences, not
+causes.** The cross-region string port they look like they are about is
+already substituted: the producer's concat reaches the consumer's split
+through the trusted protocol edge, and the codec proves that round trip. What
+neither codec can reduce is a *map* read whose entry has no recorded value:
+the trace carries an associative `PUT` with the value operand simply absent —
+distinct from a recorded null, which the trace writes as its own null symbol.
+The composer used to read that omission as a null reference, which decided
+every later read of the entry from no evidence at all; it now names it
+(`ABSENT_EXPRESSION`) and fails closed. Closing the two codec gaps needs the
+recorder to state the stored value, and to give that map's keys distinct
+identities — it currently renders every String key of one map as one nameless
+symbol, which forces the same read to be null on one branch and a non-null
+String on another, so no model of that relation exists.
 
 ## Constraints
 
