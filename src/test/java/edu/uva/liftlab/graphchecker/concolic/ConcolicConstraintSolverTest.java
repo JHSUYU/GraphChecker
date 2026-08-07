@@ -606,11 +606,43 @@ public class ConcolicConstraintSolverTest {
         assertEquals(cleared.smtLib, recorded.smtLib);
     }
 
+    /**
+     * The base is empty whether or not its receiver carries operations of its
+     * own.  Replaying the observed members onto a receiver that may hold
+     * {@code m} entries would give the snapshot {@code m} more of them than
+     * were observed, and start the observed order at {@code m}, so a mutation
+     * a snapshot supersedes stays unobservable rather than being recovered.
+     */
+    @Test
+    public void snapshotBaseStaysEmptyOverAReceiverCarryingHistory()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject history = associativeOperation("PUT",
+                associativeState("M_L_field_REGION.3.in.4"),
+                intConstant(3), intConstant(5));
+
+        ConcolicConstraintSolver.Result carried = snapshotOfOneEntry(
+                "SNAPSHOT_BASE", history);
+        ConcolicConstraintSolver.Result bare = snapshotOfOneEntry(
+                "SNAPSHOT_BASE",
+                associativeState("M_L_field_REGION.3.in.4"));
+
+        assertEquals(carried.record.toString(), "SAT_MODEL_READY",
+                carried.record.get("status").getAsString());
+        assertFalse(carried.smtLib, carried.smtLib.contains("(VInt 3)"));
+        assertEquals(bare.smtLib, carried.smtLib);
+    }
+
     private static ConcolicConstraintSolver.Result snapshotOfOneEntry(
             String baseOperation) throws Exception {
+        return snapshotOfOneEntry(baseOperation,
+                associativeState("M_L_field_REGION.3.in.4"));
+    }
+
+    private static ConcolicConstraintSolver.Result snapshotOfOneEntry(
+            String baseOperation, JsonObject receiver) throws Exception {
         JsonObject snapshot = associativeOperation("PUT",
-                associativeOperation(baseOperation,
-                        associativeState("M_L_field_REGION.3.in.4")),
+                associativeOperation(baseOperation, receiver),
                 intConstant(7), intConstant(9));
         JsonObject condition = binaryExpression(
                 binaryExpression(associativeRead(snapshot,

@@ -28,14 +28,24 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * Both operations denote the empty container, and nothing else about a
-     * state distinguishes them, so they evaluate identically here.  They state
-     * different facts: {@code CLEAR} is a {@code Collection.clear()} the
-     * program executed, while {@code SNAPSHOT_BASE} is the recorder asserting
-     * that the container held exactly the members replayed above it.  Keeping
-     * the names apart is what lets a consumer tell an observation from a
-     * program action; collapsing them would hide real history behind a
-     * snapshot.
+     * Both operations denote the exact empty container.  They state different
+     * facts - {@code CLEAR} is a {@code Collection.clear()} the program
+     * executed, {@code SNAPSHOT_BASE} is the recorder asserting that the
+     * container held exactly the members replayed above it - and keeping the
+     * names apart is what lets a consumer tell an observation from a program
+     * action.  Neither may keep its receiver.
+     *
+     * <p>A snapshot's receiver can carry recorded operations, a removal among
+     * them, which the empty base drops.  Retaining it does not recover them:
+     * the observed members are replayed with {@code assoc_put}, so a base
+     * holding {@code m} entries leaves the snapshot {@code N + m} of them and
+     * starts the observed iteration order at {@code m}.  A receiver that may
+     * hold anything therefore contradicts the very observation it was
+     * recorded for, and one provably empty changes no value the formula can
+     * read.  Since a container's chain is rooted in an unconstrained {@code
+     * STATE} unless an empty base already grounds it, retaining is only ever
+     * the first case - so the base stays empty, and a mutation that a
+     * snapshot supersedes is unobservable rather than lost.</p>
      */
     static boolean emptiesState(String operation) {
         return "CLEAR".equals(operation) || "SNAPSHOT_BASE".equals(operation);
