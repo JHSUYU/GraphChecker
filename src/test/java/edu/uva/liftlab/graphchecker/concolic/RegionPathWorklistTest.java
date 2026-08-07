@@ -386,6 +386,75 @@ public class RegionPathWorklistTest {
     }
 
     @Test
+    public void flipThatCannotReachThePublishingSiteIsNotProposed() {
+        String method = "<test.Region: int publish()>";
+        JsonObject summary = summary("ACT.REACH",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject task = executionTask("ACT.REACH",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.REACH",
+                method + "#u3", method + "#u5");
+        JsonObject output = closure.getAsJsonArray("members").get(0)
+                .getAsJsonObject().getAsJsonObject("output");
+        output.addProperty("outputSiteId", "CALL_ARGUMENT:" + method
+                + "#u9:<test.Sink: void take(int)>#arg0");
+        output.addProperty("outputOccurrence", 1);
+        output.addProperty("replayOccurrence", 1);
+        attachClosure(summary, closure);
+        attachClosure(task, closure);
+
+        JsonArray mappings = new JsonArray();
+        mappings.add(mapping(method + "#u3", 0));
+        mappings.add(mapping(method + "#u5", 1));
+        summary.add("branchMappings", mappings);
+        authorizeVmPcMappings(summary);
+
+        // Both decisions were observed taken, so both flips ask for the
+        // fall-through.  Only the one whose fall-through still reaches the
+        // publishing site survives.
+        JsonArray branches = new JsonArray();
+        branches.add(guardedBranch(method + "#u3", method + "#u9", true));
+        branches.add(guardedBranch(method + "#u5", method + "#u9", false));
+        task.add("branches", branches);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(result.manifest.toString(), 1, result.tasks.size());
+        assertEquals(method + "#u5", sourceSite(result.tasks.get(0)));
+
+        // An unproven required outcome names no proof, so the flip stays.
+        branches.get(0).getAsJsonObject()
+                .getAsJsonArray("guardedSiteOutcomes").get(0)
+                .getAsJsonObject().remove("requiredOutcome");
+        RegionPathWorklist.Result unproven = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(2, unproven.tasks.size());
+    }
+
+    private static JsonObject guardedBranch(String siteId,
+                                            String guardedSiteId,
+                                            boolean requiredOutcome) {
+        JsonObject guarded = new JsonObject();
+        guarded.addProperty("siteId", guardedSiteId);
+        guarded.addProperty("requiredOutcome", requiredOutcome);
+        JsonArray outcomes = new JsonArray();
+        outcomes.add(guarded);
+        JsonObject branch = new JsonObject();
+        branch.addProperty("siteId", siteId);
+        branch.addProperty("policy", "EXPLORE");
+        branch.add("guardedSiteOutcomes", outcomes);
+        return branch;
+    }
+
+    @Test
     public void explicitClosureScopesBranchTasksAndManifest() {
         JsonObject summary = summary("ACT.CLOSURE",
                 ClosureGoalKind.OUTPUT_RELATION_CLOSURE);

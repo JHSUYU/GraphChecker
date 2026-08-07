@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Builds bounded branch-flip work for one region closure. */
@@ -238,6 +239,7 @@ public final class RegionPathWorklist {
 
         private void planSummary(PathObservation path) {
             List<SummaryBranchMapping> candidates = new ArrayList<>();
+            JsonObject task = taskById.get(path.sourceTaskId());
             for (SummaryBranchMapping mapping : path.branchMappings()) {
                 String site = mapping.siteId();
                 if (!path.scope().branchSites().contains(site)) {
@@ -247,6 +249,9 @@ public final class RegionPathWorklist {
                     continue;
                 }
                 if (!mapping.isExplore()) continue;
+                if (abandonsDemandedOutputSite(path, task, mapping)) {
+                    continue;
+                }
                 candidates.add(mapping);
             }
             // Classic depth-first concolic order: flip the latest relevant
@@ -274,6 +279,52 @@ public final class RegionPathWorklist {
                 }
                 emitTask(path, candidates.get(index));
             }
+        }
+
+        /**
+         * True when the flipped successor provably cannot reach a site the
+         * demanded outputs are published at.  Such a flip walks a fresh path
+         * and then ends with the port never written, so the whole replay is
+         * spent to learn nothing; the runtime still fails closed on it
+         * ({@code OUTPUT_CAPTURE_COUNT:<port>:0}), which is what makes it
+         * cost a replay rather than a wrong answer.
+         *
+         * <p>Only the outcome the static analyzer proved is required to reach
+         * that exact site decides this.  A site with no proof, a branch with
+         * no recorded control dependence, and a demand published at no site
+         * at all all keep the candidate.</p>
+         */
+        private boolean abandonsDemandedOutputSite(
+                PathObservation path, JsonObject task,
+                SummaryBranchMapping mapping) {
+            OutputClosureContract closure = path.scope().outputClosure();
+            if (closure == null || task == null) return false;
+            Set<String> demanded =
+                    closure.executionScope().outputSites();
+            if (demanded.isEmpty()) return false;
+            boolean desired = !mapping.sourceTakenOutcome();
+            for (JsonElement element : array(task, "branches")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (!mapping.siteId().equals(string(branch, "siteId"))) {
+                    continue;
+                }
+                for (JsonElement row
+                        : array(branch, "guardedSiteOutcomes")) {
+                    if (!row.isJsonObject()) continue;
+                    JsonObject guarded = row.getAsJsonObject();
+                    if (!demanded.contains(string(guarded, "siteId"))) {
+                        continue;
+                    }
+                    JsonElement outcome = guarded.get("requiredOutcome");
+                    if (outcome != null && outcome.isJsonPrimitive()
+                            && outcome.getAsJsonPrimitive().isBoolean()
+                            && outcome.getAsBoolean() != desired) {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         private void emitTask(PathObservation path,

@@ -78,11 +78,6 @@ final class ControlDependenceEdgeSupport {
                 successorIndices);
     }
 
-    static boolean requiresSiteIdentity(String kind) {
-        return kind != null && (PATH_GUARD_KIND.equals(kind)
-                || kind.endsWith("_path_guard"));
-    }
-
     static boolean annotateGuardedMutation(
             Map<String, Object> edge, String method, int guardUnitIndex,
             int mutationUnitIndex, Object requiredOutcome,

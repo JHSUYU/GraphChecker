@@ -227,6 +227,27 @@ public final class OutputClosureContract {
             return text(output, "javaTypeDescriptor");
         }
 
+        /**
+         * The exact program site this port is published at, empty when the
+         * port names none.  The encoded identity is
+         * {@code KIND:<method>#u<n>...}; only that leading unit position is a
+         * control-flow location, the rest names the argument, callee or field
+         * the capture reads there.
+         */
+        public String outputSite() {
+            String encoded = text(output, "outputSiteId");
+            int start = encoded.indexOf('<');
+            int marker = start < 0 ? -1 : encoded.indexOf(">#u", start);
+            if (marker < 0) return "";
+            int end = marker + 3;
+            while (end < encoded.length()
+                    && Character.isDigit(encoded.charAt(end))) {
+                end++;
+            }
+            return end == marker + 3 ? ""
+                    : encoded.substring(start, end);
+        }
+
         public JsonObject slice() { return slice.deepCopy(); }
 
         public JsonArray captures() { return captureBindings().deepCopy(); }
@@ -249,6 +270,7 @@ public final class OutputClosureContract {
         private final SortedSet<String> staticSites;
         private final SortedSet<String> methods;
         private final SortedSet<String> edges;
+        private final SortedSet<String> outputSites;
 
         private ExecutionScope(List<Member> members) {
             inputs = union(members, "inputPorts");
@@ -256,6 +278,12 @@ public final class OutputClosureContract {
             staticSites = union(members, "staticSites");
             methods = union(members, "methods");
             edges = union(members, "causalEdgeIds");
+            TreeSet<String> published = new TreeSet<>();
+            for (Member member : members) {
+                String site = member.outputSite();
+                if (!site.isEmpty()) published.add(site);
+            }
+            outputSites = Collections.unmodifiableSortedSet(published);
         }
 
         public SortedSet<String> inputPorts() { return inputs; }
@@ -267,6 +295,9 @@ public final class OutputClosureContract {
         }
 
         public SortedSet<String> staticSites() { return staticSites; }
+
+        /** Unit positions the demanded outputs are published at. */
+        public SortedSet<String> outputSites() { return outputSites; }
 
         public SortedSet<String> methods() { return methods; }
 

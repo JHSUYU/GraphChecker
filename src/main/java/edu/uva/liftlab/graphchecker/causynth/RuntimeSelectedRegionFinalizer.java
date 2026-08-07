@@ -28,6 +28,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.zip.GZIPInputStream;
 
@@ -2165,6 +2167,7 @@ public final class RuntimeSelectedRegionFinalizer {
             branch.put("operandCells", operandCells(decisiveGuards));
             Boolean required = consistentRequiredOutcome(decisiveGuards);
             branch.put("requiredOutcome", required);
+            branch.put("guardedSiteOutcomes", guardedSiteOutcomes(guards));
 
             boolean conflicting = required == null
                     && hasConflictingRequiredOutcomes(decisiveGuards);
@@ -2201,6 +2204,52 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         List<String> result = new ArrayList<>(cells);
         Collections.sort(result);
+        return result;
+    }
+
+    /**
+     * Names, per site this branch decides, the Jimple outcome the analyzer
+     * proved is required to reach that site.  The analyzer already ran the
+     * CFG reachability; keeping only the aggregate answer threw away which
+     * site each answer was about, which is the part a consumer needs to ask
+     * whether one exact position survives a flip.  A site two rows disagree
+     * about, or that no row proves an outcome for, is left out: a reader may
+     * conclude unreachability only from a proof.
+     */
+    private static List<Map<String, Object>> guardedSiteOutcomes(
+            Collection<Map<String, Object>> guards) {
+        Map<String, Boolean> proved = new TreeMap<>();
+        Set<String> unproved = new TreeSet<>();
+        for (Map<String, Object> guard : guards) {
+            List<Map<String, Object>> controlled = new ArrayList<>();
+            controlled.addAll(rows(guard.get("guardedMutations")));
+            controlled.addAll(rows(guard.get("controlledDefinitions")));
+            controlled.addAll(rows(guard.get("guardedEffects")));
+            for (Map<String, Object> row : controlled) {
+                String site = first(first(
+                        text(row.get("guardedMutationSiteId")),
+                        text(row.get("controlledDefinitionSiteId"))),
+                        text(row.get("effectSiteId")));
+                if (site.isEmpty()) continue;
+                Boolean outcome = booleanValue(row.get("requiredOutcome"));
+                if (outcome == null) {
+                    unproved.add(site);
+                    continue;
+                }
+                Boolean prior = proved.putIfAbsent(site, outcome);
+                if (prior != null && !prior.equals(outcome)) {
+                    unproved.add(site);
+                }
+            }
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map.Entry<String, Boolean> entry : proved.entrySet()) {
+            if (unproved.contains(entry.getKey())) continue;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("siteId", entry.getKey());
+            row.put("requiredOutcome", entry.getValue());
+            result.add(row);
+        }
         return result;
     }
 
@@ -3319,12 +3368,6 @@ public final class RuntimeSelectedRegionFinalizer {
                                               long rootCallId,
                                               String cell) {
             return instanceKey(regionId, rootCallId) + "\nCELL\n" + cell;
-        }
-
-        private static void addAllUnique(
-                Map<String, List<String>> target, String key,
-                Collection<String> values) {
-            for (String value : values) addUnique(target, key, value);
         }
 
         private static void addUnique(Map<String, List<String>> target,
