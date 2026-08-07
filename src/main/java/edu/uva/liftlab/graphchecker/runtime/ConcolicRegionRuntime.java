@@ -35,6 +35,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
@@ -1973,14 +1974,14 @@ public final class ConcolicRegionRuntime {
         String siteId = safe(method) + "#u" + unitIndex;
         int baseline = active.lastPathConditionSize;
         boolean noVmCondition = vmEventHasNoConditions(api, vmEventId);
-        JsonArray conditions;
+        PathConditionElements conditions;
         int rawPathConditionSize;
         int attestationBaseline;
         if (noVmCondition) {
             // An exact conditionless event cannot contribute a branch guard.
             // Avoid serializing and parsing the full accumulated PC merely to
             // record a concrete observation.
-            conditions = new JsonArray();
+            conditions = PathConditionElements.EMPTY;
             rawPathConditionSize = baseline;
             attestationBaseline = 0;
         } else {
@@ -1988,13 +1989,12 @@ public final class ConcolicRegionRuntime {
             String raw = api.pathCondition();
             diag("PC_READ_END", siteId + " occ=" + occurrence
                     + " chars=" + (raw == null ? -1 : raw.length()));
-            JsonElement parsed = parseJson(raw);
-            conditions = parsed.isJsonArray()
-                    ? parsed.getAsJsonArray() : new JsonArray();
+            conditions = PathConditionElements.of(raw);
             rawPathConditionSize = conditions.size();
             attestationBaseline = baseline;
             diag("PC_PARSED", siteId + " occ=" + occurrence
-                    + " conditions=" + rawPathConditionSize);
+                    + " conditions=" + rawPathConditionSize
+                    + " mode=" + conditions.mode());
         }
         VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
                 active, siteId, expression, observedOutcome, vmEventId,
@@ -2099,9 +2099,8 @@ public final class ConcolicRegionRuntime {
             String expression, int occurrence, SwitchExpectation expected,
             long vmEventId) throws Exception {
         String siteId = safe(method) + "#u" + unitIndex;
-        JsonElement parsed = parseJson(api.pathCondition());
-        JsonArray conditions = parsed.isJsonArray()
-                ? parsed.getAsJsonArray() : new JsonArray();
+        PathConditionElements conditions = PathConditionElements.of(
+                api.pathCondition());
         int baseline = active.lastPathConditionSize;
         VmBranchEventAttestation attestation = attestVmBranchEvent(api,
                 active, siteId, expression, expected.caseArm(), vmEventId,
@@ -2149,7 +2148,7 @@ public final class ConcolicRegionRuntime {
     private static VmBranchEventAttestation attestVmBranchEvent(
             EngineApi api, ActiveRegion active, String siteId,
             String expression, boolean observedOutcome, long eventId,
-            int occurrence, JsonArray conditions, int baseline) {
+            int occurrence, PathConditionElements conditions, int baseline) {
         return attestVmBranchEvent(api, active, siteId, expression,
                 observedOutcome, eventId, occurrence, conditions, baseline,
                 null);
@@ -2158,7 +2157,7 @@ public final class ConcolicRegionRuntime {
     private static VmBranchEventAttestation attestVmBranchEvent(
             EngineApi api, ActiveRegion active, String siteId,
             String expression, boolean observedOutcome, long eventId,
-            int occurrence, JsonArray conditions, int baseline,
+            int occurrence, PathConditionElements conditions, int baseline,
             SwitchExpectation switchExpectation) {
         if (eventId <= 0L) {
             return VmBranchEventAttestation.invalid(
@@ -2293,7 +2292,8 @@ public final class ConcolicRegionRuntime {
 
     private static VmBranchEventAttestation attestVmSwitchConditions(
             JsonObject event, SwitchExpectation expected,
-            JsonArray rawIndices, JsonArray conditions, int baseline) {
+            JsonArray rawIndices, PathConditionElements conditions,
+            int baseline) {
         int expectedOpcode = "TABLE_SWITCH".equals(expected.branchKind)
                 ? 170 : 171;
         if (integer(event, "opcode", -1) != expectedOpcode) {
@@ -3738,6 +3738,197 @@ public final class ConcolicRegionRuntime {
                     // Resume failure is already reported by the real hooks.
                 }
             }
+        }
+    }
+
+    /**
+     * Indexed access to a serialized path condition without materializing
+     * every element.
+     *
+     * <p>A branch hook needs exactly two facts from that document: how many
+     * conditions the VM has accumulated, and the one element the VM's exact
+     * event says this branch owns - an index the event stream, a few kilobytes
+     * wide, already carries.  Building the whole tree to learn them costs one
+     * object per node of a document that reaches tens of megabytes in a
+     * long-lived replay, and every node but one is then dropped unread.  A
+     * single pass records where each element begins and ends, and a requested
+     * element is parsed from those same characters by the same parser.</p>
+     *
+     * <p>The scan accepts only what it can prove is a JSON array of complete
+     * values; anything else - a non-array document, an unterminated string, a
+     * lenient extension - is handed to the tree parser, so a document this
+     * scanner does not understand is read exactly as it was before.</p>
+     */
+    static final class PathConditionElements {
+        static final PathConditionElements EMPTY =
+                new PathConditionElements(new JsonArray());
+        private static final String SCAN_MODE = "SCAN";
+        private static final String TREE_MODE = "TREE";
+
+        private final String raw;
+        private final int[] bounds;
+        private final JsonArray tree;
+        private final int size;
+
+        private PathConditionElements(String raw, int[] bounds) {
+            this.raw = raw;
+            this.bounds = bounds;
+            this.tree = null;
+            this.size = bounds.length / 2;
+        }
+
+        private PathConditionElements(JsonArray tree) {
+            this.raw = null;
+            this.bounds = null;
+            this.tree = tree;
+            this.size = tree.size();
+        }
+
+        /**
+         * Reads a serialized path condition.  A document that is not an array
+         * of values carries no conditions, which is what the tree parser
+         * reported for it before.
+         */
+        static PathConditionElements of(String raw) {
+            int[] bounds = scanElements(raw);
+            if (bounds != null) return new PathConditionElements(raw, bounds);
+            JsonElement parsed = parseJson(raw);
+            return parsed.isJsonArray()
+                    ? new PathConditionElements(parsed.getAsJsonArray())
+                    : EMPTY;
+        }
+
+        int size() {
+            return size;
+        }
+
+        JsonElement get(int index) {
+            if (index < 0 || index >= size) {
+                throw new IndexOutOfBoundsException(
+                        "path condition index " + index + " of " + size);
+            }
+            if (tree != null) return tree.get(index);
+            return parseJson(raw.substring(
+                    bounds[2 * index], bounds[2 * index + 1]));
+        }
+
+        /** Which reader answered, for the replay's own diagnostics. */
+        String mode() {
+            return tree == null ? SCAN_MODE : TREE_MODE;
+        }
+
+        /**
+         * Bounds of every element of a JSON array, or {@code null} when the
+         * document is not one this scanner can split with certainty.
+         */
+        private static int[] scanElements(String raw) {
+            if (raw == null) return null;
+            // One copy the scan can index directly.  A replay VM interprets
+            // every bytecode, and a bounds-checked accessor call per character
+            // of a document this size is most of the work otherwise.
+            char[] document = raw.toCharArray();
+            int length = document.length;
+            int index = skipWhitespace(document, 0);
+            if (index >= length || document[index] != '[') return null;
+            index = skipWhitespace(document, index + 1);
+            if (index >= length) return null;
+            int[] bounds = new int[64];
+            int count = 0;
+            if (document[index] == ']') {
+                index++;
+            } else {
+                while (true) {
+                    if (!valueStart(document[index])) return null;
+                    int end = skipValue(document, index);
+                    if (end <= index) return null;
+                    if (2 * count == bounds.length) {
+                        bounds = Arrays.copyOf(bounds, 2 * bounds.length);
+                    }
+                    bounds[2 * count] = index;
+                    bounds[2 * count + 1] = end;
+                    count++;
+                    index = skipWhitespace(document, end);
+                    if (index >= length) return null;
+                    char delimiter = document[index];
+                    if (delimiter == ']') {
+                        index++;
+                        break;
+                    }
+                    if (delimiter != ',') return null;
+                    index = skipWhitespace(document, index + 1);
+                    if (index >= length) return null;
+                }
+            }
+            return skipWhitespace(document, index) == length
+                    ? Arrays.copyOf(bounds, 2 * count) : null;
+        }
+
+        /** The characters a strict JSON value may begin with. */
+        private static boolean valueStart(char first) {
+            return first == '{' || first == '[' || first == '"'
+                    || first == '-' || (first >= '0' && first <= '9')
+                    || first == 't' || first == 'f' || first == 'n';
+        }
+
+        /**
+         * End of the value starting at {@code start}, or a non-positive
+         * distance when the document ends inside it.
+         */
+        private static int skipValue(char[] document, int start) {
+            int length = document.length;
+            int index = start;
+            int depth = 0;
+            while (index < length) {
+                char current = document[index];
+                if (current == '"') {
+                    index = skipString(document, index);
+                    if (index < 0) return -1;
+                    if (depth == 0) return index;
+                    continue;
+                }
+                if (current == '{' || current == '[') {
+                    depth++;
+                    index++;
+                    continue;
+                }
+                if (current == '}' || current == ']') {
+                    if (depth == 0) return index;
+                    depth--;
+                    index++;
+                    if (depth == 0) return index;
+                    continue;
+                }
+                if (depth == 0 && (current == ','
+                        || Character.isWhitespace(current))) {
+                    return index;
+                }
+                index++;
+            }
+            return -1;
+        }
+
+        /** Index after the string starting at its opening quote. */
+        private static int skipString(char[] document, int start) {
+            int length = document.length;
+            for (int index = start + 1; index < length; index++) {
+                char current = document[index];
+                if (current == '\\') {
+                    index++;
+                    continue;
+                }
+                if (current == '"') return index + 1;
+            }
+            return -1;
+        }
+
+        private static int skipWhitespace(char[] document, int start) {
+            int index = start;
+            int length = document.length;
+            while (index < length
+                    && Character.isWhitespace(document[index])) {
+                index++;
+            }
+            return index;
         }
     }
 

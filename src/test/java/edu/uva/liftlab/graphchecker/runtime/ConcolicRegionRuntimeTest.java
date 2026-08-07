@@ -403,6 +403,149 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void readingOnePathConditionAgreesWithParsingAllOfIt() {
+        // One document, both readers.  The shapes are the ones a serialized
+        // path condition actually carries: nested expression trees, code
+        // positions holding the punctuation that delimits JSON, escapes, and
+        // every primitive form.
+        String document = pathConditionDocument();
+        JsonArray parsed = new JsonParser().parse(document).getAsJsonArray();
+        ConcolicRegionRuntime.PathConditionElements scanned =
+                ConcolicRegionRuntime.PathConditionElements.of(document);
+
+        assertEquals("SCAN", scanned.mode());
+        assertEquals(parsed.size(), scanned.size());
+        for (int index = 0; index < parsed.size(); index++) {
+            assertEquals(parsed.get(index), scanned.get(index));
+        }
+
+        // Whitespace between elements is not part of any element.
+        String pretty = new com.google.gson.GsonBuilder().setPrettyPrinting()
+                .create().toJson(parsed);
+        ConcolicRegionRuntime.PathConditionElements indented =
+                ConcolicRegionRuntime.PathConditionElements.of(pretty);
+        assertEquals("SCAN", indented.mode());
+        assertEquals(parsed.size(), indented.size());
+        for (int index = 0; index < parsed.size(); index++) {
+            assertEquals(parsed.get(index), indented.get(index));
+        }
+
+        // An empty path condition is an empty array, not an absent one.
+        assertEquals(0,
+                ConcolicRegionRuntime.PathConditionElements.of("[]").size());
+        assertEquals("SCAN",
+                ConcolicRegionRuntime.PathConditionElements.of("  [ ] ")
+                        .mode());
+
+        // Documents the scanner cannot split with certainty are handed to the
+        // tree parser, so every document reads exactly as it did before.
+        for (String other : new String[] {null, "", "   ", "{\"a\":1}",
+                "[1,2", "[1,]", "[\"unterminated]", "[1 2]", "not json",
+                "[]", document}) {
+            JsonArray expected = treeConditions(other);
+            ConcolicRegionRuntime.PathConditionElements actual =
+                    ConcolicRegionRuntime.PathConditionElements.of(other);
+            assertEquals(other + " condition count",
+                    expected.size(), actual.size());
+            for (int index = 0; index < expected.size(); index++) {
+                assertEquals(other + " condition " + index,
+                        expected.get(index), actual.get(index));
+            }
+        }
+    }
+
+    /** The path-condition reading this replaced: parse it all, keep an array. */
+    private static JsonArray treeConditions(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return new JsonArray();
+        final com.google.gson.JsonElement parsed;
+        try {
+            parsed = new JsonParser().parse(raw);
+        } catch (RuntimeException malformed) {
+            return new JsonArray();
+        }
+        return parsed.isJsonArray() ? parsed.getAsJsonArray() : new JsonArray();
+    }
+
+    /** A document shaped like the VM's serialized path condition. */
+    private static String pathConditionDocument() {
+        JsonArray conditions = new JsonArray();
+        String[] operators = {"==", "<", ">=", "!="};
+        for (int index = 0; index < operators.length; index++) {
+            JsonObject left = new JsonObject();
+            left.addProperty("_type", "SymbolExpression");
+            left.addProperty("_exp", "environment__currentTimeMills_" + index);
+            JsonObject right = new JsonObject();
+            right.addProperty("_type", "ConstExpr");
+            right.addProperty("_value", -1L - index);
+            JsonObject condition = new JsonObject();
+            // Punctuation and escapes inside a string must not split it.
+            condition.addProperty("_code_position",
+                    "virtual jlong java.util.Date.getTimeImpl(),[{\"}]:"
+                            + index + "\\");
+            condition.addProperty("_type", "BinaryExpression");
+            condition.add("_left", left);
+            condition.addProperty("_op", operators[index]);
+            condition.add("_right", right);
+            JsonArray operands = new JsonArray();
+            operands.add(left);
+            operands.add(right);
+            condition.add("_operands", operands);
+            conditions.add(condition);
+        }
+        // Primitive elements are values of the array too.
+        conditions.add(new JsonParser().parse("true"));
+        conditions.add(new JsonParser().parse("false"));
+        conditions.add(com.google.gson.JsonNull.INSTANCE);
+        conditions.add(new JsonParser().parse("-12.5e3"));
+        conditions.add(new JsonParser().parse("\"[a,b]\""));
+        conditions.add(new JsonParser().parse("[]"));
+        conditions.add(new JsonParser().parse("{}"));
+        return conditions.toString();
+    }
+
+    @Test
+    public void onlyTheLoopsOwnGuardAnswersForItsBody() {
+        // The shape this protects: a loop whose header is not an instrumented
+        // branch site, holding a symbolically decided branch in its body.  The
+        // body's decision runs between two body entries and shares the loop's
+        // method, so a criterion that reads "the last decision" attributes it
+        // to the header and charges a loop the replay merely walks - and a
+        // concrete body branch would just as wrongly release a loop whose
+        // header the solver does choose.
+        String method = "<test.Keys: void removeExpiredKeys()>";
+        String loop = method + "#loop:u5";
+        String guard = method + "#u6";
+        String bodyBranch = method + "#u14";
+
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, guard, bodyBranch, false));
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, guard, bodyBranch, true));
+        // An uninstrumented header names no guard, which answers nothing and
+        // is charged rather than assumed concrete.
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, "", bodyBranch, true));
+        // Only the named guard's own concrete decision releases the body.
+        assertTrue(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, guard, guard, true));
+
+        // The body-entry edge carries both facts; the ledger stays keyed by
+        // the loop, so the latch hooks and this hook spend one budget.
+        String encoded = loop + "@guard:u6";
+        assertEquals(loop, ConcolicRegionRuntime.loopIdentity(encoded));
+        assertEquals(guard, ConcolicRegionRuntime.bodyEntryGuardSite(encoded));
+
+        // An edge instrumented before guards were named, or one whose guard
+        // is malformed, names no guard and is charged.
+        assertEquals(loop, ConcolicRegionRuntime.loopIdentity(loop));
+        assertEquals("", ConcolicRegionRuntime.bodyEntryGuardSite(loop));
+        assertEquals("", ConcolicRegionRuntime.bodyEntryGuardSite(
+                loop + "@guard:u"));
+        assertEquals("", ConcolicRegionRuntime.bodyEntryGuardSite(
+                loop + "@guard:ux6"));
+    }
+
+    @Test
     public void eachBoundedAccessorOccurrenceKeepsItsOwnSymbol() {
         // The replay counts its accessor calls from one, so the demanded
         // occurrence is the one bounded to a single helper activation.
