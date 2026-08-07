@@ -27,6 +27,20 @@ public final class ContainerSmtCodec {
     private ContainerSmtCodec() {
     }
 
+    /**
+     * Both operations denote the empty container, and nothing else about a
+     * state distinguishes them, so they evaluate identically here.  They state
+     * different facts: {@code CLEAR} is a {@code Collection.clear()} the
+     * program executed, while {@code SNAPSHOT_BASE} is the recorder asserting
+     * that the container held exactly the members replayed above it.  Keeping
+     * the names apart is what lets a consumer tell an observation from a
+     * program action; collapsing them would hide real history behind a
+     * snapshot.
+     */
+    static boolean emptiesState(String operation) {
+        return "CLEAR".equals(operation) || "SNAPSHOT_BASE".equals(operation);
+    }
+
     /** One tagged transport value shared by path solving and composition. */
     static String valueDatatypeDeclaration() {
         return "(declare-datatypes () ((Value"
@@ -511,10 +525,10 @@ public final class ContainerSmtCodec {
                     + position.text + " " + size + "))", Sort.BOOL);
         }
         JsonArray arguments = array(expression, "arguments");
-        if ("CLEAR".equals(operation)) {
+        if (emptiesState(operation)) {
             if (arguments.size() != 0) {
-                host.unsupported("ContainerRelation:" + shape
-                        + ":CLEAR:arity=" + arguments.size());
+                host.unsupported("ContainerRelation:" + shape + ":"
+                        + operation + ":arity=" + arguments.size());
                 return null;
             }
             if ("INDEXED".equals(shape)) {
@@ -668,7 +682,7 @@ public final class ContainerSmtCodec {
                     : new Term("(assoc_has " + state.text + " "
                     + key.text + ")", Sort.BOOL);
         }
-        if ("CLEAR".equals(mutation.operation)) {
+        if (emptiesState(mutation.operation)) {
             return new Term("false", Sort.BOOL);
         }
         Term mutatedKey = host.box(mutation.arguments.get(0));
@@ -692,7 +706,7 @@ public final class ContainerSmtCodec {
                     + key.text + ") (assoc_read " + state.text + " "
                     + key.text + ") (VRef nullRef))", Sort.VALUE);
         }
-        if ("CLEAR".equals(mutation.operation)) {
+        if (emptiesState(mutation.operation)) {
             return new Term("(VRef nullRef)", Sort.VALUE);
         }
         Term mutatedKey = host.box(mutation.arguments.get(0));
@@ -714,7 +728,7 @@ public final class ContainerSmtCodec {
             return state == null ? null
                     : new Term("(assoc_size " + state.text + ")", Sort.INT);
         }
-        if ("CLEAR".equals(mutation.operation)) {
+        if (emptiesState(mutation.operation)) {
             return new Term("0", Sort.INT);
         }
         Term key = host.box(mutation.arguments.get(0));
@@ -741,7 +755,7 @@ public final class ContainerSmtCodec {
         }
         String operation = string(relation, "operation");
         JsonArray arguments = array(relation, "arguments");
-        int arity = "CLEAR".equals(operation) ? 0
+        int arity = emptiesState(operation) ? 0
                 : "REMOVE".equals(operation) ? 1
                 : "PUT".equals(operation) ? 2 : -1;
         return arity >= 0 && arguments.size() == arity

@@ -428,14 +428,18 @@ bool ConcolicMngr::snapshotContainerExpression(
     return false;
   }
 
-  // CLEAR(STATE) is an exact empty collection: its size is zero and every
-  // associative key is absent.  Replaying the observed final members from
-  // that base yields a path-final snapshot rather than an unconstrained
-  // symbolic initial collection.
+  // SNAPSHOT_BASE(STATE) is an exact empty collection: its size is zero and
+  // every associative key is absent.  Replaying the observed final members
+  // from that base yields a path-final snapshot rather than an unconstrained
+  // symbolic initial collection.  It denotes the same empty value as CLEAR
+  // but states a different fact -- this recorder asserts what the container
+  // held, where CLEAR reports a Collection.clear() the program executed.  The
+  // two carry separate op names so that a consumer can tell a recorded
+  // observation from an observed program action.
   exp_list_t no_arguments;
   Expression *initial = ctx->container_state(target, shape);
   Expression *state = new ContainerExpression(
-      shape, "CLEAR", initial, no_arguments);
+      shape, "SNAPSHOT_BASE", initial, no_arguments);
   ctx->set_container_state(target, state);
 
   for (int index = 0; index < snapshot_values->length(); ++index) {

@@ -3587,8 +3587,10 @@ public final class ConcolicSmtComposer {
 
         /**
          * Normal-exit container outputs are rebuilt by the runtime from the
-         * members that Java actually observed: {@code CLEAR} followed by
-         * {@code PUT}/{@code APPEND}.  A non-null member is represented by a
+         * members that Java actually observed: {@code SNAPSHOT_BASE} followed
+         * by {@code PUT}/{@code APPEND} (recordings taken before the base got
+         * its own op name write {@code CLEAR} there).  A non-null member is
+         * represented by a
          * VM reference symbol, while an observed null is the dedicated
          * {@code N} expression.  Preserve that distinction in the selected
          * path case; otherwise SMT may alias a concrete object identity with
@@ -3610,7 +3612,7 @@ public final class ConcolicSmtComposer {
                     break;
                 }
                 String operation = string(relation, "operation");
-                if ("CLEAR".equals(operation)) {
+                if (ContainerSmtCodec.emptiesState(operation)) {
                     exactSnapshot = true;
                     break;
                 }

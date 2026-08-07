@@ -586,6 +586,40 @@ public class ConcolicConstraintSolverTest {
         assertTrue(assignment.get("value").getAsInt() > 0);
     }
 
+    /**
+     * The recorder's snapshot base and a {@code Collection.clear()} the
+     * program ran are different facts, so they carry different op names; both
+     * still denote the empty container, so the lowering must be the same one.
+     */
+    @Test
+    public void recordedSnapshotBaseLowersLikeAnObservedClear()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        ConcolicConstraintSolver.Result cleared = snapshotOfOneEntry("CLEAR");
+        ConcolicConstraintSolver.Result recorded =
+                snapshotOfOneEntry("SNAPSHOT_BASE");
+
+        assertEquals(recorded.record.toString(), "SAT_MODEL_READY",
+                recorded.record.get("status").getAsString());
+        assertEquals(cleared.record.get("unsupported").toString(),
+                recorded.record.get("unsupported").toString());
+        assertEquals(cleared.smtLib, recorded.smtLib);
+    }
+
+    private static ConcolicConstraintSolver.Result snapshotOfOneEntry(
+            String baseOperation) throws Exception {
+        JsonObject snapshot = associativeOperation("PUT",
+                associativeOperation(baseOperation,
+                        associativeState("M_L_field_REGION.3.in.4")),
+                intConstant(7), intConstant(9));
+        JsonObject condition = binaryExpression(
+                binaryExpression(associativeRead(snapshot,
+                        intConstant(7), "I"), "==", intConstant(9)),
+                "&&", binary(">", 0));
+        return solveForTest(task(condition), activation(),
+                Paths.get("z3"), 10_000L);
+    }
+
     @Test
     public void associativeReadProjectsRemoveWithoutIteratorState()
             throws Exception {
