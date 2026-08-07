@@ -1613,18 +1613,25 @@ public final class CausynthPipeline {
                     }
                     boolean entersBody = removeEdge(continuations,
                             backedge.source, backedge.target);
-                    List<SootMethodRef> edgeHooks = new ArrayList<>();
+                    List<LoopEdgeHook> edgeHooks = new ArrayList<>();
                     if (resourceOnly) {
                         // One charge per body entered.  The latch hooks exist
                         // to separate a guarded return to the header from the
                         // transfer into the next body; the resource cap counts
                         // bodies, so only the body-entering edge is charged.
+                        // It counts them per loop, and so is given the loop.
                         if (!entersBody) continue;
-                        edgeHooks.add(checkBodyEntry);
+                        edgeHooks.add(new LoopEdgeHook(checkBodyEntry, loopId));
                     } else {
-                        edgeHooks.add(!loop.hasContinuationGuard
-                                ? checkBackedge : recordBackedge);
-                        if (entersBody) edgeHooks.add(checkBodyEntry);
+                        edgeHooks.add(new LoopEdgeHook(
+                                !loop.hasContinuationGuard
+                                        ? checkBackedge : recordBackedge,
+                                loopId));
+                        if (entersBody) {
+                            edgeHooks.add(new LoopEdgeHook(checkBodyEntry,
+                                    bodyEntryLoopId(loopId,
+                                            backedge.source)));
+                        }
                     }
                     splitCfgEdge(body, method, backedge.source,
                             backedge.target, loopId,
@@ -1635,7 +1642,10 @@ public final class CausynthPipeline {
                     splitCfgEdge(body, method, continuation.source,
                             continuation.target, loopId,
                             policy.maxBackedgeTraversals(),
-                            Collections.singletonList(checkBodyEntry));
+                            Collections.singletonList(new LoopEdgeHook(
+                                    checkBodyEntry, resourceOnly ? loopId
+                                            : bodyEntryLoopId(loopId,
+                                            continuation.source))));
                     // In bounded mode the return value counts the backedges
                     // this pass split, which a continuation edge is not.  The
                     // resource pass charges bodies, so for it a continuation
@@ -1781,10 +1791,32 @@ public final class CausynthPipeline {
         return removed;
     }
 
+    /**
+     * Names the guard whose decision enters this body, so the replay charges
+     * the unroll bound on evidence about this loop's own continuation instead
+     * of whichever branch happened to be decided last.  An edge whose source
+     * has no original identity names none, and the replay then charges it.
+     */
+    private static String bodyEntryLoopId(String loopId, Unit guard) {
+        int guardIndex = originalUnitIndex(guard);
+        return guardIndex < 0 ? loopId : loopId + "@guard:u" + guardIndex;
+    }
+
+    /** A loop hook and the edge identity that hook is handed. */
+    private static final class LoopEdgeHook {
+        private final SootMethodRef ref;
+        private final String loopId;
+
+        private LoopEdgeHook(SootMethodRef ref, String loopId) {
+            this.ref = ref;
+            this.loopId = loopId;
+        }
+    }
+
     private static void splitCfgEdge(
             Body body, SootMethod method, Unit source, Unit target,
             String loopId, int maxTraversals,
-            List<SootMethodRef> hookRefs) {
+            List<LoopEdgeHook> hookRefs) {
         List<UnitBox> matchingTargets = new ArrayList<>();
         for (UnitBox targetBox : source.getUnitBoxes()) {
             if (targetBox.getUnit() == target) {
@@ -1800,10 +1832,10 @@ public final class CausynthPipeline {
         }
 
         List<Unit> bridge = new ArrayList<>();
-        for (SootMethodRef hookRef : hookRefs) {
+        for (LoopEdgeHook hook : hookRefs) {
             bridge.add(Jimple.v().newInvokeStmt(
-                    Jimple.v().newStaticInvokeExpr(hookRef,
-                            StringConstant.v(loopId),
+                    Jimple.v().newStaticInvokeExpr(hook.ref,
+                            StringConstant.v(hook.loopId),
                             IntConstant.v(maxTraversals))));
         }
         Unit first = bridge.get(0);

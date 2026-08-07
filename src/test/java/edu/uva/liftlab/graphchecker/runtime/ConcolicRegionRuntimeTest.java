@@ -314,19 +314,21 @@ public class ConcolicRegionRuntimeTest {
     public void onlyASymbolicallyGuardedLoopSpendsTheUnrollBudget() {
         String method = "<test.Keys: void addKeys()>";
         String loop = method + "#loop:u13";
+        String guard = method + "#u16";
 
         // A concrete array walk repeats as often as its data says.
         assertTrue(ConcolicRegionRuntime.concreteGuardEnteredBody(
-                loop, method, true));
+                loop, guard, true, guard, true));
         // A guard the VM decided symbolically is a real path branch.
         assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
-                loop, method, false));
+                loop, guard, true, guard, false));
         // A decision from another method, or none at all, answers nothing
         // about this header and is charged.
         assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
-                loop, "<test.Keys: void removeExpired()>", true));
+                loop, guard, true,
+                "<test.Keys: void removeExpired()>#u16", true));
         assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
-                loop, "", true));
+                loop, guard, true, "", true));
 
         // A released traversal leaves the budget where it was, so a long
         // concrete loop never starves the symbolic loops beside it.
@@ -505,29 +507,41 @@ public class ConcolicRegionRuntimeTest {
 
     @Test
     public void onlyTheLoopsOwnGuardAnswersForItsBody() {
-        // The shape this protects: a loop whose header is not an instrumented
-        // branch site, holding a symbolically decided branch in its body.  The
-        // body's decision runs between two body entries and shares the loop's
-        // method, so a criterion that reads "the last decision" attributes it
-        // to the header and charges a loop the replay merely walks - and a
-        // concrete body branch would just as wrongly release a loop whose
-        // header the solver does choose.
+        // A guard that is a branch site of the symbolic slice decides every
+        // body of its loop, so it is the only witness accepted for one.
         String method = "<test.Keys: void removeExpiredKeys()>";
         String loop = method + "#loop:u5";
         String guard = method + "#u6";
         String bodyBranch = method + "#u14";
 
-        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
-                loop, guard, bodyBranch, false));
-        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
-                loop, guard, bodyBranch, true));
-        // An uninstrumented header names no guard, which answers nothing and
-        // is charged rather than assumed concrete.
-        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
-                loop, "", bodyBranch, true));
-        // Only the named guard's own concrete decision releases the body.
         assertTrue(ConcolicRegionRuntime.concreteGuardEnteredBody(
-                loop, guard, guard, true));
+                loop, guard, true, guard, true));
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, guard, true, guard, false));
+        // A branch of the body can no longer stand in for a guard that did
+        // decide.  It runs between two body entries and shares the loop's
+        // method, so this is what a "most recent decision" rule mistook for
+        // the header - releasing a loop the solver chooses, or charging one
+        // the replay merely walks.
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, guard, true, bodyBranch, true));
+        // A decision from another method answers nothing about this loop.
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, guard, true, "<test.Keys: void addKeys()>#u6", true));
+        // A guard outside the slice never decides, and no witness for it can
+        // be produced.  The loop keeps the evidence this replay does have,
+        // its own method's attested decision, rather than spending the unroll
+        // bound on every concrete walk over recorded data.  Its bodies are
+        // still charged to the replay resource cap.
+        assertTrue(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, guard, false, bodyBranch, true));
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, guard, false, bodyBranch, false));
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, "", false, "", true));
+        // Even without a guard, only this loop's own method can answer.
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, "", false, "<test.Keys: void addKeys()>#u6", true));
 
         // The body-entry edge carries both facts; the ledger stays keyed by
         // the loop, so the latch hooks and this hook spend one budget.

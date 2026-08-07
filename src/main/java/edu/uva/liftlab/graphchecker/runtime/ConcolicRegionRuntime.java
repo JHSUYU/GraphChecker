@@ -316,7 +316,9 @@ public final class ConcolicRegionRuntime {
         try {
             api.pausePathCondition();
             paused = true;
-            String loop = safe(loopId);
+            // This cap counts bodies per loop, so a body-entry edge that also
+            // names its guard still spends one ledger.
+            String loop = loopIdentity(loopId);
             if (loop.isEmpty() || instrumentedMaxTraversals
                     != active.activation.loopBound.maxBackedgeTraversals()) {
                 // The class was instrumented under a different policy, so its
@@ -359,11 +361,14 @@ public final class ConcolicRegionRuntime {
         try {
             api.pausePathCondition();
             paused = true;
-            String loop = safe(loopId);
+            // The edge names the loop it belongs to and the guard that
+            // decides this body; the ledger is the loop's alone.
+            String loop = loopIdentity(loopId);
+            String guardSite = bodyEntryGuardSite(loopId);
             int runtimeMax = active.activation.loopBound
                     .maxBackedgeTraversals();
-            diag("LOOP_BODY_ENTRY", loop + " charged="
-                    + active.loopBackedges.completed(loop));
+            diag("LOOP_BODY_ENTRY", loop + " guard=" + guardSite
+                    + " charged=" + active.loopBackedges.completed(loop));
             // Every body spends the replay resource cap, whatever the unroll
             // bound then decides about this one.
             resourceCut = active.chargeLoopBody(loop);
@@ -371,7 +376,7 @@ public final class ConcolicRegionRuntime {
                     || instrumentedMaxTraversals != runtimeMax) {
                 cut = active.loopBoundCut(loop, runtimeMax, 0L,
                         "INSTRUMENTATION_POLICY_MISMATCH");
-            } else if (active.enteredBodyOnConcreteGuard(loop)) {
+            } else if (active.enteredBodyOnConcreteGuard(loop, guardSite)) {
                 // The unroll bound exists to cap path explosion, which only a
                 // symbolically decided continuation can cause.  How often a
                 // fully concrete guard repeats is data this replay observes,
@@ -1605,22 +1610,80 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * True when the decision that entered a loop body belongs to that loop's
-     * own header and was attested to carry no symbolic expression.
+     * True when the decision that entered a loop body was attested to carry
+     * no symbolic expression.
      *
      * <p>Only a symbolically decided continuation can explode the path space,
      * so only such a loop spends the unroll budget; a concrete guard's trip
-     * count is data this replay observes.  The decision's method must be the
-     * loop's own, because a decision made elsewhere - in a callee, or before
-     * an uninstrumented header - says nothing about this guard.  Every case
-     * that leaves the question open is charged instead.</p>
+     * count is data this replay observes.  The decision that answers for a
+     * body is the one this loop's own guard made, which the instrumentation
+     * names on the edge it split.  When that guard did decide - it is a
+     * branch site of the symbolic slice - it is the only witness accepted,
+     * and a branch inside the body can no longer stand in for it: such an
+     * impostor runs between two body entries and shares the loop's method, so
+     * a concrete one would release a symbolically guarded loop and a symbolic
+     * one charges a loop the replay merely walks.</p>
+     *
+     * <p>A guard outside the slice never decides anything this replay can
+     * see.  No witness for it can be produced, and demanding one would charge
+     * the unroll bound for every concrete walk over recorded data - a cut on
+     * loops the solver was never offered a choice about.  Such a loop keeps
+     * the evidence this replay does have, its own method's attested decision,
+     * exactly as before; naming that guard in the symbolic slice is what
+     * would answer it exactly.  Its work is not unaccounted for either way:
+     * every body it runs is charged to the replay resource cap.</p>
      */
     static boolean concreteGuardEnteredBody(
-            String loopId, String decisionMethod, boolean decisionConcrete) {
+            String loopId, String guardSiteId, boolean guardDecides,
+            String decisionSiteId, boolean decisionConcrete) {
         int marker = safe(loopId).indexOf("#loop:");
-        return decisionConcrete && marker > 0
-                && !safe(decisionMethod).isEmpty()
-                && loopId.substring(0, marker).equals(decisionMethod);
+        String decision = safe(decisionSiteId);
+        if (!decisionConcrete || marker <= 0 || decision.isEmpty()) {
+            return false;
+        }
+        String guard = safe(guardSiteId);
+        if (guardDecides && !guard.isEmpty()) {
+            // The guard decides this loop, so nothing else answers for it.
+            return decision.equals(guard);
+        }
+        // A guard that has never decided is outside the slice, and no witness
+        // for it exists to demand.  The loop's method is the narrowest scope
+        // its continuation can be attested in at all.
+        return decision.startsWith(loopId.substring(0, marker) + "#u");
+    }
+
+    /** Separates a body-entry edge's loop from the guard that decides it. */
+    private static final String BODY_ENTRY_GUARD_MARKER = "@guard:u";
+
+    /**
+     * The loop whose ledger a body-entry edge spends, which is the identity
+     * the latch hooks of the same loop are given.
+     */
+    static String loopIdentity(String encodedLoopId) {
+        String encoded = safe(encodedLoopId);
+        int marker = encoded.indexOf(BODY_ENTRY_GUARD_MARKER);
+        return marker < 0 ? encoded : encoded.substring(0, marker);
+    }
+
+    /**
+     * The branch site whose decision enters the body, or the empty string
+     * when the instrumentation named none for this edge.
+     */
+    static String bodyEntryGuardSite(String encodedLoopId) {
+        String encoded = safe(encodedLoopId);
+        int marker = encoded.indexOf(BODY_ENTRY_GUARD_MARKER);
+        if (marker < 0) return "";
+        String loop = encoded.substring(0, marker);
+        int loopMarker = loop.indexOf("#loop:");
+        if (loopMarker <= 0) return "";
+        String unitIndex = encoded.substring(
+                marker + BODY_ENTRY_GUARD_MARKER.length());
+        if (unitIndex.isEmpty()) return "";
+        for (int index = 0; index < unitIndex.length(); index++) {
+            char digit = unitIndex.charAt(index);
+            if (digit < '0' || digit > '9') return "";
+        }
+        return loop.substring(0, loopMarker) + "#u" + unitIndex;
     }
 
     /**
@@ -1861,7 +1924,7 @@ public final class ConcolicRegionRuntime {
                         observedOutcome);
                 // No input has been materialized yet, so nothing this region
                 // decides can carry a symbolic expression.
-                active.noteBranchDecision(method, true);
+                active.noteBranchDecision(method, unitIndex, true);
                 finishAtExactOutputBoundary(active);
             } catch (Throwable ignored) {
                 // Observation must never alter the workload's own outcome.
@@ -2051,7 +2114,7 @@ public final class ConcolicRegionRuntime {
         // A decision the VM attested owns no path condition carried no
         // symbolic expression.  Anything less than an attestation leaves the
         // question open, and an open question must be charged.
-        active.noteBranchDecision(method, vmAttestation.valid
+        active.noteBranchDecision(method, unitIndex, vmAttestation.valid
                 && vmAttestation.conditionIndices.isEmpty());
         if (mapping.has("witness") || mapping.has("concreteObservation")) {
             // A marker without either authority carries no decision into the
@@ -4275,7 +4338,8 @@ public final class ConcolicRegionRuntime {
         private final Map<String, Integer> associativeAccessOccurrences =
                 new LinkedHashMap<>();
         private final ReplayProgress replayProgress;
-        private String lastDecisionMethod = "";
+        private final Set<String> decidedSites = new LinkedHashSet<>();
+        private String lastDecisionSite = "";
         private boolean lastDecisionConcrete;
         private int replayCaptureWatermark = -1;
         private long nextObjectToken = 1L;
@@ -4405,23 +4469,28 @@ public final class ConcolicRegionRuntime {
         /**
          * Records how the branch that just executed was decided, so the loop
          * hooks can tell a symbolically chosen continuation from a concrete
-         * one.  The method is kept because a decision made somewhere else
-         * says nothing about this loop's guard.
+         * one.  The site is kept, not merely the method: only the branch that
+         * decides a loop's continuation says anything about that loop's
+         * guard, and the body of the loop holds branches of the same method.
          */
-        private void noteBranchDecision(String method, boolean concrete) {
-            lastDecisionMethod = safe(method);
+        private void noteBranchDecision(
+                String method, int unitIndex, boolean concrete) {
+            lastDecisionSite = siteId(method, unitIndex);
             lastDecisionConcrete = concrete;
+            decidedSites.add(lastDecisionSite);
         }
 
         /**
-         * True when the decision that entered this loop body was attested to
-         * carry no symbolic expression.  An unattested, missing, or foreign
-         * decision answers nothing and is charged to the budget.
+         * True when this loop's own guard decided this body and was attested
+         * to carry no symbolic expression.  An unattested, missing, or
+         * foreign decision answers nothing and is charged to the budget.
          */
-        private boolean enteredBodyOnConcreteGuard(String loopId) {
-            boolean concrete = concreteGuardEnteredBody(loopId,
-                    lastDecisionMethod, lastDecisionConcrete);
-            lastDecisionMethod = "";
+        private boolean enteredBodyOnConcreteGuard(
+                String loopId, String guardSiteId) {
+            boolean concrete = concreteGuardEnteredBody(loopId, guardSiteId,
+                    decidedSites.contains(safe(guardSiteId)),
+                    lastDecisionSite, lastDecisionConcrete);
+            lastDecisionSite = "";
             lastDecisionConcrete = false;
             return concrete;
         }
