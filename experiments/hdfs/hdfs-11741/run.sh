@@ -194,19 +194,36 @@ require_jsonl_contains() {
     || die "${label} missing from ${path}: ${literal}"
 }
 
+# Reads one top-level string field from the JSONL row on stdin without
+# building the row.  A selected result carries the region's whole symbolic
+# expression tree, which runs to hundreds of megabytes nested past jq's
+# tree-parser depth limit; the stream stops at the field, so this stays fast
+# however deep the row is, and the row itself is never held in a variable.
+jsonl_stream_field() {
+  local field=$1
+  jq --stream -n -r --arg field "${field}" '
+    first(inputs | select(length == 2 and .[0] == [$field]) | .[1]) // ""'
+}
+
 require_unique_task_result() {
   local label=$1
   local path=$2
   local task_id=$3
   require_nonempty_file "${label}" "${path}"
-  jq -e -s --arg task "${task_id}" '
-    ([.[] | select(.taskId == $task
-      and .event == "CONCOLIC_REGION_RESULT")] | length) == 1
-    and all(.[];
-      .taskId == $task
-      and (.event == "CONCOLIC_REGION_RESULT"
-        or .event == "CONCOLIC_REGION_SKIPPED"))
-  ' "${path}" >/dev/null \
+  local event task total number results=0
+  total=$(wc -l <"${path}")
+  for ((number = 1; number <= total; number++)); do
+    event=$(sed -n "${number}p" "${path}" | jsonl_stream_field event)
+    task=$(sed -n "${number}p" "${path}" | jsonl_stream_field taskId)
+    [[ "${task}" == "${task_id}" ]] \
+      || die "${label} carries a row of another task (${task}): ${path}"
+    case "${event}" in
+      CONCOLIC_REGION_RESULT) results=$((results + 1)) ;;
+      CONCOLIC_REGION_SKIPPED) ;;
+      *) die "${label} carries an incompatible event (${event}): ${path}" ;;
+    esac
+  done
+  [[ "${results}" -eq 1 ]] \
     || die "${label} must contain one selected result and only compatible skipped events: ${path}"
 }
 
@@ -1155,26 +1172,51 @@ combine_jsonl_unique() {
     require_file "JSONL input" "${input}"
   done
   temporary=$(mktemp "${output}.tmp.XXXXXX")
-  jq -c -s --arg identity "${identity_field}" '
-    def comparable:
-      if $identity == "summaryId" then del(.taskId) else . end;
-    # SKIPPED rows are replay diagnostics, not the task result retained in
-    # path state.  The admission check already required one real result.
-    reduce (.[] | select($identity != "taskId"
-        or (.event // "") != "CONCOLIC_REGION_SKIPPED")) as $row (
-      {order: [], rows: {}};
-      ($row[$identity] // "") as $key
-      | if ($key | type) != "string" or ($key | length) == 0 then
-          error("missing JSONL identity " + $identity)
-        elif (.rows | has($key))
-            and (.rows[$key] | comparable) != ($row | comparable) then
-          error("conflicting duplicate " + $identity + ":" + $key)
-        elif (.rows | has($key)) then .
-        else .order += [$key] | .rows[$key] = $row
-        end)
-    | .order[] as $key | .rows[$key]
-  ' "$@" >"${temporary}" \
-    || die "could not combine JSONL inputs for ${output}"
+  # Rows pass through verbatim and only their identity is read, so a row
+  # carrying a symbolic expression tree deeper than jq's tree parser accepts
+  # still survives.  Rows are addressed by line so none is ever held whole.
+  #
+  # Identity taskId keeps the original comparison exactly: its normalization
+  # was the identity function, so equal bytes mean equal rows.  Only summaries
+  # need the taskId-insensitive comparison, and those rows are small.
+  local key digest total number seen_keys=() seen_digests=() index found
+  for input in "$@"; do
+    total=$(wc -l <"${input}")
+    for ((number = 1; number <= total; number++)); do
+      if [[ "${identity_field}" == "taskId" ]] \
+        && [[ "$(sed -n "${number}p" "${input}" | jsonl_stream_field event)" \
+          == "CONCOLIC_REGION_SKIPPED" ]]; then
+        # SKIPPED rows are replay diagnostics, not the task result retained in
+        # path state.  The admission check already required one real result.
+        continue
+      fi
+      key=$(sed -n "${number}p" "${input}" \
+        | jsonl_stream_field "${identity_field}")
+      [[ -n "${key}" ]] \
+        || die "missing JSONL identity ${identity_field} in ${input}"
+      if [[ "${identity_field}" == "summaryId" ]]; then
+        digest=$(sed -n "${number}p" "${input}" \
+          | jq -S -c 'del(.taskId)' | sha256sum | cut -d' ' -f1)
+      else
+        digest=$(sed -n "${number}p" "${input}" | sha256sum | cut -d' ' -f1)
+      fi
+      found=""
+      for index in "${!seen_keys[@]}"; do
+        if [[ "${seen_keys[$index]}" == "${key}" ]]; then
+          found=$index
+          break
+        fi
+      done
+      if [[ -n "${found}" ]]; then
+        [[ "${seen_digests[$found]}" == "${digest}" ]] \
+          || die "conflicting duplicate ${identity_field}:${key}"
+        continue
+      fi
+      seen_keys+=("${key}")
+      seen_digests+=("${digest}")
+      sed -n "${number}p" "${input}" >>"${temporary}"
+    done
+  done
   [[ -s "${temporary}" ]] || die "combined JSONL is empty: ${output}"
   mv -f "${temporary}" "${output}"
 }
