@@ -205,6 +205,34 @@ jsonl_stream_field() {
     first(inputs | select(length == 2 and .[0] == [$field]) | .[1]) // ""'
 }
 
+# Answers whether two rows sharing an identity carry the same content.  Equal
+# bytes settle it outright, which is the whole answer for every identity whose
+# normalization was already the identity function.  Only summaryId needs the
+# taskId-insensitive form, and only when the bytes differ; a row too deep to
+# rebuild cannot be compared that way, so it is refused rather than assumed
+# equal.  Rebuilding is bounded because it happens only on that path.
+jsonl_rows_agree() {
+  local left_file=$1
+  local left_line=$2
+  local right_file=$3
+  local right_line=$4
+  local identity=$5
+  local limit=$((8 * 1024 * 1024))
+  local left right
+  left=$(sed -n "${left_line}p" "${left_file}" | sha256sum)
+  right=$(sed -n "${right_line}p" "${right_file}" | sha256sum)
+  [[ "${left}" == "${right}" ]] && return 0
+  [[ "${identity}" == "summaryId" ]] || return 1
+  [[ "$(sed -n "${left_line}p" "${left_file}" | wc -c)" -le "${limit}" ]] \
+    && [[ "$(sed -n "${right_line}p" "${right_file}" | wc -c)" \
+      -le "${limit}" ]] \
+    || return 1
+  jq -e -n -s \
+    --argjson a "$(sed -n "${left_line}p" "${left_file}")" \
+    --argjson b "$(sed -n "${right_line}p" "${right_file}")" \
+    '($a | del(.taskId)) == ($b | del(.taskId))' >/dev/null
+}
+
 require_unique_task_result() {
   local label=$1
   local path=$2
@@ -232,11 +260,12 @@ require_unique_complete_summary() {
   local path=$2
   local task_id=$3
   require_nonempty_file "${label}" "${path}"
-  jq -e -s --arg task "${task_id}" '
-    length == 1
-    and .[0].taskId == $task
-    and .[0].relationallyComplete == true
-  ' "${path}" >/dev/null \
+  # An imported summary carries the region's projected relation and can be
+  # nested past jq's tree-parser depth limit, so read its two fields as a
+  # stream rather than building the summary to look at them.
+  [[ "$(wc -l <"${path}")" -eq 1 ]] \
+    && [[ "$(jsonl_stream_field taskId <"${path}")" == "${task_id}" ]] \
+    && [[ "$(jsonl_stream_field relationallyComplete <"${path}")" == true ]] \
     || die "${label} must contain one relationally complete summary for ${task_id}: ${path}"
 }
 
@@ -1179,7 +1208,7 @@ combine_jsonl_unique() {
   # Identity taskId keeps the original comparison exactly: its normalization
   # was the identity function, so equal bytes mean equal rows.  Only summaries
   # need the taskId-insensitive comparison, and those rows are small.
-  local key digest total number seen_keys=() seen_digests=() index found
+  local key total number seen_keys=() seen_files=() seen_lines=() index found
   for input in "$@"; do
     total=$(wc -l <"${input}")
     for ((number = 1; number <= total; number++)); do
@@ -1194,12 +1223,6 @@ combine_jsonl_unique() {
         | jsonl_stream_field "${identity_field}")
       [[ -n "${key}" ]] \
         || die "missing JSONL identity ${identity_field} in ${input}"
-      if [[ "${identity_field}" == "summaryId" ]]; then
-        digest=$(sed -n "${number}p" "${input}" \
-          | jq -S -c 'del(.taskId)' | sha256sum | cut -d' ' -f1)
-      else
-        digest=$(sed -n "${number}p" "${input}" | sha256sum | cut -d' ' -f1)
-      fi
       found=""
       for index in "${!seen_keys[@]}"; do
         if [[ "${seen_keys[$index]}" == "${key}" ]]; then
@@ -1208,12 +1231,15 @@ combine_jsonl_unique() {
         fi
       done
       if [[ -n "${found}" ]]; then
-        [[ "${seen_digests[$found]}" == "${digest}" ]] \
+        # Only a repeated identity is compared, and only when it repeats.
+        jsonl_rows_agree "${seen_files[$found]}" "${seen_lines[$found]}" \
+          "${input}" "${number}" "${identity_field}" \
           || die "conflicting duplicate ${identity_field}:${key}"
         continue
       fi
       seen_keys+=("${key}")
-      seen_digests+=("${digest}")
+      seen_files+=("${input}")
+      seen_lines+=("${number}")
       sed -n "${number}p" "${input}" >>"${temporary}"
     done
   done
@@ -1327,21 +1353,31 @@ run_path_query() {
     ' "${task_dir}/import-diagnostics.jsonl" >"${task_dir}/record.jsonl"
     return
   fi
-  jq -e -c -s \
-    --slurpfile task "${task_dir}/execution_task_plan.jsonl" '
-    if length == 1 and ($task | length) == 1
-      and .[0].relationallyComplete == true
-      and .[0].taskId == $task[0].taskId
+  # The imported summary carries the replayed region's projected relation and
+  # can be nested past jq's tree-parser depth limit, so its admission is read
+  # as a stream; the record itself is built from the task plan, which is not.
+  local replay_task_id
+  replay_task_id=$(jq -er -s 'if length == 1 then .[0].taskId
+    else error("not singleton") end' \
+    "${task_dir}/execution_task_plan.jsonl")
+  [[ "$(wc -l <"${imported}")" -eq 1 ]] \
+    && [[ "$(jsonl_stream_field relationallyComplete <"${imported}")" \
+      == true ]] \
+    && [[ "$(jsonl_stream_field taskId <"${imported}")" \
+      == "${replay_task_id}" ]] \
+    || die "path replay admission failed: ${task_dir}"
+  jq -e -c -s '
+    if length == 1
     then {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD",
-      queryKey: $task[0].pathQueryKey, regionId: $task[0].regionId,
-      taskId: $task[0].taskId,
-      regionInstanceId: $task[0].regionInstanceId,
-      goalId: $task[0].goalId,
-      status: (if $task[0].goalKind == "OUTPUT_RELATION_CLOSURE"
+      queryKey: .[0].pathQueryKey, regionId: .[0].regionId,
+      taskId: .[0].taskId,
+      regionInstanceId: .[0].regionInstanceId,
+      goalId: .[0].goalId,
+      status: (if .[0].goalKind == "OUTPUT_RELATION_CLOSURE"
         then "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
         else "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY" end)}
-    else error("path replay was not imported completely") end
-  ' "${imported}" >"${task_dir}/record.jsonl" \
+    else error("path replay task plan is not singleton") end
+  ' "${task_dir}/execution_task_plan.jsonl" >"${task_dir}/record.jsonl" \
     || die "path replay admission failed: ${task_dir}"
 }
 
