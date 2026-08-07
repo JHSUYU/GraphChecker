@@ -102,6 +102,15 @@ public final class ConcolicRegionRuntime {
     static final String ENGINE_BUSY_INTERRUPTED =
             "ENGINE_BUSY_INTERRUPTED: waiting for the symbolic engine was "
                     + "interrupted";
+    /**
+     * Emits one line per replay milestone to stderr. Long-lived roots make a
+     * stalled activation indistinguishable from a slow one; this trace names
+     * which hook the replay is inside and how large the accumulated path
+     * condition it must re-read has become.
+     */
+    static final String DIAGNOSTICS_PROPERTY =
+            "causynth.concolic.diagnostics";
+    private static volatile Boolean diagnostics;
     private static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
     private static final ThreadLocal<Long> CURRENT_TOKEN = new ThreadLocal<>();
     /**
@@ -300,6 +309,8 @@ public final class ConcolicRegionRuntime {
             String loop = safe(loopId);
             int runtimeMax = active.activation.loopBound
                     .maxBackedgeTraversals();
+            diag("LOOP_BODY_ENTRY", loop + " charged="
+                    + active.loopBackedges.completed(loop));
             if (loop.isEmpty()
                     || instrumentedMaxTraversals != runtimeMax) {
                 cut = active.loopBoundCut(loop, runtimeMax, 0L,
@@ -504,6 +515,8 @@ public final class ConcolicRegionRuntime {
             active.entrySetup = true;
             symbolizeReceiverFields(active, api);
             active.entrySetup = false;
+            diag("REGION_START", "token=" + token
+                    + " region=" + safe(activation.regionId));
             api.resumePathCondition();
             pathConditionPaused = false;
             return token;
@@ -1176,6 +1189,7 @@ public final class ConcolicRegionRuntime {
                 || !request.definitionInvocationScoped()) {
             return;
         }
+        diag("MUTATION_ENTER", safe(captureBindingId));
         active.beginMutationMethodStateOutput(request);
     }
 
@@ -1192,6 +1206,7 @@ public final class ConcolicRegionRuntime {
                 captureBindingId);
         if (request == null || !request.capturesMutationState()) return;
         int occurrence = active.nextMutationOutputCaptureOccurrence(request);
+        diag("MUTATION_SITE", safe(captureBindingId) + " occ=" + occurrence);
         if (!withinBoundedOutputWindow(occurrence)) return;
 
         active.deferMutationStateOutput(request, container, occurrence);
@@ -1207,6 +1222,8 @@ public final class ConcolicRegionRuntime {
         if (request == null || !request.capturesMutationState()) return;
         PendingMutationCapture pending =
                 active.takeMutationStateOutput(request);
+        diag("MUTATION_EXIT", safe(captureBindingId)
+                + " pending=" + (pending != null));
         if (pending == null) return;
 
         JsonObject row = outputCaptureRow(request, pending.occurrence);
@@ -1902,11 +1919,17 @@ public final class ConcolicRegionRuntime {
             rawPathConditionSize = baseline;
             attestationBaseline = 0;
         } else {
-            JsonElement parsed = parseJson(api.pathCondition());
+            diag("PC_READ_BEGIN", siteId + " occ=" + occurrence);
+            String raw = api.pathCondition();
+            diag("PC_READ_END", siteId + " occ=" + occurrence
+                    + " chars=" + (raw == null ? -1 : raw.length()));
+            JsonElement parsed = parseJson(raw);
             conditions = parsed.isJsonArray()
                     ? parsed.getAsJsonArray() : new JsonArray();
             rawPathConditionSize = conditions.size();
             attestationBaseline = baseline;
+            diag("PC_PARSED", siteId + " occ=" + occurrence
+                    + " conditions=" + rawPathConditionSize);
         }
         VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
                 active, siteId, expression, observedOutcome, vmEventId,
@@ -2333,6 +2356,8 @@ public final class ConcolicRegionRuntime {
         // Region cleanup is the final fail-closed boundary for malformed or
         // externally interrupted control flow.
         clearAccessorCallContexts(token);
+        diag("REGION_FINISH", "token=" + token + " exit=" + safe(exitKind)
+                + " captures=" + active.outputCaptures.size());
         JsonObject result = new JsonObject();
         EngineApi api = engine();
         boolean engineFinished = false;
@@ -3593,6 +3618,55 @@ public final class ConcolicRegionRuntime {
                 && value.charAt(end) == '}';
     }
 
+    private static boolean diagnosticsEnabled() {
+        Boolean cached = diagnostics;
+        if (cached != null) return cached;
+        boolean enabled;
+        try {
+            enabled = Boolean.parseBoolean(
+                    safe(System.getProperty(DIAGNOSTICS_PROPERTY)));
+        } catch (Throwable ignored) {
+            enabled = false;
+        }
+        diagnostics = enabled;
+        return enabled;
+    }
+
+    /**
+     * Writes one diagnostic line with path-condition recording paused, so the
+     * trace can never manufacture a condition of the program under test. Every
+     * failure here is swallowed: an observation must not alter the workload.
+     */
+    static void diag(String event, String detail) {
+        if (!diagnosticsEnabled()) return;
+        EngineApi api = engine();
+        boolean paused = false;
+        try {
+            api.pausePathCondition();
+            paused = true;
+        } catch (Throwable ignored) {
+            // A missing engine still leaves the line worth printing.
+        }
+        try {
+            System.err.println("CAUSYNTH-DIAG|"
+                    + System.currentTimeMillis() + "|t"
+                    + Thread.currentThread().getId() + "|heapMB"
+                    + (Runtime.getRuntime().totalMemory()
+                    - Runtime.getRuntime().freeMemory()) / 1048576L + "|"
+                    + safe(event) + "|" + safe(detail));
+        } catch (Throwable ignored) {
+            // Diagnostics never fail the replay.
+        } finally {
+            if (paused) {
+                try {
+                    api.resumePathCondition();
+                } catch (Throwable ignored) {
+                    // Resume failure is already reported by the real hooks.
+                }
+            }
+        }
+    }
+
     private static JsonElement parseJson(String value) {
         if (value == null || value.trim().isEmpty()) {
             return new JsonObject();
@@ -4019,6 +4093,12 @@ public final class ConcolicRegionRuntime {
                 String siteId, int occurrence, boolean outcome) {
             boolean matched = replayProgress.observe(
                     siteId, occurrence, outcome);
+            diag("REPLAY_OBSERVE", siteId + " occ=" + occurrence
+                    + " outcome=" + outcome + " matched=" + matched
+                    + " complete=" + replayProgress.complete()
+                    + " failed=" + replayProgress.failed()
+                    + " watermark=" + replayCaptureWatermark
+                    + " captures=" + outputCaptures.size());
             if (replayProgress.failed()) {
                 addUnresolvedOnce("REPLAY_PREFIX_MISMATCH:"
                         + replayProgress.failure());
@@ -4260,12 +4340,17 @@ public final class ConcolicRegionRuntime {
                     ? outputCaptures
                     : outputCaptures.subList(replayCaptureWatermark,
                     outputCaptures.size());
-            return demandedBranchSitesObserved(
+            boolean sites = demandedBranchSitesObserved(
                     activation.branchPolicies.keySet(),
-                    witnessedOutcomes.keySet())
-                    && completeExactOutputBoundary(
+                    witnessedOutcomes.keySet());
+            boolean relation = completeExactOutputBoundary(
                     activation.capturesOutputRelation,
                     activation.outputCaptures, captures);
+            diag("BOUNDARY_CHECK", "sites=" + sites + " relation=" + relation
+                    + " watermark=" + replayCaptureWatermark
+                    + " captures=" + outputCaptures.size()
+                    + " eligible=" + captures.size());
+            return sites && relation;
         }
 
         private void recordFieldAccessOwner(String symbol, Object owner) {
