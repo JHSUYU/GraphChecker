@@ -127,16 +127,25 @@ Until then `expiryDate` has no producer and its model value means nothing.
 because they touch the same code and their acceptance criteria conflict if
 split (T3 demands unchanged output; T4 deliberately changes it).
 
-- **R1 symbolic leaves**: a leaf is symbolic iff it is on the fatal target's
-  backward demanded closure *and* is a value producer rather than a carrier
-  reconstruction. Carriers, request parameters that do not affect response
-  content, and formatting paths stay concrete. Same judgement as ruling L's
-  terminal condition — implement once.
+- **R1 symbolic leaves** (landed): a leaf is symbolic only where some explored
+  guard reads it. A value that is only carried never buys a path, and
+  everything computed from it becomes symbolic for nothing. Fails closed.
 - **R2 flip targets**: the fatal guard is the *goal*, not the flip target.
   Flip targets are branches dominating a demanded state mutation.
-- Evidence for R1: the Balancer SASL region publishes one call-argument capture
-  whose expression is 138MB nested past 10,000 levels. A carrier should be
-  concrete; that depth is the symptom.
+- **R1 is blocked from where it would matter most, and the reason is
+  measured.** The refined dataflow graph offers only two tiers. `value_flow`
+  is too narrow — it does not cross a codec or a container lookup, so
+  tightening to it cuts the very chain that decides the fatal branch. Full
+  taint is too wide — one leaf reaches ~33k cells, so almost nothing is
+  cuttable. Concretely, the key whose membership decides the failure and a
+  neighbouring field carried in the same encoded string have *identical*
+  reachable sets (symmetric difference zero), so **no name-free criterion can
+  separate them today**. The missing tier is value-level dependence that
+  survives encode/decode: "after being encoded and decoded, is this value
+  still *compared*, or only *reconstructed*?" Until that exists, R1 only
+  removes leaves nothing reads at all (a logging flag, on the target region).
+  This is also why one captured expression reaches 138MB nested past 10,000
+  levels: the carrier cannot be told from the value it carries.
 
 **T5 — realizability refinement at the SMT layer.** Decoupled from everything
 upstream: on an implausible SAT, assert the negation of *why* it is implausible
