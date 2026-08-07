@@ -703,10 +703,37 @@ run_graphchecker_main() {
     "${main_class}" "$@")
 }
 
+# Discovery answers a question about the region plan and changes nothing, but
+# it answers it in a fresh JVM over a large jar -- and a single candidate run
+# asks between fifteen and twenty times, once per producer per question.  That
+# is minutes per run, repeated identically on every rerun of an unchanged
+# plan.  Key the answer to the plan and the engine that read it, so a rerun
+# pays for the first ask only.  A question that fails is never recorded.
 workflow_discovery() {
-  run_graphchecker_main \
+  local cache="${work_root}/.discovery-cache"
+  local jar="${graphchecker_dir}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
+  local key answer status
+  key=$( { printf '%s\0' "$@"
+           sha256sum "${region_plan}" 2>/dev/null
+           stat -c '%Y %s' "${jar}" 2>/dev/null
+         } | sha256sum | cut -d' ' -f1)
+  if [[ -s "${cache}/${key}" ]]; then
+    cat "${cache}/${key}"
+    return 0
+  fi
+  set +e
+  answer=$(run_graphchecker_main \
     edu.uva.liftlab.graphchecker.concolic.RuntimeWorkflowDiscovery \
-    --region-plan "${region_plan}" "$@"
+    --region-plan "${region_plan}" "$@")
+  status=$?
+  set -e
+  if [[ "${status}" -eq 0 ]]; then
+    mkdir -p "${cache}"
+    printf '%s\n' "${answer}" >"${cache}/${key}.tmp.$$"
+    mv -f "${cache}/${key}.tmp.$$" "${cache}/${key}"
+  fi
+  printf '%s\n' "${answer}"
+  return "${status}"
 }
 
 workflow_discovery_for_target() {
