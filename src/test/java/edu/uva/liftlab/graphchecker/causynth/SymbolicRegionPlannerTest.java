@@ -77,6 +77,39 @@ public class SymbolicRegionPlannerTest {
     }
 
     @Test
+    public void executionScopeIsRootedAtTheDemandingAnchor() {
+        String anchor = "<example.Demand: void act()>";
+        String needed = "<example.Needed: void helper()>";
+        String aside = "<example.Aside: void other()>";
+        StaticProgram program = new StaticProgram();
+        program.edges.add(edge(ROOT, anchor, "VALUE_PASS", "call", "arg",
+                "param"));
+        program.edges.add(edge(ROOT, aside, "VALUE_PASS", "call", "arg",
+                "param"));
+        program.edges.add(edge(anchor, needed, "VALUE_PASS", "call", "arg",
+                "param"));
+        program.edges.add(edge(anchor, "", "GUARD", "exception_guard",
+                "guard", anchor + "#u7#exception:Failure"));
+        program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
+
+        SymbolicRegionPlanner.planSelectedSkeleton(program,
+                Arrays.asList(ROOT, anchor, needed, aside));
+
+        assertEquals(1, program.regions.size());
+        assertEquals("EXCEPTION_CONTEXT",
+                program.regions.get(0).get("selection"));
+        assertEquals(anchor, program.regions.get(0).get("anchorMethod"));
+        // The region still contains the context -- its outputs are produced
+        // there -- but only what the anchor reaches is demanded, so the other
+        // thing the outer frame does buys no path here.
+        assertEquals(Arrays.asList(aside, anchor, needed, ROOT),
+                program.regions.get(0).get("methods"));
+        assertEquals(Arrays.asList(anchor, needed, ROOT),
+                program.regions.get(0).get(
+                        RuntimeSelectedRegionFinalizer.DEMAND_SCOPE));
+    }
+
+    @Test
     public void configuredClientStubCallEndsTheExecutionScope() {
         String stub = "<example.Transport: void send(java.lang.String)>";
         String internal = "<example.Transport: void frame()>";
@@ -104,10 +137,14 @@ public class SymbolicRegionPlannerTest {
                 Arrays.asList(ROOT, stub, internal, shared, TARGET));
 
         assertEquals(1, program.regions.size());
-        // The stub and what only it reaches are the transport's business; a
-        // callee the root also reaches without crossing the boundary stays.
-        assertEquals(Arrays.asList(shared, ROOT),
+        // The region still contains the transport methods; they are simply
+        // not what it has to decide.  A callee the anchors also reach without
+        // crossing the boundary stays demanded.
+        assertEquals(Arrays.asList(shared, ROOT, internal, stub),
                 program.regions.get(0).get("methods"));
+        assertEquals(Arrays.asList(shared, ROOT),
+                program.regions.get(0).get(
+                        RuntimeSelectedRegionFinalizer.DEMAND_SCOPE));
     }
 
     @Test

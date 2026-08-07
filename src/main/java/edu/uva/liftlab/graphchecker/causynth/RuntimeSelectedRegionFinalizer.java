@@ -39,6 +39,12 @@ public final class RuntimeSelectedRegionFinalizer {
             .setObjectToNumberStrategy(ToNumberPolicy.LONG_OR_DOUBLE)
             .create();
     private static final String REFINED_KIND = "RUNTIME_REFINED_DATAFLOW";
+    /**
+     * Skeleton field naming the methods reached from the anchors that admitted
+     * the region.  Absent or empty means "not decided": every guard in the
+     * region stays explorable.
+     */
+    public static final String DEMAND_SCOPE = "demandScopeMethods";
 
     private RuntimeSelectedRegionFinalizer() {
     }
@@ -131,16 +137,17 @@ public final class RuntimeSelectedRegionFinalizer {
 
             List<Map<String, Object>> regionGraph = edgesByRegion.getOrDefault(
                     regionId, Collections.emptyList());
-            List<Map<String, Object>> branchPolicies = branches(regionGraph);
+            List<Map<String, Object>> outputs = statePorts(regionId,
+                    regionGraph, "HEAP_WRITE", "OUT");
+            outputs.addAll(protocolPorts(regionId, regionGraph, "OUT"));
+            List<Map<String, Object>> branchPolicies = branches(regionGraph,
+                    demandScope(skeleton, outputs));
             List<Map<String, Object>> inputs = statePorts(regionId,
                     regionGraph, "HEAP_READ", "IN");
             inputs.addAll(accessorPorts(regionId, regionGraph,
                     branchPolicies));
             inputs.addAll(protocolPorts(regionId, regionGraph, "IN"));
             markLoopControlOnlyInputs(inputs, regionGraph, branchPolicies);
-            List<Map<String, Object>> outputs = statePorts(regionId,
-                    regionGraph, "HEAP_WRITE", "OUT");
-            outputs.addAll(protocolPorts(regionId, regionGraph, "OUT"));
             region.put("symbolicInputs", inputs);
             region.put("outputs", outputs);
             region.put("branchPolicies", branchPolicies);
@@ -2077,8 +2084,46 @@ public final class RuntimeSelectedRegionFinalizer {
         row.put(field, values);
     }
 
+    /**
+     * The methods whose guards decide the region's demanded behaviour: what the
+     * admitting anchors reach, widened by the methods that define this
+     * region's own outputs.  A region can carry more than one demand, and a
+     * guard inside an output definition is about how that output comes about
+     * whichever anchor admitted the region.  An unknown scope stays unknown.
+     */
+    private static Set<String> demandScope(
+            Map<String, Object> skeleton,
+            List<Map<String, Object>> outputs) {
+        Set<String> result = new LinkedHashSet<>(
+                strings(skeleton.get(DEMAND_SCOPE)));
+        if (result.isEmpty()) {
+            return result;
+        }
+        for (Map<String, Object> output : outputs) {
+            String site = text(output.get("siteId"));
+            int marker = site.indexOf('#');
+            if (marker > 0) {
+                result.add(site.substring(0, marker));
+            }
+            String owner = text(output.get("rootMethod"));
+            if (!owner.isEmpty()) {
+                result.add(owner);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Builds the region's branch policies.  {@code demandScope} names the
+     * methods reached from the anchors that admitted the region; a guard
+     * outside it decides something the execution context does for its own
+     * reasons, not how this region's outputs come about, so it is replayed as
+     * observed instead of explored.  An empty scope decides nothing and leaves
+     * every guard explorable, and a guard that dominates the failure target is
+     * never demoted -- that one is the goal.
+     */
     private static List<Map<String, Object>> branches(
-            List<Map<String, Object>> edges) {
+            List<Map<String, Object>> edges, Set<String> demandScope) {
         Map<String, List<Map<String, Object>>> bySite =
                 new LinkedHashMap<>();
         for (Map<String, Object> edge : edges) {
@@ -2128,14 +2173,19 @@ public final class RuntimeSelectedRegionFinalizer {
                     || classifier.structuralLoopGuard(site, guards);
             boolean carrierStructure = classifier.structureCarrierGuard(
                     guards);
+            boolean outsideDemand = !demandScope.isEmpty()
+                    && failureGuards.isEmpty()
+                    && !demandScope.contains(text(
+                    representative.get("method")));
             branch.put("loopControlGuard", loopStructure);
             branch.put("policy", conflicting || loopStructure
-                    || carrierStructure
+                    || carrierStructure || outsideDemand
                     ? "PATH_ASSUMPTION" : "EXPLORE");
             branch.put("policyReason", conflicting
                     ? "CONFLICTING_REQUIRED_OUTCOMES"
                     : loopStructure ? "BOUND_LOOP_CONTROL_GUARD"
                     : carrierStructure ? "STRUCTURE_CARRIER_GUARD"
+                    : outsideDemand ? "OUTSIDE_DEMANDED_SCOPE"
                     : "FAILURE_DIRECTED_SEMANTIC_GUARD");
             result.add(branch);
         }

@@ -1041,6 +1041,12 @@ public final class CausynthTraceRecorder {
                     }
                 }
                 Set<String> potentialMethods = new LinkedHashSet<>();
+                // Coalescing several static regions into one activation
+                // widens the region; its demanded scope has to widen with it,
+                // or a guard contributed by one source would be judged
+                // against another source's demand.
+                Set<String> demandScope = new LinkedHashSet<>();
+                boolean demandScopeKnown = true;
                 for (String sourceRegion : sourceRegionsByRegion
                         .getOrDefault(region,
                                 Collections.singleton(region))) {
@@ -1052,6 +1058,15 @@ public final class CausynthTraceRecorder {
                     for (JsonElement method
                             : source.getAsJsonArray("methods")) {
                         potentialMethods.add(method.getAsString());
+                    }
+                    JsonArray sourceScope = source.getAsJsonArray(
+                            RuntimeSelectedRegionFinalizer.DEMAND_SCOPE);
+                    if (sourceScope == null) {
+                        demandScopeKnown = false;
+                        continue;
+                    }
+                    for (JsonElement method : sourceScope) {
+                        demandScope.add(method.getAsString());
                     }
                 }
                 if (!potentialMethods.contains(selectedRoot)
@@ -1065,6 +1080,14 @@ public final class CausynthTraceRecorder {
                     encodedPotentialMethods.add(method);
                 }
                 row.add("methods", encodedPotentialMethods);
+                JsonArray encodedDemandScope = new JsonArray();
+                if (demandScopeKnown) {
+                    for (String method : demandScope) {
+                        encodedDemandScope.add(method);
+                    }
+                }
+                row.add(RuntimeSelectedRegionFinalizer.DEMAND_SCOPE,
+                        encodedDemandScope);
                 JsonArray baselineObservedMethods = new JsonArray();
                 for (String method : observedMethods) {
                     baselineObservedMethods.add(method);

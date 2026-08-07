@@ -75,18 +75,7 @@ final class SymbolicRegionPlanner {
             }
             outgoing.get(method).add(callee);
         }
-        // A configured stub's client call is the transport boundary, so the
-        // execution scope ends at it: whatever the callee runs belongs to the
-        // transport, and the only fact that crosses is the port correspondence
-        // the mapping declares.  This cannot depend on how the transport is
-        // implemented -- a stub hidden behind a proxy is opaque anyway, while
-        // one that runs in-process would otherwise pull its whole library into
-        // the caller's region.  Only the call edge is cut, so a callee the
-        // root also reaches without crossing a boundary stays in scope.
         transportBoundaries.remove("");
-        for (Set<String> callees : outgoing.values()) {
-            callees.removeAll(transportBoundaries);
-        }
 
         program.regions.clear();
         program.regionEdges.clear();
@@ -103,7 +92,9 @@ final class SymbolicRegionPlanner {
             boolean admitted = addSkeleton(program, root, authority, methods,
                     failureMethods,
                     protocolAnchors, stateAnchors,
-                    "STATIC_AUTHORITY_SKELETON");
+                    "STATIC_AUTHORITY_SKELETON", outgoing,
+                    program.executionContextAuthorities,
+                    transportBoundaries);
             if (!admitted) {
                 addAuthorityEnvelope(program, root, authority, methods);
             }
@@ -120,7 +111,9 @@ final class SymbolicRegionPlanner {
                     forwardClosure(endpoint, outgoing,
                             program.executionContextAuthorities),
                     failureMethods, protocolAnchors, stateAnchors,
-                    "STATIC_NESTED_CONTEXT_FRAGMENT");
+                    "STATIC_NESTED_CONTEXT_FRAGMENT", outgoing,
+                    program.executionContextAuthorities,
+                    transportBoundaries);
         }
     }
 
@@ -128,7 +121,9 @@ final class SymbolicRegionPlanner {
             StaticProgram program, String root, String authority,
             List<String> methods, Set<String> failureMethods,
             Set<String> protocolAnchors, Set<String> stateAnchors,
-            String planningMode) {
+            String planningMode, Map<String, Set<String>> outgoing,
+            Map<String, String> authorities,
+            Set<String> transportBoundaries) {
         List<String> failure = intersections(methods, failureMethods);
         List<String> protocol = intersections(methods, protocolAnchors);
         List<String> state = intersections(methods, stateAnchors);
@@ -136,6 +131,18 @@ final class SymbolicRegionPlanner {
         if (anchors.isEmpty()) {
             return false;
         }
+        // The anchors of the admitting kind are the innermost methods that
+        // have to be entered for the demanded behaviour; the root only names
+        // the execution context they ran in.  What those anchors reach is the
+        // demanded scope.  The region still *contains* the whole context --
+        // its outputs are produced there -- but a branch outside the demanded
+        // scope is the context's own business and is not explored, so the
+        // other work the outer frames do buys no path and, by the symbolic
+        // leaf rule, no symbol either.
+        List<String> demandScope = anchorRootedScope(root,
+                !failure.isEmpty() ? failure
+                        : !protocol.isEmpty() ? protocol : state,
+                methods, outgoing, authorities, transportBoundaries);
         String identity = authority + "\n" + root;
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("schemaVersion", REGION_SCHEMA_VERSION);
@@ -148,6 +155,8 @@ final class SymbolicRegionPlanner {
         row.put("anchorMethod", anchors.get(0));
         row.put("anchorMethods", anchors);
         row.put("methods", methods);
+        row.put(RuntimeSelectedRegionFinalizer.DEMAND_SCOPE,
+                demandScope);
         row.put("selection", !failure.isEmpty()
                 ? "EXCEPTION_CONTEXT"
                 : !protocol.isEmpty()
@@ -192,6 +201,53 @@ final class SymbolicRegionPlanner {
                 result.add(value);
             }
         }
+        return result;
+    }
+
+    /**
+     * Forward closure from every anchor of the admitting kind, kept inside the
+     * context closure the root already bounds.  A nested execution-context
+     * authority still ends the walk unless it is itself one of the anchors.
+     *
+     * <p>A call to a configured protocol stub also ends it.  That call is the
+     * transport boundary: the demand is carried across by the port
+     * correspondence the mapping declares, so how the transport reaches the
+     * other end is never this region's demand -- whether the stub is a proxy
+     * that is opaque anyway, or an in-process call tree that would otherwise
+     * pull its whole library in.  Only the call edge is cut, so a callee the
+     * anchors also reach without crossing a boundary stays demanded.  The
+     * region still contains the transport methods; they are simply not what
+     * this region has to decide.</p>
+     */
+    private static List<String> anchorRootedScope(
+            String root, List<String> anchors, List<String> context,
+            Map<String, Set<String>> outgoing,
+            Map<String, String> authorities,
+            Set<String> transportBoundaries) {
+        Set<String> sources = new LinkedHashSet<>(anchors);
+        Set<String> visited = new LinkedHashSet<>();
+        Deque<String> work = new ArrayDeque<>(anchors);
+        while (!work.isEmpty()) {
+            String method = work.removeFirst();
+            if (!visited.add(method)) {
+                continue;
+            }
+            List<String> next = new ArrayList<>(outgoing.getOrDefault(method,
+                    Collections.emptySet()));
+            Collections.sort(next);
+            for (String candidate : next) {
+                if (transportBoundaries.contains(candidate)
+                        || !sources.contains(candidate)
+                        && authorities.containsKey(candidate)) {
+                    continue;
+                }
+                work.addLast(candidate);
+            }
+        }
+        visited.retainAll(new LinkedHashSet<>(context));
+        visited.add(root);
+        List<String> result = new ArrayList<>(visited);
+        Collections.sort(result);
         return result;
     }
 
