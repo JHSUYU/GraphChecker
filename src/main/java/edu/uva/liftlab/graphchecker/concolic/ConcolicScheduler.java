@@ -22,9 +22,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -228,11 +231,11 @@ public final class ConcolicScheduler {
                 }
                 JsonArray symbolize = projected == null
                         ? goal.symbolize() : projected.symbolize;
-                JsonArray inputActions = materializationPlan(
-                        goal, symbolize, definitions, definitionMethods,
-                        outputClosure);
                 JsonArray branches = projected == null
                         ? goal.branches() : projected.branches;
+                JsonArray inputActions = materializationPlan(
+                        goal, symbolize, definitions, definitionMethods,
+                        outputClosure, branches);
                 result.add(new Candidate(goal, branches,
                         TargetBranch.outputCapture(), true,
                         inputActions, true,
@@ -258,7 +261,6 @@ public final class ConcolicScheduler {
                     break;
                 }
             }
-            JsonArray inputActions = null;
             for (int index = 0; index < branches.size(); index++) {
                 JsonElement element = branches.get(index);
                 if (!element.isJsonObject()) {
@@ -291,14 +293,17 @@ public final class ConcolicScheduler {
                 if (hasWitness && !explicitlySelected && !explore) {
                     continue;
                 }
-                if (inputActions == null) {
-                    JsonArray symbolize = goal.symbolize();
-                    inputActions = materializationPlan(goal, symbolize,
-                            definitions,
-                            definitionMethods, null);
-                }
+                // A target task explores exactly one branch; the rest of the
+                // slice is replayed prefix.  Materialization is decided
+                // against that slice so a leaf is not kept symbolic for a
+                // decision this task never reopens.
+                JsonArray reachSlice = targetReachBranchSlice(branches,
+                        target);
+                JsonArray inputActions = materializationPlan(goal,
+                        goal.symbolize(), definitions,
+                        definitionMethods, null, reachSlice);
                 result.add(new Candidate(goal,
-                        targetReachBranchSlice(branches, target), target,
+                        reachSlice, target,
                         hasWitness, inputActions, true,
                         targetQueryInstance(arguments, goal),
                         targetQueryOccurrence(arguments, goal), null,
@@ -404,11 +409,14 @@ public final class ConcolicScheduler {
             Goal goal, JsonArray sourceActions,
             DefinitionIndex definitions,
             Set<String> regionMethods,
-            OutputClosureContract outputClosure) {
+            OutputClosureContract outputClosure,
+            JsonArray demandedBranches) {
         JsonArray result = new JsonArray();
         Set<String> represented = new LinkedHashSet<>();
         OutputClosureContract.ExecutionScope scope = outputClosure == null
                 ? null : outputClosure.executionScope();
+        Set<String> guardDependent = definitions.guardDependentCells(
+                exploredGuardOperands(demandedBranches));
         for (JsonElement element : sourceActions) {
             if (!element.isJsonObject()) {
                 continue;
@@ -445,6 +453,18 @@ public final class ConcolicScheduler {
                         "CONCRETE_STRUCTURE_CONTROL");
                 binding.addProperty("structureControlReason",
                         structureControl);
+                addInputAction(result, represented, binding,
+                        InputActionCatalog.Mode.CONCRETE);
+                continue;
+            }
+            if (unguardedPayloadLeaf(action, definitions, guardDependent)) {
+                // Symbolic freedom is only worth its cost when some explored
+                // decision can read the value.  A leaf that is merely carried
+                // into an encoding or a payload opens no new outcome, while
+                // symbolising it turns every expression built from it
+                // symbolic as well.
+                binding.addProperty("symbolicDemand",
+                        "CONCRETE_UNGUARDED_PAYLOAD");
                 addInputAction(result, represented, binding,
                         InputActionCatalog.Mode.CONCRETE);
                 continue;
@@ -618,6 +638,66 @@ public final class ConcolicScheduler {
             addInputAction(result, represented,
                     element.getAsJsonObject().deepCopy(),
                     InputActionCatalog.Mode.DECLARATION_ONLY);
+        }
+        return result;
+    }
+
+    /**
+     * Operands of the decisions this task actually reopens.  Branches kept as
+     * replay assumptions are excluded: their recorded outcome is preserved by
+     * the concrete value, so they demand no solver dimension.
+     */
+    private static Set<String> exploredGuardOperands(JsonArray branches) {
+        Set<String> result = new LinkedHashSet<>();
+        if (branches == null) {
+            return result;
+        }
+        for (JsonElement element : branches) {
+            if (!element.isJsonObject()) continue;
+            JsonObject branch = element.getAsJsonObject();
+            if (!"EXPLORE".equals(string(branch, "policy"))) continue;
+            for (JsonElement operand : array(branch, "operandCells")) {
+                String cell = operand.isJsonPrimitive()
+                        ? operand.getAsString().trim() : "";
+                if (!cell.isEmpty()) result.add(cell);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * R1: a leaf earns a solver dimension only by being able to move some
+     * explored decision.  The check is the fail-closed direction of that
+     * rule: a leaf is released only when the dependence relation is known for
+     * it and proves no explored guard reads it, so an unrecorded or
+     * unrepresented cell keeps its symbolic demand.
+     */
+    private static boolean unguardedPayloadLeaf(
+            JsonObject action, DefinitionIndex definitions,
+            Set<String> guardDependent) {
+        if (guardDependent.isEmpty()) {
+            return false;
+        }
+        boolean represented = false;
+        for (String cell : dependenceOrigins(action)) {
+            if (guardDependent.contains(cell)) {
+                return false;
+            }
+            represented |= definitions.knownCell(cell);
+        }
+        return represented;
+    }
+
+    private static List<String> dependenceOrigins(JsonObject action) {
+        List<String> result = new ArrayList<>();
+        for (JsonElement element : array(action, "dependencyCells")) {
+            if (element.isJsonPrimitive()) {
+                result.add(element.getAsString().trim());
+            }
+        }
+        String cell = string(action, "cell");
+        if (!cell.isEmpty() && !result.contains(cell)) {
+            result.add(cell);
         }
         return result;
     }
@@ -1237,6 +1317,9 @@ public final class ConcolicScheduler {
                 new LinkedHashMap<>();
         private final Map<String, Set<String>> guardSitesByInputCell =
                 new LinkedHashMap<>();
+        private final Map<String, List<String>> transferSources =
+                new LinkedHashMap<>();
+        private final Set<String> transferCells = new LinkedHashSet<>();
         private static DefinitionIndex from(List<JsonObject> edges) {
             DefinitionIndex result = new DefinitionIndex();
             Set<String> seen = new LinkedHashSet<>();
@@ -1250,6 +1333,14 @@ public final class ConcolicScheduler {
                         result.guardSitesByInputCell.computeIfAbsent(source,
                                 ignored -> new LinkedHashSet<>())
                                 .add(guardSite);
+                    }
+                } else {
+                    String target = string(edge, "toCell");
+                    if (!source.isEmpty() && !target.isEmpty()) {
+                        result.transferSources.computeIfAbsent(target,
+                                ignored -> new ArrayList<>()).add(source);
+                        result.transferCells.add(source);
+                        result.transferCells.add(target);
                     }
                 }
                 String cell = string(edge, "toCell");
@@ -1299,6 +1390,27 @@ public final class ConcolicScheduler {
                 return false;
             }
             return local.equals(unit.substring(0, assignment).trim());
+        }
+
+        private boolean knownCell(String cell) {
+            return transferCells.contains(cell);
+        }
+
+        /**
+         * Cells from which one of the given guard operands is still
+         * reachable.  Resolving it once by reverse reachability costs one
+         * graph traversal instead of one per candidate input port.
+         */
+        private Set<String> guardDependentCells(Collection<String> operands) {
+            Set<String> result = new LinkedHashSet<>();
+            Deque<String> work = new ArrayDeque<>(operands);
+            while (!work.isEmpty()) {
+                String cell = work.removeFirst();
+                if (!result.add(cell)) continue;
+                work.addAll(transferSources.getOrDefault(cell,
+                        Collections.<String>emptyList()));
+            }
+            return result;
         }
 
         private JsonArray sites(String cell,

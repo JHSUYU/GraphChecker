@@ -87,6 +87,32 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
+    public void leafNoExploredGuardReadsStaysConcrete() throws Exception {
+        String method = "<T: void f()>";
+        String guarded = "<example.Owner: int guarded>";
+        String payload = "<example.Owner: int payload>";
+        File regions = write("payload-regions.jsonl", region());
+        File plans = write("payload-plans.jsonl", guardOperandTargetPlan(
+                heapLeaf("REGION.1.in.guarded", "example.Owner", "int",
+                        "guarded"),
+                heapLeaf("REGION.1.in.payload", "example.Owner", "int",
+                        "payload")));
+        File edges = writeEmpty("payload-edges.jsonl");
+        File refined = writeRows("payload-refined.jsonl", refinedEdge(),
+                transferEdge("DF.guarded", guarded, method + "::$i1"),
+                transferEdge("DF.payload", payload, method + "::$i9"));
+        File output = folder.newFolder("payload-schedule");
+
+        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                arguments(regions, plans, edges, refined, output));
+
+        JsonArray actions = result.executionTasks.get(0)
+                .getAsJsonArray("inputActions");
+        assertEquals("SYMBOLIC", mode(actions, "REGION.1.in.guarded"));
+        assertEquals("CONCRETE", mode(actions, "REGION.1.in.payload"));
+    }
+
+    @Test
     public void protocolArgumentBecomesAnExactMethodArgument() throws Exception {
         File regions = write("protocol-argument-regions.jsonl", region());
         File plans = write("protocol-argument-plans.jsonl",
@@ -983,6 +1009,22 @@ public class ConcolicSchedulerTest {
         return result;
     }
 
+    @SafeVarargs
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> guardOperandTargetPlan(
+            Map<String, Object>... actions) {
+        Map<String, Object> result = targetPlanWithActions(actions);
+        Map<String, Object> goal = ((java.util.List<Map<String, Object>>)
+                result.get("closureGoals")).get(0);
+        java.util.List<Map<String, Object>> branches =
+                (java.util.List<Map<String, Object>>) goal.get("branches");
+        branches.get(0).put("operandCells",
+                Collections.singletonList("<T: void f()>::$i0"));
+        branches.get(1).put("operandCells",
+                Collections.singletonList("<T: void f()>::$i1"));
+        return result;
+    }
+
     @SuppressWarnings("unchecked")
     private static void setDependencyRole(
             Map<String, Object> plan, String symbol, String role) {
@@ -1428,6 +1470,15 @@ public class ConcolicSchedulerTest {
                 "id", "DF.1", "kind", "exception_guard",
                 "transferKind", "GUARD", "method", "<T: void f()>",
                 "fromCell", "guard", "toCell", "exception");
+    }
+
+    private static Map<String, Object> transferEdge(
+            String id, String fromCell, String toCell) {
+        return object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "id", id, "kind", "field_read",
+                "transferKind", "HEAP_READ", "method", "<T: void f()>",
+                "fromCell", fromCell, "toCell", toCell);
     }
 
     private static Map<String, Object> protocolRefinedEdge() {
