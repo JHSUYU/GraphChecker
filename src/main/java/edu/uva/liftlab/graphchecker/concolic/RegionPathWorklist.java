@@ -501,6 +501,12 @@ public final class RegionPathWorklist {
         if ("REPLAY_NOT_ADMITTED".equals(status)) {
             return "PATH_FLIP_REPLAY_NOT_ADMITTED";
         }
+        // A replay is bounded in the paths it may walk, not in what those
+        // paths cost to keep resident, so one can end before publishing a
+        // result.  That flip is abandoned like any other, and the gap says so.
+        if ("REPLAY_PRODUCED_NO_RESULT".equals(status)) {
+            return "PATH_FLIP_REPLAY_PRODUCED_NO_RESULT";
+        }
         return "";
     }
 

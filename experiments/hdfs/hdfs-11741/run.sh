@@ -1334,8 +1334,28 @@ run_path_query() {
   replay_task=$(jq -er -s \
     'if length == 1 then .[0].taskId else error("not singleton") end' \
     "${task_dir}/execution_task_plan.jsonl")
-  replay_concolic_plan "${task_dir}/execution_task_plan.jsonl" \
-    "${replay_task}" "${classes}" "${raw}" "${task_dir}"
+  # A replay that never reaches its selected result leaves nothing to admit.
+  # Exploring a flip is allowed to cost more than this machine can pay -- the
+  # replay is bounded, its resident cost is not -- so a flip whose replay dies
+  # before publishing is explored and abandoned like one whose path missed the
+  # relation, not a pipeline failure.  A seed replay keeps dying on this,
+  # because a campaign with no result cannot be seeded at all.
+  set +e
+  ( replay_concolic_plan "${task_dir}/execution_task_plan.jsonl" \
+      "${replay_task}" "${classes}" "${raw}" "${task_dir}" )
+  local replay_outcome=$?
+  set -e
+  if [[ "${replay_outcome}" -ne 0 ]]; then
+    jq -c -s -n --slurpfile task "${task_dir}/execution_task_plan.jsonl" \
+      --arg outcome "${replay_outcome}" '
+      {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD",
+       queryKey: $task[0].pathQueryKey, regionId: $task[0].regionId,
+       taskId: $task[0].taskId, status: "REPLAY_PRODUCED_NO_RESULT",
+       reason: ("replay ended without a selected result (exit "
+                + $outcome + ")")}' >"${task_dir}/record.jsonl"
+    echo "[hdfs-11741] flip abandoned: replay produced no result (exit ${replay_outcome}): ${task_dir}"
+    return
+  fi
   run_concolic_import "${task_dir}/execution_task_plan.jsonl" "${raw}" \
     "${imported}" "${task_dir}"
   # A proposed flip whose bounded replay walked a path that never reaches the
