@@ -1419,6 +1419,17 @@ probe_observed_candidate() {
     CAUSYNTH_FATAL_REGION_INSTANCE_ID="${partial_probe_target_instance}" \
     do_engine_config compose \
       --composition-mode EXISTENTIAL_OBSERVED_PATHS
+  # Exploration can finish while this probe is still armed: once every
+  # producer campaign is closed the same summaries compose into a complete
+  # path set, which is no longer the underapproximation this probe is
+  # allowed to publish.  That is the probe's job ending, not a failure -
+  # retire it and let the complete closure below compose and report.
+  if jq -e '.pathSetComplete == true' \
+      "${attempt}/composition.json" >/dev/null; then
+    echo "[hdfs-11741] observed-path probe retired: producer paths are complete"
+    partial_probe_enabled=false
+    return 1
+  fi
   jq -e '.trustState == "OBSERVED_PATH_UNDERAPPROX"
     and .pathSetComplete == false' \
     "${attempt}/composition.json" >/dev/null \

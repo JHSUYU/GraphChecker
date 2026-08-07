@@ -254,7 +254,11 @@ public class ConcolicSummaryImporterTest {
             capture.addProperty("captureBindingId", "CAPTURE.0");
             capture.addProperty("outputSiteId",
                     "<test.Worker: void run()>#u1");
-            capture.addProperty("outputOccurrence",
+            // Every capture is the first selected mutation of its own
+            // definition invocation, so the selection index is 1 throughout;
+            // only the boundary-wide version ordinal tells them apart.
+            capture.addProperty("outputOccurrence", 1);
+            capture.addProperty("outputVersionOrdinal",
                     collide ? 1 : version);
             capture.addProperty("replayOccurrence", collide ? 1 : version);
             JsonObject expression = new JsonObject();

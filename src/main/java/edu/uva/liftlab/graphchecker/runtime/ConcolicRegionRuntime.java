@@ -1218,7 +1218,7 @@ public final class ConcolicRegionRuntime {
 
         JsonObject row = new JsonObject();
         row.addProperty("captureBindingId", request.captureBindingId());
-        addOutputCaptureOccurrence(row, request, occurrence);
+        addOutputCaptureOccurrence(row, request, occurrence, occurrence);
         try {
             EngineApi api = engine();
             if (containerValue(value)
@@ -1276,11 +1276,14 @@ public final class ConcolicRegionRuntime {
         OutputCaptureSpec request = active.activation.outputCapture(
                 captureBindingId);
         if (request == null || !request.capturesMutationState()) return;
-        int occurrence = active.nextMutationOutputCaptureOccurrence(request);
-        diag("MUTATION_SITE", safe(captureBindingId) + " occ=" + occurrence);
-        if (!withinBoundedOutputWindow(occurrence)) return;
+        MutationCaptureIndex index =
+                active.nextMutationOutputCaptureOccurrence(request);
+        if (index == null) return;
+        diag("MUTATION_SITE", safe(captureBindingId)
+                + " occ=" + index.selection + " version=" + index.version);
+        if (!withinBoundedOutputWindow(index.selection)) return;
 
-        active.deferMutationStateOutput(request, container, occurrence);
+        active.deferMutationStateOutput(request, container, index);
     }
 
     /** Emits a selected mutation receiver at its method's normal exit. */
@@ -1297,7 +1300,8 @@ public final class ConcolicRegionRuntime {
                 + " pending=" + (pending != null));
         if (pending == null) return;
 
-        JsonObject row = outputCaptureRow(request, pending.occurrence);
+        JsonObject row = outputCaptureRow(request, pending.occurrence,
+                pending.versionOrdinal);
         EngineApi api = engine();
         try {
             if (!snapshotOutputContainer(pending.container, api)) {
@@ -1395,9 +1399,16 @@ public final class ConcolicRegionRuntime {
 
     private static JsonObject outputCaptureRow(
             OutputCaptureSpec request, int occurrence) {
+        // Captures counted straight off the port already run monotonically
+        // across the boundary, so their selection index is their version.
+        return outputCaptureRow(request, occurrence, occurrence);
+    }
+
+    private static JsonObject outputCaptureRow(OutputCaptureSpec request,
+            int occurrence, int versionOrdinal) {
         JsonObject row = new JsonObject();
         row.addProperty("captureBindingId", request.captureBindingId());
-        addOutputCaptureOccurrence(row, request, occurrence);
+        addOutputCaptureOccurrence(row, request, occurrence, versionOrdinal);
         return row;
     }
 
@@ -1486,10 +1497,11 @@ public final class ConcolicRegionRuntime {
         return identity;
     }
 
-    private static void addOutputCaptureOccurrence(
-            JsonObject row, OutputCaptureSpec request, int occurrence) {
+    private static void addOutputCaptureOccurrence(JsonObject row,
+            OutputCaptureSpec request, int occurrence, int versionOrdinal) {
         row.addProperty("outputSiteId", request.outputSiteId());
         row.addProperty("outputOccurrence", occurrence);
+        row.addProperty("outputVersionOrdinal", versionOrdinal);
         row.addProperty("replayOccurrence", request.replayOccurrence());
     }
 
@@ -4232,12 +4244,35 @@ public final class ConcolicRegionRuntime {
         private final OutputCaptureSpec request;
         private final Object container;
         private final int occurrence;
+        private final int versionOrdinal;
 
         PendingMutationCapture(OutputCaptureSpec request,
-                               Object container, int occurrence) {
+                               Object container, MutationCaptureIndex index) {
             this.request = request;
             this.container = container;
-            this.occurrence = occurrence;
+            this.occurrence = index.selection;
+            this.versionOrdinal = index.version;
+        }
+    }
+
+    /**
+     * The two indices a selected mutation carries.
+     *
+     * <p>{@code selection} answers "which mutation inside this definition
+     * invocation", so it restarts with every invocation; that scoping is what
+     * lets one invocation reject an ambiguous choice of containers.
+     * {@code version} answers "which version of this port's state", so it runs
+     * monotonically across the activation's whole output boundary.  One field
+     * cannot be both: two invocations each publishing their first selected
+     * mutation are two distinct versions of the same port.
+     */
+    static final class MutationCaptureIndex {
+        private final int selection;
+        private final int version;
+
+        MutationCaptureIndex(int selection, int version) {
+            this.selection = selection;
+            this.version = version;
         }
     }
 
@@ -4517,10 +4552,11 @@ public final class ConcolicRegionRuntime {
                     .push(new MutationMethodScope());
         }
 
-        private int nextMutationOutputCaptureOccurrence(
+        private MutationCaptureIndex nextMutationOutputCaptureOccurrence(
                 OutputCaptureSpec request) {
             if (!request.definitionInvocationScoped()) {
-                return nextOutputCaptureOccurrence(request);
+                int occurrence = nextOutputCaptureOccurrence(request);
+                return new MutationCaptureIndex(occurrence, occurrence);
             }
             Deque<MutationMethodScope> scopes = mutationMethodScopes.get(
                     request.captureBindingId());
@@ -4529,19 +4565,20 @@ public final class ConcolicRegionRuntime {
                 addUnresolvedOnce(request.captureBindingId()
                         + ": mutation hook executed outside its definition "
                         + "invocation scope");
-                return -1;
+                return null;
             }
-            // Retain a total hook count for diagnostics, but never use it as
-            // replay identity.
-            outputCaptureOccurrences.observe(request.captureBindingId(),
-                    request.outputSiteId());
-            return ++scope.observed;
+            // The boundary-wide count orders this port's versions; it is never
+            // replay identity, which stays the path seed.
+            int version = outputCaptureOccurrences.observe(
+                    request.captureBindingId(), request.outputSiteId());
+            return new MutationCaptureIndex(++scope.observed, version);
         }
 
         private void deferMutationStateOutput(
-                OutputCaptureSpec request, Object container, int occurrence) {
+                OutputCaptureSpec request, Object container,
+                MutationCaptureIndex index) {
             PendingMutationCapture pending = new PendingMutationCapture(
-                    request, container, occurrence);
+                    request, container, index);
             if (request.definitionInvocationScoped()) {
                 Deque<MutationMethodScope> scopes = mutationMethodScopes.get(
                         request.captureBindingId());

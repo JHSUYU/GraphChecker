@@ -140,6 +140,13 @@ public class ConcolicRegionRuntimeTest {
         assertEquals(1, second.observe("CAPTURE.A", "METHOD#u7"));
     }
 
+    /** Selection index for a capture whose version ordinal is irrelevant. */
+    private static ConcolicRegionRuntime.MutationCaptureIndex index(
+            int selection) {
+        return new ConcolicRegionRuntime.MutationCaptureIndex(
+                selection, selection);
+    }
+
     @Test
     public void repeatedMutationOfOneContainerFoldsIntoTheExitSnapshot() {
         ConcolicRegionRuntime.MutationMethodScope scope =
@@ -149,14 +156,16 @@ public class ConcolicRegionRuntimeTest {
         // addKeys puts every key on one receiver inside one invocation; the
         // relation is that receiver's state at the invocation's normal exit.
         ConcolicRegionRuntime.PendingMutationCapture anchor =
-                new ConcolicRegionRuntime.PendingMutationCapture(null, keys, 1);
+                new ConcolicRegionRuntime.PendingMutationCapture(null, keys,
+                        index(1));
         assertEquals(ConcolicRegionRuntime.MutationMethodScope
                         .Selection.ANCHORED, scope.offer(anchor));
         for (int occurrence = 2; occurrence <= 8; occurrence++) {
             assertEquals(ConcolicRegionRuntime.MutationMethodScope
                             .Selection.FOLDED,
                     scope.offer(new ConcolicRegionRuntime
-                            .PendingMutationCapture(null, keys, occurrence)));
+                            .PendingMutationCapture(null, keys,
+                                    index(occurrence))));
         }
         assertSame(anchor, scope.pendingForTests());
     }
@@ -171,19 +180,19 @@ public class ConcolicRegionRuntimeTest {
         assertEquals(ConcolicRegionRuntime.MutationMethodScope
                         .Selection.ANCHORED,
                 scope.offer(new ConcolicRegionRuntime
-                        .PendingMutationCapture(null, keys, 1)));
+                        .PendingMutationCapture(null, keys, index(1))));
         // A different receiver makes the exit snapshot ambiguous.
         assertEquals(ConcolicRegionRuntime.MutationMethodScope
                         .Selection.AMBIGUOUS,
                 scope.offer(new ConcolicRegionRuntime
-                        .PendingMutationCapture(null, other, 2)));
+                        .PendingMutationCapture(null, other, index(2))));
         assertNull(scope.pendingForTests());
 
         // A later mutation must not re-anchor the poisoned invocation.
         assertEquals(ConcolicRegionRuntime.MutationMethodScope
                         .Selection.IGNORED,
                 scope.offer(new ConcolicRegionRuntime
-                        .PendingMutationCapture(null, keys, 3)));
+                        .PendingMutationCapture(null, keys, index(3))));
         assertNull(scope.pendingForTests());
     }
 

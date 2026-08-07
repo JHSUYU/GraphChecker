@@ -1032,10 +1032,15 @@ public final class ConcolicSummaryImporter {
     /**
      * Exports every bounded occurrence version observed at one output site.
      *
-     * <p>The recorded occurrence is a site-local bounded index inside this
+     * <p>The recorded version ordinal is a site-local bounded index inside this
      * activation, not a cross-execution identity.  Each version becomes one
      * guarded relation case downstream; which version a reader observes is
      * settled by the composed versioned channel, never by collapsing here.</p>
+     *
+     * <p>Versions are keyed by {@code outputVersionOrdinal}, which runs across
+     * the whole output boundary, and not by {@code outputOccurrence}, which
+     * restarts inside each definition invocation and so cannot separate the
+     * successive states one activation publishes at the same port.</p>
      */
     private static JsonObject siteLocalBoundedVersions(
             String port, List<JsonObject> admitted, List<String> issues) {
@@ -1043,7 +1048,7 @@ public final class ConcolicSummaryImporter {
         NavigableMap<Integer, JsonElement> byOrdinal = new TreeMap<>();
         for (JsonObject capture : admitted) {
             String captureSite = string(capture, "outputSiteId");
-            int occurrence = integer(capture, "outputOccurrence", -1);
+            int occurrence = integer(capture, "outputVersionOrdinal", -1);
             if (captureSite.isEmpty() || occurrence < 1) {
                 // Legacy unscoped captures carry no site-local index, so
                 // several of them stay the original ambiguous count.
