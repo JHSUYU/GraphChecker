@@ -316,6 +316,24 @@ public final class CausynthPipeline {
         }
         int boundedBackedges = instrumentConcolicLoopBounds(
                 instrumentationMethods, plan.loopBound());
+        Set<String> replayPathMethods = replayPathLoopMethods(
+                instrumentationMethods);
+        for (String methodSignature : replayPathMethods) {
+            try {
+                SootMethod method = Scene.v().getMethod(methodSignature);
+                if (method != null && method.isConcrete()) {
+                    tagOriginalUnits(snapshotUnits(
+                            method.retrieveActiveBody()));
+                }
+            } catch (RuntimeException ignored) {
+                // Unresolvable bodies are dropped by the bounding pass too.
+            }
+        }
+        int replayPathBodies = instrumentConcolicLoopBounds(
+                replayPathMethods, plan.loopBound(), true);
+        LOG.info("Bounded {} slice backedge(s) and {} replay-path loop "
+                        + "body edge(s) across {} replay-path method(s)",
+                boundedBackedges, replayPathBodies, replayPathMethods.size());
         // Exact mutation captures must be installed before root-exit hooks.
         // When the definition method is the root itself, this guarantees the
         // completed mutation state is emitted while its region is still active.
@@ -1477,13 +1495,76 @@ public final class CausynthPipeline {
      */
     int instrumentConcolicLoopBounds(
             Set<String> methods, LoopBoundPolicy policy) {
+        return instrumentConcolicLoopBounds(methods, policy, false);
+    }
+
+    /**
+     * The methods whose loops carry the replay between the region root and
+     * the calls the task's slice is stated over.
+     *
+     * <p>A long-lived root does not reach its slice once and stop: it spins a
+     * service loop that re-enters the same code every turn, and that loop
+     * lives in a sibling method of the root - not in the slice, and so not in
+     * any set the bounded semantics already instruments.  Taking the declaring
+     * classes of the methods the task does name is a static over-approximation
+     * of that path which needs no call graph, stays inside the code the
+     * activation owns, and cannot depend on any application's naming.</p>
+     */
+    private static Set<String> replayPathLoopMethods(Set<String> bounded) {
+        Set<SootClass> owners = new LinkedHashSet<>();
+        for (String methodSignature : bounded) {
+            try {
+                SootMethod method = Scene.v().getMethod(methodSignature);
+                if (method != null) owners.add(method.getDeclaringClass());
+            } catch (RuntimeException ignored) {
+                // A method the bounding pass cannot resolve owns no class
+                // this pass could expand either.
+            }
+        }
+        Set<String> expanded = new LinkedHashSet<>();
+        for (SootClass owner : owners) {
+            for (SootMethod candidate : new ArrayList<>(owner.getMethods())) {
+                // A constructor's loop may precede the initialization that
+                // makes a hook legal to insert, and the bounded pass already
+                // rejects that case for the methods it owns.  Leaving them to
+                // it keeps this expansion from failing a whole campaign over
+                // a method the replay never runs a loop in.
+                if (candidate.isConstructor()
+                        || candidate.isStaticInitializer()
+                        || !candidate.isConcrete()
+                        || bounded.contains(candidate.getSignature())) {
+                    continue;
+                }
+                expanded.add(candidate.getSignature());
+            }
+        }
+        return expanded;
+    }
+
+    /**
+     * Bounds the loops of one method set.
+     *
+     * <p>With {@code resourceOnly}, each loop body is charged to the replay
+     * resource cap and nothing else.  This is what a replay-path method
+     * outside the task's bounded slice gets: its loops are not part of the
+     * path space the solver reasons about, so they must not spend the unroll
+     * budget, but the work they do decides whether the replay can finish at
+     * all and therefore has to be accounted for somewhere.</p>
+     */
+    int instrumentConcolicLoopBounds(
+            Set<String> methods, LoopBoundPolicy policy,
+            boolean resourceOnly) {
         if (policy == null) {
             throw new IllegalArgumentException("loop bound policy is required");
         }
         HookCatalog hooks = HookCatalog.concolic();
-        SootMethodRef checkBackedge = hooks.ref(Hook.CHECK_LOOP_BACKEDGE);
-        SootMethodRef recordBackedge = hooks.ref(Hook.RECORD_LOOP_BACKEDGE);
-        SootMethodRef checkBodyEntry = hooks.ref(Hook.CHECK_LOOP_BODY_ENTRY);
+        SootMethodRef replayBody = hooks.ref(Hook.CHECK_REPLAY_LOOP_BODY);
+        SootMethodRef checkBackedge = resourceOnly ? replayBody
+                : hooks.ref(Hook.CHECK_LOOP_BACKEDGE);
+        SootMethodRef recordBackedge = resourceOnly ? replayBody
+                : hooks.ref(Hook.RECORD_LOOP_BACKEDGE);
+        SootMethodRef checkBodyEntry = resourceOnly ? replayBody
+                : hooks.ref(Hook.CHECK_LOOP_BODY_ENTRY);
         int instrumented = 0;
         for (String methodSignature : methods) {
             final SootMethod method;
@@ -1533,9 +1614,18 @@ public final class CausynthPipeline {
                     boolean entersBody = removeEdge(continuations,
                             backedge.source, backedge.target);
                     List<SootMethodRef> edgeHooks = new ArrayList<>();
-                    edgeHooks.add(!loop.hasContinuationGuard
-                            ? checkBackedge : recordBackedge);
-                    if (entersBody) edgeHooks.add(checkBodyEntry);
+                    if (resourceOnly) {
+                        // One charge per body entered.  The latch hooks exist
+                        // to separate a guarded return to the header from the
+                        // transfer into the next body; the resource cap counts
+                        // bodies, so only the body-entering edge is charged.
+                        if (!entersBody) continue;
+                        edgeHooks.add(checkBodyEntry);
+                    } else {
+                        edgeHooks.add(!loop.hasContinuationGuard
+                                ? checkBackedge : recordBackedge);
+                        if (entersBody) edgeHooks.add(checkBodyEntry);
+                    }
                     splitCfgEdge(body, method, backedge.source,
                             backedge.target, loopId,
                             policy.maxBackedgeTraversals(), edgeHooks);
@@ -1546,6 +1636,11 @@ public final class CausynthPipeline {
                             continuation.target, loopId,
                             policy.maxBackedgeTraversals(),
                             Collections.singletonList(checkBodyEntry));
+                    // In bounded mode the return value counts the backedges
+                    // this pass split, which a continuation edge is not.  The
+                    // resource pass charges bodies, so for it a continuation
+                    // is exactly what was instrumented.
+                    if (resourceOnly) instrumented++;
                 }
             }
         }
@@ -2801,6 +2896,7 @@ public final class CausynthPipeline {
         CHECK_LOOP_BACKEDGE,
         RECORD_LOOP_BACKEDGE,
         CHECK_LOOP_BODY_ENTRY,
+        CHECK_REPLAY_LOOP_BODY,
         EXIT_REGION_FRAME,
         THROW_REGION_FRAME
     }
@@ -2961,6 +3057,9 @@ public final class CausynthPipeline {
                             IntType.v())
                     .add(Hook.CHECK_LOOP_BODY_ENTRY, runtime,
                             "checkLoopBodyEntry", VoidType.v(), string,
+                            IntType.v())
+                    .add(Hook.CHECK_REPLAY_LOOP_BODY, runtime,
+                            "checkReplayLoopBody", VoidType.v(), string,
                             IntType.v())
                     .add(Hook.EXIT_REGION_FRAME, runtime, "exitRegionFrame",
                             VoidType.v(), string, object, string)

@@ -294,6 +294,57 @@ public final class ConcolicRegionRuntime {
         throwLoopCut(active, cut);
     }
 
+    /**
+     * Charges one loop body to the replay resource cap without consulting the
+     * unroll bound.
+     *
+     * <p>Emitted at every loop on the replay path, including the service
+     * loops of a long-lived root that no bounded-semantics loop hook covers.
+     * Such a loop is not part of the path space the solver reasons about, so
+     * it must not spend the unroll budget; what it does spend is the replay's
+     * ability to finish, and that is what this hook accounts for.</p>
+     */
+    public static void checkReplayLoopBody(
+            String loopId, int instrumentedMaxTraversals) {
+        ActiveRegion active = activeRegion();
+        if (active == null) return;
+
+        EngineApi api = engine();
+        boolean paused = false;
+        ReplayLoopResourceCut cut = null;
+        try {
+            api.pausePathCondition();
+            paused = true;
+            String loop = safe(loopId);
+            if (loop.isEmpty() || instrumentedMaxTraversals
+                    != active.activation.loopBound.maxBackedgeTraversals()) {
+                // The class was instrumented under a different policy, so its
+                // loop identities cannot be trusted to account for anything.
+                cut = new ReplayLoopResourceCut(loop, 0, 0L);
+                active.replayResourceCut = cut.toJson();
+                active.addUnresolvedOnce(
+                        ReplayLoopResourceCut.REASON
+                                + ":INSTRUMENTATION_POLICY_MISMATCH:" + loop);
+            } else {
+                cut = active.chargeLoopBody(loop);
+            }
+        } catch (Throwable failure) {
+            active.addUnresolvedOnce("replay loop resource hook failed: "
+                    + rootCause(failure));
+        } finally {
+            if (paused) {
+                try {
+                    api.resumePathCondition();
+                } catch (Throwable failure) {
+                    active.addUnresolvedOnce(
+                            "loop-bound path-condition resume failed: "
+                                    + rootCause(failure));
+                }
+            }
+        }
+        throwReplayResourceCut(active, cut);
+    }
+
     /** Rejects only a transition that would enter body {@code K+1}. */
     public static void checkLoopBodyEntry(
             String loopId, int instrumentedMaxTraversals) {
@@ -303,6 +354,7 @@ public final class ConcolicRegionRuntime {
         EngineApi api = engine();
         boolean paused = false;
         LoopBoundCut cut = null;
+        ReplayLoopResourceCut resourceCut = null;
         try {
             api.pausePathCondition();
             paused = true;
@@ -311,6 +363,9 @@ public final class ConcolicRegionRuntime {
                     .maxBackedgeTraversals();
             diag("LOOP_BODY_ENTRY", loop + " charged="
                     + active.loopBackedges.completed(loop));
+            // Every body spends the replay resource cap, whatever the unroll
+            // bound then decides about this one.
+            resourceCut = active.chargeLoopBody(loop);
             if (loop.isEmpty()
                     || instrumentedMaxTraversals != runtimeMax) {
                 cut = active.loopBoundCut(loop, runtimeMax, 0L,
@@ -350,7 +405,17 @@ public final class ConcolicRegionRuntime {
                 }
             }
         }
+        // The resource cap outranks the unroll bound: a replay that cannot be
+        // carried far enough has no bounded path left to report.
+        throwReplayResourceCut(active, resourceCut);
         throwLoopCut(active, cut);
+    }
+
+    private static void throwReplayResourceCut(
+            ActiveRegion active, ReplayLoopResourceCut cut) {
+        if (cut == null) return;
+        finish(active.token, "CUT", "", null);
+        throw cut;
     }
 
     private static void throwLoopCut(ActiveRegion active, LoopBoundCut cut) {
@@ -2362,9 +2427,12 @@ public final class ConcolicRegionRuntime {
         EngineApi api = engine();
         boolean engineFinished = false;
         String rawEngineSummary = null;
+        // A replay that spent its resource cap produced no bounded path, so
+        // it may not be reported as a completed bounded execution.
         boolean boundedOutputExit = "CUT".equals(exitKind)
                 && active.activation.capturesOutputRelation
-                && active.loopBoundCut != null;
+                && active.loopBoundCut != null
+                && active.replayResourceCut == null;
         String completedExitKind = boundedOutputExit
                 ? "BOUNDED" : exitKind;
         try {
@@ -2494,8 +2562,14 @@ public final class ConcolicRegionRuntime {
         if (active.loopBoundCut != null) {
             result.add("pathCut", copyJsonTree(active.loopBoundCut));
         }
+        if (active.replayResourceCut != null) {
+            result.add("replayResourceCut",
+                    copyJsonTree(active.replayResourceCut));
+        }
         result.add("loopBackedgeTraversals",
                 active.loopBackedges.toJson());
+        result.add("replayLoopBodies",
+                active.loopBackedges.bodiesToJson());
         active.validateRegionExitFieldCaptures(exitKind);
         result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
         result.add("symbolizedInputs", GSON.toJsonTree(active.symbolized));
@@ -4017,6 +4091,7 @@ public final class ConcolicRegionRuntime {
         private long preparedBranchSequence;
         private int lastPathConditionSize;
         private JsonObject loopBoundCut;
+        private JsonObject replayResourceCut;
         private boolean entrySetup;
         private boolean pathRecordingStarted;
 
@@ -4030,6 +4105,28 @@ public final class ConcolicRegionRuntime {
                     activation.loopBound);
             this.replayProgress = new ReplayProgress(
                     activation.replayContract);
+        }
+
+        /**
+         * Charges one body of this loop to the replay resource cap, returning
+         * the cut that ends the activation once the cap is spent.
+         *
+         * <p>The detail is always recorded, capture-producing tasks included:
+         * a replay that ran out of budget answered nothing, and letting that
+         * pass unnamed is exactly the silent truncation this cap exists to
+         * prevent.</p>
+         */
+        private ReplayLoopResourceCut chargeLoopBody(String loopId) {
+            int maxBodies = activation.maxLoopBodies(loopId);
+            long entered = loopBackedges.recordBody(loopId);
+            if (entered <= maxBodies) return null;
+            ReplayLoopResourceCut cut = new ReplayLoopResourceCut(
+                    loopId, maxBodies, entered);
+            if (replayResourceCut == null) {
+                replayResourceCut = cut.toJson();
+                addUnresolvedOnce(cut.detail());
+            }
+            return cut;
         }
 
         private LoopBoundCut loopBoundCut(
@@ -4541,6 +4638,7 @@ public final class ConcolicRegionRuntime {
         private final int maxTraversals;
         private final Map<String, Integer> traversals =
                 new LinkedHashMap<>();
+        private final Map<String, Integer> bodies = new LinkedHashMap<>();
 
         LoopBackedgeBudget(LoopBoundPolicy policy) {
             if (policy == null) {
@@ -4589,11 +4687,76 @@ public final class ConcolicRegionRuntime {
             return traversals.getOrDefault(loopId, 0);
         }
 
+        /**
+         * Counts one body of this loop against the replay resource cap and
+         * returns the body number just entered.
+         *
+         * <p>Separate from {@link #traversals}: that ledger is the unroll
+         * bound, which only a symbolically decided continuation spends.  This
+         * one is spent by every body, so a concrete walk and an uninstrumented
+         * service loop are both accounted for.</p>
+         */
+        long recordBody(String loopId) {
+            long entered = (long) bodies.getOrDefault(loopId, 0) + 1L;
+            bodies.put(loopId, (int) Math.min(entered, Integer.MAX_VALUE));
+            return entered;
+        }
+
         JsonObject toJson() {
             JsonObject encoded = new JsonObject();
             for (Map.Entry<String, Integer> entry : traversals.entrySet()) {
                 encoded.addProperty(entry.getKey(), entry.getValue());
             }
+            return encoded;
+        }
+
+        JsonObject bodiesToJson() {
+            JsonObject encoded = new JsonObject();
+            for (Map.Entry<String, Integer> entry : bodies.entrySet()) {
+                encoded.addProperty(entry.getKey(), entry.getValue());
+            }
+            return encoded;
+        }
+    }
+
+    /**
+     * Non-workload control signal aborting a replay that has spent its loop
+     * resource cap.
+     *
+     * <p>Distinct from {@link LoopBoundCut}: an unroll cut is a modelled
+     * boundary of the bounded semantics and still yields the relation the
+     * bounded path produced, while this one says the replay could not be
+     * carried far enough to answer at all.  It therefore never becomes a
+     * {@code BOUNDED} exit and never publishes a capture.</p>
+     */
+    public static final class ReplayLoopResourceCut extends Error {
+        private static final long serialVersionUID = 1L;
+        static final String REASON = "REPLAY_LOOP_RESOURCE_CAP";
+        private final String loopId;
+        private final int maxBodies;
+        private final long attemptedBody;
+
+        ReplayLoopResourceCut(String loopId, int maxBodies,
+                              long attemptedBody) {
+            super(REASON + " at " + safe(loopId) + ": body "
+                    + attemptedBody + " exceeds " + maxBodies);
+            this.loopId = safe(loopId);
+            this.maxBodies = maxBodies;
+            this.attemptedBody = attemptedBody;
+        }
+
+        String detail() {
+            return REASON + ':' + loopId + ':' + attemptedBody + '/'
+                    + maxBodies;
+        }
+
+        JsonObject toJson() {
+            JsonObject encoded = new JsonObject();
+            encoded.addProperty("kind", REASON);
+            encoded.addProperty("loopId", loopId);
+            encoded.addProperty("maxLoopBodies", maxBodies);
+            encoded.addProperty("attemptedBody", attemptedBody);
+            encoded.addProperty("reason", REASON);
             return encoded;
         }
     }
@@ -5511,6 +5674,7 @@ public final class ConcolicRegionRuntime {
         private final List<ModelAssignment> modelAssignments;
         private final List<OutputCaptureSpec> outputCaptures;
         private final boolean capturesOutputRelation;
+        private final Set<String> executionScopeMethods;
         private final BranchReplayContract replayContract;
         private final Map<String, Set<Boolean>> seedOutcomes;
         private final String stopAfterBranchSite;
@@ -5536,6 +5700,11 @@ public final class ConcolicRegionRuntime {
             this.outputCaptures = new ArrayList<>();
             this.capturesOutputRelation =
                     task.goalKind().capturesOutputRelation();
+            this.executionScopeMethods = new LinkedHashSet<>();
+            if (task.outputClosure() != null) {
+                this.executionScopeMethods.addAll(
+                        task.outputClosure().executionScope().methods());
+            }
             JsonElement encodedReplay = task.replayContract();
             if (encodedReplay == null) {
                 this.replayContract = null;
@@ -5586,6 +5755,25 @@ public final class ConcolicRegionRuntime {
             for (OutputCaptureSpec request : task.outputCaptures()) {
                 outputCaptures.add(request);
             }
+        }
+
+        /**
+         * Body entries this loop may run before the replay is cut.
+         *
+         * <p>A loop declared by a method the output closure names walks the
+         * data the slice is stated over, so it is given the larger cap.  Every
+         * other loop on the replay path is a service loop of the long-lived
+         * root, and one turn of it is a whole heartbeat of unrelated symbolic
+         * work; a loop this runtime cannot attribute to the scope is charged
+         * the smaller cap rather than left unbounded.</p>
+         */
+        private int maxLoopBodies(String loopId) {
+            int marker = safe(loopId).indexOf("#loop:");
+            String method = marker > 0
+                    ? loopId.substring(0, marker) : "";
+            return LoopBoundPolicy.maxLoopBodies(
+                    !method.isEmpty()
+                            && executionScopeMethods.contains(method));
         }
 
         /**

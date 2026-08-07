@@ -21,6 +21,31 @@ public final class LoopBoundPolicy {
      * failure is stated over.</p>
      */
     public static final int SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY = 32;
+    /**
+     * Body entries one execution-scope loop may run in one activation before
+     * the replay is cut.
+     *
+     * <p>Independent of {@link #MAX_LOOP_BODY_ITERATIONS}.  The unroll bound
+     * caps the <em>path space</em> a solver must reason about, so only a
+     * symbolically decided continuation spends it.  This cap answers a
+     * different question - how much work one replay may do before it is
+     * declared unable to finish - and every loop body spends it, concrete
+     * guards included.  A slice loop walks recorded data, so it is given room
+     * for the collection sizes a real slice carries.</p>
+     */
+    public static final int MAX_EXECUTION_SCOPE_LOOP_BODIES = 2048;
+    /**
+     * Body entries one replay-path loop outside the execution scope may run
+     * in one activation before the replay is cut.
+     *
+     * <p>These are the service loops a long-lived root spins in between the
+     * calls the slice is stated over - a heartbeat, a retry, a poll.  Each
+     * turn re-enters library code that adds symbolic conditions the replay
+     * must then re-read at every later branch, so an unbounded count is what
+     * turns a slow activation into one that never ends.  The slice's own
+     * calls happen within the first few turns, so tens of them is room.</p>
+     */
+    public static final int MAX_REPLAY_PATH_LOOP_BODIES = 32;
     // A guarded body-entry hook denies body nine after eight bodies have run.
     // The encoded field name is historical; the value is a body bound.
     private static final int SCHEMA_VERSION = 1;
@@ -63,6 +88,16 @@ public final class LoopBoundPolicy {
 
     public int maxBackedgeTraversals() {
         return maxBackedgeTraversals;
+    }
+
+    /**
+     * Body entries one loop may run before the replay is cut, given whether
+     * the loop's own method belongs to the task's execution scope.
+     */
+    public static int maxLoopBodies(boolean executionScopeLoop) {
+        return executionScopeLoop
+                ? MAX_EXECUTION_SCOPE_LOOP_BODIES
+                : MAX_REPLAY_PATH_LOOP_BODIES;
     }
 
     public String identity() {

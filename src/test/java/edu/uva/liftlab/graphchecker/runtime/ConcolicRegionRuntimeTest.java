@@ -346,6 +346,63 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void theResourceCapCountsEveryBodyTheUnrollBoundIgnores() {
+        String method = "<test.Keys: void addKeys()>";
+        String loop = method + "#loop:u13";
+        int bound = LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
+        ConcolicRegionRuntime.LoopBackedgeBudget budget =
+                new ConcolicRegionRuntime.LoopBackedgeBudget(
+                        LoopBoundPolicy.cfgBackedges(bound));
+
+        // A concrete guard releases the unroll traversal it was charged, but
+        // the body it entered still spent replay resource.  The two ledgers
+        // are independent: one caps the path space, the other caps the work.
+        for (int body = 1; body <= 3 * bound; body++) {
+            budget.recordGuardedTraversal(loop);
+            budget.releaseTraversal(loop);
+            assertEquals(body, budget.recordBody(loop));
+            assertTrue(budget.canEnterBody(loop));
+        }
+        assertEquals(3 * bound,
+                budget.bodiesToJson().get(loop).getAsInt());
+        // The unroll ledger is untouched by all that work.
+        assertEquals(0, budget.completed(loop));
+    }
+
+    @Test
+    public void aServiceLoopIsCappedTighterThanASliceLoop() {
+        // A loop the output closure names walks the data the slice is stated
+        // over; every other loop on the replay path is a service loop whose
+        // every turn is a heartbeat of unrelated symbolic work.
+        assertEquals(LoopBoundPolicy.MAX_EXECUTION_SCOPE_LOOP_BODIES,
+                LoopBoundPolicy.maxLoopBodies(true));
+        assertEquals(LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES,
+                LoopBoundPolicy.maxLoopBodies(false));
+        assertTrue(LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES
+                < LoopBoundPolicy.MAX_EXECUTION_SCOPE_LOOP_BODIES);
+        // Both caps stay clear of the unroll bound, which they must never
+        // stand in for.
+        assertTrue(LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS
+                < LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES);
+    }
+
+    @Test
+    public void aSpentResourceCapNamesItselfInsteadOfTruncating() {
+        ConcolicRegionRuntime.ReplayLoopResourceCut cut =
+                new ConcolicRegionRuntime.ReplayLoopResourceCut(
+                        "<test.Actor: void offerService()>#loop:u7", 32, 33L);
+        JsonObject encoded = cut.toJson();
+        assertEquals("REPLAY_LOOP_RESOURCE_CAP",
+                encoded.get("kind").getAsString());
+        assertEquals("REPLAY_LOOP_RESOURCE_CAP",
+                encoded.get("reason").getAsString());
+        assertEquals(32, encoded.get("maxLoopBodies").getAsInt());
+        assertEquals(33L, encoded.get("attemptedBody").getAsLong());
+        assertTrue(cut.detail().startsWith("REPLAY_LOOP_RESOURCE_CAP:"));
+        assertTrue(cut.detail().endsWith(":33/32"));
+    }
+
+    @Test
     public void eachBoundedAccessorOccurrenceKeepsItsOwnSymbol() {
         // The replay counts its accessor calls from one, so the demanded
         // occurrence is the one bounded to a single helper activation.
