@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -187,27 +188,63 @@ public final class ContainerSmtCodec {
                         + " (store (assoc_position s) k"
                         + " (assoc_size s)))))"
                 ,
-                "(define-fun assoc_remove ((s AssocState) (k Value))"
-                        + " AssocState"
-                        + " (ite (assoc_has s k)"
-                        + " (let ((p (select (assoc_position s) k)))"
-                        + " (mkAssocState"
-                        + " (- (assoc_size s) 1)"
-                        + " (store (assoc_present s) k false)"
-                        + " (assoc_values s)"
-                        + " (lambda ((q Int))"
-                        + " (ite (and (<= p q)"
-                        + " (< q (- (assoc_size s) 1)))"
-                        + " (select (assoc_order s) (+ q 1))"
-                        + " (select (assoc_order s) q)))"
-                        + " (lambda ((key Value))"
-                        + " (ite (= key k) (- 1)"
-                        + " (ite (and (assoc_has s key)"
-                        + " (> (select (assoc_position s) key) p))"
-                        + " (- (select (assoc_position s) key) 1)"
-                        + " (select (assoc_position s) key))))))"
-                        + " s))"
+                associativeRemoveDefinition()
         ));
+    }
+
+    /**
+     * Removal, written over the container bound rather than as a rewriting of
+     * the whole order.
+     *
+     * <p>Closing the gap a removed key leaves is a shift of every later
+     * position, which reads naturally as a function of the position — and a
+     * function is what it used to be. That costs the solver its first-order
+     * reasoning: on the first formula that actually applied a removal, Z3
+     * spent five minutes without deciding a query it settles in seconds once
+     * the shift is spelled out. Collections here are bounded, so spelling it
+     * out is available and nothing is approximated by doing so.</p>
+     *
+     * <p>Beyond the bound the shift is not written, so a container that grew
+     * past it keeps stale positions. That is the same edge the snapshot
+     * capacity already governs: an observation wider than the bound is not
+     * represented, rather than represented wrongly.</p>
+     */
+    private static String associativeRemoveDefinition() {
+        int bound = LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY;
+        StringBuilder order = new StringBuilder("(assoc_order s)");
+        for (int slot = 0; slot < bound; slot++) {
+            order.insert(0, "(store ")
+                    .append(' ').append(slot)
+                    .append(" (ite (and (<= p ").append(slot)
+                    .append(") (< ").append(slot)
+                    .append(" (- (assoc_size s) 1)))")
+                    .append(" (select (assoc_order s) ").append(slot + 1)
+                    .append(") (select (assoc_order s) ").append(slot)
+                    .append(")))");
+        }
+        StringBuilder position =
+                new StringBuilder("(store (assoc_position s) k (- 1))");
+        for (int slot = 0; slot < bound; slot++) {
+            String key = "(select (assoc_order s) " + slot + ")";
+            String was = "(select (assoc_position s) " + key + ")";
+            position.insert(0, "(store ")
+                    .append(' ').append(key)
+                    .append(" (ite (and (not (= ").append(key).append(" k))")
+                    .append(" (assoc_has s ").append(key).append(')')
+                    .append(" (> ").append(was).append(" p))")
+                    .append(" (- ").append(was).append(" 1) ")
+                    .append(was).append("))");
+        }
+        return "(define-fun assoc_remove ((s AssocState) (k Value))"
+                + " AssocState"
+                + " (ite (assoc_has s k)"
+                + " (let ((p (select (assoc_position s) k)))"
+                + " (mkAssocState"
+                + " (- (assoc_size s) 1)"
+                + " (store (assoc_present s) k false)"
+                + " (assoc_values s) "
+                + order + " " + position + "))"
+                + " s))";
     }
 
     public static boolean handles(JsonElement expression) {
