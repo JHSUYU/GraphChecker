@@ -1561,6 +1561,18 @@ probe_observed_candidate() {
     echo "[hdfs-11741] observed paths are not SAT yet; continuing exploration"
     return 1
   fi
+  # A reach condition of constant true, or a satisfying valuation that binds
+  # nothing, says only that the target's method runs -- which the recording
+  # already showed.  Ending the campaign on it would trade the exploration
+  # that could still constrain the target for an answer that constrains
+  # nothing, so it is not an answer.
+  if ! jq -e '(.reachCondition.formula // "" | . != "" and . != "true")
+      and any(.valuations[]?; .status == "sat"
+        and ((.values // []) | length) > 0)' \
+      "${attempt}/z3-result.json" >/dev/null; then
+    echo "[hdfs-11741] observed-path reach condition constrains nothing; continuing exploration"
+    return 1
+  fi
   cp -f "${attempt}/candidate.smt2" \
     "${partial_probe_output}/candidate.smt2"
   cp -f "${attempt}/composition.json" \
