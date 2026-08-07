@@ -28,6 +28,12 @@ class ContainerExpression : public Expression {
                       const std::string &java_type = std::string());
   virtual ~ContainerExpression();
 
+  // STATE names a container; every other operation is one the recorder
+  // watched happen to it.
+  virtual bool is_recorded_container_mutation() {
+    return _operation != "STATE";
+  }
+
   virtual void print();
   virtual void serialize_internal(
       rapidjson::Writer<rapidjson::StringBuffer> &writer);

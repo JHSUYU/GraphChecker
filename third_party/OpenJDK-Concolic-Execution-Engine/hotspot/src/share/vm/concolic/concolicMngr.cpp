@@ -428,6 +428,19 @@ bool ConcolicMngr::snapshotContainerExpression(
     return false;
   }
 
+  // A container the recorder has already watched change carries its contents
+  // in those operations, so it does not need to be told what it holds -- and
+  // telling it would replace a history that relates the container to this
+  // activation's inputs with a constant that holds only on the recorded path.
+  // That is the same judgement the array branch above makes.  A container
+  // whose state is still the bare STATE root has no such history, and is
+  // exactly the unconstrained symbolic collection the empty base exists to
+  // replace, so it is still snapshotted; so is any state that does not say.
+  Expression *recorded = ctx->find_container_state(target);
+  if (recorded != NULL && recorded->is_recorded_container_mutation()) {
+    return true;
+  }
+
   // SNAPSHOT_BASE(STATE) is an exact empty collection: its size is zero and
   // every associative key is absent.  Replaying the observed final members
   // from that base yields a path-final snapshot rather than an unconstrained

@@ -38,6 +38,11 @@ public:
   // Boolean constant (rather than an integer 0/1) and to preserve Java
   // boolean &, | and ^ when the bytecode is shared with integer operations.
   virtual bool is_boolean_expression() { return false; }
+  // True for a container state some recorded operation produced, as opposed
+  // to the bare STATE root ThreadContext creates on first contact with a
+  // container.  It tells a container whose contents the recording already
+  // decides from one the recording has only named.
+  virtual bool is_recorded_container_mutation() { return false; }
 
   static void print_on_maybe_null(Expression *exp) {
     if (exp) {
