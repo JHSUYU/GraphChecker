@@ -294,7 +294,8 @@ final class RuntimeRegionPlanner {
         row.put(field, new ArrayList<>(merged));
     }
 
-    private static int selectionRank(String selection) {
+    /** Ranks how strong one region selection is when two fragments merge. */
+    static int selectionRank(String selection) {
         if (selection != null && selection.startsWith("EXCEPTION")) {
             return 3;
         }

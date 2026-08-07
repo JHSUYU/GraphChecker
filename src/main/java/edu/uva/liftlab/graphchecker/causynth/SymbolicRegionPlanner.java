@@ -357,21 +357,6 @@ final class SymbolicRegionPlanner {
                 && cell.contains(":") && !cell.contains("(");
     }
 
-    static boolean validRootAuthority(String authority) {
-        if (authority == null) {
-            return false;
-        }
-        switch (authority) {
-            case "THREAD_ENTRY":
-            case "TASK_ENTRY":
-            case "MAIN_ENTRY":
-            case "RPC_HANDLER":
-                return true;
-            default:
-                return false;
-            }
-    }
-
     private static String text(Object value) {
         return value == null ? "" : String.valueOf(value);
     }

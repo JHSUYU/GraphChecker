@@ -2525,41 +2525,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
             for (BoundPort write : selectedByPort.values()) {
-                String alternative = write.region + "\n" + write.port
-                        + "\n" + write.rootCallId + "\n" + write.site
-                        + "\n" + write.occurrence + "\n" + read.region
-                        + "\n" + read.port + "\n" + read.rootCallId
-                        + "\n" + read.site + "\n" + read.occurrence;
-                Map<String, Object> edge = new LinkedHashMap<>();
-                edge.put("schemaVersion", 3);
-                edge.put("kind", "RUNTIME_FIELD_FLOW");
-                edge.put("transportKind", "HEAP");
-                edge.put("edgeId", "RF." + UUID.nameUUIDFromBytes(
-                        alternative.getBytes(StandardCharsets.UTF_8)));
-                edge.put("causalAlternativeId", "FIELD_OCCURRENCE."
-                        + UUID.nameUUIDFromBytes(alternative.getBytes(
-                        StandardCharsets.UTF_8)));
-                edge.put("fromRegion", write.region);
-                edge.put("toRegion", read.region);
-                edge.put("fromPort", write.port);
-                edge.put("toPort", read.port);
-                edge.put("fromRootCallId", write.rootCallId);
-                edge.put("toRootCallId", read.rootCallId);
-                edge.put("receiverObjectId", write.receiver);
-                edge.put("valueObjectId", write.valueObject);
-                edge.put("primitiveValue", write.primitiveValue);
-                edge.put("writerEventSeq", write.seq);
-                edge.put("readerEventSeq", read.seq);
-                edge.put("writerStaticSiteId", write.site);
-                edge.put("readerStaticSiteId", read.site);
-                edge.put("writerOccurrence", write.occurrence);
-                edge.put("readerOccurrence", read.occurrence);
-                edge.put("bindingKind", write.bindingKind);
-                edge.put("dependencyRole", read.dependencyRole);
-                edge.put("fieldPathDeclarations", Collections.singletonList(
-                        write.leafDeclaration()));
-                edge.put("writerFieldPathDeclarations", write.declarations);
-                edge.put("readerFieldPathDeclarations", read.declarations);
+                Map<String, Object> edge = fieldFlowEdge(write, read,
+                        "", "RF.");
                 if ("CONTAINER_MUTATION".equals(write.bindingKind)) {
                     edge.put("writerFieldReadSeq",
                             write.writerFieldReadSeq);
@@ -2663,45 +2630,62 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             if (byWriterPort.size() != 1) continue;
             BoundPort write = byWriterPort.values().iterator().next();
-            String alternative = write.region + "\n" + write.port
-                    + "\n" + write.rootCallId + "\n" + write.site
-                    + "\n" + write.occurrence + "\n" + read.region
-                    + "\n" + read.port + "\n" + read.rootCallId
-                    + "\n" + read.site + "\n" + read.occurrence;
-            Map<String, Object> edge = new LinkedHashMap<>();
-            edge.put("schemaVersion", 3);
-            edge.put("kind", "RUNTIME_FIELD_FLOW");
-            edge.put("transportKind", "HEAP");
-            edge.put("authority", LEAF_PRODUCER_AUTHORITY);
-            edge.put("edgeId", "RF.LEAF." + UUID.nameUUIDFromBytes(
-                    alternative.getBytes(StandardCharsets.UTF_8)));
-            edge.put("causalAlternativeId", "FIELD_OCCURRENCE."
-                    + UUID.nameUUIDFromBytes(alternative.getBytes(
-                    StandardCharsets.UTF_8)));
-            edge.put("fromRegion", write.region);
-            edge.put("toRegion", read.region);
-            edge.put("fromPort", write.port);
-            edge.put("toPort", read.port);
-            edge.put("fromRootCallId", write.rootCallId);
-            edge.put("toRootCallId", read.rootCallId);
-            edge.put("receiverObjectId", write.receiver);
-            edge.put("valueObjectId", write.valueObject);
-            edge.put("primitiveValue", write.primitiveValue);
-            edge.put("writerEventSeq", write.seq);
-            edge.put("readerEventSeq", read.seq);
-            edge.put("writerStaticSiteId", write.site);
-            edge.put("readerStaticSiteId", read.site);
-            edge.put("writerOccurrence", write.occurrence);
-            edge.put("readerOccurrence", read.occurrence);
-            edge.put("bindingKind", write.bindingKind);
-            edge.put("dependencyRole", read.dependencyRole);
-            edge.put("fieldPathDeclarations", Collections.singletonList(
-                    readField));
-            edge.put("writerFieldPathDeclarations", write.declarations);
-            edge.put("readerFieldPathDeclarations", read.declarations);
-            result.add(edge);
+            result.add(fieldFlowEdge(write, read, LEAF_PRODUCER_AUTHORITY,
+                    "RF.LEAF."));
         }
         return result;
+    }
+
+    /**
+     * Renders one write/read pair as a runtime field-flow edge.
+     *
+     * <p>Both field-flow rules publish the same edge schema; only the
+     * authority that admitted the pair and the edge-id prefix differ.  A
+     * field added to one rule and not the other would silently make the two
+     * kinds of edge un-mergeable downstream.</p>
+     */
+    private static Map<String, Object> fieldFlowEdge(
+            BoundPort write, BoundPort read, String authority,
+            String edgeIdPrefix) {
+        String alternative = write.region + "\n" + write.port
+                + "\n" + write.rootCallId + "\n" + write.site
+                + "\n" + write.occurrence + "\n" + read.region
+                + "\n" + read.port + "\n" + read.rootCallId
+                + "\n" + read.site + "\n" + read.occurrence;
+        Map<String, Object> edge = new LinkedHashMap<>();
+        edge.put("schemaVersion", 3);
+        edge.put("kind", "RUNTIME_FIELD_FLOW");
+        edge.put("transportKind", "HEAP");
+        if (!authority.isEmpty()) {
+            edge.put("authority", authority);
+        }
+        edge.put("edgeId", edgeIdPrefix + UUID.nameUUIDFromBytes(
+                alternative.getBytes(StandardCharsets.UTF_8)));
+        edge.put("causalAlternativeId", "FIELD_OCCURRENCE."
+                + UUID.nameUUIDFromBytes(alternative.getBytes(
+                StandardCharsets.UTF_8)));
+        edge.put("fromRegion", write.region);
+        edge.put("toRegion", read.region);
+        edge.put("fromPort", write.port);
+        edge.put("toPort", read.port);
+        edge.put("fromRootCallId", write.rootCallId);
+        edge.put("toRootCallId", read.rootCallId);
+        edge.put("receiverObjectId", write.receiver);
+        edge.put("valueObjectId", write.valueObject);
+        edge.put("primitiveValue", write.primitiveValue);
+        edge.put("writerEventSeq", write.seq);
+        edge.put("readerEventSeq", read.seq);
+        edge.put("writerStaticSiteId", write.site);
+        edge.put("readerStaticSiteId", read.site);
+        edge.put("writerOccurrence", write.occurrence);
+        edge.put("readerOccurrence", read.occurrence);
+        edge.put("bindingKind", write.bindingKind);
+        edge.put("dependencyRole", read.dependencyRole);
+        edge.put("fieldPathDeclarations", Collections.singletonList(
+                write.leafDeclaration()));
+        edge.put("writerFieldPathDeclarations", write.declarations);
+        edge.put("readerFieldPathDeclarations", read.declarations);
+        return edge;
     }
 
     /** Names the leaf-producer binding for downstream manifest tracing. */

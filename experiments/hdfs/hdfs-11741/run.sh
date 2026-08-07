@@ -4,7 +4,6 @@ set -euo pipefail
 
 experiment_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 graphchecker_dir=$(cd "${experiment_dir}/../../.." && pwd -P)
-runner="${graphchecker_dir}/run_engine.sh"
 hadoop_dir=${HADOOP_REPO:-/opt/hadoop}
 hdfs_pom="${hadoop_dir}/hadoop-hdfs-project/hadoop-hdfs/pom.xml"
 runtime_patch_file="${experiment_dir}/patches/runtime-trace-workload.patch"
@@ -532,7 +531,6 @@ verify_static_artifacts() {
 
 verify_runtime_artifacts() {
   local runtime="${work_root}/runtime"
-  local skeleton="${runtime}/skeleton-pass"
   local regions="${work_root}/analysis/symbolic_regions.jsonl"
   require_command rg
   require_command jq
@@ -1135,12 +1133,8 @@ import_seed_task() {
   local singleton="${campaign}/execution_task_plan.jsonl"
   local results="${campaign}/seed-results.jsonl"
   local summaries="${campaign}/seed-summaries.jsonl"
-  local diagnostics="${campaign}/import-diagnostics.jsonl"
-  CAUSYNTH_RAW_RESULTS="${results}" \
-    CAUSYNTH_IMPORT_TASK_PLAN="${singleton}" \
-    CAUSYNTH_IMPORTED_SUMMARIES="${summaries}" \
-    CAUSYNTH_IMPORT_DIAGNOSTICS="${diagnostics}" \
-    do_engine_config import
+  run_concolic_import "${singleton}" "${results}" "${summaries}" \
+    "${campaign}"
   require_unique_complete_summary "imported seed summary" "${summaries}" \
     "${task_id}"
 }
@@ -1169,7 +1163,7 @@ run_seed_tasks_parallel() {
   local schedule_plan=$1
   shift
   local spec goal_kind task_id pid status index next=0
-  local -a specs=("$@") workers=() batch=() labels=() failures=()
+  local -a specs=("$@") batch=() labels=() failures=()
   declare -A seen=()
   local -a unique=()
 
@@ -1198,7 +1192,6 @@ run_seed_tasks_parallel() {
         run_seed_task "${schedule_plan}" "${task_id}" "${goal_kind}"
       ) &
       pid=$!
-      workers+=("${pid}")
       batch+=("${pid}")
       labels+=("${goal_kind} ${task_id}")
       next=$((next + 1))
@@ -1291,11 +1284,6 @@ run_concolic_import() {
     CAUSYNTH_IMPORTED_SUMMARIES="${summaries}" \
     CAUSYNTH_IMPORT_DIAGNOSTICS="${output_dir}/import-diagnostics.jsonl" \
     do_engine_config import
-}
-
-import_concolic_plan() {
-  run_concolic_import "$@"
-  require_nonempty_file "imported concolic summary" "$3"
 }
 
 prepare_target_branch_query() {
@@ -1410,15 +1398,11 @@ run_path_query() {
   # The imported summary carries the replayed region's projected relation and
   # can be nested past jq's tree-parser depth limit, so its admission is read
   # as a stream; the record itself is built from the task plan, which is not.
-  local replay_task_id
-  replay_task_id=$(jq -er -s 'if length == 1 then .[0].taskId
-    else error("not singleton") end' \
-    "${task_dir}/execution_task_plan.jsonl")
   [[ "$(wc -l <"${imported}")" -eq 1 ]] \
     && [[ "$(jsonl_stream_field relationallyComplete <"${imported}")" \
       == true ]] \
     && [[ "$(jsonl_stream_field taskId <"${imported}")" \
-      == "${replay_task_id}" ]] \
+      == "${replay_task}" ]] \
     || die "path replay admission failed: ${task_dir}"
   jq -e -c -s '
     if length == 1

@@ -8,7 +8,6 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonPrimitive;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -267,66 +266,8 @@ public final class TargetReachPathQueryBuilder {
 
     private static JsonElement remap(JsonElement value,
                                      Map<String, String> ports) {
-        if (value == null || value.isJsonNull()) return value;
-        if (value.isJsonArray()) {
-            JsonArray result = new JsonArray();
-            for (JsonElement element : value.getAsJsonArray()) {
-                result.add(remap(element, ports));
-            }
-            return result;
-        }
-        if (value.isJsonObject()) {
-            JsonObject result = new JsonObject();
-            for (Map.Entry<String, JsonElement> entry
-                    : value.getAsJsonObject().entrySet()) {
-                String key = ports.getOrDefault(entry.getKey(),
-                        entry.getKey());
-                if (result.has(key)) {
-                    throw new IllegalArgumentException(
-                            "target occurrence port remap collides at "
-                                    + key);
-                }
-                result.add(key, remap(entry.getValue(), ports));
-            }
-            return result;
-        }
-        JsonPrimitive primitive = value.getAsJsonPrimitive();
-        if (!primitive.isString()) return primitive.deepCopy();
-        return new JsonPrimitive(remapPortTokens(
-                primitive.getAsString(), ports));
-    }
-
-    private static String remapPortTokens(String value,
-                                          Map<String, String> ports) {
-        String exact = ports.get(value);
-        if (exact != null) return exact;
-        List<String> canonical = new ArrayList<>(ports.keySet());
-        canonical.sort((left, right) -> Integer.compare(
-                right.length(), left.length()));
-        StringBuilder result = new StringBuilder();
-        int cursor = 0;
-        while (cursor < value.length()) {
-            String match = "";
-            for (String candidate : canonical) {
-                if (!value.startsWith(candidate, cursor)) continue;
-                int end = cursor + candidate.length();
-                boolean leftBoundary = cursor == 0
-                        || value.charAt(cursor - 1) == '_';
-                boolean rightBoundary = end == value.length()
-                        || value.charAt(end) == '_';
-                if (leftBoundary && rightBoundary) {
-                    match = candidate;
-                    break;
-                }
-            }
-            if (match.isEmpty()) {
-                result.append(value.charAt(cursor++));
-            } else {
-                result.append(ports.get(match));
-                cursor += match.length();
-            }
-        }
-        return result.toString();
+        return PortAlphaRenaming.remap(value, ports,
+                "target occurrence port remap collides at ");
     }
 
     private static final class SelectedOccurrence {

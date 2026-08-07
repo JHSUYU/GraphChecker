@@ -236,7 +236,7 @@ public final class ConcolicRegionRuntime {
         }
         // A loop cut is the end of this bounded execution path, even if
         // application code catches Error/Throwable above the loop.
-        throwLoopCut(active, cut);
+        throwCut(active, cut);
     }
 
     /**
@@ -292,7 +292,7 @@ public final class ConcolicRegionRuntime {
                 }
             }
         }
-        throwLoopCut(active, cut);
+        throwCut(active, cut);
     }
 
     /**
@@ -345,7 +345,7 @@ public final class ConcolicRegionRuntime {
                 }
             }
         }
-        throwReplayResourceCut(active, cut);
+        throwCut(active, cut);
     }
 
     /** Rejects only a transition that would enter body {@code K+1}. */
@@ -413,18 +413,12 @@ public final class ConcolicRegionRuntime {
         }
         // The resource cap outranks the unroll bound: a replay that cannot be
         // carried far enough has no bounded path left to report.
-        throwReplayResourceCut(active, resourceCut);
-        throwLoopCut(active, cut);
+        throwCut(active, resourceCut);
+        throwCut(active, cut);
     }
 
-    private static void throwReplayResourceCut(
-            ActiveRegion active, ReplayLoopResourceCut cut) {
-        if (cut == null) return;
-        finish(active.token, "CUT", "", null);
-        throw cut;
-    }
-
-    private static void throwLoopCut(ActiveRegion active, LoopBoundCut cut) {
+    /** Publishing any cut ends the region as CUT before it is rethrown. */
+    private static void throwCut(ActiveRegion active, Error cut) {
         if (cut == null) return;
         finish(active.token, "CUT", "", null);
         throw cut;

@@ -566,50 +566,50 @@ public final class RegionInstancePlan {
         private static String portShape(JsonObject port, boolean output) {
             JsonObject value = output ? object(port, "output") : port;
             JsonObject shape = new JsonObject();
-            copyShape(value, shape, "cell");
-            copyShape(value, shape, "kind");
-            copyShape(value, shape, "javaTypeDescriptor");
-            copyShape(value, shape, "location");
-            copyShape(value, shape, "javaType");
-            copyShape(value, shape, "sourceKind");
-            copyShape(value, shape, "rootKind");
-            copyShape(value, shape, "rootParameterIndex");
-            copyShape(value, shape, "argumentIndex");
-            copyShape(value, shape, "index");
-            copyShape(value, shape, "bindingMode");
-            copyShape(value, shape, "dependencyRole");
-            copyShape(value, shape, "fieldPath");
-            copyShape(value, shape, "fieldPaths");
-            copyShape(value, shape, "outputSiteId");
-            copyShape(value, shape, "outputOccurrence");
+            copyIfPresent(value, shape, "cell");
+            copyIfPresent(value, shape, "kind");
+            copyIfPresent(value, shape, "javaTypeDescriptor");
+            copyIfPresent(value, shape, "location");
+            copyIfPresent(value, shape, "javaType");
+            copyIfPresent(value, shape, "sourceKind");
+            copyIfPresent(value, shape, "rootKind");
+            copyIfPresent(value, shape, "rootParameterIndex");
+            copyIfPresent(value, shape, "argumentIndex");
+            copyIfPresent(value, shape, "index");
+            copyIfPresent(value, shape, "bindingMode");
+            copyIfPresent(value, shape, "dependencyRole");
+            copyIfPresent(value, shape, "fieldPath");
+            copyIfPresent(value, shape, "fieldPaths");
+            copyIfPresent(value, shape, "outputSiteId");
+            copyIfPresent(value, shape, "outputOccurrence");
             // Repeated accessor/container reads can intentionally expose the
             // same declared field several times in one bounded activation.
             // Their invocation-local ordinal plus static call/declaration
             // identity is the stable slot key across exact occurrences.
             // Runtime call/object/value ids are deliberately excluded.
-            copyShape(value, shape, "accessorOccurrence");
-            copyShape(value, shape, "replayOccurrence");
-            copyShape(value, shape, "containerAccessOrdinal");
-            copyShape(value, shape, "siteId");
-            copyShape(value, shape, "unitIndex");
-            copyShape(value, shape, "callerMethod");
-            copyShape(value, shape, "declaredCallee");
-            copyShape(value, shape, "implementationMethod");
-            copyShape(value, shape, "accessorCallerMethod");
-            copyShape(value, shape, "accessorCallUnitIndex");
-            copyShape(value, shape, "accessorDeclaredCallee");
-            copyShape(value, shape, "accessorImplementationMethod");
-            copyShape(value, shape, "declaredFieldSignature");
-            copyShape(value, shape, "accessFieldSignature");
-            copyShape(value, shape, "leafFieldSignature");
-            copyShape(value, shape, "fieldPathDeclarations");
-            copyShape(value, shape, "accessSites");
-            copyShape(value, shape, "materialization");
+            copyIfPresent(value, shape, "accessorOccurrence");
+            copyIfPresent(value, shape, "replayOccurrence");
+            copyIfPresent(value, shape, "containerAccessOrdinal");
+            copyIfPresent(value, shape, "siteId");
+            copyIfPresent(value, shape, "unitIndex");
+            copyIfPresent(value, shape, "callerMethod");
+            copyIfPresent(value, shape, "declaredCallee");
+            copyIfPresent(value, shape, "implementationMethod");
+            copyIfPresent(value, shape, "accessorCallerMethod");
+            copyIfPresent(value, shape, "accessorCallUnitIndex");
+            copyIfPresent(value, shape, "accessorDeclaredCallee");
+            copyIfPresent(value, shape, "accessorImplementationMethod");
+            copyIfPresent(value, shape, "declaredFieldSignature");
+            copyIfPresent(value, shape, "accessFieldSignature");
+            copyIfPresent(value, shape, "leafFieldSignature");
+            copyIfPresent(value, shape, "fieldPathDeclarations");
+            copyIfPresent(value, shape, "accessSites");
+            copyIfPresent(value, shape, "materialization");
             if (output) {
                 JsonObject slice = object(port, "slice");
-                copyShape(slice, shape, "methods");
-                copyShape(slice, shape, "sites");
-                copyShape(slice, shape, "staticSites");
+                copyIfPresent(slice, shape, "methods");
+                copyIfPresent(slice, shape, "sites");
+                copyIfPresent(slice, shape, "staticSites");
             }
             return CanonicalJson.render(shape);
         }
@@ -628,13 +628,6 @@ public final class RegionInstancePlan {
             }
             Collections.sort(members);
             return kind + "\n" + pathSeed + "\n" + members;
-        }
-
-        private static void copyShape(JsonObject source, JsonObject target,
-                                      String field) {
-            if (source.has(field)) {
-                target.add(field, source.get(field).deepCopy());
-            }
         }
 
         public String executionRegionInstanceId() {

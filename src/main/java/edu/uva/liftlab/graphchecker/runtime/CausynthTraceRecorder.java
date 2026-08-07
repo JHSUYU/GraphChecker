@@ -38,10 +38,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 public final class CausynthTraceRecorder {
@@ -971,8 +969,9 @@ public final class CausynthTraceRecorder {
             String selection = String.valueOf(instance.get("selection"));
             String previousSelection = selectionByRegion.get(region);
             if (previousSelection == null
-                    || selectionRank(selection)
-                    > selectionRank(previousSelection)) {
+                    || RuntimeRegionPlanner.selectionRank(selection)
+                    > RuntimeRegionPlanner.selectionRank(
+                    previousSelection)) {
                 selectionByRegion.put(region, selection);
                 anchorByRegion.put(region,
                         String.valueOf(instance.get("anchorMethod")));
@@ -1109,16 +1108,6 @@ public final class CausynthTraceRecorder {
                 writer.write('\n');
             }
         }
-    }
-
-    private static int selectionRank(String selection) {
-        if (selection != null && selection.startsWith("EXCEPTION")) {
-            return 3;
-        }
-        if (selection != null && selection.startsWith("PROTOCOL")) {
-            return 2;
-        }
-        return 1;
     }
 
     private static BufferedReader skeletonReader(File file)

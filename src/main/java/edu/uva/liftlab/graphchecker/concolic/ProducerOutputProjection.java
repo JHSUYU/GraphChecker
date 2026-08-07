@@ -80,8 +80,6 @@ public final class ProducerOutputProjection {
 
     public Set<String> edgeIds() { return edgeIds; }
 
-    public String fingerprint() { return CanonicalJson.sha256(encoded); }
-
     public void requireMatches(RegionInstancePlan.Goal goal) {
         if (goal == null || !goal.kind().capturesOutputRelation()
                 || !string(encoded, "regionId").equals(
