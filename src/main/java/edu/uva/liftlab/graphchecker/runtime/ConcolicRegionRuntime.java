@@ -3900,6 +3900,7 @@ public final class ConcolicRegionRuntime {
         private final Map<String, Integer> associativeAccessOccurrences =
                 new LinkedHashMap<>();
         private final ReplayProgress replayProgress;
+        private int replayCaptureWatermark = -1;
         private long nextObjectToken = 1L;
         private long preparedBranchSequence;
         private int lastPathConditionSize;
@@ -3983,6 +3984,14 @@ public final class ConcolicRegionRuntime {
             if (replayProgress.failed()) {
                 addUnresolvedOnce("REPLAY_PREFIX_MISMATCH:"
                         + replayProgress.failure());
+            }
+            if (activation.replayContract != null
+                    && replayCaptureWatermark < 0
+                    && replayProgress.complete()) {
+                // The demanded decision has only just been made.  Every
+                // relation captured before it is a version the flip did not
+                // produce, so the boundary must wait for a later one.
+                replayCaptureWatermark = outputCaptures.size();
             }
             return matched;
         }
@@ -4182,13 +4191,19 @@ public final class ConcolicRegionRuntime {
             // A replay contract is consumed one hook after the branch it
             // demands is witnessed, so a window that closes on the witness
             // alone discards the very decision the flip was solved for.
-            return replayProgress.complete()
-                    && demandedBranchSitesObserved(
+            if (!replayProgress.complete()) return false;
+            // A flip is asked what its decision does to the relation, so the
+            // versions captured before that decision cannot answer it.
+            List<JsonObject> captures = replayCaptureWatermark < 0
+                    ? outputCaptures
+                    : outputCaptures.subList(replayCaptureWatermark,
+                    outputCaptures.size());
+            return demandedBranchSitesObserved(
                     activation.branchPolicies.keySet(),
                     witnessedOutcomes.keySet())
                     && completeExactOutputBoundary(
                     activation.capturesOutputRelation,
-                    activation.outputCaptures, outputCaptures);
+                    activation.outputCaptures, captures);
         }
 
         private void recordFieldAccessOwner(String symbol, Object owner) {
