@@ -39,6 +39,7 @@ final class SymbolicRegionPlanner {
         Map<String, Set<String>> outgoing = new LinkedHashMap<>();
         Set<String> failureMethods = new LinkedHashSet<>();
         Set<String> protocolAnchors = new LinkedHashSet<>();
+        Set<String> transportBoundaries = new LinkedHashSet<>();
         Set<String> stateAnchors = new LinkedHashSet<>();
         Set<String> demandedState = failureRelevantState(program.edges);
         for (String method : selected) {
@@ -55,6 +56,8 @@ final class SymbolicRegionPlanner {
                 addIfSelected(protocolAnchors, selected, method);
                 addIfSelected(protocolAnchors, selected,
                         text(edge.get("protocolServerStub")));
+                transportBoundaries.add(
+                        text(edge.get("protocolClientStub")));
             }
             if (("HEAP_READ".equals(transfer)
                     || "HEAP_WRITE".equals(transfer))
@@ -71,6 +74,18 @@ final class SymbolicRegionPlanner {
                 continue;
             }
             outgoing.get(method).add(callee);
+        }
+        // A configured stub's client call is the transport boundary, so the
+        // execution scope ends at it: whatever the callee runs belongs to the
+        // transport, and the only fact that crosses is the port correspondence
+        // the mapping declares.  This cannot depend on how the transport is
+        // implemented -- a stub hidden behind a proxy is opaque anyway, while
+        // one that runs in-process would otherwise pull its whole library into
+        // the caller's region.  Only the call edge is cut, so a callee the
+        // root also reaches without crossing a boundary stays in scope.
+        transportBoundaries.remove("");
+        for (Set<String> callees : outgoing.values()) {
+            callees.removeAll(transportBoundaries);
         }
 
         program.regions.clear();

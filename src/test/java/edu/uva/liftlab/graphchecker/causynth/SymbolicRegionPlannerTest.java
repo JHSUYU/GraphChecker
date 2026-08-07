@@ -77,6 +77,40 @@ public class SymbolicRegionPlannerTest {
     }
 
     @Test
+    public void configuredClientStubCallEndsTheExecutionScope() {
+        String stub = "<example.Transport: void send(java.lang.String)>";
+        String internal = "<example.Transport: void frame()>";
+        String shared = "<example.Codec: void encode()>";
+        StaticProgram program = new StaticProgram();
+        program.edges.add(edge(ROOT, "", "GUARD", "exception_guard",
+                "guard", ROOT + "#u7#exception:Failure"));
+        program.edges.add(edge(ROOT, stub, "VALUE_PASS", "call", "arg",
+                "param"));
+        program.edges.add(edge(ROOT, shared, "VALUE_PASS", "call", "arg",
+                "param"));
+        program.edges.add(edge(stub, internal, "VALUE_PASS", "call", "arg",
+                "param"));
+        program.edges.add(edge(stub, shared, "VALUE_PASS", "call", "arg",
+                "param"));
+        Map<String, Object> protocol = edge(ROOT, TARGET,
+                "PROTOCOL_TRANSFER", "rpc", "request", "parameter");
+        protocol.put("protocolStubMappingId", "example.transport");
+        protocol.put("protocolClientStub", stub);
+        protocol.put("protocolServerStub", TARGET);
+        program.edges.add(protocol);
+        program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
+
+        SymbolicRegionPlanner.planSelectedSkeleton(program,
+                Arrays.asList(ROOT, stub, internal, shared, TARGET));
+
+        assertEquals(1, program.regions.size());
+        // The stub and what only it reaches are the transport's business; a
+        // callee the root also reaches without crossing the boundary stays.
+        assertEquals(Arrays.asList(shared, ROOT),
+                program.regions.get(0).get("methods"));
+    }
+
+    @Test
     public void concreteDynamicDispatchTargetJoinsOwningRegion() {
         String declared = "<example.Factory: example.Value create()>";
         String concrete = "<example.FactoryImpl: example.Value create()>";
