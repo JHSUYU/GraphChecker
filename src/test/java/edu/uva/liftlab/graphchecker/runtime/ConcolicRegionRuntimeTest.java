@@ -311,6 +311,41 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void onlyASymbolicallyGuardedLoopSpendsTheUnrollBudget() {
+        String method = "<test.Keys: void addKeys()>";
+        String loop = method + "#loop:u13";
+
+        // A concrete array walk repeats as often as its data says.
+        assertTrue(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, method, true));
+        // A guard the VM decided symbolically is a real path branch.
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, method, false));
+        // A decision from another method, or none at all, answers nothing
+        // about this header and is charged.
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, "<test.Keys: void removeExpired()>", true));
+        assertFalse(ConcolicRegionRuntime.concreteGuardEnteredBody(
+                loop, "", true));
+
+        // A released traversal leaves the budget where it was, so a long
+        // concrete loop never starves the symbolic loops beside it.
+        int bound = LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
+        ConcolicRegionRuntime.LoopBackedgeBudget budget =
+                new ConcolicRegionRuntime.LoopBackedgeBudget(
+                        LoopBoundPolicy.cfgBackedges(bound));
+        for (int traversal = 0; traversal < 2 * bound; traversal++) {
+            budget.recordGuardedTraversal(loop);
+            budget.releaseTraversal(loop);
+            assertTrue(budget.canEnterBody(loop));
+        }
+        for (int traversal = 0; traversal < bound; traversal++) {
+            budget.recordGuardedTraversal(loop);
+        }
+        assertFalse(budget.canEnterBody(loop));
+    }
+
+    @Test
     public void eachBoundedAccessorOccurrenceKeepsItsOwnSymbol() {
         // The replay counts its accessor calls from one, so the demanded
         // occurrence is the one bounded to a single helper activation.

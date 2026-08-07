@@ -304,6 +304,15 @@ public final class ConcolicRegionRuntime {
                     || instrumentedMaxTraversals != runtimeMax) {
                 cut = active.loopBoundCut(loop, runtimeMax, 0L,
                         "INSTRUMENTATION_POLICY_MISMATCH");
+            } else if (active.enteredBodyOnConcreteGuard(loop)) {
+                // The unroll bound exists to cap path explosion, which only a
+                // symbolically decided continuation can cause.  How often a
+                // fully concrete guard repeats is data this replay observes,
+                // not a branch it chooses, so it must not spend the budget
+                // the symbolic loops in the same activation need.  The
+                // symbolic surface stays capped by the container snapshot
+                // capacity, and the latch already charged this traversal.
+                active.loopBackedges.releaseTraversal(loop);
             } else if (!active.loopBackedges.canEnterBody(loop)) {
                 cut = active.loopBoundCut(loop, runtimeMax,
                         (long) active.loopBackedges.completed(loop) + 1L,
@@ -1513,6 +1522,25 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * True when the decision that entered a loop body belongs to that loop's
+     * own header and was attested to carry no symbolic expression.
+     *
+     * <p>Only a symbolically decided continuation can explode the path space,
+     * so only such a loop spends the unroll budget; a concrete guard's trip
+     * count is data this replay observes.  The decision's method must be the
+     * loop's own, because a decision made elsewhere - in a callee, or before
+     * an uninstrumented header - says nothing about this guard.  Every case
+     * that leaves the question open is charged instead.</p>
+     */
+    static boolean concreteGuardEnteredBody(
+            String loopId, String decisionMethod, boolean decisionConcrete) {
+        int marker = safe(loopId).indexOf("#loop:");
+        return decisionConcrete && marker > 0
+                && !safe(decisionMethod).isEmpty()
+                && loopId.substring(0, marker).equals(decisionMethod);
+    }
+
+    /**
      * True when a bounded accessor-return action accepts the occurrence the
      * replay just counted for its accessor call site.
      *
@@ -1748,6 +1776,9 @@ public final class ConcolicRegionRuntime {
             try {
                 active.recordConcreteBranchWitness(method, unitIndex,
                         observedOutcome);
+                // No input has been materialized yet, so nothing this region
+                // decides can carry a symbolic expression.
+                active.noteBranchDecision(method, true);
                 finishAtExactOutputBoundary(active);
             } catch (Throwable ignored) {
                 // Observation must never alter the workload's own outcome.
@@ -1929,6 +1960,11 @@ public final class ConcolicRegionRuntime {
         }
         active.lastPathConditionSize = rawPathConditionSize;
         active.branchMappings.add(mapping);
+        // A decision the VM attested owns no path condition carried no
+        // symbolic expression.  Anything less than an attestation leaves the
+        // question open, and an open question must be charged.
+        active.noteBranchDecision(method, vmAttestation.valid
+                && vmAttestation.conditionIndices.isEmpty());
         if (mapping.has("witness") || mapping.has("concreteObservation")) {
             // A marker without either authority carries no decision into the
             // summary, so it must not attest a recorded outcome either.
@@ -3900,6 +3936,8 @@ public final class ConcolicRegionRuntime {
         private final Map<String, Integer> associativeAccessOccurrences =
                 new LinkedHashMap<>();
         private final ReplayProgress replayProgress;
+        private String lastDecisionMethod = "";
+        private boolean lastDecisionConcrete;
         private int replayCaptureWatermark = -1;
         private long nextObjectToken = 1L;
         private long preparedBranchSequence;
@@ -3994,6 +4032,30 @@ public final class ConcolicRegionRuntime {
                 replayCaptureWatermark = outputCaptures.size();
             }
             return matched;
+        }
+
+        /**
+         * Records how the branch that just executed was decided, so the loop
+         * hooks can tell a symbolically chosen continuation from a concrete
+         * one.  The method is kept because a decision made somewhere else
+         * says nothing about this loop's guard.
+         */
+        private void noteBranchDecision(String method, boolean concrete) {
+            lastDecisionMethod = safe(method);
+            lastDecisionConcrete = concrete;
+        }
+
+        /**
+         * True when the decision that entered this loop body was attested to
+         * carry no symbolic expression.  An unattested, missing, or foreign
+         * decision answers nothing and is charged to the budget.
+         */
+        private boolean enteredBodyOnConcreteGuard(String loopId) {
+            boolean concrete = concreteGuardEnteredBody(loopId,
+                    lastDecisionMethod, lastDecisionConcrete);
+            lastDecisionMethod = "";
+            lastDecisionConcrete = false;
+            return concrete;
         }
 
         private int nextLocalMaterializationOccurrence(
@@ -4413,6 +4475,16 @@ public final class ConcolicRegionRuntime {
                 traversals.put(backedgeId, (int) attempted);
             }
             return attempted;
+        }
+
+        /**
+         * Returns the traversal the latch charged for a body the header then
+         * entered on a concrete guard.  The latch runs before that guard is
+         * decided, so it cannot know which budget the transfer belongs to.
+         */
+        void releaseTraversal(String loopId) {
+            int completed = traversals.getOrDefault(loopId, 0);
+            if (completed > 0) traversals.put(loopId, completed - 1);
         }
 
         long recordGuardedTraversal(String loopId) {
