@@ -94,7 +94,8 @@ require_positive_integer() {
 require_bounded_workload_iterations() {
   local label=$1
   local value=$2
-  [[ "${value}" =~ ^[1-8]$ ]] \
+  [[ "${value}" =~ ^[1-9][0-9]*$ ]] \
+      && (( value <= hdfs11741_loop_iteration_cap )) \
     || die "${label} must be an integer from 1 through ${hdfs11741_loop_iteration_cap}"
 }
 
@@ -1054,6 +1055,8 @@ replay_concolic_plan() {
   local maven_repository gson_jar replay_status
   normalized=$(do_engine_config config)
   jdk=$(sed -n 's/^custom_jdk_home=//p' <<< "${normalized}")
+  [[ -n "${jdk}" ]] \
+    || die "workflow configuration has no custom_jdk_home"
   # Keep Hadoop's historical dependency versions authoritative.  The fat
   # GraphChecker jar is for standalone planner tools; replay uses the thin
   # runtime jar after the Hadoop test classpath.
@@ -1857,8 +1860,9 @@ run_candidate_for_target() {
 
   IFS=$'\t' read -r target_campaign_id target_region target_instance \
     target_goal <<< "${binding}"
-  [[ -n "${target_campaign_id}" && -n "${target_instance}" \
-      && -n "${target_goal}" ]] || die "incomplete target binding: ${binding}"
+  [[ -n "${target_campaign_id}" && -n "${target_region}" \
+      && -n "${target_instance}" && -n "${target_goal}" ]] \
+    || die "incomplete target binding: ${binding}"
   target_task=$(workflow_discovery_for_target "${target_instance}" \
     "${target_goal}" --command scheduled-target-task \
     --task-plan "${schedule_plan}")
@@ -1875,6 +1879,9 @@ run_candidate_for_target() {
       "${target_goal}" --command producer-binding --campaign "${producer_id}")
     IFS=$'\t' read -r ignored producer_region producer_instance \
       producer_goal <<< "${producer_binding}"
+    [[ -n "${producer_region}" && -n "${producer_instance}" \
+        && -n "${producer_goal}" ]] \
+      || die "incomplete producer binding: ${producer_binding}"
     producer_task=$(workflow_discovery_for_target "${target_instance}" \
       "${target_goal}" --command scheduled-task --campaign "${producer_id}" \
       --task-plan "${schedule_plan}")
@@ -1968,9 +1975,21 @@ run_candidate_for_target() {
         regionInstanceId: $instance, goalId: $goal},
       reachability: $reachability,
       artifacts: {smt: $smt, z3Result: $z3}}' >"${output}/result.json"
+  # The same vacuity test the observed-path probe applies: a reach condition
+  # of constant true, satisfied by a valuation that binds nothing, says only
+  # that the target's method runs.  The probe already refuses to end a
+  # campaign on that, and a witness published as the final answer has to clear
+  # at least the bar an intermediate one does.
   if [[ "${reachability}" == "REACHABLE" ]] \
       && jq -e 'any(.valuations[]?; .status == "sat")' \
         "${output}/z3-result.json" >/dev/null; then
+    if ! jq -e '(.reachCondition.formula // "" | . != "" and . != "true")
+        or any(.valuations[]?; .status == "sat"
+          and (((.values // []) | length) > 0
+            or ((.existentialWitness // []) | length) > 0))' \
+        "${output}/z3-result.json" >/dev/null; then
+      die "candidate reach condition constrains nothing: ${output}"
+    fi
     cp -f "${output}/result.json" "${candidate_root}/sat-result.json"
     echo "[hdfs-11741] SAT: ${output}/candidate.smt2"
     return 0
