@@ -209,6 +209,56 @@ public final class ContainerSmtCodec {
      * capacity already governs: an observation wider than the bound is not
      * represented, rather than represented wrongly.</p>
      */
+    /** The slot a removal names, when the recorder named a constant one. */
+    private static String literalSlot(String index) {
+        String text = index.trim();
+        if (text.isEmpty() || !text.chars().allMatch(Character::isDigit)) {
+            return "";
+        }
+        try {
+            int slot = Integer.parseInt(text);
+            return slot >= 0
+                    && slot < LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY
+                    ? text : "";
+        } catch (NumberFormatException notASlot) {
+            return "";
+        }
+    }
+
+    /**
+     * Removal at a slot the recorder already knows.
+     *
+     * <p>Which slot moves is then not a question the solver has to answer, so
+     * the shift needs no test per slot -- and the test, not the length of the
+     * chain, is what it cannot afford. Measured on the composition carrying an
+     * eviction: a chain of the full bound costs seconds without one and does
+     * not finish in three minutes with one, even where every test is
+     * constantly false.</p>
+     *
+     * <p>Slots below the removed one keep their key; the rest take their
+     * successor's. Positions follow the same shift, and the removed key's own
+     * position is written last so a duplicate store cannot restore it.</p>
+     */
+    private static String removeAtSlot(String receiver, int removed) {
+        int bound = LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY;
+        StringBuilder order = new StringBuilder("(assoc_order s)");
+        StringBuilder position = new StringBuilder("(assoc_position s)");
+        for (int slot = removed; slot < bound; slot++) {
+            String next = "(select (assoc_order s) " + (slot + 1) + ")";
+            order.insert(0, "(store ").append(' ').append(slot)
+                    .append(' ').append(next).append(')');
+            position.insert(0, "(store ").append(' ').append(next)
+                    .append(' ').append(slot).append(')');
+        }
+        String key = "(select (assoc_order s) " + removed + ")";
+        return "(let ((s " + receiver + ")) (ite (assoc_has s " + key + ")"
+                + " (mkAssocState (- (assoc_size s) 1)"
+                + " (store (assoc_present s) " + key + " false)"
+                + " (assoc_values s) " + order
+                + " (store " + position + " " + key + " (- 1)))"
+                + " s))";
+    }
+
     private static String associativeRemoveDefinition() {
         int bound = LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY;
         StringBuilder order = new StringBuilder("(assoc_order s)");
@@ -698,10 +748,14 @@ public final class ContainerSmtCodec {
             if ("REMOVE_AT".equals(operation)
                     && arguments.size() == 1) {
                 Term index = host.operand(arguments.get(0), Sort.INT);
-                return index == null ? null
-                        : new Term("(assoc_remove " + receiver.text
+                if (index == null) return null;
+                String literal = literalSlot(index.text);
+                return literal.isEmpty()
+                        ? new Term("(assoc_remove " + receiver.text
                         + " (assoc_key_at " + receiver.text + " "
-                        + index.text + "))", Sort.ASSOCIATIVE);
+                        + index.text + "))", Sort.ASSOCIATIVE)
+                        : new Term(removeAtSlot(receiver.text,
+                        Integer.parseInt(literal)), Sort.ASSOCIATIVE);
             }
             if ("REMOVE".equals(operation) && arguments.size() == 1) {
                 Term key = host.box(arguments.get(0));

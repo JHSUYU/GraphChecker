@@ -2723,6 +2723,10 @@ public final class ConcolicConstraintSolver {
 
     }
 
+    static Map<String, String> getValues(String output) {
+        return parseGetValues(output);
+    }
+
     private static Map<String, String> parseGetValues(String output) {
         Map<String, String> result = new LinkedHashMap<>();
         int newline = output.indexOf('\n');

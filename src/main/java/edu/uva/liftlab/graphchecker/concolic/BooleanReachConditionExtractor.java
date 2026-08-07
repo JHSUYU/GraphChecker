@@ -129,6 +129,11 @@ public final class BooleanReachConditionExtractor {
             JsonObject row = valuationRow(values, status);
             if ("sat".equals(status)) {
                 satisfyingValuations.add(values.clone());
+                JsonArray witness = existentialWitness(solver, query,
+                        discovery.existentialNonBooleanRootInputs);
+                if (witness.size() > 0) {
+                    row.add("existentialWitness", witness);
+                }
             } else if (!"unsat".equals(status)) {
                 row.addProperty("solverOutput", result.diagnostic());
                 solverErrors++;
@@ -469,6 +474,52 @@ public final class BooleanReachConditionExtractor {
             if ("Ljava/lang/String;".equals(value)) return STRING;
             return null;
         }
+    }
+
+    /**
+     * The values that make this valuation satisfiable.
+     *
+     * <p>Reachability is stated existentially over the non-boolean roots, so
+     * the verdict is complete without them — but a report that says a failure
+     * is reachable and cannot say on what is a claim the reader has to take on
+     * trust. Ask the solver, once, for the assignment it already found.</p>
+     *
+     * <p>The witness is evidence, never a premise: it is read off a query that
+     * was already answered, and nothing downstream constrains anything by it.
+     * A solver that will not answer leaves the row as it was.</p>
+     */
+    private static JsonArray existentialWitness(
+            Z3Solver solver, String query, List<RootInput> roots) {
+        JsonArray witness = new JsonArray();
+        if (roots.isEmpty()) return witness;
+        StringBuilder terms = new StringBuilder();
+        for (RootInput root : roots) {
+            terms.append(' ').append(root.solverTerm);
+        }
+        try {
+            ConcolicConstraintSolver.SolverOutput answer = solver.check(
+                    query + "\n(get-value (" + terms.toString().trim()
+                            + "))");
+            if (!"sat".equals(answer.status())) return witness;
+            Map<String, String> assigned =
+                    ConcolicConstraintSolver.getValues(answer.stdout);
+            for (RootInput root : roots) {
+                String value = assigned.get(root.solverTerm);
+                if (value == null) continue;
+                JsonObject row = new JsonObject();
+                row.addProperty("portId", root.port.id);
+                row.addProperty("regionInstanceId", root.regionInstanceId);
+                row.addProperty("solverTerm", root.solverTerm);
+                row.addProperty("value", value);
+                witness.add(row);
+            }
+        } catch (IOException | InterruptedException unanswered) {
+            if (unanswered instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            return new JsonArray();
+        }
+        return witness;
     }
 
     private static JsonObject valuationRow(boolean[] values, String status) {
