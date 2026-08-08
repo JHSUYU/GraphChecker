@@ -65,6 +65,25 @@ bool ContainerSupport::follows_callee_body(const std::string &callee_name) {
   return callee_name == "<init>";
 }
 
+bool ContainerSupport::measures(Expression *length, Expression *state) {
+  if (length == NULL || state == NULL) return false;
+  ContainerExpression *size = length->as_container_expression();
+  return size != NULL && size->get_operation() == "SIZE"
+      && size->get_receiver() == state;
+}
+
+std::string ContainerSupport::measurement(Expression *length,
+                                          Expression *state) {
+  if (measures(length, state)) return "MEASURED";
+  if (length == NULL) return "LENGTH_NOT_TRACKED";
+  ContainerExpression *container = length->as_container_expression();
+  if (container == NULL) return "LENGTH_IS_NOT_A_CONTAINER_RELATION";
+  if (container->get_operation() != "SIZE") {
+    return "LENGTH_IS_" + container->get_operation();
+  }
+  return "LENGTH_SIZES_ANOTHER_STATE";
+}
+
 std::string ContainerSupport::unsupported(const char *category,
                                           MethodSymbolizerHandle &handle) {
   std::string reason(category == NULL ? "UNSPECIFIED" : category);

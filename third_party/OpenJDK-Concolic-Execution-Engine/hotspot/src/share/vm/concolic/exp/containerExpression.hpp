@@ -34,6 +34,11 @@ class ContainerExpression : public Expression {
     return _operation != "STATE";
   }
 
+  virtual ContainerExpression *as_container_expression() { return this; }
+
+  const std::string &get_operation() const { return _operation; }
+  Expression *get_receiver() const { return _receiver; }
+
   virtual void print();
   virtual void serialize_internal(
       rapidjson::Writer<rapidjson::StringBuffer> &writer);

@@ -32,6 +32,15 @@ void attach_result(oop result, Expression *expression, oop owner = NULL);
 // destination class more harshly than an untracked one, which is silently
 // tolerated on the same line today.
 bool follows_callee_body(const std::string &callee_name);
+// True when `length` is exactly the element count of `state`, so an array
+// declared with it holds a collection of that state and nothing else.  This
+// is the `new T[c.size()]` destination `Collection.toArray(T[])` fills
+// without leaving a trailing slot, and the indexed vocabulary has no way to
+// say "these elements, but that many slots" for the destinations that do.
+bool measures(Expression *length, Expression *state);
+// Why `measures` said no, as a name a report can be read for.  A gap whose
+// cause cannot be told from its name costs a whole pipeline run to diagnose.
+std::string measurement(Expression *length, Expression *state);
 // Names the exact container operation a modeling gap was hit on.  A bare
 // category tells a reader that some unmodeled operation aborted the region
 // but not which one, and the abort silently truncates everything after it,

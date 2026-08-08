@@ -13,6 +13,9 @@
 #include <map>
 #include <cstdio>
 #include <vector>
+
+class ContainerExpression;
+
 class Expression {
 private:
   uint _ref_count;
@@ -43,6 +46,10 @@ public:
   // container.  It tells a container whose contents the recording already
   // decides from one the recording has only named.
   virtual bool is_recorded_container_mutation() { return false; }
+  // Container algebra is the one place a shadow value has to be read back
+  // structurally rather than only serialized, and HotSpot is built without
+  // RTTI, so the downcast is declared here instead of guessed at.
+  virtual ContainerExpression *as_container_expression() { return NULL; }
 
   static void print_on_maybe_null(Expression *exp) {
     if (exp) {

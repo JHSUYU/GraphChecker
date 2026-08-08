@@ -3,6 +3,7 @@
 #include "concolic/exp/containerExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
 #include "concolic/reference/containerSupport.hpp"
+#include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicList.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "concolic/utils.hpp"
@@ -35,6 +36,7 @@ std::set<std::string> SymList::init_handle_method_names() {
   set.insert("isEmpty");
   set.insert("clear");
   set.insert("size");
+  set.insert("toArray");
   set.insert("iterator");
   set.insert("hasNext");
   set.insert("next");
@@ -70,6 +72,71 @@ bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
 }
 
 
+/**
+ * The array a Collection.toArray published, related to the collection it was
+ * taken from.
+ *
+ * Both overloads promise the same elements in the same order and differ only
+ * in the array they are put in.  toArray() allocates one of exactly size(),
+ * and so does toArray(T[]) when the destination it was handed is too short.
+ * Every slot of such an array is an element, so the array *is* the
+ * collection's indexed value: it is bound to that state, and later reads of
+ * the array read the collection.
+ *
+ * toArray(T[]) that fills the destination it was handed is the case an
+ * IndexedState cannot state.  The elements stop at size(), a null is written
+ * at size(), and the destination's own contents survive above that, so the
+ * array agrees with the collection only up to size() -- "these elements, but
+ * that many slots" is not expressible, since a state carries one size.  It
+ * *is* exact when the destination has no room to spare, which is precisely
+ * what `new T[c.size()]` declares and what `measures` recognises.  Any other
+ * destination is named rather than approximated: falling back to the array's
+ * concrete contents would discard the dependence on the collection that put
+ * this call in the closure to begin with, which is the one thing the call is
+ * here for.
+ */
+Expression *SymList::published_array(MethodSymbolizerHandle &handle,
+                                     Expression *receiver,
+                                     const exp_list_t &arguments) {
+  if (receiver == NULL) {
+    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+        "INDEXED_TO_ARRAY_RECEIVER_UNSUPPORTED", handle).c_str());
+    return NULL;
+  }
+  if (arguments.size() > 1) {
+    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+        "INDEXED_TO_ARRAY_OVERLOAD_UNSUPPORTED", handle).c_str());
+    return NULL;
+  }
+  BasicType result_type = handle.get_result_type();
+  oop published = result_type == T_ARRAY || result_type == T_OBJECT
+      ? handle.get_result<oop>(result_type) : NULL;
+  if (published == NULL || !published->is_array()) {
+    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+        "INDEXED_TO_ARRAY_RESULT_NOT_AN_ARRAY", handle).c_str());
+    return NULL;
+  }
+  // A destination the call did not return was too short to fill, so what
+  // came back was allocated at exactly size() instead.
+  oop destination = arguments.empty() ? (oop)NULL
+      : handle.get_param<oop>(1);
+  if (published == destination
+      && ((arrayOop)destination)->length() != 0) {
+    SymArr *filled =
+        ConcolicMngr::ctx->find_sym_array((arrayOop)destination);
+    Expression *declared = filled == NULL ? NULL : filled->get_length_exp();
+    if (!ContainerSupport::measures(declared, receiver)) {
+      std::string gap("INDEXED_TO_ARRAY_DESTINATION_MAY_HAVE_ROOM_TO_SPARE:");
+      gap += ContainerSupport::measurement(declared, receiver);
+      ConcolicMngr::ctx->abort_symbolic_execution(
+          ContainerSupport::unsupported(gap.c_str(), handle).c_str());
+      return NULL;
+    }
+  }
+  ConcolicMngr::ctx->set_container_state(published, receiver);
+  return ContainerSupport::concrete_value(published);
+}
+
 Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &method = handle.get_callee_name();
   exp_list_t &parameters = handle.get_param_list();
@@ -84,6 +151,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
       || method == "get" || method == "remove"
       || method == "contains" || method == "isEmpty"
       || method == "clear" || method == "size"
+      || method == "toArray"
       || method == "iterator");
   if (list_operation) {
     receiver = ConcolicMngr::ctx->container_state(
@@ -94,6 +162,10 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
   exp_list_t arguments;
   for (size_t index = 1; index < parameters.size(); ++index) {
     arguments.push_back(parameters[index]);
+  }
+  if (method == "toArray") {
+    return published_array(handle, root_container ? receiver : NULL,
+                           arguments);
   }
   if ((method == "add" || method == "offer") && root_container) {
     const char *operation = arguments.size() == 1 ? "APPEND" : "INSERT";
