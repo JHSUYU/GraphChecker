@@ -109,6 +109,17 @@ together:
 Degenerate SAT (`reachCondition.formula == "true"`, empty `valuations[].values`)
 is not success. `expiryDate` plausibility is **not** checked at this stage.
 
+A third degeneracy hides better than either, because every structural check
+passes: the fatal condition is asserted, the formula is not `true`, the
+regions are all present — and the value the condition turns on is a free
+leaf. A witness that reads *"some integer is absent from this table"* names
+no producer for that integer, so nothing else in the model has to hold. The
+check is per-symbol, not per-artifact: **for the operands of the fatal
+condition, find the assertion that binds each one.** A symbol whose only
+assertion is its own type range is unconstrained, whatever else surrounds
+it. A region inside the closure is not evidence that any value it computes
+reached the query.
+
 ## Method vs case
 
 **The method is general; the case is the yardstick.** Case knowledge lives in
