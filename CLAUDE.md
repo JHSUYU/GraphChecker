@@ -149,16 +149,26 @@ the fatal membership test are bound to the same producer timeline:
 
 ```
 NN updateKeys()            S' = put(remove(S, expired), fresh), one writer lane
-  ├─ shared field ─► getBlockKeys handler ── RPC ──► KeyManager.addKeys
-  │                                                    └─ shared field ─► Dispatcher ─► presented keyId
+  ├─ shared field ─► getBlockKeys handler ── RPC ──► BlockKeyUpdater: addKeys
+  │                                                    │ balancer's table        [cell 1 — dropped, see TODO 1]
+  │                                                    ▼
+  │                                     newDataEncryptionKey (on the SASL send path)
+  │                                                    │ cached DataEncryptionKey [cell 2 — modeled]
+  │                                                    ▼
+  │                                     later handshakes ─► presented keyId
   └─ shared field ─► sendHeartbeat handler ─ RPC ──► BPServiceActor ─► DN allKeys
                                                        └─ DataXceiver: (assoc_has allKeys keyId), flipped
 ```
 
 Readers choose cut points on the timeline independently; Balancer at roll i,
-DN at roll j, i < j *is* the divergence. Every ingredient is engine
-vocabulary — single-writer timelines, declared carrier projections,
-membership over one table. None of it is case knowledge.
+DN at roll j, i < j *is* the divergence. Cell 2 is why i lags j robustly:
+the encryption key is generated once and reused, so the balancer's read is
+pinned at the roll of its *first* handshake while the DN's table keeps
+advancing — the cache is a cut point frozen by program structure, which the
+timeline model expresses as a single write read by every later activation.
+Every ingredient is engine vocabulary — single-writer timelines, declared
+carrier projections, membership over one table. None of it is case
+knowledge.
 
 ## TODO (ordered: first what falsifies the report, then what binds the query)
 
