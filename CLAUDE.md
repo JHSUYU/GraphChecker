@@ -120,6 +120,12 @@ assertion is its own type range is unconstrained, whatever else surrounds
 it. A region inside the closure is not evidence that any value it computes
 reached the query.
 
+The audit for the dropped-evidence variant is mechanical: for each
+unconstrained operand, search the validated runtime edges for a `CONFIRMED`
+edge that could have bound it. Finding one is a named gap, never silence —
+evidence that was proven and then dropped is worse than evidence never
+found, because `gaps: 0` over it is a false report.
+
 ## Method vs case
 
 **The method is general; the case is the yardstick.** Case knowledge lives in
@@ -133,70 +139,104 @@ Note `causalEdge.mutatorDeclaredCallee` is the **demand** (which output
 relation needs closing), not the flip target; the flip target is in
 `replayContract.source.site`.
 
-## TODO
+## The witness, stated once
 
-**Ruling L — bring the NameNode regions into the closure.** Mandatory. The
-recursion terminal condition is wrong: deserialization writes are transport
-reconstruction, not value production, so the closure stops short of the real
-producer. Fix that judgement generally; the NN regions follow as a consequence.
-Until then `expiryDate` has no producer and its model value means nothing.
+HDFS-11741 is two readers of one rolling table disagreeing. The heartbeat
+chain decides what the DN *has*; the getBlockKeys chain decides what the
+Balancer *presents*; the fault is the Balancer presenting a key the DN has
+already rolled away. A witness is meaningful exactly when both operands of
+the fatal membership test are bound to the same producer timeline:
 
-**T3+T4 — analysis-layer speedup and the selection rules.** One work package,
-because they touch the same code and their acceptance criteria conflict if
-split (T3 demands unchanged output; T4 deliberately changes it).
+```
+NN updateKeys()            S' = put(remove(S, expired), fresh), one writer lane
+  ├─ shared field ─► getBlockKeys handler ── RPC ──► KeyManager.addKeys
+  │                                                    └─ shared field ─► Dispatcher ─► presented keyId
+  └─ shared field ─► sendHeartbeat handler ─ RPC ──► BPServiceActor ─► DN allKeys
+                                                       └─ DataXceiver: (assoc_has allKeys keyId), flipped
+```
 
-- **R1 symbolic leaves** (landed): a leaf is symbolic only where some explored
-  guard reads it. A value that is only carried never buys a path, and
-  everything computed from it becomes symbolic for nothing. Fails closed.
-- **R2 flip targets**: the fatal guard is the *goal*, not the flip target.
-  Flip targets are branches dominating a demanded state mutation.
-- **R1 is blocked from where it would matter most, and the reason is
-  measured.** The refined dataflow graph offers only two tiers. `value_flow`
-  is too narrow — it does not cross a codec or a container lookup, so
-  tightening to it cuts the very chain that decides the fatal branch. Full
-  taint is too wide — one leaf reaches ~33k cells, so almost nothing is
-  cuttable. Concretely, the key whose membership decides the failure and a
-  neighbouring field carried in the same encoded string have *identical*
-  reachable sets (symmetric difference zero), so **no name-free criterion can
-  separate them today**. The missing tier is value-level dependence that
-  survives encode/decode: "after being encoded and decoded, is this value
-  still *compared*, or only *reconstructed*?" Until that exists, R1 only
-  removes leaves nothing reads at all (a logging flag, on the target region).
-  This is also why one captured expression reaches 138MB nested past 10,000
-  levels: the carrier cannot be told from the value it carries.
+Readers choose cut points on the timeline independently; Balancer at roll i,
+DN at roll j, i < j *is* the divergence. Every ingredient is engine
+vocabulary — single-writer timelines, declared carrier projections,
+membership over one table. None of it is case knowledge.
 
-**T5 — realizability refinement at the SMT layer.** Decoupled from everything
-upstream: on an implausible SAT, assert the negation of *why* it is implausible
-and re-solve. Block the reason, not the point — negating one assignment
-eliminates one point in a vast space and never converges. The accumulated
-constraints become a realizability spec. **Constrain the environment (clock
-monotonicity, non-negative lifetimes); never constrain program causality** —
-that is forging a summary. If blocking turns it UNSAT, that is a strong result:
-every witness in the bounded model needed the implausible condition.
+## TODO (ordered: first what falsifies the report, then what binds the query)
 
-**Open**: a DN flip replay reproducibly ends under SIGKILL before publishing.
-Measured peak RSS 961MB against 182GB available, so it is **not** memory
-exhaustion — cause unknown. Currently recorded as
-`PATH_FLIP_REPLAY_PRODUCED_NO_RESULT` and explored past.
+**1 — The silent drop (fail-open; ahead of everything).** The accepted
+candidate composed all six regions of the seven-row plan and reported
+`gaps: 0`, yet the four `CONFIRMED_RUNTIME_IDENTITY` field-flow edges
+KeyManager→Dispatcher became zero channels in the query — every channel it
+does contain is Dispatcher-to-itself — leaving the presented keyId bound by
+nothing but its own int range. Find where composition dropped a confirmed
+channel (demand walk, port selection, or `composable()`), and wire the
+Acceptance audit in so a recurrence cannot be quiet. A fail-closed defect
+costs a proof; this one manufactured one.
 
-**Open**: two composition gaps surfaced once the pipeline reached the composer
-— `JAVA_STRING_REFERENCE_IDENTITY:==` (Java reference equality between strings
-of different origin; string *content* semantics are implemented) and
-`splitElement:CONCAT_RECEIVER_REQUIRED` (split is implemented only for a
-receiver that flattens to a concat chain). **Both are consequences, not
-causes.** The cross-region string port they look like they are about is
-already substituted: the producer's concat reaches the consumer's split
-through the trusted protocol edge, and the codec proves that round trip. What
-neither codec can reduce is a *map* read whose entry has no recorded value:
-the trace carries an associative `PUT` with the value operand simply absent —
-distinct from a recorded null, which the trace writes as its own null symbol.
-The composer used to read that omission as a null reference, which decided
-every later read of the entry from no evidence at all; it now names it
-(`ABSENT_EXPRESSION`) and fails closed. Closing the two codec gaps needs the
-recorder to state the stored value, and to give that map's keys distinct
-identities — it currently renders every String key of one map as one nameless
-symbol, which forces the same read to be null on one branch and a non-null
-String on another, so no model of that relation exists.
+**2 — Rank targets by residual freedom, not producer count.** `TargetRank`
+prefers `producerGoals` count, which chose the write-phase handshake (9)
+over the balancer one (6) and dropped the presenting chain from the task
+plan entirely. Rank by how few unconstrained operands the closure leaves on
+the fatal condition — that is the acceptance criterion itself, so ranking
+and witness strength cannot disagree. Producer count breaks ties.
+
+**3 — Recorder: container member identity.** One recorder package closes
+three named gaps: element-level carrier projection (measured: 8 rebuilt
+keys against 9 producer definitions, 6 against 3 — order pairing has no
+recorded positions to attach to; `observedContainerWidth` is always −1),
+the map whose String keys are one nameless symbol (source of
+`ABSENT_EXPRESSION`, `JAVA_STRING_REFERENCE_IDENTITY:==`, and
+`splitElement:CONCAT_RECEIVER_REQUIRED`), and array-element demand below a
+spine object (the fatal read sits on `allKeys[]` elements; the landed
+projection reaches the singleton spine `currentKey` only). Invalidates the
+recording and everything below it; both passes measured ≈3.5 min.
+
+**4 — Shared state as bounded timelines.** Writers on one lane become a
+chain S₀→…→S_N of the already-proven summary, alpha-renamed per step — a
+**third ledger** (state-chain bound), distinct from the unroll bound
+(paths) and the replay cap (runtime), and visible in the SMT so a witness
+says "within N rolls". Readers select cut points, monotone along each
+reader's program order, free across unordered readers — that freedom is the
+fault. Only activation-boundary states are published, which is region
+atomicity by construction. Multi-lane **mutation** writers fail closed
+(captured snapshots bake in the recorded interleaving; reordering them is
+unsound); multi-lane assignment writers keep the existing selection.
+Zero campaign cost — the chain is composition-layer instantiation. It also
+gives clock monotonicity its footing (`t_i ≤ t_{i+1}` along the chain),
+which T5 measured as uninstantiable today (all clock reads are case-split
+alternatives, not a sequence).
+
+**5 — R1b, after paths close.** Post-closure the predicate set is complete
+for the closed path set, so a leaf never read by any recorded predicate may
+demote to concrete *for composition only* (exploration keeps it symbolic).
+This is the missing tier between `value_flow` (cannot cross a codec) and
+full taint (keyId and its co-carried neighbour have byte-identical
+reachable sets — measured, symmetric difference zero); statically the tier
+does not exist.
+
+**In flight** — the contract-vs-seed conflict (`replay event conflicts with
+task seed`) is a static check that today runs at import time, *after* the
+replay it condemns (measured: 26 minutes of engine work discarded by it).
+Being front-moved to planning with the import check kept; the same round
+measures the true flip count (75 EXPLORE guards is policy, not candidates)
+and the oracle rank.
+
+**Open** — a DN flip replay reproducibly ends under SIGKILL before
+publishing; peak RSS 961MB against 182GB available, so not memory. Skips
+now carry their kind, so the next occurrence is attributable.
+
+**Landed this round** — demand crosses RPC response edges
+(`ProtocolCarrierReconstruction`; NN handler regions and the roll monitor
+enter the task plan). Spine-object field projection under its own authority
+(`TRUSTED_DECLARED_CARRIER_PROJECTION_V1`), value-checked against evidence
+the rule never reads. Engine released on prefix contradiction; the
+entry-state gate demoted from veto to ordering; skip records distinguish
+losing the engine from an unwalkable path. Fan-out defaults to the host and
+announces its width; long stages log beside their artifacts (the serial
+campaign was launched with JOBS=1 — the posture CLAUDE.md warns about, and
+nothing recorded it). T5 exists as a tool (`smt_realizability_refine.py` +
+`environment-axioms.smt2`): point-blocking measured non-convergent; the
+expired-case control (force `expiryDate > now` on the removal branch) is
+UNSAT, which is the encoding-faithfulness check passing.
 
 ## Constraints
 
