@@ -61,6 +61,20 @@ std::string ContainerSupport::java_type(oop result, BasicType declared) {
   return std::string(1, type2char(result_type(result, declared)));
 }
 
+bool ContainerSupport::follows_callee_body(const std::string &callee_name) {
+  return callee_name == "<init>";
+}
+
+std::string ContainerSupport::unsupported(const char *category,
+                                          MethodSymbolizerHandle &handle) {
+  std::string reason(category == NULL ? "UNSPECIFIED" : category);
+  reason += ":";
+  reason += handle.get_callee_holder_name();
+  reason += ".";
+  reason += handle.get_callee_name();
+  return reason;
+}
+
 Expression *ContainerSupport::concrete_value(oop value) {
   if (value == NULL) return SymbolExpression::get(Sym_NULL);
   if (value->is_array()) {

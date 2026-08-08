@@ -89,9 +89,10 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
     }
     return recording;
   }
-  if (handle.general_check_param_symbolized()) {
-    ConcolicMngr::ctx->abort_symbolic_execution(
-        "ASSOCIATIVE_OPERATION_UNSUPPORTED");
+  if (handle.general_check_param_symbolized()
+      && !ContainerSupport::follows_callee_body(callee_name)) {
+    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+        "ASSOCIATIVE_OPERATION_UNSUPPORTED", handle).c_str());
   }
   return false;
 }
@@ -104,8 +105,8 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
       || method == "replace" || method == "replaceAll"
       || method == "compute" || method == "computeIfAbsent"
       || method == "computeIfPresent" || method == "merge") {
-    ConcolicMngr::ctx->abort_symbolic_execution(
-        "ASSOCIATIVE_MUTATOR_UNSUPPORTED");
+    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+        "ASSOCIATIVE_MUTATOR_UNSUPPORTED", handle).c_str());
     return NULL;
   }
 

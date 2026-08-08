@@ -247,10 +247,17 @@ JVM_handle_linux_signal(int sig,
   }
 #endif // !PRODUCT
 
-  const char *fmt = "caught unhandled signal %d";
-  char buf[64];
+  // A Zero fatal() carries no signal context, so the hs_err report has no
+  // siginfo, no registers and no problematic frame -- every unclassified
+  // fault here reports as the same line.  The fault address and si_code are
+  // the whole difference between a null dereference and a wild pointer, so
+  // carry them in the message the report does print.
+  const char *fmt = "caught unhandled signal %d, si_code %d, si_addr "
+                    INTPTR_FORMAT;
+  char buf[128];
 
-  sprintf(buf, fmt, sig);
+  sprintf(buf, fmt, sig, info == NULL ? 0 : info->si_code,
+          p2i(info == NULL ? NULL : info->si_addr));
   fatal(buf);
 }
 
