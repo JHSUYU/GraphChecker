@@ -106,6 +106,22 @@ activations. The analysis had changed the run it was measuring, and the
 symptom looked like an ordinary replay divergence. Whatever a cut does, the
 program around it must proceed as though the analysis were not there.
 
+**Every shadow states its ownership.** For each shadow the engine holds, it
+must be decidable whether the engine *owns* it, *claims* it, or merely
+*observed* it. The crashes that cost this project its longest rounds were all
+confusions of these three: an array's shadow reinterpreted as an instance's
+(identity), a slot aliasing an expression it never ref-counted (ownership),
+and a frameless fast path that skipped interception entirely (observation
+coverage). A new symbolic feature declares which of the three it does before
+it touches a shadow.
+
+**What needs no runtime evidence is checked at planning time.** A flip
+contract contradicting its own seed, a demanded port kind with no capture
+path — both are decidable from the plan alone, and both were discovered after
+the replay they doom. The planning-time check admits when it cannot decide
+and never replaces the late check; it exists so a doomed unit of work costs
+seconds, not a campaign.
+
 **Artifacts outgrow their readers.** A captured expression tree reaches
 hundreds of MB nested past jq's tree-parser depth limit. Gates read the two
 top-level fields they need off a stream (`jsonl_stream_field`) and address
