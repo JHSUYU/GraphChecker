@@ -182,9 +182,17 @@ public:
   SymInstance *get_or_alloc_sym_inst(oop obj);
   SymInstance *alloc_sym_inst(oop obj);
   inline SymInstance *get_sym_inst(oop obj) {
-    if (obj != NULL && obj->is_array() && obj->is_symbolic()) {
-      return get_sym_inst(obj->get_sym_rid());
-    }
+    // An array's shadow is a SymArr, which shares only SymRef with
+    // SymInstance.  Handing one back here reads one object through the
+    // other's layout, and the first virtual call walks off the end of
+    // SymArr's four-entry vtable into whatever the linker put after it --
+    // a jump into an unrelated member function, on the shadow of a live
+    // array.  Every allocator here already refuses arrays
+    // (alloc_sym_inst, find_sym_inst); this is the one accessor that did
+    // not, so say so rather than return something that only looks like an
+    // instance.
+    guarantee(obj == NULL || !obj->is_array(),
+              "An array has no symbolic instance; ask for its SymArr");
     SymInstance *instance = find_sym_inst(obj);
     guarantee(instance != NULL,
               "Unexpected null symbolic object lookup");

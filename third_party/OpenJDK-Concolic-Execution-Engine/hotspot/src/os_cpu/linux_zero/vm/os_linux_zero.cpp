@@ -54,6 +54,8 @@
 #include "utilities/events.hpp"
 #include "utilities/vmError.hpp"
 
+#include <execinfo.h>
+
 address os::current_stack_pointer() {
   // return the address of the current function
   return (address)__builtin_frame_address(0);
@@ -254,10 +256,35 @@ JVM_handle_linux_signal(int sig,
   // carry them in the message the report does print.
   const char *fmt = "caught unhandled signal %d, si_code %d, si_addr "
                     INTPTR_FORMAT;
-  char buf[128];
+  char buf[512];
 
   sprintf(buf, fmt, sig, info == NULL ? 0 : info->si_code,
           p2i(info == NULL ? NULL : info->si_addr));
+#if defined(AMD64)
+  // The faulting pc is what tells a wild jump from a plain null field read,
+  // and it is the one thing the Zero report cannot recover afterwards.
+  // Carry it, its operands and the native return addresses in the message,
+  // so a crash can be attributed from the report alone.
+  if (uc != NULL) {
+    size_t at = strlen(buf);
+    sprintf(buf + at,
+            "\n#   pc=" INTPTR_FORMAT " sp=" INTPTR_FORMAT
+            " rdi=" INTPTR_FORMAT " rsi=" INTPTR_FORMAT
+            " rbx=" INTPTR_FORMAT,
+            (intptr_t)uc->uc_mcontext.gregs[REG_RIP],
+            (intptr_t)uc->uc_mcontext.gregs[REG_RSP],
+            (intptr_t)uc->uc_mcontext.gregs[REG_RDI],
+            (intptr_t)uc->uc_mcontext.gregs[REG_RSI],
+            (intptr_t)uc->uc_mcontext.gregs[REG_RBX]);
+    void *frames[24];
+    int depth = backtrace(frames, 24);
+    for (int i = 0; i < depth && strlen(buf) + 24 < sizeof(buf); ++i) {
+      sprintf(buf + strlen(buf), i == 0 ? "\n#   native: " INTPTR_FORMAT
+                                        : " " INTPTR_FORMAT,
+              (intptr_t)frames[i]);
+    }
+  }
+#endif // AMD64
   fatal(buf);
 }
 

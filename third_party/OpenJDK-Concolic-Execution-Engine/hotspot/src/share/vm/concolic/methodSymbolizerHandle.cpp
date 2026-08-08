@@ -85,6 +85,15 @@ int __attribute__((optimize("O0"))) MethodSymbolizerHandle::general_prepare_para
         // Prefer the alias-specific expression propagated by getfield.  This
         // is essential when the concrete receiver is an interned String that
         // intentionally cannot carry a symbolic id in its shared oop header.
+      } else if (obj->is_array()) {
+        // An array names itself.  It has no SymInstance to ask -- asking
+        // read a SymArr through SymInstance's layout and dispatched off the
+        // end of its vtable -- and its contents reach a callee through the
+        // container state rather than through this operand.  An array with
+        // no shadow yet keeps the untracked placeholder the general case
+        // below gives it, so observing an argument still allocates nothing.
+        exp = obj->is_symbolic() ? ContainerSupport::concrete_value(obj)
+                                 : SymInstance::get_exp_of(obj);
       } else if (obj->is_symbolic()) {
         SymInstance *sym_inst = ConcolicMngr::ctx->get_sym_inst(obj);
         exp = sym_inst->get_or_create_ref_exp(obj);
