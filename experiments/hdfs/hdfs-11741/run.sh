@@ -54,10 +54,16 @@ declare -a partial_probe_summary_files=()
 
 # Concolic exploration has two independent parallelism levels.  Region jobs
 # run different logical closure campaigns, while path jobs execute the
-# immutable branch-flip frontier produced for one campaign.  Keep both small
-# by default because every path worker starts a custom-VM Hadoop replay.
-region_parallelism=${HDFS11741_REGION_JOBS:-2}
-path_parallelism=${HDFS11741_PATH_JOBS:-2}
+# immutable branch-flip frontier produced for one campaign.  Both default to
+# this host's CPU count: every worker is its own JVM, so they contend for
+# nothing a smaller default would protect, while a serialised run costs hours
+# and produces byte for byte the same artifacts -- which is precisely why
+# leaving it narrow goes unnoticed.  The two levels multiply: a campaign
+# fan-out of N with a flip fan-out of M admits N*M concurrent replays, at
+# roughly 1 GB resident each.
+host_parallelism=$(nproc 2>/dev/null || echo 2)
+region_parallelism=${HDFS11741_REGION_JOBS:-${host_parallelism}}
+path_parallelism=${HDFS11741_PATH_JOBS:-${host_parallelism}}
 
 # Runtime discovery and custom-VM replay must observe the same bounded
 # activation envelope.  These workload knobs only cap repeated relevant
@@ -89,6 +95,22 @@ require_positive_integer() {
   local value=$2
   [[ "${value}" =~ ^[1-9][0-9]*$ ]] \
     || die "${label} must be a positive integer"
+}
+
+# Parallelism is the one knob that changes nothing about a run except how long
+# it takes, so a wrong value leaves no trace in the artifacts it produces.
+# State the width in force and where it came from at every fan-out, so the
+# answer survives in the stage log instead of having to be reconstructed from
+# directory birth times after the fact.
+announce_parallelism() {
+  local label=$1
+  local variable=$2
+  local value=$3
+  if [[ -z "${!variable:-}" ]]; then
+    echo "[hdfs-11741] warning: ${variable} unset; ${label} defaults to ${value} (host CPUs: ${host_parallelism})" >&2
+  elif [[ "${value}" -eq 1 ]]; then
+    echo "[hdfs-11741] warning: ${variable}=1 serialises ${label}; that is a debugging posture, not a run configuration" >&2
+  fi
 }
 
 require_bounded_workload_iterations() {
@@ -1171,6 +1193,8 @@ run_seed_tasks_parallel() {
   local -a unique=()
 
   require_positive_integer HDFS11741_REGION_JOBS "${region_parallelism}"
+  announce_parallelism "region seed campaigns" HDFS11741_REGION_JOBS \
+    "${region_parallelism}"
   for spec in "${specs[@]}"; do
     IFS=$'\t' read -r goal_kind task_id <<< "${spec}"
     [[ -n "${goal_kind}" && -n "${task_id}" ]] \
@@ -1388,14 +1412,27 @@ run_path_query() {
   # failure.  The importer's admission stays exactly as strict; the flip is
   # named as an exploration gap so the planner closes over it and the round
   # continues.
+  #
+  # A replay whose every activation only ever lost the single symbolic engine
+  # is a different gap: nothing about its path was decided, so it may not be
+  # recorded as a path that failed admission.  The reason carries every
+  # diagnostic code, not just the admission ones, or a run rejected upstream
+  # of admission reports an empty reason and becomes unattributable.
   if [[ ! -s "${imported}" ]]; then
     jq -c -s --slurpfile task "${task_dir}/execution_task_plan.jsonl" '
-      {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD",
-       queryKey: $task[0].pathQueryKey, regionId: $task[0].regionId,
-       taskId: $task[0].taskId, status: "REPLAY_NOT_ADMITTED",
-       reason: ([.[] | select(.code == "PATH_REPLAY_ADMISSION_REJECTED")
-                 | .detail] | join(";"))}
+      (map(.code) | unique) as $codes
+      | {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD",
+         queryKey: $task[0].pathQueryKey, regionId: $task[0].regionId,
+         taskId: $task[0].taskId,
+         status: (if ($codes | length) > 0
+                    and ($codes - ["REGION_ENGINE_UNAVAILABLE"]
+                         | length) == 0
+                  then "REPLAY_ENGINE_UNAVAILABLE"
+                  else "REPLAY_NOT_ADMITTED" end),
+         reason: ([.[] | .code + ": " + (.detail // "")] | join(";"))}
     ' "${task_dir}/import-diagnostics.jsonl" >"${task_dir}/record.jsonl"
+    echo "[hdfs-11741] flip abandoned: $(jq -r '.status' \
+      "${task_dir}/record.jsonl"): ${task_dir}"
     return
   fi
   # The imported summary carries the replayed region's projected relation and
@@ -1433,6 +1470,8 @@ run_path_frontier() {
   local -a queries=() workers=() batch=()
 
   require_positive_integer HDFS11741_PATH_JOBS "${path_parallelism}"
+  announce_parallelism "path flips" HDFS11741_PATH_JOBS \
+    "${path_parallelism}"
   while IFS= read -r query; do
     [[ -n "${query}" ]] && queries+=("${query}")
   done < <(jq -er -s '
@@ -1785,6 +1824,8 @@ run_producer_closures_parallel() {
   declare -A seen=() active_pid=()
 
   require_positive_integer HDFS11741_REGION_JOBS "${region_parallelism}"
+  announce_parallelism "producer path closures" HDFS11741_REGION_JOBS \
+    "${region_parallelism}"
   for spec in "${supplied[@]}"; do
     IFS=$'\t' read -r label region goal campaign <<< "${spec}"
     [[ -n "${label}" && -n "${region}" && -n "${goal}" \
@@ -2086,6 +2127,30 @@ do_traced_workload() {
     edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
     "${test_class}" "${test_method}"
 }
+
+# A stage prints the one fact -- how wide it actually ran -- that cannot be
+# recovered from its artifacts afterwards, and until now it printed it to a
+# stdout nobody captured.  Tee both streams into the work root, keeping them
+# separate so that a caller parsing stdout still parses only stdout, and
+# leaving exit status untouched: the shell is not placed in a pipeline, so
+# every die and every propagated status behaves exactly as before.
+start_stage_log() {
+  local stage=$1
+  local stamp
+  mkdir -p "${work_root}" 2>/dev/null || return 0
+  stamp=$(date +%Y%m%d-%H%M%S)
+  stage_log="${work_root}/run-${stage}-${stamp}.log"
+  exec > >(tee -a "${stage_log}") 2> >(tee -a "${stage_log}" >&2)
+  echo "[hdfs-11741] stage ${stage} logging to ${stage_log}"
+}
+
+# Only the long-running stages are logged.  config and validate exist to be
+# read by a caller through a command substitution, and must keep a stdout that
+# carries nothing but their answer.
+case "${1:-prepare}" in
+  prepare|tasks|schedule|candidates|full|traced-workload)
+    start_stage_log "${1:-prepare}" ;;
+esac
 
 case "${1:-prepare}" in
   __patch) [[ $# -eq 1 ]] || die "__patch takes no arguments"; do_patch ;;

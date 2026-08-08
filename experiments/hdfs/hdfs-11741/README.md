@@ -74,10 +74,18 @@ experiments-output/hdfs-11741/candidates/sat-result.json
 ```
 
 Concolic execution keeps two bounded parallelism levels. Independent logical
-region campaigns run in parallel (`HDFS11741_REGION_JOBS`, default 2), and one
-campaign executes the sorted semantic path-seed/branch-flip frontier in
-parallel (`HDFS11741_PATH_JOBS`, default 2). Every campaign and flip has a
-private classes, test-data, log, result, and summary directory. Frontier
+region campaigns run in parallel (`HDFS11741_REGION_JOBS`), and one campaign
+executes the sorted semantic path-seed/branch-flip frontier in parallel
+(`HDFS11741_PATH_JOBS`). Both default to this host's CPU count, and the two
+levels multiply: a campaign fan-out of N with a flip fan-out of M admits N*M
+concurrent replays at roughly 1 GB resident each. Setting either to 1
+serialises that level; the run then produces byte for byte the same artifacts,
+only hours later, so each fan-out announces the width it is actually using and
+warns when that width is 1 or was defaulted. Those lines land in
+`experiments-output/hdfs-11741/run-<stage>-<timestamp>.log`, which is the only
+place the width of a finished run can be read back from. Every campaign and
+flip has a private classes, test-data, log, result, and summary directory.
+Frontier
 results are merged serially by canonical query key, and only the coordinator
 performs partial-SAT probes, so concurrency does not change the composed
 relation order.
