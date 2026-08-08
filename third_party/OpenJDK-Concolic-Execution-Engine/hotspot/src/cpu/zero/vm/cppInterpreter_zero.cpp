@@ -561,17 +561,15 @@ int CppInterpreter::accessor_entry(Method* method, intptr_t UNUSED, TRAPS) {
   }
 
 #ifdef ENABLE_CONCOLIC
-  SymInstance *container_entry =
-      ConcolicMngr::can_do_concolic()
-          ? ConcolicMngr::ctx->find_sym_inst(object) : NULL;
-  if (container_entry != NULL
-      && container_entry->get_ref_exp() != NULL
-      && (method->name()->equals("getKey")
-          || method->name()->equals("getValue"))) {
-    // Map entry accessors are container operations, not ordinary object
-    // fields.  The fast accessor creates no Java frame and would bypass the
-    // canonical KEY/VALUE relation handler, so tracked entries use the normal
-    // entry while unrelated getters retain the fast path.
+  if (ConcolicMngr::can_do_concolic()
+      && ConcolicMngr::ctx->get_method_symbolizer().intercepts(method)) {
+    // A getter whose value a handler decides is not an ordinary field read.
+    // This entry builds no Java frame, so MethodSymbolizer never sees the
+    // call and the field semantics below would answer in the handler's
+    // place -- a container's size() would become an untracked read of the
+    // field backing it, and the relation it owed would simply not exist.
+    // Handled callees take the normal entry; every other getter keeps the
+    // fast path.
     return normal_entry(method, 0, THREAD);
   }
 #endif

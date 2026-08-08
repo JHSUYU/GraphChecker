@@ -12,6 +12,10 @@ public:
     return target_class_names.find(class_name) != target_class_names.end();
   }
 
+  inline static const std::set<std::string> &targets() {
+    return target_class_names;
+  }
+
 private:
   typedef std::map<std::string, std::string>::iterator NameSignaturePairIt;
 

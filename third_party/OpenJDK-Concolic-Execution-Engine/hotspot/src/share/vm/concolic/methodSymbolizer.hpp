@@ -56,6 +56,10 @@ public:
   void set_has_callback(bool shouldProcessFinishMethod);
 
   void add_method(const char *class_name, const char *method_name);
+  // True when invoke_method would route this callee to a handler rather than
+  // let its body speak for itself.  Such a call must reach invoke_method, so
+  // an entry point that skips the Java frame has to decline it.
+  bool intercepts(Method *callee_method);
   void invoke_method(ZeroFrame *caller_frame, ZeroFrame *callee_frame);
   void finish_method(ZeroFrame *caller_frame);
   // only for those are not symbolized method

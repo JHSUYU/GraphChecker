@@ -90,6 +90,84 @@ void MethodSymbolizer::add_method(const char *class_name,
 }
 
 
+static bool names(Symbol *symbol, const std::string &registered) {
+  return symbol != NULL
+      && symbol->equals(registered.c_str(), (int)registered.size());
+}
+
+static bool boxes_a_primitive(Symbol *holder) {
+  return holder->equals(SymPrimitive<jchar>::TYPE_NAME)
+      || holder->equals(SymPrimitive<jboolean>::TYPE_NAME)
+      || holder->equals(SymPrimitive<jbyte>::TYPE_NAME)
+      || holder->equals(SymPrimitive<jint>::TYPE_NAME)
+      || holder->equals(SymPrimitive<jshort>::TYPE_NAME)
+      || holder->equals(SymPrimitive<jlong>::TYPE_NAME)
+      || holder->equals(SymPrimitive<jfloat>::TYPE_NAME)
+      || holder->equals(SymPrimitive<jdouble>::TYPE_NAME);
+}
+
+/**
+ * Whether this callee's value is decided by a registered handler.
+ *
+ * This mirrors the dispatch invoke_method performs, and exists for the
+ * interpreter entry points that answer a call without building a Java frame.
+ * Such an entry point never reaches invoke_method, so a handled callee would
+ * silently fall back to whatever its bytecode happens to look like -- for a
+ * container accessor, an untracked field read where a container relation was
+ * owed.
+ *
+ * The holder name is compared against the registration keys as a Symbol, so
+ * this asks its question on the interpreter's hot path without allocating
+ * and without caching anything whose lifetime it would then have to reason
+ * about.  Almost every candidate fails on length alone.
+ */
+bool MethodSymbolizer::intercepts(Method *callee_method) {
+  if (callee_method == NULL || callee_method->method_holder() == NULL) {
+    return false;
+  }
+  Symbol *holder = callee_method->method_holder()->name();
+  if (holder == NULL) return false;
+
+  for (invoke_helper_method_map_t::const_iterator helper =
+           _invoke_helper_methods.begin();
+       helper != _invoke_helper_methods.end(); ++helper) {
+    if (names(holder, helper->first)) return true;
+  }
+  for (SymClassMap::const_iterator holder_methods = _symbolicMethods.begin();
+       holder_methods != _symbolicMethods.end(); ++holder_methods) {
+    if (!names(holder, holder_methods->first)
+        || holder_methods->second == NULL) {
+      continue;
+    }
+    Symbol *name = callee_method->name();
+    for (SymMethodSet::const_iterator method = holder_methods->second->begin();
+         method != holder_methods->second->end(); ++method) {
+      if (names(name, *method)) return true;
+    }
+  }
+  if (boxes_a_primitive(holder)) return true;
+  const std::set<std::string> &persisted = SymPersister::targets();
+  for (std::set<std::string>::const_iterator persister = persisted.begin();
+       persister != persisted.end(); ++persister) {
+    if (names(holder, *persister)) return true;
+  }
+  // Only the prefix registry matches on a substring rather than the whole
+  // name, so it is the one test that needs the name as a string.  It is
+  // empty unless something registered a prefix, and then the conversion is
+  // that registration's own cost.
+  if (_classes_prefix_to_symbolize.empty()) return false;
+  ResourceMark rm;
+  std::string holder_name(holder->as_C_string());
+  for (size_t index = 0; index < _classes_prefix_to_symbolize.size();
+       ++index) {
+    if (holder_name.find(_classes_prefix_to_symbolize[index])
+        != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
                                      ZeroFrame *callee_frame) {
   if (!callee_frame->is_interpreter_frame()) {
