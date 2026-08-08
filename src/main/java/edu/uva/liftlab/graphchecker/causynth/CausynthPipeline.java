@@ -542,8 +542,17 @@ public final class CausynthPipeline {
                                 + capture.captureBindingId());
             }
             List<Unit> before = new ArrayList<>();
-            Value value = objectArg(body,
-                    invoke.getArg(capture.argumentIndex()), before);
+            // A primitive argument is a value the boundary publishes just as
+            // much as a reference is.  Dropping it to null here is silent:
+            // the capture row still exists, carries no expression, and can
+            // never observe its relation, so the output boundary it belongs
+            // to can never complete and the activation runs until something
+            // else cuts it.  The declared parameter type is the boxing
+            // authority, for the same reason it is on a field write.
+            Value value = boxedCaptureValue(body,
+                    invoke.getArg(capture.argumentIndex()),
+                    invoke.getMethodRef().parameterType(
+                            capture.argumentIndex()), before);
             before.add(Jimple.v().newInvokeStmt(
                     Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.PAUSE_OBSERVATION))));
