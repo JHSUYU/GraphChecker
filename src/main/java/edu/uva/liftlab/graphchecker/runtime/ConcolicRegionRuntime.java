@@ -104,6 +104,29 @@ public final class ConcolicRegionRuntime {
             "ENGINE_BUSY_INTERRUPTED: waiting for the symbolic engine was "
                     + "interrupted";
     /**
+     * Why an activation never published a region result.  A skip that never
+     * got the engine and a skip that ran and contradicted its recording are
+     * different findings, and collapsing them makes a scheduling artifact
+     * indistinguishable from an infeasible path.
+     */
+    static final String SKIP_ENGINE_UNAVAILABLE = "ENGINE_UNAVAILABLE";
+    static final String SKIP_NOT_STARTED = "NOT_STARTED";
+    static final String SKIP_REPLAY_PREFIX_UNMATCHED =
+            "REPLAY_PREFIX_UNMATCHED";
+    static final String SKIP_SEED_OUTCOME_CONFLICT = "SEED_OUTCOME_CONFLICT";
+    /**
+     * Candidate order for the single symbolic engine.  A recorded entry value
+     * is compared value-wise, which cannot decide whether an activation walks
+     * the recorded path, so it only ranks candidates; the recorded branch
+     * prefix is the sole judgement that refuses one.
+     */
+    static final int ENTRY_STATE_RANK_MATCHES = 0;
+    static final int ENTRY_STATE_RANK_UNDECIDED = 1;
+    static final int ENTRY_STATE_RANK_MISMATCH = 2;
+    private static final int ENTRY_STATE_RANKS = 3;
+    /** Waiting candidates per rank; guarded by {@link #ENGINE_LOCK}. */
+    private static final int[] ENGINE_WAITING = new int[ENTRY_STATE_RANKS];
+    /**
      * Emits one line per replay milestone to stderr. Long-lived roots make a
      * stalled activation indistinguishable from a slow one; this trace names
      * which hook the replay is inside and how large the accumulated path
@@ -516,7 +539,12 @@ public final class ConcolicRegionRuntime {
 
     /** Test seam for the bounded symbolic-engine reservation. */
     static String reserveSymbolicEngineForTests() {
-        return reserveSymbolicEngine();
+        return reserveSymbolicEngine(ENTRY_STATE_RANK_UNDECIDED);
+    }
+
+    /** Test seam for the ranked reservation. */
+    static String reserveSymbolicEngineForTests(int entryStateRank) {
+        return reserveSymbolicEngine(entryStateRank);
     }
 
     /** Test seam releasing the reservation taken above. */
@@ -539,21 +567,24 @@ public final class ConcolicRegionRuntime {
         if (activation == null) {
             return 0L;
         }
-        return startSymbolicRegion(activation, receiver);
+        return startSymbolicRegion(activation, receiver,
+                activation.observedEntryStateRank(receiver));
     }
 
     private static long startSymbolicRegion(RuntimeTask activation,
-                                            Object receiver) {
-        String contention = reserveSymbolicEngine();
+                                            Object receiver,
+                                            int entryStateRank) {
+        String contention = reserveSymbolicEngine(entryStateRank);
         if (!contention.isEmpty()) {
-            writeSkipped(activation, contention);
+            writeSkipped(activation, SKIP_ENGINE_UNAVAILABLE, contention);
             return 0L;
         }
 
         EngineApi api = engine();
         if (!api.available()) {
             releaseSymbolicEngine();
-            writeSkipped(activation, "custom concolic System API is unavailable");
+            writeSkipped(activation, SKIP_NOT_STARTED,
+                    "custom concolic System API is unavailable");
             return 0L;
         }
         boolean engineStarted = false;
@@ -606,7 +637,8 @@ public final class ConcolicRegionRuntime {
                 api.cleanupAfterFailure();
             }
             releaseSymbolicEngine();
-            writeSkipped(activation, "engine start failed: " + rootCause(throwable));
+            writeSkipped(activation, SKIP_NOT_STARTED,
+                    "engine start failed: " + rootCause(throwable));
             return 0L;
         }
     }
@@ -646,29 +678,55 @@ public final class ConcolicRegionRuntime {
      * an unbounded wait would deadlock the workload.  The timeout is
      * therefore a named skip reason rather than a silent retry.</p>
      *
+     * <p>{@code entryStateRank} orders candidates that are waiting at the
+     * same time: an activation whose recorded entry values agree goes before
+     * one whose evidence decides nothing, which goes before one that
+     * disagrees.  Rank never rejects a candidate, so the last candidate left
+     * is always admitted; only the recorded branch prefix refuses one.</p>
+     *
      * @return an empty string once reserved, otherwise the skip reason.
      */
-    private static String reserveSymbolicEngine() {
-        if (ENGINE_BUSY.compareAndSet(false, true)) return "";
-        long budget = engineWaitMillis();
-        if (budget <= 0L) return ENGINE_BUSY_TIMEOUT;
-        long deadline = System.currentTimeMillis() + budget;
+    private static String reserveSymbolicEngine(int entryStateRank) {
+        int rank = Math.max(0, Math.min(ENTRY_STATE_RANKS - 1,
+                entryStateRank));
+        long deadline = System.currentTimeMillis() + engineWaitMillis();
         synchronized (ENGINE_LOCK) {
-            while (!ENGINE_BUSY.compareAndSet(false, true)) {
-                long remaining = deadline - System.currentTimeMillis();
-                if (remaining <= 0L) return ENGINE_BUSY_TIMEOUT;
-                try {
-                    ENGINE_LOCK.wait(remaining);
-                } catch (InterruptedException interrupted) {
-                    // Thread roots are commonly interrupted during shutdown.
-                    // Preserve that signal for the workload instead of
-                    // silently consuming it inside instrumentation.
-                    Thread.currentThread().interrupt();
-                    return ENGINE_BUSY_INTERRUPTED;
+            ENGINE_WAITING[rank]++;
+            try {
+                while (true) {
+                    if (!ENGINE_BUSY.get() && !betterCandidateWaiting(rank)) {
+                        ENGINE_BUSY.set(true);
+                        return "";
+                    }
+                    long remaining = deadline - System.currentTimeMillis();
+                    if (remaining <= 0L) return ENGINE_BUSY_TIMEOUT;
+                    try {
+                        ENGINE_LOCK.wait(remaining);
+                    } catch (InterruptedException interrupted) {
+                        // Thread roots are commonly interrupted during
+                        // shutdown.  Preserve that signal for the workload
+                        // instead of silently consuming it inside
+                        // instrumentation.
+                        Thread.currentThread().interrupt();
+                        return ENGINE_BUSY_INTERRUPTED;
+                    }
                 }
+            } finally {
+                ENGINE_WAITING[rank]--;
+                // A candidate that stops waiting -- because it won, gave up or
+                // was interrupted -- may be the only reason a worse-ranked one
+                // is still deferring.
+                ENGINE_LOCK.notifyAll();
             }
-            return "";
         }
+    }
+
+    /** Guarded by {@link #ENGINE_LOCK}. */
+    private static boolean betterCandidateWaiting(int rank) {
+        for (int better = 0; better < rank; better++) {
+            if (ENGINE_WAITING[better] > 0) return true;
+        }
+        return false;
     }
 
     private static void releaseSymbolicEngine() {
@@ -1950,6 +2008,7 @@ public final class ConcolicRegionRuntime {
         EngineApi api = engine();
         boolean paused = false;
         boolean stopAfterBranch = false;
+        boolean replayContradicted = false;
         try {
             api.pausePathCondition();
             paused = true;
@@ -1959,6 +2018,7 @@ public final class ConcolicRegionRuntime {
             boolean replayTargetMatched = active.observeReplayBranch(
                     siteId(method, unitIndex), prepared.occurrence,
                     observedOutcome);
+            replayContradicted = active.replayPrefixContradicted();
             // The contract may have just been consumed, which is the other
             // half of a replay's boundary; the witness hook above ran before
             // this branch reached the contract and could not see it.
@@ -1976,6 +2036,11 @@ public final class ConcolicRegionRuntime {
             if (paused) resumePathCondition(active, api);
             if (stopAfterBranch) {
                 finish(active.token, "TARGET_REACHED", "", null);
+            } else if (replayContradicted) {
+                // Release the engine here rather than at this activation's own
+                // return: the branch that just executed already decided that
+                // nothing publishable can follow.
+                finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "", null);
             }
         }
     }
@@ -2479,6 +2544,34 @@ public final class ConcolicRegionRuntime {
         return key == expectedKey ? left.toString() : "";
     }
 
+    /**
+     * Ends an activation that has already contradicted its recorded prefix,
+     * giving the single symbolic engine back at that moment.
+     *
+     * <p>Once the prefix is contradicted, no continuation of this activation
+     * can belong to the replayed path, so everything it would still walk is
+     * work whose result must be discarded.  Holding the engine until this
+     * activation happens to return costs a sibling activation -- one that
+     * could still match -- its whole wait budget for a result that cannot
+     * exist.  The summary is not built either: it would be discarded by the
+     * same judgement, and building it is the expensive part.</p>
+     */
+    private static void abandonContradictedReplay(ActiveRegion active,
+                                                  long token) {
+        try {
+            engine().cleanupAfterFailure();
+        } finally {
+            Long current = CURRENT_TOKEN.get();
+            if (current != null && current == token) {
+                CURRENT_TOKEN.remove();
+            }
+            releaseSymbolicEngine();
+        }
+        writeSkipped(active.activation, SKIP_REPLAY_PREFIX_UNMATCHED,
+                "activation contradicts the recorded replay prefix: "
+                        + active.replayProgress.failure());
+    }
+
     private static void finish(long token, String exitKind,
                                String exceptionType, Object output) {
         ActiveRegion active = ownerRegion(token);
@@ -2492,6 +2585,10 @@ public final class ConcolicRegionRuntime {
         clearAccessorCallContexts(token);
         diag("REGION_FINISH", "token=" + token + " exit=" + safe(exitKind)
                 + " captures=" + active.outputCaptures.size());
+        if (active.replayPrefixContradicted()) {
+            abandonContradictedReplay(active, token);
+            return;
+        }
         JsonObject result = new JsonObject();
         EngineApi api = engine();
         boolean engineFinished = false;
@@ -2562,7 +2659,7 @@ public final class ConcolicRegionRuntime {
         }
         if (active.activation.replayContract != null
                 && !active.replayProgress.complete()) {
-            writeSkipped(active.activation,
+            writeSkipped(active.activation, SKIP_REPLAY_PREFIX_UNMATCHED,
                     "no compatible activation matched replay prefix: "
                             + active.replayProgress.failure());
             return;
@@ -2570,7 +2667,7 @@ public final class ConcolicRegionRuntime {
         String seedConflict = active.activation.replayContract == null
                 ? active.seedOutcomeConflict() : "";
         if (!seedConflict.isEmpty()) {
-            writeSkipped(active.activation,
+            writeSkipped(active.activation, SKIP_SEED_OUTCOME_CONFLICT,
                     "activation contradicts a recorded seed outcome: "
                             + seedConflict);
             return;
@@ -3685,12 +3782,20 @@ public final class ConcolicRegionRuntime {
         return "";
     }
 
-    private static void writeSkipped(RuntimeTask activation,
+    /**
+     * Records that an activation published nothing, and why.  {@code skipKind}
+     * is the machine-readable half: a skip that never obtained the engine is
+     * a scheduling outcome, while a skip that ran and contradicted its
+     * recording is a finding about the path, and a reader that cannot tell
+     * them apart reports one as the other.
+     */
+    private static void writeSkipped(RuntimeTask activation, String skipKind,
                                      String reason) {
         JsonObject result = new JsonObject();
         result.addProperty("event", "CONCOLIC_REGION_SKIPPED");
         result.addProperty("schemaVersion", 1);
         result.addProperty("taskId", activation.taskId);
+        result.addProperty("skipKind", skipKind);
         result.addProperty("reason", reason);
         appendResult(result);
     }
@@ -4493,6 +4598,19 @@ public final class ConcolicRegionRuntime {
                 replayCaptureWatermark = outputCaptures.size();
             }
             return matched;
+        }
+
+        /**
+         * Whether this activation has already walked a branch the recorded
+         * replay prefix forbids.  The judgement is monotone: {@link
+         * ReplayProgress} refuses to advance once it has named a
+         * contradiction, so a prefix that is merely unfinished -- the state of
+         * every activation that is still progressing normally -- never
+         * answers true here.
+         */
+        private boolean replayPrefixContradicted() {
+            return activation.replayContract != null
+                    && replayProgress.failed();
         }
 
         /**
@@ -6134,8 +6252,8 @@ public final class ConcolicRegionRuntime {
             return match;
         }
 
-        private boolean matchesObservedEntryState(Object receiver) {
-            return ConcolicRegionRuntime.matchesObservedEntryState(
+        private int observedEntryStateRank(Object receiver) {
+            return ConcolicRegionRuntime.observedEntryStateRank(
                     declaredSymbolize, receiver);
         }
 
@@ -6155,7 +6273,6 @@ public final class ConcolicRegionRuntime {
             return compatibleRoot(task.rootMethod, rootMethod,
                     task.rootContextSelector, task.rootArgumentSelector,
                     receiver, rootArguments, Thread.currentThread().getName())
-                    && task.matchesObservedEntryState(receiver)
                     ? task : null;
         }
 
@@ -6212,22 +6329,33 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Distinguishes several occurrences of one region template without any
-     * global invocation ordinal.  Two occurrences of the same root differ
-     * because they read different state on entry; that observed entry shape
-     * is the occurrence's identity here.  An occurrence whose evidence
-     * decides nothing stays eligible, so this only ever narrows a selection
-     * the recorded trace can actually justify.
+     * Orders several occurrences of one region template without any global
+     * invocation ordinal.  Two occurrences of the same root differ because
+     * they read different state on entry, and an occurrence whose live entry
+     * values still agree with the recording is the better candidate for the
+     * single engine.
+     *
+     * <p>This is a value-wise comparison -- string equality for primitives,
+     * null against non-null for references -- so it can say which candidate
+     * looks more like the recorded one but not whether a candidate walks the
+     * recorded path.  It therefore ranks and never refuses: the recorded
+     * branch prefix is the only judgement allowed to reject an activation,
+     * and a rejected activation gives the engine back at once.</p>
      */
-    private static boolean matchesObservedEntryState(
+    static int observedEntryStateRank(
             List<SymbolizeAction> declared, Object receiver) {
+        int rank = ENTRY_STATE_RANK_UNDECIDED;
         for (SymbolizeAction action : declared) {
-            if (action.observedEntryStateVerdict(receiver)
-                    == EntryStateVerdict.DIFFERS) {
-                return false;
+            EntryStateVerdict verdict =
+                    action.observedEntryStateVerdict(receiver);
+            if (verdict == EntryStateVerdict.DIFFERS) {
+                return ENTRY_STATE_RANK_MISMATCH;
+            }
+            if (verdict == EntryStateVerdict.MATCHES) {
+                rank = ENTRY_STATE_RANK_MATCHES;
             }
         }
-        return true;
+        return rank;
     }
 
     private static boolean compatibleRoot(

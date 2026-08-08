@@ -90,8 +90,7 @@ public final class ConcolicSummaryImporter {
             String taskId = string(raw, "taskId");
             if (!"CONCOLIC_REGION_RESULT".equals(string(raw, "event"))) {
                 diagnostics.add(diagnostic(raw, index,
-                        "SKIPPED_RUNTIME_EVENT",
-                        string(raw, "event")));
+                        skippedEventCode(raw), skippedEventDetail(raw)));
                 continue;
             }
             ExecutionTask task = tasks.get(taskId);
@@ -1191,6 +1190,26 @@ public final class ConcolicSummaryImporter {
             }
         }
         return result;
+    }
+
+    /**
+     * Names why a non-result row published nothing.  An activation that never
+     * obtained the single symbolic engine was not refuted, it was never
+     * explored; one that ran and contradicted its recording is a finding
+     * about the path.  A caller that sees one code for both charges a
+     * scheduling artifact to the path -- or the reverse -- so the runtime's
+     * own skip kind is carried through instead of being flattened away.
+     */
+    private static String skippedEventCode(JsonObject raw) {
+        String skipKind = string(raw, "skipKind");
+        return skipKind.isEmpty() ? "SKIPPED_RUNTIME_EVENT"
+                : "REGION_" + skipKind;
+    }
+
+    private static String skippedEventDetail(JsonObject raw) {
+        String reason = string(raw, "reason");
+        String event = string(raw, "event");
+        return reason.isEmpty() ? event : event + ": " + reason;
     }
 
     private static JsonObject diagnostic(

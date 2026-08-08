@@ -552,6 +552,13 @@ public final class RegionPathWorklist {
         if ("REPLAY_NOT_ADMITTED".equals(status)) {
             return "PATH_FLIP_REPLAY_NOT_ADMITTED";
         }
+        // A flip whose replay never obtained the single symbolic engine was
+        // not refuted; it was never explored.  Charging it to the same gap as
+        // a replay that ran and missed the relation would make a scheduling
+        // outcome indistinguishable from an infeasible path.
+        if ("REPLAY_ENGINE_UNAVAILABLE".equals(status)) {
+            return "PATH_FLIP_REPLAY_ENGINE_UNAVAILABLE";
+        }
         // A replay is bounded in the paths it may walk, not in what those
         // paths cost to keep resident, so one can end before publishing a
         // result.  That flip is abandoned like any other, and the gap says so.

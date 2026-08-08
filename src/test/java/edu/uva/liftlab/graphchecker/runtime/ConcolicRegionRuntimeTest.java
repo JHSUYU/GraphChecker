@@ -23,6 +23,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
@@ -1142,6 +1144,205 @@ public class ConcolicRegionRuntimeTest {
         } finally {
             System.clearProperty(
                     ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY);
+        }
+    }
+
+    /**
+     * Two candidate activations of one region template compete for the single
+     * symbolic engine.  The one that wins it contradicts its recorded prefix
+     * on its first replayed branch and then keeps executing, as a long-lived
+     * workload root does.  Nothing it walks after that contradiction can
+     * belong to the replayed path, so the engine must come back at the
+     * contradiction and not at that root's eventual return -- otherwise the
+     * candidate that could still match spends its whole wait budget on a
+     * result that cannot exist.
+     */
+    @Test
+    public void aContradictedReplayHandsTheEngineToTheNextCandidate()
+            throws Exception {
+        long budget = 20_000L;
+        ConcolicRegionRuntime.resetForTests();
+        System.setProperty(ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY,
+                Long.toString(budget));
+        BranchReplayContract contract = BranchReplayContract.flip(
+                Collections.singletonList(replayWitness("ROOT#u1", 1, true)),
+                replayWitness("ROOT#u7", 1, true));
+        // The first candidate drives the prefix the other way; the second
+        // reproduces it and reaches the demanded opposite source outcome.
+        ReplayJob contradicting = new ReplayJob(
+                ConcolicRegionRuntime.ENTRY_STATE_RANK_UNDECIDED, contract,
+                new boolean[]{false}, new String[]{"ROOT#u1"},
+                new int[]{1});
+        ReplayJob matching = new ReplayJob(
+                ConcolicRegionRuntime.ENTRY_STATE_RANK_UNDECIDED, contract,
+                new boolean[]{true, false},
+                new String[]{"ROOT#u1", "ROOT#u7"}, new int[]{1, 1});
+        Thread first = new Thread(contradicting, "candidate-1");
+        Thread second = new Thread(matching, "candidate-2");
+        try {
+            first.start();
+            assertTrue(contradicting.reserved.await(30, TimeUnit.SECONDS));
+            assertEquals("", contradicting.contention);
+
+            // Only the first candidate is sequenced; the second replays as
+            // soon as it is admitted.
+            matching.mayReplay.countDown();
+            second.start();
+            // The second candidate is now blocked on an engine it can only
+            // get if the first one gives it back early.
+            assertFalse(matching.reserved.await(200, TimeUnit.MILLISECONDS));
+
+            contradicting.mayReplay.countDown();
+            second.join(budget - 5_000L);
+            assertFalse(second.isAlive());
+            assertEquals("PUBLISHED", matching.outcome);
+            assertEquals("", matching.contention);
+            assertTrue(matching.waitedMillis < budget / 2);
+
+            // The engine came back while its holder was still inside the
+            // region root, which is the whole point.
+            assertEquals("ABANDONED", contradicting.outcome);
+            assertTrue(first.isAlive());
+        } finally {
+            contradicting.mayReplay.countDown();
+            contradicting.regionBodyReturns.countDown();
+            first.join(30_000L);
+            second.join(30_000L);
+            System.clearProperty(
+                    ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY);
+            ConcolicRegionRuntime.resetForTests();
+        }
+    }
+
+    /**
+     * A recorded entry value is compared value-wise, so it orders candidates
+     * and never rejects one.  The candidate whose entry state still agrees
+     * goes first while both are waiting.
+     */
+    @Test
+    public void aBetterRankedCandidateTakesTheEngineFirst() throws Exception {
+        ConcolicRegionRuntime.resetForTests();
+        System.setProperty(ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY,
+                "20000");
+        final List<String> admitted = Collections.synchronizedList(
+                new ArrayList<String>());
+        Thread mismatched = null;
+        Thread matched = null;
+        try {
+            assertEquals("",
+                    ConcolicRegionRuntime.reserveSymbolicEngineForTests());
+            mismatched = admissionOrderThread("MISMATCH",
+                    ConcolicRegionRuntime.ENTRY_STATE_RANK_MISMATCH,
+                    admitted);
+            mismatched.start();
+            // Both must be waiting before the engine is freed, or the test
+            // would only observe arrival order.
+            Thread.sleep(500L);
+            matched = admissionOrderThread("MATCHES",
+                    ConcolicRegionRuntime.ENTRY_STATE_RANK_MATCHES, admitted);
+            matched.start();
+            Thread.sleep(500L);
+            assertTrue(admitted.isEmpty());
+
+            ConcolicRegionRuntime.releaseSymbolicEngineForTests();
+            matched.join(30_000L);
+            mismatched.join(30_000L);
+            // Ranking orders the candidates; it never discards the worse one.
+            assertEquals(Arrays.asList("MATCHES", "MISMATCH"), admitted);
+        } finally {
+            if (matched != null) matched.join(30_000L);
+            if (mismatched != null) mismatched.join(30_000L);
+            System.clearProperty(
+                    ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY);
+            ConcolicRegionRuntime.resetForTests();
+        }
+    }
+
+    private static Thread admissionOrderThread(final String name,
+                                               final int entryStateRank,
+                                               final List<String> admitted) {
+        return new Thread(new Runnable() {
+            @Override
+            public void run() {
+                if (!ConcolicRegionRuntime.reserveSymbolicEngineForTests(
+                        entryStateRank).isEmpty()) {
+                    admitted.add(name + ":TIMEOUT");
+                    return;
+                }
+                admitted.add(name);
+                ConcolicRegionRuntime.releaseSymbolicEngineForTests();
+            }
+        }, name);
+    }
+
+    /**
+     * One candidate activation, wired in the order the region hooks use it:
+     * reserve the engine, replay the recorded prefix branch by branch, and
+     * give the engine back at the first branch the prefix forbids -- before
+     * the region root itself returns.
+     */
+    private static final class ReplayJob implements Runnable {
+        private final int entryStateRank;
+        private final BranchReplayContract contract;
+        private final boolean[] outcomes;
+        private final String[] sites;
+        private final int[] occurrences;
+        private final CountDownLatch reserved = new CountDownLatch(1);
+        private final CountDownLatch mayReplay = new CountDownLatch(1);
+        private final CountDownLatch regionBodyReturns =
+                new CountDownLatch(1);
+        private volatile String contention = "";
+        private volatile String outcome = "";
+        private volatile long waitedMillis = -1L;
+
+        private ReplayJob(int entryStateRank, BranchReplayContract contract,
+                          boolean[] outcomes, String[] sites,
+                          int[] occurrences) {
+            this.entryStateRank = entryStateRank;
+            this.contract = contract;
+            this.outcomes = outcomes;
+            this.sites = sites;
+            this.occurrences = occurrences;
+        }
+
+        @Override
+        public void run() {
+            long started = System.currentTimeMillis();
+            contention = ConcolicRegionRuntime
+                    .reserveSymbolicEngineForTests(entryStateRank);
+            waitedMillis = System.currentTimeMillis() - started;
+            reserved.countDown();
+            if (!contention.isEmpty()) {
+                outcome = "SKIPPED";
+                return;
+            }
+            boolean held = true;
+            try {
+                mayReplay.await(30, TimeUnit.SECONDS);
+                ConcolicRegionRuntime.ReplayProgress progress =
+                        new ConcolicRegionRuntime.ReplayProgress(contract);
+                for (int index = 0; index < sites.length; index++) {
+                    progress.observe(sites[index], occurrences[index],
+                            outcomes[index]);
+                    if (progress.failed()) {
+                        outcome = "ABANDONED";
+                        ConcolicRegionRuntime
+                                .releaseSymbolicEngineForTests();
+                        held = false;
+                        // The workload keeps running this root afterwards.
+                        regionBodyReturns.await(30, TimeUnit.SECONDS);
+                        return;
+                    }
+                }
+                outcome = progress.complete() ? "PUBLISHED" : "INCOMPLETE";
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                outcome = "INTERRUPTED";
+            } finally {
+                if (held) {
+                    ConcolicRegionRuntime.releaseSymbolicEngineForTests();
+                }
+            }
         }
     }
 
