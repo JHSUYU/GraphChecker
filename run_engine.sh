@@ -403,7 +403,15 @@ run_java_main() {
   local main_class=$1
   shift
   require_file "GraphChecker jar" "${graphchecker_jar}"
+  # The configured protocol mappings describe the transport, so every stage
+  # that reasons about a cross-process value needs them, not only the static
+  # pass that first resolved their stub methods.
+  local -a properties=()
+  if [[ -n "${causynth_protocol_stubs}" ]]; then
+    properties+=("-Dcausynth.protocol.stubs=${causynth_protocol_stubs}")
+  fi
   run_in_directory "${graphchecker_work_dir}" "${java_bin}" \
+    "${properties[@]}" \
     -cp "${graphchecker_jar}" "${main_class}" "$@"
 }
 

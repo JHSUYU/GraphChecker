@@ -105,6 +105,63 @@ final class ConfiguredProtocolStubs {
                 Collections.unmodifiableList(mappings));
     }
 
+    /**
+     * Declared reply reconstruction per mapping id.
+     *
+     * <p>A mapping declares a property of its transport, so every stage that
+     * reasons about a value carried across it needs the declaration — not
+     * only the static pass that resolved the stub methods.  Reading it by id
+     * needs no program, which is why it is separated from
+     * {@link #fromConfiguration}.  An unreadable or unknown declaration is
+     * refused rather than treated as absent: silently dropping it would turn
+     * a declared correspondence into a missing one without saying so.</p>
+     */
+    static Map<String, String> declaredCarrierProjections()
+            throws IOException {
+        String configured = firstNonBlank(
+                System.getProperty("causynth.protocol.stubs"),
+                System.getenv("CAUSYNTH_PROTOCOL_STUBS"));
+        Map<String, String> result = new LinkedHashMap<>();
+        if (configured == null) {
+            return result;
+        }
+        Path path = Paths.get(configured).toAbsolutePath().normalize();
+        if (!Files.isRegularFile(path)) {
+            throw new IOException("Protocol stub mapping not found: " + path);
+        }
+        try (BufferedReader reader = Files.newBufferedReader(path,
+                StandardCharsets.UTF_8)) {
+            String line;
+            int lineNumber = 0;
+            while ((line = reader.readLine()) != null) {
+                lineNumber++;
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                JsonObject row;
+                try {
+                    row = JsonParser.parseString(trimmed).getAsJsonObject();
+                } catch (RuntimeException malformed) {
+                    throw new IOException("Invalid protocol stub mapping at "
+                            + path + ":" + lineNumber, malformed);
+                }
+                String projection = string(row, "carrierProjection");
+                if (projection.isEmpty()) {
+                    continue;
+                }
+                if (!ProtocolCarrierProjection
+                        .DECLARED_FIELDS_AND_ELEMENT_ORDER
+                        .equals(projection)) {
+                    throw new IOException("Unknown carrierProjection at "
+                            + path + ":" + lineNumber + ": " + projection);
+                }
+                result.put(string(row, "id"), projection);
+            }
+        }
+        return result;
+    }
+
     List<ProtocolStubMapping> targets(String clientStub) {
         return byClient.getOrDefault(clientStub, Collections.emptyList());
     }
@@ -199,6 +256,22 @@ final class ConfiguredProtocolStubs {
         if (id.isEmpty()) {
             id = clientStub + " -> " + serverStub;
         }
+        String carrierProjection = string(row, "carrierProjection");
+        if (!carrierProjection.isEmpty()) {
+            if (!response) {
+                throw new IllegalArgumentException("carrierProjection "
+                        + "declares how a reply carrier is rebuilt and "
+                        + "requires a mapped response");
+            }
+            if (!ProtocolCarrierProjection.DECLARED_FIELDS_AND_ELEMENT_ORDER
+                    .equals(carrierProjection)) {
+                throw new IllegalArgumentException("carrierProjection must "
+                        + "be "
+                        + ProtocolCarrierProjection
+                        .DECLARED_FIELDS_AND_ELEMENT_ORDER
+                        + ": " + carrierProjection);
+            }
+        }
         String encodedServerContext = string(row, "serverContext");
         ProtocolServerContext serverContext;
         if (encodedServerContext.isEmpty()) {
@@ -215,7 +288,7 @@ final class ConfiguredProtocolStubs {
         }
         return new ProtocolStubMapping(id, string(row, "transport"),
                 clientStub, serverStub, client.getDeclaringClass().getName(),
-                request, response, serverContext);
+                request, response, serverContext, carrierProjection);
     }
 
     private static ProtocolPortMapping port(
@@ -260,6 +333,23 @@ enum ProtocolServerContext {
     NESTED_CALL
 }
 
+/**
+ * How much of a reply carrier a mapping declares to be rebuilt.
+ *
+ * <p>The vocabulary names a property of the transport, never an application
+ * type: {@code DECLARED_FIELDS_AND_ELEMENT_ORDER} says the reply is
+ * reconstructed as the same declared types, field by declared field, with
+ * container elements in the same order.  Without the declaration a carrier
+ * keeps its named projection gap.</p>
+ */
+final class ProtocolCarrierProjection {
+    static final String DECLARED_FIELDS_AND_ELEMENT_ORDER =
+            "DECLARED_FIELDS_AND_ELEMENT_ORDER";
+
+    private ProtocolCarrierProjection() {
+    }
+}
+
 final class ProtocolStubMapping {
     final String id;
     final String transport;
@@ -269,12 +359,15 @@ final class ProtocolStubMapping {
     final List<ProtocolPortMapping> request;
     final boolean response;
     final ProtocolServerContext serverContext;
+    /** Declared reply reconstruction, or empty when none is declared. */
+    final String carrierProjection;
 
     ProtocolStubMapping(String id, String transport, String clientStub,
                         String serverStub, String clientOwner,
                         List<ProtocolPortMapping> request,
                         boolean response,
-                        ProtocolServerContext serverContext) {
+                        ProtocolServerContext serverContext,
+                        String carrierProjection) {
         this.id = id;
         this.transport = transport;
         this.clientStub = clientStub;
@@ -284,6 +377,7 @@ final class ProtocolStubMapping {
                 new ArrayList<>(request));
         this.response = response;
         this.serverContext = serverContext;
+        this.carrierProjection = carrierProjection;
     }
 }
 

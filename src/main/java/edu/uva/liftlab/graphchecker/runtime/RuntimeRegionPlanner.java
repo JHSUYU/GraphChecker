@@ -636,6 +636,7 @@ final class RuntimeRegionPlanner {
             // local container definition implements that projected output.
             for (String field : new String[]{
                     "projectionKind", "rpcDescendantProjection",
+                    "rpcProjectionAuthority",
                     "projectionSelectionAuthority", "projectionOfEdgeId",
                     "projectionOfFromPort", "projectionOfToPort",
                     "producerProjectionSiteId", "consumerProjectionSiteId",
@@ -1905,6 +1906,18 @@ final class RuntimeRegionPlanner {
      * only because the finalizer also selected one exact local HEAP_WRITE
      * that the VM can capture.
      */
+    /**
+     * Projection that stands on a declared reply reconstruction.  The
+     * transport trust is still the configured mapping; what is additionally
+     * declared is that the reply is rebuilt field by declared field, so the
+     * relation is named apart from the mapping that carries it.
+     */
+    static final String DECLARED_CARRIER_AUTHORITY =
+            "TRUSTED_DECLARED_CARRIER_PROJECTION_V1";
+
+    static final String DECLARED_CARRIER_SELECTION =
+            "DECLARED_CARRIER_PATH_PROJECTION_V1";
+
     private static boolean trustedRpcContainerProjectionBinding(
             JsonObject binding) {
         String kind = JsonFields.string(binding, "projectionKind");
@@ -1915,8 +1928,9 @@ final class RuntimeRegionPlanner {
                         && "STATIC_DEF_USE_CONTAINER_PROJECTION_V1".equals(
                         selection)
                         || "SCALAR_LEAF_VALUE".equals(kind)
-                        && "STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1".equals(
-                        selection);
+                        && ("STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1".equals(
+                        selection)
+                        || DECLARED_CARRIER_SELECTION.equals(selection));
         return AutomaticRegionEdge.trustedRuntimeValueEqualityBinding(binding)
                 && JsonFields.bool(binding, "rpcDescendantProjection", false)
                 && declaredKind
@@ -1932,12 +1946,16 @@ final class RuntimeRegionPlanner {
         boolean declaredKind =
                 "STATIC_DEF_USE_CONTAINER_PROJECTION_V1".equals(selection)
                         && "BOUNDED_CONTAINER_STATE".equals(demand)
-                        || "STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1".equals(
-                        selection) && demand.isEmpty();
+                        || ("STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1".equals(
+                        selection)
+                        || DECLARED_CARRIER_SELECTION.equals(selection))
+                        && demand.isEmpty();
+        String projectionAuthority = text(port.get("rpcProjectionAuthority"));
         if (!Boolean.TRUE.equals(port.get("rpcDescendantProjectionOutput"))
                 || !declaredKind
                 || !"TRUSTED_CONFIGURED_RPC_MAPPING_V1".equals(
-                text(port.get("rpcProjectionAuthority")))) {
+                projectionAuthority)
+                && !DECLARED_CARRIER_AUTHORITY.equals(projectionAuthority)) {
             return false;
         }
         String mapping = text(port.get("rpcProjectionMappingId"));
