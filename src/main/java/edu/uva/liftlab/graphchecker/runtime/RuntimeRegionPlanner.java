@@ -1045,6 +1045,57 @@ final class RuntimeRegionPlanner {
         }
     }
 
+    /**
+     * Names the freedom taken when a reply carrier stops being demanded.
+     */
+    static final String REPLY_CARRIER_FREEDOM =
+            "RPC_REPLY_CARRIER_NOT_A_DEMANDED_VALUE_V1";
+
+    /**
+     * Output ports that only carried a demand across a transport.
+     *
+     * <p>A configured response mapping equates one whole reply object, and a
+     * declared carrier projection of that same reply equates the individual
+     * values rebuilt inside it.  Where both are demanded of one producer, the
+     * projections are what the consumer reads and the whole reply is only how
+     * they travelled.  Demanding the carrier as well makes the producer
+     * summary state how <em>every</em> field of that reply came about, so the
+     * entire reply assembly enters the summary's slice and every guard in it
+     * joins the replay identity -- including the guards that decide unrelated
+     * fields, which no input of this region can steer.  The stub the mapping
+     * names is where the demand crosses, not what the demand is.</p>
+     *
+     * <p>Fail closed: a carrier is dropped only where a projection of that
+     * exact flow is present.  Without one the whole reply is the only
+     * evidence there is, and it stays demanded.  Dropping it does widen the
+     * model -- the consumer's reply port keeps no producer beyond the
+     * projected values -- which is why every drop is published on the goal
+     * as a named freedom rather than being taken silently.</p>
+     */
+    private static Set<String> replyCarrierOutputPorts(
+            List<Map<String, Object>> bindings,
+            Map<String, String> canonicalOutputPort) {
+        Set<String> projected = new LinkedHashSet<>();
+        Set<String> demanded = new LinkedHashSet<>();
+        for (Map<String, Object> binding : bindings) {
+            String output = canonicalOutputPort.getOrDefault(
+                    text(binding.get("fromOutputPort")),
+                    text(binding.get("fromOutputPort")));
+            if (output.isEmpty()) continue;
+            if (Boolean.TRUE.equals(binding.get("rpcDescendantProjection"))) {
+                String carried = text(binding.get("projectionOfFromPort"));
+                if (!carried.isEmpty()) {
+                    projected.add(canonicalOutputPort.getOrDefault(
+                            carried, carried));
+                }
+                continue;
+            }
+            demanded.add(output);
+        }
+        projected.retainAll(demanded);
+        return projected;
+    }
+
     private static void finalizeProducerGoalsForPlan(
             Map<String, Object> plan,
             Map<String, Map<String, Object>> regionById,
@@ -1067,6 +1118,9 @@ final class RuntimeRegionPlanner {
                             producerRootCallId);
             List<Map<String, Object>> incomingBindings = new ArrayList<>();
             String producerInstance = text(plan.get("regionInstanceId"));
+            Set<String> carrierOnly = replyCarrierOutputPorts(
+                    rows(base.get("edgeBindings")), canonicalOutputPort);
+            List<String> carrierFreedoms = new ArrayList<>();
             for (Map<String, Object> binding
                     : rows(base.get("edgeBindings"))) {
                 boolean outgoing = producerInstance.equals(
@@ -1078,6 +1132,13 @@ final class RuntimeRegionPlanner {
                 if (outgoing && !output.isEmpty()) {
                     output = canonicalOutputPort.getOrDefault(output, output);
                     binding.put("fromOutputPort", output);
+                    if (carrierOnly.contains(output)) {
+                        String freedom = REPLY_CARRIER_FREEDOM + ":" + output;
+                        if (!carrierFreedoms.contains(freedom)) {
+                            carrierFreedoms.add(freedom);
+                        }
+                        continue;
+                    }
                     String endpoint = semanticOutputEndpoint(binding,
                             producerRegion, producerRootCallId);
                     // Missing endpoint metadata must not merge unrelated
@@ -1111,6 +1172,9 @@ final class RuntimeRegionPlanner {
                             Collections.emptyList()));
                 }
                 goal.put("edgeBindings", selectedBindings);
+                if (!carrierFreedoms.isEmpty()) {
+                    goal.put("undemandedOutputFreedoms", carrierFreedoms);
+                }
                 String identity = text(plan.get("regionInstanceId"))
                         + "\n" + demandedEndpoints + "\n" + alternative
                         + "\n" + bindingAlternativeIdentity(selected);
