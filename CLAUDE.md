@@ -98,6 +98,14 @@ be explored is abandoned and recorded, it does not fail the run.
 paths it may walk; what those paths cost to keep resident is not bounded, so a
 replay can end before publishing. That is an exploration gap.
 
+**A bound must not become an event in the workload.** A cut at a symbolically
+guarded loop was raised as an exception, escaped the region, and failed a live
+RPC — so a queue the analysis was watching never drained, and a guard reading
+that queue disagreed with the recording on five hundred consecutive
+activations. The analysis had changed the run it was measuring, and the
+symptom looked like an ordinary replay divergence. Whatever a cut does, the
+program around it must proceed as though the analysis were not there.
+
 **Artifacts outgrow their readers.** A captured expression tree reaches
 hundreds of MB nested past jq's tree-parser depth limit. Gates read the two
 top-level fields they need off a stream (`jsonl_stream_field`) and address
