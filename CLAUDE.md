@@ -53,6 +53,15 @@ Invalidate the narrowest layer that the change touches, and **everything below
 it** — a stale `path-iteration-*` makes the next replay refuse to overwrite its
 own output, and a half-built campaign directory fails closed on reuse.
 
+That last one bites on every retry: a campaign that failed leaves a directory
+without `seed-results.jsonl`, and `prepare_seed_campaign` refuses it rather
+than rebuilding. Rerunning without deleting those directories first prints
+`invalid seed campaign preparation state` once each and **never runs those
+campaigns at all** — a whole round that looks like it reproduced the failure
+while having executed nothing. `rm -rf` the failed task directories under
+`campaigns/auto-seeds/producer/`, after saving any `hs_err_pid*.log` worth
+keeping.
+
 ## Core design
 
 **Target-first demanded closure.** The fatal target's backward closure decides
