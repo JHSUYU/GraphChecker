@@ -39,6 +39,7 @@ import soot.Value;
 import soot.ValueBox;
 import soot.VoidType;
 import soot.jimple.AssignStmt;
+import soot.jimple.ArrayRef;
 import soot.jimple.Constant;
 import soot.jimple.FieldRef;
 import soot.jimple.IdentityStmt;
@@ -169,6 +170,7 @@ public final class CausynthPipeline {
      */
     private void instrumentRuntimeState(StaticProgram result) {
         SootMethodRef recordFieldRef = traceRecorderFieldMethodRef();
+        SootMethodRef recordArrayRef = traceRecorderArrayMethodRef();
         HookCatalog richRefs = HookCatalog.trace();
         TraceSelection traceSelection = TraceSelection.allRuntimeState();
         Set<String> skippedClasses = traceSkipClasses();
@@ -208,6 +210,8 @@ public final class CausynthPipeline {
                         traceSelection, richRefs);
                 instrumentFieldTrace(body, method, recordFieldRef,
                         traceSelection, originalUnits, lowerBound);
+                instrumentReferenceArrayTrace(body, method, recordArrayRef,
+                        originalUnits, lowerBound);
             } catch (RuntimeException exception) {
                 LOG.debug("Skipping trace instrumentation for {}", signature, exception);
             }
@@ -2640,6 +2644,59 @@ public final class CausynthPipeline {
         }
     }
 
+    /** Records only reference-array aaload/aastore identities. */
+    private void instrumentReferenceArrayTrace(
+            Body body, SootMethod method, SootMethodRef recordArrayRef,
+            List<Unit> units, Unit lowerBound) {
+        boolean instrumentationSafe = lowerBound == null;
+        for (int unitIndex = 0; unitIndex < units.size(); unitIndex++) {
+            Unit unit = units.get(unitIndex);
+            if (!instrumentationSafe) {
+                if (unit != lowerBound) continue;
+                instrumentationSafe = true;
+            }
+            if (!(unit instanceof AssignStmt)) continue;
+            AssignStmt assign = (AssignStmt) unit;
+            Value left = assign.getLeftOp();
+            Value right = assign.getRightOp();
+            if (left instanceof ArrayRef
+                    && referenceArrayElement((ArrayRef) left)) {
+                insertArrayTrace(body, unit, recordArrayRef, "ARRAY_WRITE",
+                        method.getSignature(), unitIndex, (ArrayRef) left,
+                        right);
+            }
+            if (right instanceof ArrayRef
+                    && referenceArrayElement((ArrayRef) right)) {
+                insertArrayTrace(body, unit, recordArrayRef, "ARRAY_READ",
+                        method.getSignature(), unitIndex, (ArrayRef) right,
+                        left);
+            }
+        }
+    }
+
+    private static boolean referenceArrayElement(ArrayRef array) {
+        Type element = array == null ? null : array.getType();
+        return element instanceof RefType || element instanceof ArrayType;
+    }
+
+    private static void insertArrayTrace(
+            Body body, Unit unit, SootMethodRef recordArrayRef, String kind,
+            String method, int unitIndex, ArrayRef array, Value element) {
+        List<Unit> suffix = new ArrayList<>();
+        Value arrayObject = objectArg(body, array.getBase(), suffix);
+        Value index = immediateValue(body, array.getIndex(), suffix);
+        Value elementObject = objectArg(body, element, suffix);
+        suffix.add(Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
+                recordArrayRef,
+                StringConstant.v(kind),
+                StringConstant.v(method),
+                IntConstant.v(unitIndex),
+                arrayObject,
+                index,
+                elementObject)));
+        insertAfterSequence(body, unit, suffix);
+    }
+
     private void insertFieldTrace(
             Body body, Unit unit, SootMethodRef recordFieldRef,
             String kind, String method, int unitIndex,
@@ -2881,6 +2938,19 @@ public final class CausynthPipeline {
                         RefType.v("java.lang.Object"),
                         RefType.v("java.lang.Object"),
                         RefType.v("java.lang.String")),
+                VoidType.v(), true);
+    }
+
+    private static SootMethodRef traceRecorderArrayMethodRef() {
+        SootClass recorder = traceRecorderClass();
+        return Scene.v().makeMethodRef(recorder, "recordArrayElement",
+                Arrays.asList(
+                        RefType.v("java.lang.String"),
+                        RefType.v("java.lang.String"),
+                        IntType.v(),
+                        RefType.v("java.lang.Object"),
+                        IntType.v(),
+                        RefType.v("java.lang.Object")),
                 VoidType.v(), true);
     }
 

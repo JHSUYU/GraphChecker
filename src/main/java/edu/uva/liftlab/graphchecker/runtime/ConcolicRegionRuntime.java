@@ -1686,6 +1686,31 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * True when the VM captured at least one output the task actually asks
+     * for.  Resource-bounded completion is per port: successful ports from
+     * this one VM path are retained, while every other demanded port remains
+     * an explicit gap and keeps the summary relationally incomplete.
+     */
+    private static boolean anyExactOutputRelation(
+            boolean capturesOutputRelation,
+            List<OutputCaptureSpec> requests,
+            List<JsonObject> captures) {
+        if (!capturesOutputRelation || requests == null || requests.isEmpty()
+                || captures == null || captures.isEmpty()) {
+            return false;
+        }
+        for (OutputCaptureSpec request : requests) {
+            if (!exactOutputBoundaryCapture(request)) continue;
+            for (JsonObject capture : captures) {
+                if (successfulExactOutputCapture(request, capture)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * True once every branch-replay site the task demands has executed at
      * least once in this activation.
      *
@@ -1820,6 +1845,22 @@ public final class ConcolicRegionRuntime {
             }
         }
         return completeExactOutputBoundary(
+                task.goalKind().capturesOutputRelation(),
+                task.outputCaptures(), captures);
+    }
+
+    /** Test seam for per-port resource-cut completion. */
+    static boolean resourceCutCapturedOutputForTests(
+            JsonObject encodedTask, JsonArray encodedCaptures) {
+        ExecutionTask task = ExecutionTask.decode(encodedTask);
+        List<JsonObject> captures = new ArrayList<>();
+        if (encodedCaptures != null) {
+            for (JsonElement element : encodedCaptures) {
+                if (!element.isJsonObject()) return false;
+                captures.add(element.getAsJsonObject());
+            }
+        }
+        return anyExactOutputRelation(
                 task.goalKind().capturesOutputRelation(),
                 task.outputCaptures(), captures);
     }
@@ -2631,12 +2672,20 @@ public final class ConcolicRegionRuntime {
         EngineApi api = engine();
         boolean engineFinished = false;
         String rawEngineSummary = null;
-        // A replay that spent its resource cap produced no bounded path, so
-        // it may not be reported as a completed bounded execution.
-        boolean boundedOutputExit = "CUT".equals(exitKind)
+        // A loop-bound cut is itself the end of the bounded path.  A replay
+        // resource cut normally means the activation answered nothing, but
+        // an output-relation task may already have published demanded ports
+        // before a long-lived service loop spends the remaining replay
+        // budget.  Keep those real VM captures as one bounded prefix; any
+        // other demanded port remains an explicit incomplete-relation gap.
+        boolean boundedPathOutputExit = "CUT".equals(exitKind)
                 && active.activation.capturesOutputRelation
                 && active.loopBoundCut != null
                 && active.replayResourceCut == null;
+        boolean boundedResourceOutputExit = "CUT".equals(exitKind)
+                && active.capturedOutputBeforeReplayResourceCut();
+        boolean boundedOutputExit = boundedPathOutputExit
+                || boundedResourceOutputExit;
         String completedExitKind = boundedOutputExit
                 ? "BOUNDED" : exitKind;
         try {
@@ -2650,7 +2699,8 @@ public final class ConcolicRegionRuntime {
                         "NO_SELECTED_INPUT_MATERIALIZED");
             }
             if ("NORMAL".equals(completedExitKind)
-                    || "BOUNDED".equals(completedExitKind)) {
+                    || "BOUNDED".equals(completedExitKind)
+                    && !boundedResourceOutputExit) {
                 captureTrackedFieldOutputs(active);
             }
             populateCompletedResult(result, active, completedExitKind,
@@ -4544,10 +4594,11 @@ public final class ConcolicRegionRuntime {
          * Charges one body of this loop to the replay resource cap, returning
          * the cut that ends the activation once the cap is spent.
          *
-         * <p>The detail is always recorded, capture-producing tasks included:
-         * a replay that ran out of budget answered nothing, and letting that
-         * pass unnamed is exactly the silent truncation this cap exists to
-         * prevent.</p>
+         * <p>The cut detail is always recorded in {@code replayResourceCut}.
+         * It is not itself an unresolved symbolic input: admission preserves
+         * demanded ports captured before the cut.  If none was captured the
+         * cap remains a resource-cut gap; otherwise uncaptured demanded ports
+         * are reported individually and keep the prefix incomplete.</p>
          */
         private ReplayLoopResourceCut chargeLoopBody(String loopId) {
             int maxBodies = activation.maxLoopBodies(loopId);
@@ -4557,9 +4608,33 @@ public final class ConcolicRegionRuntime {
                     loopId, maxBodies, entered);
             if (replayResourceCut == null) {
                 replayResourceCut = cut.toJson();
-                addUnresolvedOnce(cut.detail());
             }
             return cut;
+        }
+
+        /**
+         * Whether a replay-resource cut happened strictly after the VM had
+         * captured at least one demanded output relation.
+         *
+         * <p>For a flip, captures made before the replay source decision are
+         * deliberately excluded by {@link #replayCaptureWatermark}.  We do
+         * not require unrelated recorded tail branches to run: the captured
+         * producer prefix is the semantic boundary this task asked for.</p>
+         */
+        private boolean capturedOutputBeforeReplayResourceCut() {
+            if (!activation.capturesOutputRelation
+                    || replayResourceCut == null
+                    || !ReplayLoopResourceCut.valid(replayResourceCut)
+                    || !replayProgress.complete()) {
+                return false;
+            }
+            List<JsonObject> captures = replayCaptureWatermark < 0
+                    ? outputCaptures
+                    : outputCaptures.subList(replayCaptureWatermark,
+                    outputCaptures.size());
+            return anyExactOutputRelation(
+                    activation.capturesOutputRelation,
+                    activation.outputCaptures, captures);
         }
 
         private LoopBoundCut loopBoundCut(
@@ -5177,10 +5252,10 @@ public final class ConcolicRegionRuntime {
      * resource cap.
      *
      * <p>Distinct from {@link LoopBoundCut}: an unroll cut is a modelled
-     * boundary of the bounded semantics and still yields the relation the
-     * bounded path produced, while this one says the replay could not be
-     * carried far enough to answer at all.  It therefore never becomes a
-     * {@code BOUNDED} exit and never publishes a capture.</p>
+     * boundary of the bounded semantics.  A resource cut bounds replay work.
+     * It remains a gap unless an output-relation task had already captured a
+     * demanded output.  Captured ports may become a {@code BOUNDED} prefix;
+     * missing demanded ports remain explicit and keep it incomplete.</p>
      */
     public static final class ReplayLoopResourceCut extends Error {
         private static final long serialVersionUID = 1L;
@@ -5211,6 +5286,18 @@ public final class ConcolicRegionRuntime {
             encoded.addProperty("attemptedBody", attemptedBody);
             encoded.addProperty("reason", REASON);
             return encoded;
+        }
+
+        private static boolean valid(JsonObject encoded) {
+            if (encoded == null
+                    || !REASON.equals(string(encoded, "kind"))
+                    || !REASON.equals(string(encoded, "reason"))
+                    || string(encoded, "loopId").isEmpty()) {
+                return false;
+            }
+            int maxBodies = integer(encoded, "maxLoopBodies", -1);
+            long attempted = longInteger(encoded, "attemptedBody", -1L);
+            return maxBodies > 0 && attempted > maxBodies;
         }
     }
 

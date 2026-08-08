@@ -24,6 +24,7 @@ import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
@@ -146,7 +147,7 @@ public final class RuntimeWorkflowDiscovery {
                 if (!goal.kind().capturesOutputRelation()) {
                     continue;
                 }
-                List<JsonObject> edges = trustedEdges(goal);
+                List<JsonObject> edges = trustedEdges(plan, goal);
                 if (!edges.isEmpty()) {
                     ProducerCandidate candidate =
                             new ProducerCandidate(plan, goal, edges);
@@ -160,17 +161,26 @@ public final class RuntimeWorkflowDiscovery {
             }
         }
 
-        Set<Endpoint> frontier = new LinkedHashSet<>();
+        // This is the target's fatal input frontier, before producer inputs
+        // extend the recursive closure.  Ranking is about freedom left on the
+        // fault predicate itself, so retain this boundary separately from the
+        // producer inputs subsequently added to frontier.
+        Set<Endpoint> fatalInputs = new LinkedHashSet<>();
         for (JsonElement item : selectedTarget.goal.symbolize()) {
             if (!item.isJsonObject()) continue;
             JsonObject action = item.getAsJsonObject();
-            if (!causalAction(action)) continue;
             String input = string(action, "symbol");
-            if (!input.isEmpty()) {
-                frontier.add(new Endpoint(selectedTarget.regionInstanceId,
-                        selectedTarget.exactInput(input)));
+            if (input.isEmpty()) continue;
+            Endpoint endpoint = new Endpoint(
+                    selectedTarget.regionInstanceId,
+                    selectedTarget.exactInput(input));
+            if (causalAction(action)
+                    || exactTrustedProjectedProducer(endpoint,
+                    producersByDownstream)) {
+                fatalInputs.add(endpoint);
             }
         }
+        Set<Endpoint> frontier = new LinkedHashSet<>(fatalInputs);
         Map<Endpoint, ProducerCandidate> producerByEndpoint =
                 new LinkedHashMap<>();
         Map<ProducerCandidate, Demand> selected = new LinkedHashMap<>();
@@ -214,7 +224,7 @@ public final class RuntimeWorkflowDiscovery {
                 }
             }
             choice.demand.addRequiredInputs(choice.coveredEndpoints,
-                    choice.candidate, frontier);
+                    choice.candidate, frontier, producersByDownstream);
         }
 
         Set<Endpoint> discharged = producerByEndpoint.keySet();
@@ -258,6 +268,28 @@ public final class RuntimeWorkflowDiscovery {
             demand.finalizeProjection(selectedEdgeByEndpoint);
         }
 
+        boolean exactDirectPresentation = false;
+        for (JsonElement item : selectedTarget.goal.symbolize()) {
+            if (!item.isJsonObject()) continue;
+            JsonObject action = item.getAsJsonObject();
+            if (!causalAction(action)
+                    || !"PROTOCOL_INPUT".equals(
+                    string(action, "sourceKind"))) {
+                continue;
+            }
+            String input = string(action, "symbol");
+            if (input.isEmpty()) continue;
+            Endpoint endpoint = new Endpoint(
+                    selectedTarget.regionInstanceId,
+                    selectedTarget.exactInput(input));
+            JsonObject edge = selectedEdgeByEndpoint.get(endpoint);
+            if (edge != null && AutomaticRegionEdge
+                    .trustedRuntimeCompositionBinding(edge)) {
+                exactDirectPresentation = true;
+                break;
+            }
+        }
+
         List<Demand> result = new ArrayList<>(selected.values());
         result.sort(Comparator.comparing(Demand::sortKey));
         Set<String> campaignIds = new LinkedHashSet<>();
@@ -270,11 +302,109 @@ public final class RuntimeWorkflowDiscovery {
         Set<String> exactBindings = new LinkedHashSet<>();
         Set<String> causalRegions = new LinkedHashSet<>();
         causalRegions.add(selectedTarget.regionId);
+        Set<String> selectedProducerOccurrences = new LinkedHashSet<>();
+        for (Demand demand : result) {
+            demand.addSelectedProducerOccurrences(
+                    selectedProducerOccurrences);
+        }
+        boolean propagatedBoundedStateTransition = false;
         for (Demand demand : result) {
             causalRegions.add(demand.regionId);
             demand.addExactBindings(exactBindings);
+            propagatedBoundedStateTransition |=
+                    demand.selectsPropagatedBoundedStateTransition(
+                            selectedProducerOccurrences,
+                            selectedTarget.regionInstanceId);
         }
-        return new DemandClosure(result, exactBindings, causalRegions);
+        int stateBackedFatalInputs = stateBackedFatalInputs(fatalInputs,
+                selectedEdgeByEndpoint, result,
+                selectedTarget.regionInstanceId);
+        int residualFatalInputs = 0;
+        for (Endpoint input : fatalInputs) {
+            if (!discharged.contains(input)) residualFatalInputs++;
+        }
+        return new DemandClosure(result, exactBindings, causalRegions,
+                fatalInputs.size(), residualFatalInputs,
+                exactDirectPresentation, propagatedBoundedStateTransition,
+                stateBackedFatalInputs);
+    }
+
+    /**
+     * Counts fatal operands whose selected exact producer ancestry contains
+     * a complete bounded state transition before reaching the target.  This
+     * keeps state evidence attached to the operand it actually explains: one
+     * stateful side of a predicate must not make every other side look fully
+     * backed merely because both occur in the same closure.
+     */
+    private static int stateBackedFatalInputs(
+            Set<Endpoint> fatalInputs,
+            Map<Endpoint, JsonObject> selectedEdgeByEndpoint,
+            List<Demand> demands, String fatalTargetInstance)
+            throws IOException {
+        Map<String, Demand> demandByEdgeId = new LinkedHashMap<>();
+        for (Demand demand : demands) {
+            for (JsonObject edge : demand.selectedEdges.values()) {
+                String edgeId = required(edge, "edgeId");
+                Demand prior = demandByEdgeId.putIfAbsent(edgeId, demand);
+                if (prior != null && prior != demand) {
+                    throw new IOException("selected exact edge belongs to "
+                            + "more than one producer: " + edgeId);
+                }
+            }
+        }
+        int backed = 0;
+        for (Endpoint fatalInput : fatalInputs) {
+            if (reachesBoundedStateTransition(fatalInput,
+                    selectedEdgeByEndpoint, demandByEdgeId,
+                    fatalTargetInstance, new LinkedHashSet<>())) {
+                backed++;
+            }
+        }
+        return backed;
+    }
+
+    private static boolean reachesBoundedStateTransition(
+            Endpoint downstream,
+            Map<Endpoint, JsonObject> selectedEdgeByEndpoint,
+            Map<String, Demand> demandByEdgeId,
+            String fatalTargetInstance, Set<Endpoint> visiting)
+            throws IOException {
+        if (!visiting.add(downstream)) return false;
+        JsonObject edge = selectedEdgeByEndpoint.get(downstream);
+        if (edge == null) return false;
+        Demand demand = demandByEdgeId.get(required(edge, "edgeId"));
+        if (demand == null) {
+            throw new IOException("selected exact edge has no producer "
+                    + "demand: " + required(edge, "edgeId"));
+        }
+        String sourceInstance = required(edge, "fromRegionInstance");
+        Occurrence occurrence = demand.occurrences.require(sourceInstance);
+        OutputClosureContract.Member member = demand.member(edge,
+                occurrence);
+        JsonObject slice = member.slice();
+        if (!fatalTargetInstance.equals(required(edge,
+                "toRegionInstance")) && boundedStateTransition(slice)) {
+            return true;
+        }
+        for (JsonElement input : slice.getAsJsonArray("inputPorts")) {
+            Endpoint upstream = new Endpoint(sourceInstance,
+                    occurrence.exactInput(input.getAsString()));
+            if (demand.requiredInputEndpoints.contains(upstream)
+                    && reachesBoundedStateTransition(upstream,
+                    selectedEdgeByEndpoint, demandByEdgeId,
+                    fatalTargetInstance, visiting)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean boundedStateTransition(JsonObject slice) {
+        return "DEFINITION_INVOCATION_NORMAL_EXIT".equals(
+                string(slice, "outputBoundaryKind"))
+                && "EARLIEST_READ_IN_EXACT_DEFINITION_INVOCATION_V1"
+                .equals(string(slice, "containerPreStateAuthority"))
+                && integer(slice, "foldedMutationCount", 0) > 0;
     }
 
     static boolean causalAction(JsonObject action) {
@@ -282,7 +412,47 @@ public final class RuntimeWorkflowDiscovery {
             throw new IllegalArgumentException(
                     "causal input action is required");
         }
-        return DependencyRole.causalFollow(action.get("dependencyRole"));
+        String role = DependencyRole.normalize(
+                action.get("dependencyRole"));
+        if (DependencyRole.VALUE_FRONTIER.equals(role)) {
+            return true;
+        }
+        // A configured RPC response object is a concrete VM carrier, but it
+        // is also the exact conduit to the producer that returned it. Follow
+        // only this lossless runtime contract; ordinary object owners remain
+        // closure terminals and never reopen whole-object dependency search.
+        return DependencyRole.CONCRETE_STRUCTURE_CARRIER.equals(role)
+                && "PROTOCOL_INPUT".equals(string(action, "sourceKind"))
+                && "RESPONSE".equals(firstNonBlank(
+                string(action, "protocolDirection"),
+                string(action, "direction")))
+                && "TRUSTED_CONFIGURED_RPC_MAPPING_V1".equals(
+                string(action, "authority"))
+                && !string(action, "mappingId").isEmpty();
+    }
+
+    /**
+     * A concrete carrier does not normally extend the value frontier.  One
+     * exact descendant projected across a trusted runtime protocol edge does:
+     * the edge proves both the field path and the producer occurrence, while
+     * the carrier itself remains concrete.
+     */
+    private static boolean exactTrustedProjectedProducer(
+            Endpoint endpoint,
+            Map<Endpoint, List<ProducerCandidate>> producersByDownstream) {
+        for (ProducerCandidate candidate
+                : producersByDownstream.getOrDefault(endpoint,
+                java.util.Collections.emptyList())) {
+            for (JsonObject edge : candidate.edgesFor(endpoint)) {
+                if (bool(edge, "rpcDescendantProjection", false)
+                        && !string(edge, "projectionOfEdgeId").isEmpty()
+                        && AutomaticRegionEdge
+                        .trustedRuntimeCompositionBinding(edge)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private List<Target> discoverTargets() throws IOException {
@@ -363,14 +533,42 @@ public final class RuntimeWorkflowDiscovery {
         return target;
     }
 
-    private static List<JsonObject> trustedEdges(Goal goal) {
+    private static List<JsonObject> trustedEdges(RegionInstancePlan plan,
+                                                 Goal goal) {
         List<JsonObject> result = new ArrayList<>();
         OutputClosureContract closure = goal.outputClosure();
         if (closure != null) {
-            for (JsonObject edge : closure.causalEdges()) {
-                if (AutomaticRegionEdge
+            // A logical summary's outputClosure is canonical and therefore
+            // contains only its canonical occurrence edges.  edgeBindings is
+            // the exact-occurrence ledger; index every trusted outgoing edge
+            // from this logical region so a later loop/RPC occurrence can
+            // satisfy an exact downstream port while still reusing one VM
+            // relation.
+            Set<String> selectedIds = new LinkedHashSet<>();
+            for (JsonElement element : goal.edgeBindings()) {
+                if (!element.isJsonObject()) continue;
+                JsonObject edge = element.getAsJsonObject();
+                String fromRegion = string(edge, "fromRegion");
+                String fromInstance = string(edge,
+                        "fromRegionInstance");
+                boolean sameRegion = plan.regionId().equals(fromRegion)
+                        || fromInstance.equals(plan.regionInstanceId())
+                        || fromInstance.startsWith(plan.regionId() + "@");
+                if (!sameRegion || string(edge, "fromOutputPort").isEmpty()
+                        || !AutomaticRegionEdge
                         .trustedRuntimeCompositionBinding(edge)) {
-                    result.add(edge.deepCopy());
+                    continue;
+                }
+                String id = string(edge, "edgeId");
+                if (selectedIds.add(id)) result.add(edge.deepCopy());
+            }
+            // Older/small artifacts may carry only the canonical contract.
+            if (result.isEmpty()) {
+                for (JsonObject edge : closure.causalEdges()) {
+                    if (AutomaticRegionEdge
+                            .trustedRuntimeCompositionBinding(edge)) {
+                        result.add(edge.deepCopy());
+                    }
                 }
             }
             return result;
@@ -697,7 +895,9 @@ public final class RuntimeWorkflowDiscovery {
 
         private void addRequiredInputs(Set<Endpoint> endpoints,
                                        ProducerCandidate candidate,
-                                       Set<Endpoint> frontier)
+                                       Set<Endpoint> frontier,
+                                       Map<Endpoint, List<ProducerCandidate>>
+                                               producersByDownstream)
                 throws IOException {
             if (goal.outputClosure() == null) return;
             for (Endpoint target : endpoints) {
@@ -716,9 +916,11 @@ public final class RuntimeWorkflowDiscovery {
                 for (JsonElement input : member.slice()
                         .getAsJsonArray("inputPorts")) {
                     String port = input.getAsString();
-                    if (causalPort(goal, port)) {
-                        Endpoint endpoint = new Endpoint(sourceInstance,
-                                occurrence.exactInput(port));
+                    Endpoint endpoint = new Endpoint(sourceInstance,
+                            occurrence.exactInput(port));
+                    if (causalPort(goal, port)
+                            || exactTrustedProjectedProducer(endpoint,
+                            producersByDownstream)) {
                         requiredInputEndpoints.add(endpoint);
                         frontier.add(endpoint);
                     }
@@ -809,6 +1011,41 @@ public final class RuntimeWorkflowDiscovery {
                 bindings.add(required(edge, "fromRegionInstance") + "\n"
                         + required(edge, "fromOutputPort") + "\n"
                         + target.instance + "\n" + target.input);
+            }
+        }
+
+        /**
+         * True only when an exact selected output is one complete bounded
+         * transition and its selected edge enters another selected producer
+         * occurrence before the fatal target.  A target-local cache update
+         * is common to every presentation of the same failure and therefore
+         * must not make an otherwise one-shot input look stateful.
+         */
+        private boolean selectsPropagatedBoundedStateTransition(
+                Set<String> selectedProducerOccurrences,
+                String fatalTargetInstance) throws IOException {
+            for (JsonObject edge : selectedEdges.values()) {
+                String consumer = required(edge, "toRegionInstance");
+                if (consumer.equals(fatalTargetInstance)
+                        || !selectedProducerOccurrences.contains(consumer)) {
+                    continue;
+                }
+                Occurrence occurrence = occurrences.require(
+                        required(edge, "fromRegionInstance"));
+                JsonObject slice = member(edge, occurrence).slice();
+                if (boundedStateTransition(slice)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void addSelectedProducerOccurrences(Set<String> result)
+                throws IOException {
+            for (JsonObject edge : selectedEdges.values()) {
+                String occurrence = required(edge, "fromRegionInstance");
+                occurrences.require(occurrence);
+                result.add(occurrence);
             }
         }
 
@@ -903,6 +1140,11 @@ public final class RuntimeWorkflowDiscovery {
             return edges.get(0);
         }
 
+        private List<JsonObject> edgesFor(Endpoint endpoint) {
+            return edgesByDownstream.getOrDefault(endpoint,
+                    java.util.Collections.emptyList());
+        }
+
         private String semanticKey() {
             OutputClosureContract closure = goal.outputClosure();
             return plan.regionId() + "\n" + plan.logicalRegionId() + "\n"
@@ -970,13 +1212,28 @@ public final class RuntimeWorkflowDiscovery {
         private final List<Demand> demands;
         private final Set<String> exactBindings;
         private final Set<String> causalRegions;
+        private final int fatalInputs;
+        private final int residualFatalInputs;
+        private final boolean exactDirectPresentation;
+        private final boolean propagatedBoundedStateTransition;
+        private final int stateBackedFatalInputs;
 
         private DemandClosure(List<Demand> demands,
                               Set<String> exactBindings,
-                              Set<String> causalRegions) {
+                              Set<String> causalRegions, int fatalInputs,
+                              int residualFatalInputs,
+                              boolean exactDirectPresentation,
+                              boolean propagatedBoundedStateTransition,
+                              int stateBackedFatalInputs) {
             this.demands = demands;
             this.exactBindings = exactBindings;
             this.causalRegions = causalRegions;
+            this.fatalInputs = fatalInputs;
+            this.residualFatalInputs = residualFatalInputs;
+            this.exactDirectPresentation = exactDirectPresentation;
+            this.propagatedBoundedStateTransition =
+                    propagatedBoundedStateTransition;
+            this.stateBackedFatalInputs = stateBackedFatalInputs;
         }
     }
 
@@ -1062,13 +1319,28 @@ public final class RuntimeWorkflowDiscovery {
 
     private static final class TargetRank {
         private final boolean valid;
+        private final boolean exactDirectPresentation;
+        private final boolean propagatedBoundedStateTransition;
+        private final int stateBackedFatalInputs;
+        private final int residualFatalInputs;
+        private final int fatalInputs;
         private final int producerGoals;
         private final int exactBindings;
         private final int causalRegions;
 
-        private TargetRank(boolean valid, int producerGoals,
+        private TargetRank(boolean valid, boolean exactDirectPresentation,
+                           boolean propagatedBoundedStateTransition,
+                           int stateBackedFatalInputs,
+                           int residualFatalInputs,
+                           int fatalInputs, int producerGoals,
                            int exactBindings, int causalRegions) {
             this.valid = valid;
+            this.exactDirectPresentation = exactDirectPresentation;
+            this.propagatedBoundedStateTransition =
+                    propagatedBoundedStateTransition;
+            this.stateBackedFatalInputs = stateBackedFatalInputs;
+            this.residualFatalInputs = residualFatalInputs;
+            this.fatalInputs = fatalInputs;
             this.producerGoals = producerGoals;
             this.exactBindings = exactBindings;
             this.causalRegions = causalRegions;
@@ -1081,26 +1353,70 @@ public final class RuntimeWorkflowDiscovery {
             if (closure.demands.isEmpty()) {
                 return invalid();
             }
-            return new TargetRank(true, closure.demands.size(),
+            return new TargetRank(true, closure.exactDirectPresentation,
+                    closure.propagatedBoundedStateTransition,
+                    closure.stateBackedFatalInputs,
+                    closure.residualFatalInputs,
+                    closure.fatalInputs, closure.demands.size(),
                     closure.exactBindings.size(),
                     closure.causalRegions.size());
         }
 
         private static TargetRank invalid() {
-            return new TargetRank(false, 0, 0, 0);
+            return new TargetRank(false, false, false, 0, Integer.MAX_VALUE,
+                    Integer.MAX_VALUE, Integer.MAX_VALUE,
+                    Integer.MAX_VALUE, Integer.MAX_VALUE);
         }
 
         private static int compare(TargetRank left, TargetRank right) {
             int compared = Boolean.compare(right.valid, left.valid);
             if (compared != 0) return compared;
-            compared = Integer.compare(right.producerGoals,
-                    left.producerGoals);
+            // Prefer an occurrence where a failure-relevant protocol input
+            // is presented by one exact, trusted cross-boundary edge.  A
+            // same-process forwarding occurrence can have a much smaller
+            // static slice while omitting the value that the remote peer
+            // actually supplied.  This is trace/schema evidence, never an
+            // application method-name heuristic.
+            compared = Boolean.compare(right.exactDirectPresentation,
+                    left.exactDirectPresentation);
             if (compared != 0) return compared;
-            compared = Integer.compare(right.exactBindings,
-                    left.exactBindings);
+            // A cheaper closure is not better when it leaves a fatal operand
+            // free.  Rank the semantic boundary first; only equally closed
+            // predicates are compared by replay/composition cost.
+            compared = Integer.compare(left.residualFatalInputs,
+                    right.residualFatalInputs);
             if (compared != 0) return compared;
-            return Integer.compare(right.causalRegions,
-                    left.causalRegions);
+            // Prefer the occurrence whose exact producer ancestry explains
+            // more of the fatal predicate with bounded state evolution.  A
+            // global "some state exists" bit is insufficient for a two-sided
+            // predicate when only one operand is actually state-backed.
+            compared = Integer.compare(right.stateBackedFatalInputs,
+                    left.stateBackedFatalInputs);
+            if (compared != 0) return compared;
+            // Once the fatal frontier is equally closed, prefer a target
+            // whose exact selected producer relation proves a bounded state
+            // evolution.  This distinguishes coordination through evolving
+            // cached state from a cheaper one-shot forwarding path without
+            // relying on application identities.  It is deliberately a
+            // boolean: replay/composition cost still decides among equally
+            // stateful closures.
+            compared = Boolean.compare(
+                    right.propagatedBoundedStateTransition,
+                    left.propagatedBoundedStateTransition);
+            if (compared != 0) return compared;
+            compared = Integer.compare(left.fatalInputs,
+                    right.fatalInputs);
+            if (compared != 0) return compared;
+            compared = Integer.compare(left.producerGoals,
+                    right.producerGoals);
+            if (compared != 0) return compared;
+            compared = Integer.compare(left.causalRegions,
+                    right.causalRegions);
+            if (compared != 0) return compared;
+            compared = Integer.compare(left.exactBindings,
+                    right.exactBindings);
+            if (compared != 0) return compared;
+            return compared;
         }
     }
 

@@ -361,12 +361,14 @@ public final class RegionInstancePlan {
          * Stable VM contract for duplicate exact-goal detection.
          *
          * <p>Absolute trace positions and heap identities are evidence for
-         * this run, not part of a replayable relation.  Everything else that
-         * can affect materialization, branch selection, output capture or
-         * causal composition is retained.  Arrays whose wire meaning is a
-         * set are sorted before comparison.</p>
+         * this run, not part of a replayable relation.  Consumer-edge ledgers
+         * are composition metadata and are likewise excluded; the logical
+         * goal retains their union.  Everything that can affect VM
+         * materialization, branch selection or output capture is retained.
+         * Arrays whose wire meaning is a set are sorted before comparison.</p>
          */
         private static String exactExecutionContract(JsonObject goal) {
+            Set<String> outgoingLedgers = outgoingConsumerLedgerIds(goal);
             JsonObject contract = new JsonObject();
             for (Map.Entry<String, JsonElement> field
                     : goal.entrySet()) {
@@ -377,13 +379,14 @@ public final class RegionInstancePlan {
                     continue;
                 }
                 contract.add(name, stableContractValue(
-                        name, field.getValue()));
+                        name, field.getValue(), outgoingLedgers));
             }
             return CanonicalJson.render(contract);
         }
 
         private static JsonElement stableContractValue(
-                String field, JsonElement value) {
+                String field, JsonElement value,
+                Set<String> outgoingLedgers) {
             if (value == null || value.isJsonNull()
                     || value.isJsonPrimitive()) {
                 return value == null ? com.google.gson.JsonNull.INSTANCE
@@ -399,16 +402,21 @@ public final class RegionInstancePlan {
                         continue;
                     }
                     result.add(name, stableContractValue(
-                            name, entry.getValue()));
+                            name, entry.getValue(), outgoingLedgers));
                 }
                 return result;
             }
 
             List<JsonElement> elements = new ArrayList<>();
             for (JsonElement element : value.getAsJsonArray()) {
+                if (outgoingLedgerElement(field, element,
+                        outgoingLedgers)) {
+                    continue;
+                }
                 // The containing field decides whether this array is a set;
                 // nested arrays (notably ordered field paths) keep order.
-                elements.add(stableContractValue("", element));
+                elements.add(stableContractValue("", element,
+                        outgoingLedgers));
             }
             if (setValuedContractField(field)) {
                 elements.sort(Comparator.comparing(CanonicalJson::render));
@@ -416,6 +424,59 @@ public final class RegionInstancePlan {
             JsonArray result = new JsonArray();
             for (JsonElement element : elements) result.add(element);
             return result;
+        }
+
+        private static Set<String> outgoingConsumerLedgerIds(
+                JsonObject goal) {
+            Set<String> outputs = new LinkedHashSet<>();
+            for (JsonElement element : closureMembers(goal)) {
+                if (!element.isJsonObject()) continue;
+                String port = portId(element.getAsJsonObject(), true);
+                if (!port.isEmpty()) outputs.add(port);
+            }
+            String producerInstance = string(object(object(goal,
+                    OutputClosureContract.FIELD), "producer"),
+                    "regionInstanceId");
+            Set<String> result = new LinkedHashSet<>();
+            for (JsonElement element : array(goal, "edgeBindings")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject binding = element.getAsJsonObject();
+                String edgeId = string(binding, "edgeId");
+                String fromPort = firstNonBlank(string(binding,
+                        "fromOutputPort"), string(binding, "fromPort"));
+                boolean exactProducer = !producerInstance.isEmpty()
+                        && producerInstance.equals(string(binding,
+                        "fromRegionInstance"));
+                if (!edgeId.isEmpty()
+                        && (exactProducer || outputs.contains(fromPort))) {
+                    result.add(edgeId);
+                }
+            }
+            return result;
+        }
+
+        /**
+         * Only an outgoing binding named by the exact goal proves that an
+         * edge id is a consumer ledger.  Slice-internal causal ids remain
+         * part of the VM contract even when they happen to use the same
+         * field name.
+         */
+        private static boolean outgoingLedgerElement(
+                String field, JsonElement element,
+                Set<String> outgoingLedgers) {
+            if (outgoingLedgers.isEmpty()) return false;
+            if ("causalEdgeIds".equals(field)
+                    && element.isJsonPrimitive()
+                    && element.getAsJsonPrimitive().isString()) {
+                return outgoingLedgers.contains(element.getAsString());
+            }
+            if (("edgeBindings".equals(field)
+                    || "causalEdges".equals(field))
+                    && element.isJsonObject()) {
+                return outgoingLedgers.contains(string(
+                        element.getAsJsonObject(), "edgeId"));
+            }
+            return false;
         }
 
         private static boolean setValuedContractField(String field) {

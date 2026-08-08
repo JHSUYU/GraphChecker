@@ -178,6 +178,155 @@ public class RuntimeSelectedRegionFinalizerTest {
         assertEquals(Boolean.FALSE, evidence.get("observedOutcome"));
     }
 
+    @Test
+    public void fatalPrefixDropsPostBranchPortsAndTrimsHeapOccurrences()
+            throws Exception {
+        File skeleton = skeleton("fatal-prefix-skeleton.jsonl");
+        String earlyField = "<example.Root: int early>";
+        String lateField = "<example.Root: int late>";
+        String earlyLocal = METHOD + "::$early";
+        String lateLocal = METHOD + "::$late";
+        String joined = METHOD + "::$joined";
+        Map<String, Object> early = heapRead("DF.early", earlyField,
+                earlyLocal, "early", 40);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> earlyBindings = new ArrayList<>(
+                (List<Map<String, Object>>) early.get(
+                        "runtimeFieldBindings"));
+        early.put("runtimeFieldBindings", earlyBindings);
+        Map<String, Object> after = new LinkedHashMap<>(
+                earlyBindings.get(0));
+        after.put("eventSeq", 60L);
+        earlyBindings.add(after);
+        File refined = writeRows("fatal-prefix-refined.jsonl",
+                early,
+                heapRead("DF.late", lateField, lateLocal, "late", 70),
+                refinedEdge("DF.early.join", "local_def_use",
+                        "VALUE_PASS", earlyLocal, joined, METHOD + "#u7",
+                        7, "$joined = $early", null, null, null, false),
+                refinedEdge("DF.late.join", "local_def_use",
+                        "VALUE_PASS", lateLocal, joined, METHOD + "#u8",
+                        8, "$joined = $late", null, null, null, false),
+                refinedEdge("DF.failure", "exception_guard", "GUARD",
+                        joined, METHOD + "#u20#exception:example.Failure",
+                        METHOD + "#u9", 9,
+                        "if $joined == 0 goto throw", null,
+                        METHOD + "#u9", true, false));
+        Map<String, Object> target = object("schemaVersion", 3,
+                "kind", "RUNTIME_REGION_ACTIVATION",
+                "regionId", "REGION.1", "rootCallId", 11,
+                "selection", "EXCEPTION_CONTEXT",
+                "callIds", Collections.singletonList(101L),
+                "observedMethods", Collections.singletonList(METHOD));
+        Map<String, Object> observation = object("kind", "BRANCH",
+                "eventSeq", 50L, "method", METHOD, "callId", 101L,
+                "siteId", METHOD + "#u9", "outcome", false);
+        Map<String, Object> laterOccurrence = object("kind", "BRANCH",
+                "eventSeq", 80L, "method", METHOD, "callId", 101L,
+                "siteId", METHOD + "#u9", "outcome", false);
+        File regions = new File(folder.getRoot(),
+                "fatal-prefix-regions.jsonl");
+
+        RuntimeSelectedRegionFinalizer.finalizeRegions(refined, skeleton,
+                regions, new File(folder.getRoot(),
+                "fatal-prefix-edges.jsonl"),
+                Collections.singleton(METHOD),
+                Collections.singletonList(target),
+                Arrays.asList(observation, laterOccurrence));
+
+        JsonObject region = GSON.fromJson(Files.readAllLines(
+                regions.toPath(), StandardCharsets.UTF_8).get(0),
+                JsonObject.class);
+        assertEquals(1, region.getAsJsonArray("symbolicInputs").size());
+        JsonObject input = region.getAsJsonArray("symbolicInputs")
+                .get(0).getAsJsonObject();
+        assertEquals(earlyField, input.getAsJsonArray(
+                "fieldPathDeclarations").get(0).getAsString());
+        assertEquals(1, input.getAsJsonArray("runtimeAccesses").size());
+        assertEquals(40L, input.getAsJsonArray("runtimeAccesses").get(0)
+                .getAsJsonObject().get("eventSeq").getAsLong());
+        assertEquals(50L, input.get("fatalPrefixEventSeq").getAsLong());
+        assertEquals(1, ((List<?>) target.get(
+                "postFatalInputPorts")).size());
+    }
+
+    @Test
+    public void trustedProtocolReceiveBeforeFatalRemainsTheSourcePort()
+            throws Exception {
+        String producer = "<example.Producer: void run()>";
+        String targetMethod = "<example.Target: void run()>";
+        String wire = producer + "::$wire";
+        String username = targetMethod + ".param0:java.lang.String";
+        File skeleton = writeRows("fatal-prefix-rpc-skeleton.jsonl",
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.producer",
+                        "rootMethod", producer, "anchorMethod", producer,
+                        "methods", Collections.singletonList(producer),
+                        "selection", "PROTOCOL_CONTEXT"),
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.target",
+                        "rootMethod", targetMethod,
+                        "anchorMethod", targetMethod,
+                        "methods", Collections.singletonList(targetMethod),
+                        "selection", "EXCEPTION_CONTEXT"));
+        Map<String, Object> protocol = object(
+                "mappingId", "example.request", "port", "username",
+                "direction", "REQUEST", "transport", "RPC",
+                "authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
+                "fromRegionId", "REGION.producer",
+                "toRegionId", "REGION.target",
+                "fromRootCallId", 1, "toRootCallId", 2,
+                "fromCell", wire, "toCell", username,
+                "sendEventSeq", 30, "receiveEventSeq", 40);
+        File refined = writeRows("fatal-prefix-rpc-refined.jsonl",
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.rpc", "kind", "protocol_transfer",
+                        "transferKind", "PROTOCOL_TRANSFER",
+                        "method", producer, "regionIds", Arrays.asList(
+                        "REGION.producer", "REGION.target"),
+                        "runtimeObserved", true,
+                        "runtimeProtocolBindings",
+                        Collections.singletonList(protocol)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.failure", "kind", "exception_guard",
+                        "transferKind", "GUARD", "method", targetMethod,
+                        "regionIds", Collections.singletonList(
+                        "REGION.target"), "fromCell", username,
+                        "toCell", targetMethod
+                        + "#u9#exception:example.Failure",
+                        "siteId", targetMethod + "#u9", "unitIndex", 9));
+        Map<String, Object> target = activationAtFatalSite(
+                "REGION.target", 2, "EXCEPTION_CONTEXT", targetMethod,
+                2L, targetMethod + "#u9");
+        target.put("observedFatalTargets", Collections.singletonList(
+                observedFatalTarget(targetMethod + "#u9", targetMethod,
+                        50L, 2L, false)));
+        File regions = new File(folder.getRoot(),
+                "fatal-prefix-rpc-regions.jsonl");
+
+        RuntimeSelectedRegionFinalizer.finalizeRegions(refined, skeleton,
+                regions, new File(folder.getRoot(),
+                        "fatal-prefix-rpc-edges.jsonl"),
+                Arrays.asList(producer, targetMethod), Arrays.asList(
+                        activation("REGION.producer", 1,
+                                "PROTOCOL_CONTEXT", producer), target));
+
+        List<JsonObject> rows = readJsonLines(regions);
+        JsonObject targetRegion = rows.get(0).get("regionId").getAsString()
+                .equals("REGION.target") ? rows.get(0) : rows.get(1);
+        assertEquals(1, targetRegion.getAsJsonArray(
+                "symbolicInputs").size());
+        JsonObject input = targetRegion.getAsJsonArray("symbolicInputs")
+                .get(0).getAsJsonObject();
+        assertEquals("PROTOCOL_INPUT", input.get("sourceKind")
+                .getAsString());
+        assertEquals(username, input.get("cell").getAsString());
+        assertEquals("TRUSTED_PROTOCOL_RECEIVE_PREFIX_V1",
+                input.get("fatalPrefixAuthority").getAsString());
+    }
+
     @Test(expected = IOException.class)
     public void explicitFatalTargetRequiresActivationLocalBranchEvidence()
             throws Exception {
@@ -986,7 +1135,9 @@ public class RuntimeSelectedRegionFinalizerTest {
         Map<String, Object> protocolBinding = object(
                 "mappingId", "example.request",
                 "port", "authenticationId", "direction", "REQUEST",
-                "transport", "RPC", "fromRegionId", "REGION.dispatcher",
+                "transport", "RPC",
+                "authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
+                "fromRegionId", "REGION.dispatcher",
                 "toRegionId", "REGION.target",
                 "fromRootCallId", 2, "toRootCallId", 3,
                 "fromCell", wireValue, "toCell", request,
@@ -1083,6 +1234,7 @@ public class RuntimeSelectedRegionFinalizerTest {
         Map<String, Object> first = object(
                 "mappingId", "example.request", "port", "request",
                 "direction", "REQUEST", "transport", "RPC",
+                "authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
                 "fromRegionId", "REGION.producer",
                 "toRegionId", "REGION.target",
                 "fromRootCallId", 1, "toRootCallId", 2,
@@ -1184,6 +1336,7 @@ public class RuntimeSelectedRegionFinalizerTest {
         Map<String, Object> neededProtocol = object(
                 "mappingId", "example.needed", "port", "needed",
                 "direction", "REQUEST", "transport", "RPC",
+                "authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
                 "fromRegionId", "REGION.producer",
                 "toRegionId", "REGION.target",
                 "fromRootCallId", 3, "toRootCallId", 4,
@@ -1192,6 +1345,7 @@ public class RuntimeSelectedRegionFinalizerTest {
         Map<String, Object> noiseProtocol = object(
                 "mappingId", "example.noise", "port", "noise",
                 "direction", "REQUEST", "transport", "RPC",
+                "authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
                 "fromRegionId", "REGION.producer",
                 "toRegionId", "REGION.target",
                 "fromRootCallId", 3, "toRootCallId", 4,
@@ -1200,6 +1354,7 @@ public class RuntimeSelectedRegionFinalizerTest {
         Map<String, Object> alsoNeededProtocol = object(
                 "mappingId", "example.alsoNeeded", "port", "alsoNeeded",
                 "direction", "REQUEST", "transport", "RPC",
+                "authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
                 "fromRegionId", "REGION.producer",
                 "toRegionId", "REGION.target",
                 "fromRootCallId", 3, "toRootCallId", 4,
@@ -2314,6 +2469,7 @@ public class RuntimeSelectedRegionFinalizerTest {
         Map<String, Object> protocol = object(
                 "mappingId", "example.fetch", "port", "response",
                 "direction", "RESPONSE", "transport", "RPC",
+                "authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
                 "fromRegionId", "REGION.producer",
                 "toRegionId", "REGION.consumer",
                 "fromRootCallId", 1, "toRootCallId", 2,
@@ -2550,6 +2706,7 @@ public class RuntimeSelectedRegionFinalizerTest {
         Map<String, Object> protocol = object(
                 "mappingId", "example.fetch", "port", "response",
                 "direction", "RESPONSE", "transport", "RPC",
+                "authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
                 "fromRegionId", "REGION.producer",
                 "toRegionId", "REGION.consumer",
                 "fromRootCallId", 1, "toRootCallId", 2,
@@ -3014,6 +3171,177 @@ public class RuntimeSelectedRegionFinalizerTest {
         assertTrue(refusal, refusal.startsWith("BOUND_INSUFFICIENT: "));
     }
 
+    @Test
+    public void demandedMemberLeavesProjectByMutationTokenNotSlotOrValue() {
+        String keyId = "<example.Member: int keyId>";
+        String expiry = "<example.Member: long expiry>";
+        String ignored = "<example.Member: int unrelated>";
+        Map<String, Object> access = object(
+                "process", "p", "rootCallId", 11L,
+                "mutatorDeclaredCallee",
+                "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>",
+                "mutationInvocationId", 31L,
+                "containerMemberToken", "MEMBER.trace-definition",
+                "containerMemberIdentityAuthority",
+                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1",
+                "containerObjectId", 50,
+                "containerKeyObjectId", 59,
+                "containerValueObjectId", 60,
+                "containerMemberFieldBindings", Arrays.asList(
+                        object("field", keyId, "eventSeq", 7L),
+                        object("field", expiry, "eventSeq", 8L),
+                        object("field", ignored, "eventSeq", 9L)));
+        Map<String, Object> pre = object(
+                "portId", "REGION.1.in.state", "rootCallId", 11L,
+                "boundedContainerStateRole", "MUTATION_PRE_STATE");
+        Map<String, Object> post = object(
+                "portId", "REGION.1.out.state", "rootCallId", 11L,
+                "boundedContainerStateRole", "MUTATION_POST_STATE",
+                "boundedContainerPreStatePorts",
+                Collections.singletonList("REGION.1.in.state"),
+                "runtimeAccesses", Collections.singletonList(access));
+        Map<String, Object> region = object(
+                "regionId", "REGION.1",
+                "symbolicInputs", Collections.singletonList(pre),
+                "outputs", Collections.singletonList(post));
+        Map<String, Long> lanes = new LinkedHashMap<>();
+        lanes.put("REGION.1\n11", 4L);
+
+        RuntimeSelectedRegionFinalizer.projectDemandedContainerMembers(
+                Collections.singletonList(region),
+                new LinkedHashSet<>(Arrays.asList(keyId, expiry)), lanes);
+
+        JsonObject encoded = GSON.toJsonTree(region).getAsJsonObject();
+        JsonObject preProjection = encoded.getAsJsonArray("symbolicInputs")
+                .get(0).getAsJsonObject()
+                .getAsJsonArray("boundedContainerMemberProjections")
+                .get(0).getAsJsonObject();
+        JsonObject postProjection = encoded.getAsJsonArray("outputs")
+                .get(0).getAsJsonObject()
+                .getAsJsonArray("boundedContainerMemberProjections")
+                .get(0).getAsJsonObject();
+        assertEquals("MEMBER.trace-definition",
+                preProjection.get("memberToken").getAsString());
+        assertEquals(preProjection.get("memberToken"),
+                postProjection.get("memberToken"));
+        assertEquals("PRE_STATE",
+                preProjection.get("stateRole").getAsString());
+        assertEquals("POST_STATE",
+                postProjection.get("stateRole").getAsString());
+        assertEquals(3, postProjection.getAsJsonArray("leaves").size());
+        assertEquals("PRESENT", postProjection.getAsJsonArray("leaves")
+                .get(0).getAsJsonObject().get("kind").getAsString());
+        String projection = postProjection.toString();
+        assertTrue(projection.contains(keyId));
+        assertTrue(projection.contains(expiry));
+        assertFalse(projection.contains(ignored));
+        assertFalse(postProjection.has("index"));
+        assertFalse(postProjection.has("keyValue"));
+        assertEquals("SINGLE_WRITER_REQUIRED", encoded
+                .getAsJsonArray("outputs").get(0).getAsJsonObject()
+                .get("containerTimelineWriterPolicy").getAsString());
+    }
+
+    @Test
+    public void demandedMemberProjectionRequiresExactContainerIdentity() {
+        String field = "<example.Member: int keyId>";
+        Map<String, Object> access = object(
+                "process", "p", "rootCallId", 11L,
+                "mutatorDeclaredCallee",
+                "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>",
+                "mutationInvocationId", 31L,
+                "containerMemberToken", "MEMBER.exact-mutation",
+                "containerMemberIdentityAuthority",
+                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1",
+                // A payload/value identity is deliberately present.  It is
+                // not the container whose state the mutation changes.
+                "valueObjectId", 50,
+                "containerKeyObjectId", 59,
+                "containerValueObjectId", 60,
+                "containerMemberFieldBindings", Collections.singletonList(
+                        object("field", field, "eventSeq", 7L)));
+        Map<String, Object> post = object(
+                "portId", "REGION.1.out.state", "rootCallId", 11L,
+                "boundedContainerStateRole", "MUTATION_POST_STATE",
+                "runtimeAccesses", Collections.singletonList(access));
+        Map<String, Object> region = object(
+                "regionId", "REGION.1",
+                "symbolicInputs", Collections.emptyList(),
+                "outputs", Collections.singletonList(post));
+        Map<String, Long> lanes = new LinkedHashMap<>();
+        lanes.put("REGION.1\n11", 4L);
+
+        RuntimeSelectedRegionFinalizer.projectDemandedContainerMembers(
+                Collections.singletonList(region),
+                Collections.singleton(field), lanes);
+
+        assertEquals("BLOCKED",
+                post.get("boundedContainerMemberProjectionAdmission"));
+        assertEquals("MISSING_EXACT_CONTAINER_IDENTITY",
+                post.get("boundedContainerMemberProjectionBlocker"));
+        assertFalse(post.containsKey("boundedContainerMemberProjections"));
+    }
+
+    @Test
+    public void memberProjectionRecomputesFieldsOnRetainedProgram() {
+        String kept = "<example.Member: int keyId>";
+        String discarded = "<example.Member: long unrelated>";
+        String guard = METHOD + "::z0";
+        Map<String, Object> access = object(
+                "process", "p", "rootCallId", 11L,
+                "mutatorDeclaredCallee",
+                "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>",
+                "mutationInvocationId", 31L,
+                "containerMemberToken", "MEMBER.retained",
+                "containerMemberIdentityAuthority",
+                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1",
+                "containerObjectId", 50,
+                "containerKeyObjectId", 59,
+                "containerValueObjectId", 60,
+                "containerMemberFieldBindings", Arrays.asList(
+                        object("field", kept, "eventSeq", 7L),
+                        object("field", discarded, "eventSeq", 8L)));
+        Map<String, Object> post = object(
+                "portId", "REGION.1.out.state", "rootCallId", 11L,
+                "boundedContainerStateRole", "MUTATION_POST_STATE",
+                "runtimeAccesses", Collections.singletonList(access));
+        Map<String, Object> retained = object(
+                "regionId", "REGION.1", "selection",
+                "EXCEPTION_CONTEXT", "symbolicInputs",
+                Collections.emptyList(), "outputs",
+                Collections.singletonList(post));
+        List<Map<String, Object>> graph = Arrays.asList(
+                object("transferKind", "GUARD", "fromCell", guard,
+                        "toCell", METHOD + "#u9#exception:example.Fatal",
+                        "regionIds", Collections.singletonList("REGION.1")),
+                object("transferKind", "HEAP_READ", "fromCell", kept,
+                        "toCell", guard, "regionIds",
+                        Collections.singletonList("REGION.1")),
+                object("transferKind", "HEAP_WRITE", "fromCell",
+                        METHOD + "::i0", "toCell", kept, "regionIds",
+                        Collections.singletonList("REGION.1")),
+                // This field belonged only to a definition removed by the
+                // target-first closure and must not widen the retained member.
+                object("transferKind", "HEAP_READ", "fromCell", discarded,
+                        "toCell", "<discarded.Root: void run()>::z0",
+                        "regionIds", Collections.singletonList("REGION.D")),
+                object("transferKind", "HEAP_WRITE", "fromCell",
+                        "<discarded.Root: void run()>::j0", "toCell",
+                        discarded, "regionIds",
+                        Collections.singletonList("REGION.D")));
+        Map<String, Long> lanes = new LinkedHashMap<>();
+        lanes.put("REGION.1\n11", 4L);
+
+        RuntimeSelectedRegionFinalizer
+                .projectFailureRelevantContainerMembers(
+                        Collections.singletonList(retained), graph, lanes);
+
+        String projection = String.valueOf(
+                post.get("boundedContainerMemberProjections"));
+        assertTrue(projection.contains(kept));
+        assertFalse(projection.contains(discarded));
+    }
+
     private static Map<String, Object> object(Object... values) {
         Map<String, Object> result = new LinkedHashMap<>();
         for (int index = 0; index < values.length; index += 2) {
@@ -3037,7 +3365,8 @@ public class RuntimeSelectedRegionFinalizerTest {
                 "observedMethods", Collections.singletonList(method));
         if (selection != null && selection.startsWith("EXCEPTION")) {
             result.put("observedFatalTargets", Collections.singletonList(
-                    observedFatalTarget(method + "#u9", method, 1L,
+                    observedFatalTarget(method + "#u9", method,
+                            Long.MAX_VALUE,
                             rootCallId, true)));
         }
         return result;
@@ -3058,7 +3387,8 @@ public class RuntimeSelectedRegionFinalizerTest {
         Map<String, Object> result = activation(region, rootCallId,
                 selection, method, laneId);
         result.put("observedFatalTargets", Collections.singletonList(
-                observedFatalTarget(site, method, 1L, rootCallId, true)));
+                observedFatalTarget(site, method, Long.MAX_VALUE,
+                        rootCallId, true)));
         return result;
     }
 

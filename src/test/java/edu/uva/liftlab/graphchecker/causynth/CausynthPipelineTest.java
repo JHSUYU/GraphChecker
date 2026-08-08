@@ -10,6 +10,7 @@ import org.junit.After;
 import org.junit.Test;
 import soot.Body;
 import soot.G;
+import soot.ArrayType;
 import soot.IntType;
 import soot.Local;
 import soot.Modifier;
@@ -73,6 +74,16 @@ public class CausynthPipelineTest {
         assertTrue(hooks.contains("recordBranch"));
         assertEquals(4, count(hooks, "recordField"));
         assertFalse(hooks.contains("enterMethodLite"));
+    }
+
+    @Test
+    public void statePassRecordsOnlyReferenceArrayElements()
+            throws Exception {
+        SootMethod method = methodWithReferenceAndPrimitiveArrays();
+        invoke("instrumentRuntimeState", selected(method));
+
+        List<String> hooks = hookNames(method.getActiveBody());
+        assertEquals(2, count(hooks, "recordArrayElement"));
     }
 
     @Test
@@ -310,6 +321,56 @@ public class CausynthPipelineTest {
                 Jimple.v().newSubExpr(i, IntConstant.v(1))));
         body.getUnits().add(Jimple.v().newIfStmt(
                 Jimple.v().newGtExpr(i, IntConstant.v(0)), secondHead));
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+        return method;
+    }
+
+    private static SootMethod methodWithReferenceAndPrimitiveArrays() {
+        G.reset();
+        addCoreReferenceClasses();
+        Scene.v().addClass(new SootClass("java.lang.Throwable",
+                Modifier.PUBLIC));
+        SootClass owner = new SootClass("example.ArrayState",
+                Modifier.PUBLIC);
+        owner.setApplicationClass();
+        Scene.v().addClass(owner);
+        ArrayType references = ArrayType.v(
+                RefType.v("java.lang.Object"), 1);
+        ArrayType primitives = ArrayType.v(IntType.v(), 1);
+        SootMethod method = new SootMethod("run", Arrays.asList(
+                references, RefType.v("java.lang.Object"), primitives),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local array = Jimple.v().newLocal("array", references);
+        Local value = Jimple.v().newLocal("value",
+                RefType.v("java.lang.Object"));
+        Local loaded = Jimple.v().newLocal("loaded",
+                RefType.v("java.lang.Object"));
+        Local ints = Jimple.v().newLocal("ints", primitives);
+        Local integer = Jimple.v().newLocal("integer", IntType.v());
+        body.getLocals().add(array);
+        body.getLocals().add(value);
+        body.getLocals().add(loaded);
+        body.getLocals().add(ints);
+        body.getLocals().add(integer);
+        body.getUnits().add(Jimple.v().newIdentityStmt(array,
+                Jimple.v().newParameterRef(references, 0)));
+        body.getUnits().add(Jimple.v().newIdentityStmt(value,
+                Jimple.v().newParameterRef(
+                        RefType.v("java.lang.Object"), 1)));
+        body.getUnits().add(Jimple.v().newIdentityStmt(ints,
+                Jimple.v().newParameterRef(primitives, 2)));
+        body.getUnits().add(Jimple.v().newAssignStmt(
+                Jimple.v().newArrayRef(array, IntConstant.v(0)), value));
+        body.getUnits().add(Jimple.v().newAssignStmt(loaded,
+                Jimple.v().newArrayRef(array, IntConstant.v(0))));
+        body.getUnits().add(Jimple.v().newAssignStmt(
+                Jimple.v().newArrayRef(ints, IntConstant.v(0)),
+                IntConstant.v(1)));
+        body.getUnits().add(Jimple.v().newAssignStmt(integer,
+                Jimple.v().newArrayRef(ints, IntConstant.v(0))));
         body.getUnits().add(Jimple.v().newReturnVoidStmt());
         return method;
     }

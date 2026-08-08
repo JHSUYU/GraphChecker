@@ -7,6 +7,7 @@ import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 import edu.uva.liftlab.graphchecker.contract.BoundedOutputVersions;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
@@ -185,7 +186,7 @@ public final class ConcolicSmtComposer {
 
         for (RelationSummary selection
                 : resolved.selectedRegionSummaries.values()) {
-            emitter.regionSummary(selection);
+            emitter.regionSummaryWithBoundedTimeline(selection);
         }
 
         emitter.merge(context);
@@ -219,6 +220,8 @@ public final class ConcolicSmtComposer {
                 GSON.toJsonTree(resolved.staticEdgeIds()));
         manifest.add("suppliedInputs",
                 GSON.toJsonTree(emitter.suppliedInputs));
+        manifest.add("suppliedInputOccurrences",
+                emitter.suppliedInputOccurrences());
         manifest.add("canonicalPortOccurrences",
                 emitter.canonicalPortOccurrences());
         manifest.addProperty("droppedEdgeEvidenceAudit",
@@ -264,25 +267,46 @@ public final class ConcolicSmtComposer {
     private static void auditDroppedEdgeEvidence(Emitter emitter,
                                                  PortIndex ports,
                                                  List<JsonObject> edges) {
-        Map<String, PortOccurrence> unbound = new LinkedHashMap<>();
+        Set<PortOccurrence> unbound = new LinkedHashSet<>();
         for (PortOccurrence occurrence : emitter.mentionedPorts) {
             if (ports.isInput(occurrence.portId)
-                    && !emitter.suppliedInputs.contains(occurrence.portId)) {
-                unbound.putIfAbsent(occurrence.portId, occurrence);
+                    && !emitter.suppliedInputOccurrences.contains(
+                    occurrence)) {
+                unbound.add(occurrence);
             }
         }
         if (unbound.isEmpty()) return;
-        Set<String> reported = new LinkedHashSet<>();
+        Set<PortOccurrence> reported = new LinkedHashSet<>();
         for (JsonObject edge : edges) {
-            String consumer = string(edge, "toPort");
-            PortOccurrence occurrence = unbound.get(consumer);
-            if (occurrence == null || reported.contains(consumer)
-                    || !AutomaticRegionEdge.composable(edge)) {
+            if (!AutomaticRegionEdge.composable(edge)) {
                 continue;
             }
-            reported.add(consumer);
-            emitter.unsupported.add("DROPPED_CONFIRMED_EDGE_EVIDENCE:"
-                    + occurrence + ":" + string(edge, "edgeId"));
+            JsonArray bindings = array(edge, "bindings");
+            if (bindings.size() == 0
+                    && !bindingTargetInstance(edge).isEmpty()) {
+                bindings.add(edge.deepCopy());
+            }
+            for (JsonElement element : bindings) {
+                if (!element.isJsonObject()) continue;
+                JsonObject binding = element.getAsJsonObject();
+                String consumer = firstNonBlank(
+                        bindingTargetInput(binding),
+                        string(edge, "toPort"));
+                String instance = bindingTargetInstance(binding);
+                String region = firstNonBlank(string(binding, "toRegion"),
+                        string(edge, "toRegion"), regionOf(consumer));
+                if (consumer.isEmpty() || instance.isEmpty()) continue;
+                PortOccurrence occurrence = new PortOccurrence(
+                        new InvocationKey(region, instance), consumer);
+                if (!unbound.contains(occurrence)
+                        || !reported.add(occurrence)) {
+                    continue;
+                }
+                emitter.unsupported.add(
+                        "DROPPED_CONFIRMED_EDGE_EVIDENCE:"
+                                + occurrence + ":"
+                                + string(edge, "edgeId"));
+            }
         }
     }
 
@@ -1486,6 +1510,174 @@ public final class ConcolicSmtComposer {
         return result.append(')').toString();
     }
 
+    /**
+     * Scheduler-certified description of one repeatable container
+     * transition.  It carries identity only; all state and leaf equations
+     * still come from the imported VM relation.
+     */
+    private static final class BoundedTimelineStep {
+        private static final String KIND =
+                "SINGLE_WRITER_BOUNDED_CONTAINER_TIMELINE_STEP";
+        private static final String AUTHORITY =
+                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1";
+        private final String preStatePort;
+        private final String postStatePort;
+        private final String memberToken;
+        private final String writerLaneId;
+        private final long containerObjectId;
+        private final int bound;
+        private final String blocker;
+
+        private BoundedTimelineStep(String preStatePort,
+                                    String postStatePort,
+                                    String memberToken,
+                                    String writerLaneId,
+                                    long containerObjectId,
+                                    int bound, String blocker) {
+            this.preStatePort = preStatePort;
+            this.postStatePort = postStatePort;
+            this.memberToken = memberToken;
+            this.writerLaneId = writerLaneId;
+            this.containerObjectId = containerObjectId;
+            this.bound = bound;
+            this.blocker = blocker;
+        }
+
+        private static BoundedTimelineStep from(RelationSummary summary) {
+            JsonObject selected = null;
+            for (OutputClosureContract.Member member
+                    : summary.outputClosure().members()) {
+                JsonObject candidate = object(member.slice(),
+                        "boundedContainerTimelineStep");
+                if (candidate.size() == 0) continue;
+                if (selected != null && !sameStep(selected, candidate)) {
+                    return blocked("MULTIPLE_TIMELINE_WRITERS", summary);
+                }
+                selected = candidate;
+            }
+            if (selected == null) return null;
+            if (integer(selected, "schemaVersion", -1) != 1
+                    || !KIND.equals(string(selected, "kind"))
+                    || !"ENGINE_STATE_CHAIN_BOUND_V1".equals(string(selected,
+                    "boundAuthority"))
+                    || !"ONE_DEFINITION_INVOCATION".equals(string(selected,
+                    "transitionGranularity"))
+                    || !"EXACT_PRE_STATE_TO_NORMAL_DEFINITION_EXIT_V1"
+                    .equals(string(selected, "transitionAuthority"))
+                    || !"SINGLE_WRITER_REQUIRED".equals(string(selected,
+                    "writerPolicy"))) {
+                return blocked("MALFORMED_TIMELINE_STEP", summary);
+            }
+            if (!"PROVED".equals(string(selected, "admission"))) {
+                return blocked(firstNonBlank(string(selected, "blocker"),
+                        "TIMELINE_STEP_NOT_PROVED"), summary);
+            }
+            String pre = string(selected, "preStatePort");
+            String post = string(selected, "postStatePort");
+            String token = string(selected, "memberToken");
+            String lane = string(selected, "writerLaneId");
+            long container = longInteger(selected, "containerObjectId", 0L);
+            JsonArray projections = array(selected, "memberProjections");
+            if (!AUTHORITY.equals(string(selected, "authority"))
+                    || pre.isEmpty() || post.isEmpty() || token.isEmpty()
+                    || lane.isEmpty() || container <= 0L
+                    || !summary.outputClosure().executionScope()
+                    .inputPorts().contains(pre)
+                    || !summary.outputClosure().outputPorts().contains(post)
+                    || !validProjectionPair(projections, token, lane,
+                    container)) {
+                return blocked("INCOMPLETE_TIMELINE_MEMBER_PROJECTION",
+                        summary);
+            }
+            int bound = integer(selected, "stateChainBound", -1);
+            if (bound != LoopBoundPolicy.MAX_STATE_TIMELINE_TRANSITIONS) {
+                return blocked("INVALID_STATE_CHAIN_BOUND", summary);
+            }
+            return new BoundedTimelineStep(pre, post, token, lane,
+                    container, bound, "");
+        }
+
+        private static boolean sameStep(JsonObject left,
+                                        JsonObject right) {
+            return left.equals(right);
+        }
+
+        private static boolean validProjectionPair(JsonArray projections,
+                                                   String token,
+                                                   String lane,
+                                                   long container) {
+            JsonObject pre = null;
+            JsonObject post = null;
+            for (JsonElement element : projections) {
+                if (!element.isJsonObject()) return false;
+                JsonObject projection = element.getAsJsonObject();
+                if (!token.equals(string(projection, "memberToken"))
+                        || !lane.equals(string(projection, "writerLaneId"))
+                        || container != longInteger(projection,
+                        "containerObjectId", 0L)
+                        || !AUTHORITY.equals(string(projection,
+                        "identityAuthority"))) {
+                    return false;
+                }
+                if ("PRE_STATE".equals(string(projection, "stateRole"))) {
+                    if (pre != null) return false;
+                    pre = projection;
+                } else if ("POST_STATE".equals(string(projection,
+                        "stateRole"))) {
+                    if (post != null) return false;
+                    post = projection;
+                } else {
+                    return false;
+                }
+            }
+            return pre != null && post != null
+                    && projectionLeaves(pre).equals(projectionLeaves(post))
+                    && projectionLeaves(pre).contains("PRESENT\nboolean\n");
+        }
+
+        private static Set<String> projectionLeaves(JsonObject projection) {
+            Set<String> result = new LinkedHashSet<>();
+            for (JsonElement element : array(projection, "leaves")) {
+                if (!element.isJsonObject()) {
+                    result.add("MALFORMED");
+                    continue;
+                }
+                JsonObject leaf = element.getAsJsonObject();
+                String kind = string(leaf, "kind");
+                String javaType = string(leaf, "javaType");
+                String field = string(leaf, "field");
+                if (kind.isEmpty() || javaType.isEmpty()
+                        || "VALUE_FIELD".equals(kind) && field.isEmpty()) {
+                    result.add("MALFORMED");
+                } else {
+                    result.add(kind + "\n" + javaType + "\n" + field);
+                }
+            }
+            return result;
+        }
+
+        private static BoundedTimelineStep blocked(
+                String blocker, RelationSummary summary) {
+            int bound = LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
+            try {
+                bound = LoopBoundPolicy.decode(summary.toJson())
+                        .maxBackedgeTraversals();
+            } catch (IllegalArgumentException ignored) {
+                // The named blocker below closes the formula.
+            }
+            return new BoundedTimelineStep("", "", "", "", 0L,
+                    bound, blocker);
+        }
+
+        private String channelIdentity(RelationSummary summary) {
+            // This identity is local to the exact selected occurrence.  The
+            // member token names one put inside the state; it must never
+            // split one container timeline into a channel per member.
+            return summary.regionInstanceId() + "\n" + preStatePort
+                    + "\n" + postStatePort;
+        }
+    }
+
     private static final class Emitter {
         private final PortIndex ports;
         private final List<String> preamble = new ArrayList<>();
@@ -1532,11 +1724,15 @@ public final class ConcolicSmtComposer {
                 new ArrayList<>();
         private final Set<String> emittedVersionedBindings =
                 new LinkedHashSet<>();
+        private final Map<PortOccurrence, TimelineOutputExpansion>
+                boundedTimelineOutputs = new LinkedHashMap<>();
         private final Set<String> declaredOutputVersionChoices =
                 new LinkedHashSet<>();
         private final Set<String> declaredReferenceIdentities =
                 new LinkedHashSet<>();
         private final Set<String> suppliedInputs = new LinkedHashSet<>();
+        private final Set<PortOccurrence> suppliedInputOccurrences =
+                new LinkedHashSet<>();
         private final Map<String, JsonObject> canonicalPortOccurrences =
                 new LinkedHashMap<>();
         private String currentGuard = "";
@@ -3360,13 +3556,216 @@ public final class ConcolicSmtComposer {
             return unsupportedTerm(result.sort);
         }
 
+        private void regionSummaryWithBoundedTimeline(
+                RelationSummary selected) {
+            BoundedTimelineStep timeline = BoundedTimelineStep.from(selected);
+            if (timeline == null) {
+                regionSummary(selected);
+                return;
+            }
+            if (!timeline.blocker.isEmpty()) {
+                unsupported.add("BoundedContainerTimelineGap:"
+                        + selected.regionId() + ":" + timeline.blocker);
+                regionSummary(selected);
+                return;
+            }
+            if (timeline.bound < 1
+                    || ports.sort(timeline.preStatePort) != Sort.MAP
+                    || ports.sort(timeline.postStatePort) != Sort.MAP) {
+                unsupported.add("BoundedContainerTimelineGap:"
+                        + selected.regionId() + ":INVALID_STATE_PORTS");
+                regionSummary(selected);
+                return;
+            }
+
+            InvocationKey canonical = new InvocationKey(
+                    selected.regionId(), selected.regionInstanceId());
+            Map<String, String> recurrence = timelineRecurrencePairs(
+                    selected, timeline);
+            Set<String> frozen = timelineFrozenInputs(selected,
+                    recurrence.keySet());
+            if (!recurrence.containsKey(timeline.preStatePort)
+                    || !classifiedTimelineInputs(selected, recurrence,
+                    frozen)) {
+                unsupported.add("BoundedContainerTimelineGap:"
+                        + selected.regionId() + ":UNCLASSIFIED_INPUT");
+                regionSummary(selected);
+                return;
+            }
+            Map<String, List<TimelineCut>> outputCuts = new LinkedHashMap<>();
+            for (String output : selected.outputClosure().outputPorts()) {
+                outputCuts.put(output, new ArrayList<TimelineCut>());
+            }
+            Map<String, PortOccurrence> previousOutputsByInput =
+                    new LinkedHashMap<>();
+            for (int ordinal = 0; ordinal < timeline.bound; ordinal++) {
+                InvocationKey invocation = ordinal == 0 ? canonical
+                        : new InvocationKey(selected.regionId(),
+                        selected.regionInstanceId() + "#boundedStep"
+                                + ordinal);
+                regionSummary(selected, invocation, "bounded-step-"
+                        + ordinal);
+                if (ordinal == 0) {
+                    // Cut zero exists only for an explicit recurrence pair.
+                    for (Map.Entry<String, String> pair
+                            : recurrence.entrySet()) {
+                        outputCuts.get(pair.getValue()).add(new TimelineCut(
+                                new PortOccurrence(invocation,
+                                        pair.getKey()), 0));
+                    }
+                } else {
+                    for (Map.Entry<String, String> pair
+                            : recurrence.entrySet()) {
+                        PortOccurrence previous = previousOutputsByInput.get(
+                                pair.getKey());
+                        PortOccurrence input = new PortOccurrence(invocation,
+                                pair.getKey());
+                        if (previous == null) {
+                            unsupported.add("BoundedContainerTimelineGap:"
+                                    + selected.regionId()
+                                    + ":MISSING_RECURRENCE_OUTPUT:"
+                                    + pair.getKey());
+                            continue;
+                        }
+                        assertPortEquality(previous, input,
+                                "container_timeline_chain_"
+                                        + scopeToken(timeline
+                                        .channelIdentity(selected)) + "_"
+                                        + smtName(pair.getKey()) + "_"
+                                        + ordinal);
+                    }
+                }
+                if (ordinal > 0) {
+                    for (String external : frozen) {
+                        assertPortEquality(new PortOccurrence(canonical,
+                                        external),
+                                new PortOccurrence(invocation, external),
+                                "container_timeline_frozen_input_"
+                                        + scopeToken(timeline
+                                        .channelIdentity(selected)) + "_"
+                                        + smtName(external) + "_" + ordinal);
+                    }
+                }
+                int cut = ordinal + 1;
+                for (String output : outputCuts.keySet()) {
+                    outputCuts.get(output).add(new TimelineCut(
+                            new PortOccurrence(invocation, output), cut));
+                }
+                for (Map.Entry<String, String> pair
+                        : recurrence.entrySet()) {
+                    previousOutputsByInput.put(pair.getKey(),
+                            new PortOccurrence(invocation,
+                                    pair.getValue()));
+                }
+            }
+            String channel = timeline.channelIdentity(selected);
+            for (Map.Entry<String, List<TimelineCut>> output
+                    : outputCuts.entrySet()) {
+                boundedTimelineOutputs.put(new PortOccurrence(canonical,
+                                output.getKey()),
+                        new TimelineOutputExpansion(channel,
+                                output.getValue()));
+            }
+        }
+
+        private Map<String, String> timelineRecurrencePairs(
+                RelationSummary selected, BoundedTimelineStep timeline) {
+            Map<String, String> result = new LinkedHashMap<>();
+            result.put(timeline.preStatePort, timeline.postStatePort);
+            Set<String> usedOutputs = new LinkedHashSet<>(result.values());
+            for (String input : selected.outputClosure().executionScope()
+                    .inputPorts()) {
+                if (result.containsKey(input)) continue;
+                String match = "";
+                for (String output : selected.outputClosure().outputPorts()) {
+                    if (usedOutputs.contains(output)
+                            || !ports.sameStateCell(input, output)) {
+                        continue;
+                    }
+                    if (!match.isEmpty()) {
+                        match = "";
+                        break;
+                    }
+                    match = output;
+                }
+                if (!match.isEmpty()) {
+                    result.put(input, match);
+                    usedOutputs.add(match);
+                }
+            }
+            return result;
+        }
+
+        private Set<String> timelineFrozenInputs(RelationSummary selected,
+                                                 Set<String> recurrent) {
+            Set<String> result = new LinkedHashSet<>();
+            for (String input : selected.outputClosure().executionScope()
+                    .inputPorts()) {
+                if (!recurrent.contains(input)
+                        && ports.explicitReplayInvariant(input)) {
+                    result.add(input);
+                }
+            }
+            return result;
+        }
+
+        /** Every repeated input is either an exact recurrence pair or an
+         * explicitly replay-invariant port.  Anything else would become a
+         * new solver freedom on each alpha-renamed step. */
+        private boolean classifiedTimelineInputs(RelationSummary selected,
+                                                 Map<String, String> recurrence,
+                                                 Set<String> frozen) {
+            for (String input : frozen) {
+                if (!ports.isInput(input)
+                        || !selected.regionId().equals(regionOf(input))) {
+                    return false;
+                }
+            }
+            Set<String> mentioned = new LinkedHashSet<>();
+            collectTimelineInputPorts(object(selected.toJson(),
+                    "regionRelation"), selected.regionId(), mentioned);
+            Set<String> classified = new LinkedHashSet<>(frozen);
+            classified.addAll(recurrence.keySet());
+            return classified.containsAll(selected.outputClosure()
+                    .executionScope().inputPorts())
+                    && classified.containsAll(mentioned);
+        }
+
+        private void collectTimelineInputPorts(JsonElement expression,
+                                               String region,
+                                               Set<String> result) {
+            if (expression == null || expression.isJsonNull()) return;
+            if (expression.isJsonArray()) {
+                for (JsonElement item : expression.getAsJsonArray()) {
+                    collectTimelineInputPorts(item, region, result);
+                }
+                return;
+            }
+            if (!expression.isJsonObject()) return;
+            JsonObject object = expression.getAsJsonObject();
+            if ("SymbolExpression".equals(string(object, "_type"))) {
+                String port = findPort(string(object, "_exp"));
+                if (ports.isInput(port) && region.equals(regionOf(port))) {
+                    result.add(port);
+                }
+            }
+            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+                collectTimelineInputPorts(entry.getValue(), region, result);
+            }
+        }
+
         private void regionSummary(RelationSummary selected) {
+            regionSummary(selected, new InvocationKey(selected.regionId(),
+                    selected.regionInstanceId()), "selected");
+        }
+
+        private void regionSummary(RelationSummary selected,
+                                   InvocationKey invocation,
+                                   String scopeSuffix) {
             JsonObject summary = selected.toJson();
             OutputClosureContract outputClosure =
                     selected.outputClosure();
             String region = outputClosure.producer().regionId();
-            InvocationKey invocation = new InvocationKey(region,
-                    selected.regionInstanceId());
             if (!bool(summary, "relationallyComplete", false)) {
                 heapGap("IncompleteRegionSummary@" + region);
                 return;
@@ -3378,7 +3777,8 @@ public final class ConcolicSmtComposer {
             }
             String previousScope = enterSymbolScope("summary:"
                     + firstNonBlank(string(summary, "summaryId"),
-                    region, "selected"));
+                    region, "selected") + ":" + scopeSuffix + ":"
+                    + invocation.instanceId);
             InvocationKey previousInvocation = enterInvocation(invocation);
             try {
                 guardedRegionRelation(invocation, relation, outputClosure);
@@ -3793,7 +4193,54 @@ public final class ConcolicSmtComposer {
                                              List<VersionedWriter> writers,
                                              PortOccurrence target) {
             if (writers.isEmpty()) return;
+            writers = expandBoundedTimelineWriters(writers);
+            String timelineChannel = "";
+            boolean timeline = false;
+            for (VersionedWriter writer : writers) {
+                if (writer.timelineChannel.isEmpty()) {
+                    if (timeline) {
+                        unsupported.add("MixedTimelineAndObservedWriters:"
+                                + channelId + ":" + target);
+                        return;
+                    }
+                    continue;
+                }
+                if (!timelineChannel.isEmpty()
+                        && !timelineChannel.equals(writer.timelineChannel)) {
+                    unsupported.add("MultipleTimelineChannels:"
+                            + channelId + ":" + target);
+                    return;
+                }
+                timeline = true;
+                timelineChannel = writer.timelineChannel;
+            }
+            if (timeline) {
+                for (VersionedWriter writer : writers) {
+                    if (writer.timelineChannel.isEmpty()) {
+                        unsupported.add("MixedTimelineAndObservedWriters:"
+                                + channelId + ":" + target);
+                        return;
+                    }
+                }
+            }
             String suffix = smtName(channelId + "__" + target);
+            String sharedTimelineCut = "";
+            if (timeline) {
+                int firstCut = Integer.MAX_VALUE;
+                int lastCut = Integer.MIN_VALUE;
+                for (VersionedWriter writer : writers) {
+                    firstCut = Math.min(firstCut, writer.timelineOrdinal);
+                    lastCut = Math.max(lastCut, writer.timelineOrdinal);
+                }
+                sharedTimelineCut = "state_timeline_cut__" + scopeToken(
+                        timelineChannel + "\n" + target.invocation);
+                declare(sharedTimelineCut, Sort.INT);
+                assertNamed("state_timeline_cut_bounds__" + suffix,
+                        "(and (<= " + firstCut + " "
+                                + sharedTimelineCut + ") (<= "
+                                + sharedTimelineCut + " " + lastCut
+                                + "))");
+            }
             String readPosition = "state_read_position__" + suffix;
             int bound = writers.size() + 1;
             declareBoundedPosition(readPosition, bound);
@@ -3806,7 +4253,13 @@ public final class ConcolicSmtComposer {
                 writer.position = position;
                 writePositions.add(position);
                 declareBoundedPosition(position, bound);
-                if (bool(writer.binding, "programOrderRequired", false)) {
+                // The observed writer may precede this reader, but its
+                // alpha-renamed future steps are precisely the alternatives
+                // the reader cut chooses among.  Requiring every synthetic
+                // step to precede the read would force the final cut.
+                if (writer.timelineChannel.isEmpty()
+                        && bool(writer.binding, "programOrderRequired",
+                        false)) {
                     assertNamed("state_program_order__" + suffix + "_"
                                     + index,
                             "(< " + position + " " + readPosition + ")");
@@ -3817,9 +4270,25 @@ public final class ConcolicSmtComposer {
                 String firstLane = string(first.binding, "writerLaneId");
                 long firstEvent = longInteger(first.binding,
                         "writerEventSeq", -1L);
-                if (firstLane.isEmpty() || firstEvent < 0L) continue;
                 for (int right = left + 1; right < writers.size(); right++) {
                     VersionedWriter second = writers.get(right);
+                    if (!first.timelineChannel.isEmpty()
+                            && first.timelineChannel.equals(
+                            second.timelineChannel)
+                            && first.timelineOrdinal
+                            != second.timelineOrdinal) {
+                        String before = first.timelineOrdinal
+                                < second.timelineOrdinal
+                                ? first.position : second.position;
+                        String after = first.timelineOrdinal
+                                < second.timelineOrdinal
+                                ? second.position : first.position;
+                        assertNamed("state_timeline_order__" + suffix
+                                        + "_" + left + "_" + right,
+                                "(< " + before + " " + after + ")");
+                        continue;
+                    }
+                    if (firstLane.isEmpty() || firstEvent < 0L) continue;
                     long secondEvent = longInteger(second.binding,
                             "writerEventSeq", -1L);
                     if (!firstLane.equals(string(second.binding,
@@ -3868,6 +4337,10 @@ public final class ConcolicSmtComposer {
                             + writer.position + ") (< " + readPosition
                             + " " + otherPosition + "))");
                 }
+                if (!sharedTimelineCut.isEmpty()) {
+                    latest.add("(= " + sharedTimelineCut + " "
+                            + writer.timelineOrdinal + ")");
+                }
                 assertNamed("state_writer_guard_definition__" + suffix
                         + "_" + index, "(= " + guard + " "
                         + and(latest) + ")");
@@ -3895,8 +4368,31 @@ public final class ConcolicSmtComposer {
             mentionedPorts.add(target);
             boundPorts.add(target);
             if (ports.isInput(target.portId)) {
-                suppliedInputs.add(target.portId);
+                markSuppliedInput(target);
             }
+        }
+
+        private List<VersionedWriter> expandBoundedTimelineWriters(
+                List<VersionedWriter> writers) {
+            List<VersionedWriter> result = new ArrayList<>();
+            for (VersionedWriter writer : writers) {
+                TimelineOutputExpansion expansion =
+                        boundedTimelineOutputs.get(
+                        writer.source);
+                if (expansion == null || expansion.cuts.isEmpty()) {
+                    result.add(writer);
+                    continue;
+                }
+                for (TimelineCut cut : expansion.cuts) {
+                    String guard = writer.requestedGuard.isEmpty() ? ""
+                            : writer.requestedGuard + "_bounded_step_"
+                            + cut.ordinal;
+                    result.add(new VersionedWriter(writer.binding,
+                            cut.source, guard, expansion.channel,
+                            cut.ordinal));
+                }
+            }
+            return result;
         }
 
         private void declareBoundedPosition(String position, int bound) {
@@ -4019,14 +4515,48 @@ public final class ConcolicSmtComposer {
             private final JsonObject binding;
             private final PortOccurrence source;
             private final String requestedGuard;
+            private final String timelineChannel;
+            private final int timelineOrdinal;
             private String position;
 
             private VersionedWriter(JsonObject binding,
                                     PortOccurrence source,
                                     String requestedGuard) {
+                this(binding, source, requestedGuard, "", -1);
+            }
+
+            private VersionedWriter(JsonObject binding,
+                                    PortOccurrence source,
+                                    String requestedGuard,
+                                    String timelineChannel,
+                                    int timelineOrdinal) {
                 this.binding = binding;
                 this.source = source;
                 this.requestedGuard = requestedGuard;
+                this.timelineChannel = timelineChannel;
+                this.timelineOrdinal = timelineOrdinal;
+            }
+        }
+
+        private static final class TimelineCut {
+            private final PortOccurrence source;
+            private final int ordinal;
+
+            private TimelineCut(PortOccurrence source, int ordinal) {
+                this.source = source;
+                this.ordinal = ordinal;
+            }
+        }
+
+        private static final class TimelineOutputExpansion {
+            private final String channel;
+            private final List<TimelineCut> cuts;
+
+            private TimelineOutputExpansion(String channel,
+                                            List<TimelineCut> cuts) {
+                this.channel = channel;
+                this.cuts = Collections.unmodifiableList(
+                        new ArrayList<>(cuts));
             }
         }
 
@@ -4401,12 +4931,35 @@ public final class ConcolicSmtComposer {
             Port rightPort = ports.get(right.portId);
             if (leftPort != null && leftPort.input
                     && rightPort != null && !rightPort.input) {
-                suppliedInputs.add(left.portId);
+                markSuppliedInput(left);
             }
             if (rightPort != null && rightPort.input
                     && leftPort != null && !leftPort.input) {
-                suppliedInputs.add(right.portId);
+                markSuppliedInput(right);
             }
+        }
+
+        private void markSuppliedInput(PortOccurrence occurrence) {
+            suppliedInputOccurrences.add(occurrence);
+            // Schema-v2 compatibility for the reach-condition extractor.
+            suppliedInputs.add(occurrence.portId);
+        }
+
+        private JsonArray suppliedInputOccurrences() {
+            List<PortOccurrence> ordered = new ArrayList<>(
+                    suppliedInputOccurrences);
+            ordered.sort(Comparator.comparing(PortOccurrence::toString));
+            JsonArray result = new JsonArray();
+            for (PortOccurrence occurrence : ordered) {
+                JsonObject row = new JsonObject();
+                row.addProperty("regionId",
+                        occurrence.invocation.regionId);
+                row.addProperty("regionInstanceId",
+                        occurrence.invocation.instanceId);
+                row.addProperty("portId", occurrence.portId);
+                result.add(row);
+            }
+            return result;
         }
 
         private void recordSuppliedInput(String left, String right) {
@@ -4755,7 +5308,8 @@ public final class ConcolicSmtComposer {
             }
             ports.put(id, new Port(javaType,
                     firstNonBlank(declaredFieldJavaType(json),
-                            declaredCellJavaType(cell)), sort, input));
+                            declaredCellJavaType(cell)), sort, input,
+                    cell, json));
         }
 
         /**
@@ -4790,6 +5344,19 @@ public final class ConcolicSmtComposer {
             Port port = ports.get(id);
             return port != null && port.input;
         }
+
+        private boolean sameStateCell(String input, String output) {
+            Port left = ports.get(input);
+            Port right = ports.get(output);
+            return left != null && right != null && left.input && !right.input
+                    && !left.cell.isEmpty() && left.cell.equals(right.cell)
+                    && left.sort == right.sort;
+        }
+
+        private boolean explicitReplayInvariant(String id) {
+            Port port = ports.get(id);
+            return port != null && port.explicitReplayInvariant();
+        }
     }
 
     private static final class Port {
@@ -4797,18 +5364,35 @@ public final class ConcolicSmtComposer {
         private final String declaredFieldJavaType;
         private final Sort sort;
         private final boolean input;
+        private final String cell;
+        private final JsonObject metadata;
 
         private Port(String javaType, String declaredFieldJavaType,
-                     Sort sort, boolean input) {
+                     Sort sort, boolean input, String cell,
+                     JsonObject metadata) {
             this.javaType = javaType;
             this.declaredFieldJavaType = declaredFieldJavaType;
             this.sort = sort;
             this.input = input;
+            this.cell = firstNonBlank(cell);
+            this.metadata = metadata == null
+                    ? new JsonObject() : metadata.deepCopy();
         }
 
         /** The type Java declares for this port's value, when it is known. */
         private String declaredJavaType() {
             return firstNonBlank(javaType, declaredFieldJavaType);
+        }
+
+        private boolean explicitReplayInvariant() {
+            String role = string(metadata, "dependencyRole");
+            String demand = string(metadata, "symbolicDemand");
+            return "CONCRETE_STRUCTURE_CARRIER".equals(role)
+                    || bool(metadata, "captureRootOnly", false)
+                    || bool(metadata, "loopControlOnly", false)
+                    || bool(metadata, "controlOnly", false)
+                    || bool(metadata, "pathAssumptionOnly", false)
+                    || demand.startsWith("CONCRETE_");
         }
     }
 

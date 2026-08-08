@@ -1,9 +1,11 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 import org.junit.Assume;
 import org.junit.Rule;
@@ -353,6 +355,135 @@ public class ConcolicSmtComposerTest {
         assertUnsat(result.smtLib, "(assert (< " + write + " " + read
                 + "))\n(assert (distinct " + consumer + " " + producer
                 + "))\n");
+    }
+
+    @Test
+    public void singleWriterVmRelationBuildsBoundedTimelineAndReaderCuts()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.TIMELINE", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        // Runtime saw the seed write before this read.  Synthetic future
+        // transitions must not all inherit that observed order, or only the
+        // final timeline cut would remain selectable.
+        edge.addProperty("programOrderRequired", true);
+        edge.addProperty("readerLaneId", "lane.writer");
+        RelationSummary timeline = timelineSummary(producerInstance, edge);
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(timeline), Arrays.asList(
+                        region("REGION.0", "java.util.Map", ""),
+                        region("REGION.1", "java.util.Map",
+                                "java.util.Map")), edge);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        // One explicit cut before the first transition plus eight post-state
+        // cuts.  The last synthetic invocation proves the bound was read from
+        // the imported summary contract rather than hard-coded here.
+        assertTrue(result.smtLib, result.smtLib.contains("boundedStep7"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "container_timeline_chain_"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "state_timeline_order__"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "state_program_order__EDGE_TIMELINE"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "state_writer_value__EDGE_TIMELINE"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "port__REGION_1_in_0__instance__REGION_1_Test_call20"));
+    }
+
+    @Test
+    public void jointTimelineOutputsShareOneConsumerCut() throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject stateEdge = binding("EDGE.TIMELINE.STATE",
+                producerInstance, "REGION.1.out.0", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+        JsonObject leafEdge = binding("EDGE.TIMELINE.LEAF",
+                producerInstance, "REGION.1.out.1", fatalInstance,
+                "REGION.0.in.1", 20, 30);
+        JsonObject row = timelineSummary(producerInstance, stateEdge)
+                .toJson();
+        JsonObject leafSlice = emptySlice("REGION.1.out.1",
+                "<Test: int rolling>");
+        JsonArray leafInputs = new JsonArray();
+        leafInputs.add("REGION.1.in.1");
+        leafSlice.add("inputPorts", leafInputs);
+        OutputClosureContract leaf = OutputClosureCodec.singleton(
+                "REGION.1", producerInstance, 20L,
+                "REGION.1.out.1", "<Test: int rolling>",
+                "REGION_OUTPUT", "int", leafSlice);
+        OutputClosureContract joint = OutputClosureCodec.merge(Arrays.asList(
+                OutputClosureCodec.decode(row), leaf));
+        OutputClosureCodec.writeTo(row, joint);
+        row.getAsJsonArray("edgeBindings").add(leafEdge.deepCopy());
+        JsonObject leafExpression = new JsonObject();
+        leafExpression.addProperty("_type", "SymbolExpression");
+        leafExpression.addProperty("_java_type", "I");
+        leafExpression.addProperty("_exp", "REGION.1.in.1");
+        row.getAsJsonObject("regionRelation").getAsJsonArray("cases")
+                .get(0).getAsJsonObject()
+                .getAsJsonObject("outputExpressions")
+                .add("REGION.1.out.1", leafExpression);
+
+        JsonObject fatalRegion = region("REGION.0", "java.util.Map", "");
+        fatalRegion.getAsJsonArray("symbolicInputs").add(
+                statePort("REGION.0.in.1", true, "int",
+                        "<Test: int consumed>"));
+        JsonObject producerRegion = region("REGION.1", "java.util.Map",
+                "java.util.Map");
+        producerRegion.getAsJsonArray("symbolicInputs").add(
+                statePort("REGION.1.in.1", true, "int",
+                        "<Test: int rolling>"));
+        producerRegion.getAsJsonArray("outputs").add(
+                statePort("REGION.1.out.1", false, "int",
+                        "<Test: int rolling>"));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(RelationSummary.decode(row)),
+                Arrays.asList(fatalRegion, producerRegion), stateEdge,
+                leafEdge);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        assertEquals(result.smtLib, 1, occurrences(result.smtLib,
+                "(declare-const state_timeline_cut__"));
+        assertTrue(result.smtLib, occurrences(result.smtLib,
+                "state_timeline_cut__") > 2);
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "port__REGION_1_in_1__instance__REGION_1_Test_call20"));
+    }
+
+    @Test
+    public void unclassifiedRepeatedInputFailsClosed() throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.TIMELINE.GAP", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        JsonObject row = timelineSummary(producerInstance, edge).toJson();
+        row.getAsJsonObject("outputClosure").getAsJsonArray("members")
+                .get(0).getAsJsonObject().getAsJsonObject("slice")
+                .getAsJsonArray("inputPorts").add("REGION.1.in.1");
+        JsonObject producer = region("REGION.1", "java.util.Map",
+                "java.util.Map");
+        producer.getAsJsonArray("symbolicInputs").add(
+                statePort("REGION.1.in.1", true, "long",
+                        "<Test: long changingClock>"));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(RelationSummary.decode(row)),
+                Arrays.asList(region("REGION.0", "java.util.Map", ""),
+                        producer), edge);
+
+        assertEquals("CANDIDATE_WITH_GAPS",
+                result.manifest.get("state").getAsString());
+        assertTrue(result.manifest.toString(), result.manifest.toString()
+                .contains("UNCLASSIFIED_INPUT"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(assert false) ; fail closed: unsupported"));
     }
 
     @Test
@@ -924,6 +1055,64 @@ public class ConcolicSmtComposerTest {
                                 + ":EDGE.DROPPED"));
         assertEquals(result.manifest.toString(), "CANDIDATE_WITH_GAPS",
                 result.manifest.get("state").getAsString());
+    }
+
+    @Test
+    public void suppliedInputInOneInvocationCannotMaskAnother()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String suppliedInstance = "REGION.1@Test#call20";
+        String unboundInstance = "REGION.1@Test#call10";
+        JsonObject toFatal = binding("EDGE.TO.FATAL", suppliedInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        JsonObject toSupplied = binding("EDGE.TO.SUPPLIED",
+                unboundInstance, "REGION.1.out.0", suppliedInstance,
+                "REGION.1.in.0", 10, 20);
+        JsonObject input = new JsonObject();
+        input.addProperty("_type", "SymbolExpression");
+        input.addProperty("_java_type", "I");
+        input.addProperty("_exp", "REGION.1.in.0");
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Arrays.asList(
+                        summary("SUPPLIED", suppliedInstance, 20,
+                                input.deepCopy(),
+                                Collections.singletonList(
+                                        "REGION.1.in.0"),
+                                Collections.singletonList(toFatal)),
+                        summary("UNBOUND", unboundInstance, 10,
+                                input.deepCopy(),
+                                Collections.singletonList(
+                                        "REGION.1.in.0"),
+                                Collections.singletonList(toSupplied))),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)),
+                new JsonArray(),
+                Collections.singletonList(validatedEdge(
+                        "EDGE.DROPPED.UNBOUND",
+                        "CONFIRMED_RUNTIME_IDENTITY",
+                        "REGION.1.out.0", "REGION.1.in.0",
+                        suppliedInstance, unboundInstance)),
+                toFatal);
+
+        assertTrue(result.manifest.toString(), result.manifest.toString()
+                .contains("DROPPED_CONFIRMED_EDGE_EVIDENCE:"
+                        + unboundInstance + ":REGION.1.in.0"
+                        + ":EDGE.DROPPED.UNBOUND"));
+        JsonArray supplied = result.manifest.getAsJsonArray(
+                "suppliedInputOccurrences");
+        int suppliedProducerInputs = 0;
+        for (JsonElement element : supplied) {
+            JsonObject occurrence = element.getAsJsonObject();
+            if (!"REGION.1.in.0".equals(
+                    occurrence.get("portId").getAsString())) {
+                continue;
+            }
+            suppliedProducerInputs++;
+            assertEquals(suppliedInstance,
+                    occurrence.get("regionInstanceId").getAsString());
+        }
+        assertEquals(1, suppliedProducerInputs);
     }
 
     /**
@@ -1818,6 +2007,13 @@ public class ConcolicSmtComposerTest {
      */
     private static JsonObject validatedEdge(String edgeId, String state,
                                             String fromPort, String toPort) {
+        return validatedEdge(edgeId, state, fromPort, toPort,
+                "REGION.1@Test#call10", "REGION.1@Test#call20");
+    }
+
+    private static JsonObject validatedEdge(
+            String edgeId, String state, String fromPort, String toPort,
+            String fromInstance, String toInstance) {
         JsonObject edge = new JsonObject();
         edge.addProperty("schemaVersion", 3);
         edge.addProperty("kind", "RUNTIME_FIELD_FLOW");
@@ -1829,8 +2025,8 @@ public class ConcolicSmtComposerTest {
         edge.addProperty("fromPort", fromPort);
         edge.addProperty("toPort", toPort);
         JsonArray bindings = new JsonArray();
-        bindings.add(binding(edgeId, "REGION.1@Test#call10", fromPort,
-                "REGION.1@Test#call20", toPort, 10, 20));
+        bindings.add(binding(edgeId, fromInstance, fromPort,
+                toInstance, toPort, 10, 20));
         edge.add("bindings", bindings);
         return edge;
     }
@@ -1895,6 +2091,106 @@ public class ConcolicSmtComposerTest {
         row.add("regionRelation", relation);
         row.addProperty("relationallyComplete", true);
         return RelationSummary.decode(row);
+    }
+
+    private static RelationSummary timelineSummary(
+            String instance, JsonObject edge) {
+        JsonObject slice = emptySlice("REGION.1.out.0",
+                "<Test: java.util.Map output>");
+        JsonArray inputs = new JsonArray();
+        inputs.add("REGION.1.in.0");
+        slice.add("inputPorts", inputs);
+        JsonObject step = new JsonObject();
+        step.addProperty("schemaVersion", 1);
+        step.addProperty("kind",
+                "SINGLE_WRITER_BOUNDED_CONTAINER_TIMELINE_STEP");
+        step.addProperty("boundAuthority", "ENGINE_STATE_CHAIN_BOUND_V1");
+        step.addProperty("stateChainBound",
+                LoopBoundPolicy.MAX_STATE_TIMELINE_TRANSITIONS);
+        step.addProperty("transitionGranularity",
+                "ONE_DEFINITION_INVOCATION");
+        step.addProperty("transitionAuthority",
+                "EXACT_PRE_STATE_TO_NORMAL_DEFINITION_EXIT_V1");
+        step.addProperty("writerPolicy", "SINGLE_WRITER_REQUIRED");
+        step.addProperty("admission", "PROVED");
+        step.addProperty("authority",
+                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1");
+        step.addProperty("preStatePort", "REGION.1.in.0");
+        step.addProperty("postStatePort", "REGION.1.out.0");
+        step.addProperty("memberToken", "MEMBER.1");
+        step.addProperty("writerLaneId", "lane.writer");
+        step.addProperty("containerObjectId", 99);
+        JsonArray projections = new JsonArray();
+        projections.add(timelineProjection("PRE_STATE"));
+        projections.add(timelineProjection("POST_STATE"));
+        step.add("memberProjections", projections);
+        slice.add("boundedContainerTimelineStep", step);
+        OutputClosureContract closure = OutputClosureCodec.singleton(
+                "REGION.1", instance, 20L, "REGION.1.out.0",
+                "<Test: java.util.Map output>", "HEAP_STATE",
+                "java.util.Map", slice);
+
+        JsonObject row = new JsonObject();
+        row.addProperty("summaryId", "SUMMARY.TIMELINE");
+        row.addProperty("regionId", "REGION.1");
+        row.addProperty("regionInstanceId", instance);
+        row.addProperty("rootCallId", 20L);
+        LoopBoundPolicy.cfgBackedges(
+                LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS).writeTo(row);
+        OutputClosureCodec.writeTo(row, closure);
+        JsonArray bindings = new JsonArray();
+        bindings.add(edge.deepCopy());
+        row.add("edgeBindings", bindings);
+        JsonObject relation = new JsonObject();
+        relation.addProperty("schemaVersion", 1);
+        relation.addProperty("kind", "GUARDED_PATH_MERGE");
+        JsonObject path = new JsonObject();
+        path.addProperty("caseId", "CASE.TIMELINE");
+        path.addProperty("sourceTaskId", "TASK.TIMELINE");
+        JsonObject guard = new JsonObject();
+        guard.addProperty("kind", "PATH_CONDITION");
+        guard.add("conditions", new JsonArray());
+        path.add("guard", guard);
+        JsonObject input = new JsonObject();
+        input.addProperty("_type", "SymbolExpression");
+        input.addProperty("_java_type", "Ljava/util/Map;");
+        input.addProperty("_exp", "REGION.1.in.0");
+        JsonObject outputs = new JsonObject();
+        outputs.add("REGION.1.out.0", input);
+        path.add("outputExpressions", outputs);
+        JsonArray cases = new JsonArray();
+        cases.add(path);
+        relation.add("cases", cases);
+        row.add("regionRelation", relation);
+        row.addProperty("relationallyComplete", true);
+        return RelationSummary.decode(row);
+    }
+
+    private static JsonObject timelineProjection(String role) {
+        JsonObject projection = new JsonObject();
+        projection.addProperty("memberToken", "MEMBER.1");
+        projection.addProperty("identityAuthority",
+                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1");
+        projection.addProperty("containerObjectId", 99);
+        projection.addProperty("writerLaneId", "lane.writer");
+        projection.addProperty("stateRole", role);
+        JsonArray leaves = new JsonArray();
+        JsonObject present = new JsonObject();
+        present.addProperty("kind", "PRESENT");
+        present.addProperty("javaType", "boolean");
+        leaves.add(present);
+        JsonObject key = new JsonObject();
+        key.addProperty("kind", "VALUE_FIELD");
+        key.addProperty("javaType", "int");
+        key.addProperty("field", "<example.Key: int keyId>");
+        leaves.add(key);
+        JsonObject expiry = new JsonObject();
+        expiry.addProperty("kind", "VALUE_FIELD");
+        expiry.addProperty("javaType", "long");
+        expiry.addProperty("field", "<example.Key: long expiry>");
+        leaves.add(expiry);
+        projection.add("leaves", leaves);
+        return projection;
     }
 
     private static RelationSummary logicalSummary(
@@ -2094,13 +2390,28 @@ public class ConcolicSmtComposerTest {
 
     private static JsonObject port(
             String id, boolean input, String javaType) {
-        JsonObject port = new JsonObject();
-        port.addProperty("portId", id);
-        port.addProperty("cell", input
+        return statePort(id, input, javaType, input
                 ? "<Test: " + javaType + " input>"
                 : "<Test: " + javaType + " output>");
+    }
+
+    private static JsonObject statePort(
+            String id, boolean input, String javaType, String cell) {
+        JsonObject port = new JsonObject();
+        port.addProperty("portId", id);
+        port.addProperty("cell", cell);
         port.addProperty("javaType", javaType);
         return port;
+    }
+
+    private static int occurrences(String value, String needle) {
+        int count = 0;
+        int at = 0;
+        while ((at = value.indexOf(needle, at)) >= 0) {
+            count++;
+            at += needle.length();
+        }
+        return count;
     }
 
     private static JsonObject integer(int value) {

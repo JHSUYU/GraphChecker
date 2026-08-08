@@ -121,27 +121,34 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             String exitKind = string(raw, "exitKind");
+            boolean hasCut = raw.has("pathCut")
+                    || raw.has("replayResourceCut");
             if ("CUT".equals(exitKind)
-                    || raw.has("pathCut")
-                    && !boundedOutputExit(raw, task)) {
+                    || hasCut && !boundedOutputExit(raw, task)) {
                 // The two ledgers cut for opposite reasons and are answered by
                 // opposite work: an unroll bound says the path space was too
                 // wide to walk, a resource cap says a service loop outlasted
-                // the budget of a replay that had not reached its boundary.
+                // the replay budget.  The latter may still preserve demanded
+                // ports the VM captured before the cut.
                 // The runtime publishes each under its own field and lets the
                 // resource cap outrank the unroll bound; reading only the
                 // unroll field reports the resource cap under the other
                 // ledger's name and with an empty body, which is exactly the
                 // confusion the two ledgers exist to prevent.
                 boolean resourceCut = raw.has("replayResourceCut");
+                String cutDetail = object(raw,
+                        resourceCut ? "replayResourceCut"
+                                : "pathCut").toString();
+                if (resourceCut && !hasCapturedDemandedOutput(raw, task)) {
+                    cutDetail += "; no demanded output relation was "
+                            + "captured before cut";
+                }
                 diagnostics.add(diagnostic(raw, index,
                         resourceCut ? "REPLAY_LOOP_RESOURCE_CAP"
                                 : "LOOP_BOUND_PATH_CUT",
-                        object(raw, resourceCut ? "replayResourceCut"
-                                : "pathCut").toString()));
-                // A bounded prefix is useful execution diagnostics, but it is
-                // neither a normal return nor a workload exception relation.
-                // Never let it become a composable region summary.
+                        cutDetail));
+                // No admitted bounded prefix exists here.  Keep the cut as an
+                // explicit gap rather than inventing an output relation.
                 continue;
             }
             if ("OUTPUT_BOUNDARY".equals(exitKind)
@@ -827,6 +834,18 @@ public final class ConcolicSummaryImporter {
                 || !"BOUNDED".equals(string(raw, "exitKind"))) {
             return false;
         }
+        if (raw.has("replayResourceCut")) {
+            JsonObject cut = object(raw, "replayResourceCut");
+            int maxBodies = integer(cut, "maxLoopBodies", -1);
+            long attemptedBody = longInteger(cut, "attemptedBody", -1L);
+            return "REPLAY_LOOP_RESOURCE_CAP".equals(string(cut, "kind"))
+                    && "REPLAY_LOOP_RESOURCE_CAP".equals(
+                    string(cut, "reason"))
+                    && !string(cut, "loopId").isEmpty()
+                    && maxBodies > 0
+                    && attemptedBody > maxBodies
+                    && hasCapturedDemandedOutput(raw, task);
+        }
         JsonObject cut = object(raw, "pathCut");
         return "LOOP_BOUND".equals(string(cut, "kind"))
                 && !string(cut, "backedgeId").isEmpty()
@@ -874,6 +893,45 @@ public final class ConcolicSummaryImporter {
             if (successfulRows < 1) return false;
         }
         return true;
+    }
+
+    /**
+     * Resource-bounded output is admitted per port.  One real VM capture is
+     * enough to preserve that port from this path; missing demanded ports are
+     * still reported by {@link #outputExpressions} and keep the summary
+     * relationally incomplete.
+     */
+    private static boolean hasCapturedDemandedOutput(
+            JsonObject raw, ExecutionTask task) {
+        if (!task.goalKind().capturesOutputRelation()
+                || task.outputCaptures().isEmpty()) {
+            return false;
+        }
+        JsonArray captures = array(raw, "outputCaptures");
+        for (OutputCaptureSpec request : task.outputCaptures()) {
+            if (!(request.capturesCallArgument()
+                    || request.capturesFieldWriteState()
+                    || request.capturesMutationState())) {
+                continue;
+            }
+            for (JsonElement element : captures) {
+                if (!element.isJsonObject()) continue;
+                JsonObject capture = element.getAsJsonObject();
+                if (!request.captureBindingId().equals(
+                        string(capture, "captureBindingId"))) {
+                    continue;
+                }
+                JsonElement expression = capture.get("expression");
+                boolean related = expression != null
+                        && !expression.isJsonNull()
+                        || referenceIdentity(capture) != null;
+                if (related
+                        && exactOutputCaptureOccurrence(request, capture)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static JsonArray branchMappings(

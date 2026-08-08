@@ -38,6 +38,54 @@ public class RegionInstancePlanTest {
                 .getAsJsonArray("inputPortMap").size());
     }
 
+    @Test
+    public void occurrenceCatalogCollapsesDifferentConsumerCausalLedgers() {
+        String instance = "REGION.1@test#call1";
+        JsonObject canonical = outputGoal(
+                "GOAL.LOGICAL", instance, 1L, "canonical", 1);
+        JsonObject first = outputGoal(
+                "GOAL.EXACT.1", instance, 1L, "canonical", 1);
+        JsonObject duplicate = first.deepCopy();
+        duplicate.addProperty("goalId", "GOAL.EXACT.2");
+
+        addConsumerLedger(canonical, "EDGE.1");
+        addConsumerLedger(canonical, "EDGE.2");
+        addConsumerLedger(first, "EDGE.1");
+        addConsumerLedger(duplicate, "EDGE.2");
+
+        JsonObject plan = plan(instance, canonical,
+                occurrence(instance, 1L, first, duplicate));
+
+        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+                .occurrenceInstantiationCatalog()
+                .getAsJsonArray("occurrences");
+
+        assertEquals(1, catalog.size());
+        assertEquals(1, catalog.get(0).getAsJsonObject()
+                .getAsJsonArray("outputPortMap").size());
+        assertEquals(2, catalog.get(0).getAsJsonObject()
+                .getAsJsonArray("bindingIds").size());
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void occurrenceCatalogPreservesInternalSliceCausalIds() {
+        String instance = "REGION.1@test#call1";
+        JsonObject canonical = outputGoal(
+                "GOAL.LOGICAL", instance, 1L, "canonical", 1);
+        JsonObject first = outputGoal(
+                "GOAL.EXACT.1", instance, 1L, "canonical", 1);
+        JsonObject conflict = first.deepCopy();
+        conflict.addProperty("goalId", "GOAL.EXACT.2");
+        addInternalCausalEdge(first, "DF.INTERNAL.1");
+        addInternalCausalEdge(conflict, "DF.INTERNAL.2");
+
+        JsonObject plan = plan(instance, canonical,
+                occurrence(instance, 1L, first, conflict));
+
+        RegionInstancePlan.decode(plan).goals().get(0)
+                .occurrenceInstantiationCatalog();
+    }
+
     @Test(expected = IllegalArgumentException.class)
     public void occurrenceCatalogRejectsConflictingExactGoals() {
         String instance = "REGION.1@test#call1";
@@ -151,6 +199,35 @@ public class RegionInstancePlanTest {
                 .get("canonicalPort").getAsString());
         assertEquals(exact, mappings.get(0).getAsJsonObject()
                 .get("exactPort").getAsString());
+    }
+
+    private static void addConsumerLedger(JsonObject goal, String edgeId) {
+        JsonObject edge = new JsonObject();
+        edge.addProperty("edgeId", edgeId);
+        edge.addProperty("fromRegionInstance",
+                "REGION.1@test#call1");
+        edge.addProperty("toRegionInstance",
+                "REGION.2@test#call2");
+        goal.getAsJsonArray("edgeBindings").add(edge.deepCopy());
+        goal.getAsJsonObject(OutputClosureContract.FIELD)
+                .getAsJsonArray("causalEdges").add(edge.deepCopy());
+        goal.getAsJsonObject(OutputClosureContract.FIELD)
+                .getAsJsonArray("members").get(0).getAsJsonObject()
+                .getAsJsonObject("slice").getAsJsonArray("causalEdgeIds")
+                .add(edgeId);
+    }
+
+    private static void addInternalCausalEdge(
+            JsonObject goal, String edgeId) {
+        JsonObject edge = new JsonObject();
+        edge.addProperty("edgeId", edgeId);
+        edge.addProperty("kind", "local_def_use");
+        goal.getAsJsonObject(OutputClosureContract.FIELD)
+                .getAsJsonArray("causalEdges").add(edge);
+        goal.getAsJsonObject(OutputClosureContract.FIELD)
+                .getAsJsonArray("members").get(0).getAsJsonObject()
+                .getAsJsonObject("slice").getAsJsonArray("causalEdgeIds")
+                .add(edgeId);
     }
 
     private static JsonObject outputGoal(

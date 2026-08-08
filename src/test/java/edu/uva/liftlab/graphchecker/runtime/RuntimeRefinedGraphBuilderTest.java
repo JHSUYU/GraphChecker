@@ -85,6 +85,59 @@ public class RuntimeRefinedGraphBuilderTest {
     }
 
     @Test
+    public void referenceArrayIdentityIsCarriedOnExactFieldBinding()
+            throws Exception {
+        String arrayField = "<example.A: java.lang.Object[] values>";
+        File candidate = write("array-candidate.jsonl", object(
+                "schemaVersion", 3, "id", "DF.array",
+                "kind", "field_read", "transferKind", "HEAP_READ",
+                "method", METHOD, "unitIndex", 1,
+                "fromCell", arrayField, "toCell", "values"));
+        File skeleton = write("array-skeleton.jsonl", object(
+                "schemaVersion", 3, "kind", "REGION_SKELETON",
+                "regionId", "REGION.1", "rootMethod", METHOD,
+                "anchorMethod", METHOD,
+                "methods", Collections.singletonList(METHOD)));
+        RuntimeRegionPlanner.MethodEvent root =
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "p", "t",
+                        1, METHOD, 0, "", 11, 0, 0);
+        RuntimeRegionPlanner.RuntimeEvent argument =
+                new RuntimeRegionPlanner.RuntimeEvent(2, "METHOD_ARGUMENT",
+                        METHOD, 11, 0, 0, "", 0, "example.A", 10, "",
+                        false, false);
+        RuntimeRegionPlanner.FieldAccessEvent field =
+                new RuntimeRegionPlanner.FieldAccessEvent(3, "FIELD_READ",
+                        METHOD, 11, 1, METHOD + "#u1", arrayField,
+                        10, 20, "");
+        RuntimeRegionPlanner.ArrayAccessEvent element =
+                new RuntimeRegionPlanner.ArrayAccessEvent(4, "ARRAY_READ",
+                        METHOD, 11, 2, METHOD + "#u2", 20, 0, 30);
+        File output = new File(folder.getRoot(), "array-refined.jsonl");
+
+        RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                Collections.singletonList(activation("REGION.1", 11,
+                        "STATE_CONTEXT", METHOD)),
+                Collections.singletonList(root),
+                Collections.singletonList(argument),
+                Collections.singletonList(field),
+                Collections.singletonList(element),
+                Collections.emptyList(), output.toPath());
+
+        JsonObject edge = GSON.fromJson(Files.readAllLines(output.toPath(),
+                StandardCharsets.UTF_8).get(0), JsonObject.class);
+        JsonObject binding = edge.getAsJsonArray("runtimeFieldBindings")
+                .get(0).getAsJsonObject();
+        JsonObject access = binding.getAsJsonArray(
+                "runtimeArrayElementBindings").get(0).getAsJsonObject();
+        assertEquals("ARRAY_READ", access.get("kind").getAsString());
+        assertEquals(20, access.get("arrayObjectId").getAsInt());
+        assertEquals(0, access.get("arrayIndex").getAsInt());
+        assertEquals(30, access.get("elementObjectId").getAsInt());
+        assertEquals("EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_V1",
+                access.get("authority").getAsString());
+    }
+
+    @Test
     public void callOnObservedFieldContainerBindsContainerMutation()
             throws Exception {
         String mapField = "<example.A: java.util.Map values>";
@@ -105,17 +158,37 @@ public class RuntimeRefinedGraphBuilderTest {
                 new RuntimeRegionPlanner.RuntimeEvent(2, "METHOD_ARGUMENT",
                         METHOD, 11, 0, 0, "", 0, "example.A", 10, "",
                         false, false);
+        String memberId = "<example.Member: int id>";
+        String memberExpiry = "<example.Member: long expiry>";
+        RuntimeRegionPlanner.FieldAccessEvent idWrite =
+                new RuntimeRegionPlanner.FieldAccessEvent(3, "FIELD_WRITE",
+                        METHOD, 11, 2, METHOD + "#u2", memberId,
+                        60, 0, "7");
+        RuntimeRegionPlanner.FieldAccessEvent expiryWrite =
+                new RuntimeRegionPlanner.FieldAccessEvent(4, "FIELD_WRITE",
+                        METHOD, 11, 3, METHOD + "#u3", memberExpiry,
+                        60, 0, "99");
         RuntimeRegionPlanner.FieldAccessEvent mapRead =
-                new RuntimeRegionPlanner.FieldAccessEvent(3, "FIELD_READ",
+                new RuntimeRegionPlanner.FieldAccessEvent(5, "FIELD_READ",
                         METHOD, 11, 1, METHOD + "#u1", mapField,
                         10, 50, "");
         RuntimeRegionPlanner.RuntimeEvent mutationCall =
-                new RuntimeRegionPlanner.RuntimeEvent(4, "CALL_SITE_ENTER",
+                new RuntimeRegionPlanner.RuntimeEvent(6, "CALL_SITE_ENTER",
                         METHOD, 11, 1, 0, METHOD + "#u9",
                         "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>",
                         -1, "java.util.Map", 50, "", false, false);
+        RuntimeRegionPlanner.RuntimeEvent keyArgument =
+                new RuntimeRegionPlanner.RuntimeEvent(7, "CALL_ARGUMENT",
+                        METHOD, 11, 1, 0, METHOD + "#u9",
+                        "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>",
+                        0, "java.lang.Integer", 59, "", false, false);
+        RuntimeRegionPlanner.RuntimeEvent valueArgument =
+                new RuntimeRegionPlanner.RuntimeEvent(8, "CALL_ARGUMENT",
+                        METHOD, 11, 1, 0, METHOD + "#u9",
+                        "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>",
+                        1, "example.Member", 60, "", false, false);
         RuntimeRegionPlanner.RuntimeEvent mutationReturn =
-                new RuntimeRegionPlanner.RuntimeEvent(5, "CALL_SITE_RETURN",
+                new RuntimeRegionPlanner.RuntimeEvent(9, "CALL_SITE_RETURN",
                         METHOD, 11, 1, 0, METHOD + "#u9",
                         "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>",
                         -1, "", 0, "", false, false);
@@ -126,8 +199,9 @@ public class RuntimeRefinedGraphBuilderTest {
                         Collections.singletonList(activation("REGION.1", 11,
                                 "STATE_CONTEXT", METHOD)),
                         Collections.singletonList(root),
-                        Arrays.asList(argument, mutationCall, mutationReturn),
-                        Collections.singletonList(mapRead),
+                        Arrays.asList(argument, mutationCall, keyArgument,
+                                valueArgument, mutationReturn),
+                        Arrays.asList(idWrite, expiryWrite, mapRead),
                         Collections.emptyList(), output.toPath());
 
         assertEquals(1, result.runtimeBoundEdgeCount);
@@ -139,12 +213,22 @@ public class RuntimeRefinedGraphBuilderTest {
                 binding.get("bindingKind").getAsString());
         assertEquals(10, binding.get("fieldReceiverObjectId").getAsInt());
         assertEquals(50, binding.get("valueObjectId").getAsInt());
-        assertEquals(5, binding.get("eventSeq").getAsLong());
-        assertEquals(3, binding.get("writerFieldReadSeq").getAsLong());
-        assertEquals(4, binding.get("mutatorEnterSeq").getAsLong());
-        assertEquals(5, binding.get("mutationCompletionSeq").getAsLong());
+        assertEquals(9, binding.get("eventSeq").getAsLong());
+        assertEquals(5, binding.get("writerFieldReadSeq").getAsLong());
+        assertEquals(6, binding.get("mutatorEnterSeq").getAsLong());
+        assertEquals(9, binding.get("mutationCompletionSeq").getAsLong());
         assertEquals("values", binding.getAsJsonArray("fieldPath")
                 .get(0).getAsString());
+        assertEquals("EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1",
+                binding.get("containerMemberIdentityAuthority")
+                        .getAsString());
+        assertTrue(binding.get("containerMemberToken").getAsString()
+                .startsWith("MEMBER."));
+        assertEquals(50, binding.get("containerObjectId").getAsInt());
+        assertEquals(59, binding.get("containerKeyObjectId").getAsInt());
+        assertEquals(60, binding.get("containerValueObjectId").getAsInt());
+        assertEquals(2, binding.getAsJsonArray(
+                "containerMemberFieldBindings").size());
     }
 
     @Test
@@ -305,6 +389,64 @@ public class RuntimeRefinedGraphBuilderTest {
         assertEquals(41, binding.get("valueObjectId").getAsInt());
         assertEquals("example.Payload",
                 binding.get("valueRuntimeType").getAsString());
+    }
+
+    @Test
+    public void referenceArrayAccessorCarriesExactElementIdentity()
+            throws Exception {
+        String callee = "<example.Box: java.lang.Object[] values()>";
+        String field = "<example.Box: java.lang.Object[] values>";
+        String site = METHOD + "#u7";
+        File candidate = write("array-accessor-candidate.jsonl", object(
+                "schemaVersion", 3, "id", "DF.array.accessor",
+                "kind", "accessor_field_return", "transferKind",
+                "HEAP_READ", "method", METHOD, "unitIndex", 7,
+                "siteId", site, "fromCell", field, "toCell",
+                METHOD + "::values", "invoke", callee,
+                "declaredFieldSignature", field,
+                "accessorImplementationMethod", callee));
+        File skeleton = write("array-accessor-skeleton.jsonl", object(
+                "schemaVersion", 3, "kind", "REGION_SKELETON",
+                "regionId", "REGION.1", "rootMethod", METHOD,
+                "anchorMethod", METHOD,
+                "methods", Collections.singletonList(METHOD)));
+        RuntimeRegionPlanner.MethodEvent root =
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "p", "t",
+                        1, METHOD, 10, "example.Root", 11, 0, 0);
+        RuntimeRegionPlanner.RuntimeEvent enter =
+                new RuntimeRegionPlanner.RuntimeEvent(2, "CALL_SITE_ENTER",
+                        METHOD, 11, 21, 0, site, callee, -1,
+                        "example.Box", 31, "", false, false);
+        RuntimeRegionPlanner.RuntimeEvent returned =
+                new RuntimeRegionPlanner.RuntimeEvent(3, "CALL_SITE_RETURN",
+                        METHOD, 11, 21, 0, site, callee, -1,
+                        "[Ljava.lang.Object;", 41, "", false, false);
+        RuntimeRegionPlanner.ArrayAccessEvent element =
+                new RuntimeRegionPlanner.ArrayAccessEvent(4, "ARRAY_WRITE",
+                        METHOD, 11, 8, METHOD + "#u8", 41, 0, 51);
+        File output = new File(folder.getRoot(),
+                "array-accessor-refined.jsonl");
+
+        RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                Collections.singletonList(activation("REGION.1", 11,
+                        "STATE_CONTEXT", METHOD)),
+                Collections.singletonList(root), Arrays.asList(enter,
+                        returned), Collections.emptyList(),
+                Collections.singletonList(element),
+                Collections.emptyList(), output.toPath());
+
+        JsonObject edge = GSON.fromJson(Files.readAllLines(output.toPath(),
+                StandardCharsets.UTF_8).get(0), JsonObject.class);
+        JsonObject binding = edge.getAsJsonArray("runtimeAccessorBindings")
+                .get(0).getAsJsonObject();
+        JsonObject access = binding.getAsJsonArray(
+                "runtimeArrayElementBindings").get(0).getAsJsonObject();
+        assertEquals("ARRAY_WRITE", access.get("kind").getAsString());
+        assertEquals(41, access.get("arrayObjectId").getAsInt());
+        assertEquals(0, access.get("arrayIndex").getAsInt());
+        assertEquals(51, access.get("elementObjectId").getAsInt());
+        assertEquals("EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_V1",
+                access.get("authority").getAsString());
     }
 
     @Test

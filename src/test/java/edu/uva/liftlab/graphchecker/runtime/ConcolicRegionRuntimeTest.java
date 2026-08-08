@@ -230,6 +230,27 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void resourceCutCompletionIsPerCapturedDemandedPort() {
+        JsonObject task = exactOutputTask(2);
+        JsonArray captures = new JsonArray();
+
+        // With no VM capture the cap is only a gap.
+        assertFalse(ConcolicRegionRuntime
+                .resourceCutCapturedOutputForTests(task, captures));
+        // Once one demanded port was captured, preserve that port from this
+        // VM path.  The other port remains an explicit incomplete-relation
+        // gap; the resource cut cannot manufacture it.
+        captures.add(exactOutputCapture(0));
+        assertTrue(ConcolicRegionRuntime
+                .resourceCutCapturedOutputForTests(task, captures));
+        assertFalse(ConcolicRegionRuntime
+                .exactOutputBoundaryReachedForTests(task, captures));
+        captures.add(exactOutputCapture(1));
+        assertTrue(ConcolicRegionRuntime
+                .exactOutputBoundaryReachedForTests(task, captures));
+    }
+
+    @Test
     public void anObservationAtAnotherOccurrenceStillCompletesTheBoundary() {
         // The goal states the relation without an invocation ordinal, so a
         // bounded replay that reaches the site a different number of times

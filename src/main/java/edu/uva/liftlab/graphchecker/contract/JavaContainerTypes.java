@@ -166,6 +166,14 @@ public final class JavaContainerTypes {
                 && SET_MUTATORS.contains(method.subsignature);
     }
 
+    /** Exact associative insertion whose receiver/key/value identify a member. */
+    public static boolean associativePut(String signature) {
+        MethodSignature method = MethodSignature.parse(signature);
+        return method != null && MAPS.contains(method.owner)
+                && "java.lang.Object put(java.lang.Object,java.lang.Object)"
+                .equals(method.subsignature);
+    }
+
     /**
      * Exact predicates whose value is the position of a structural traversal,
      * rather than an element's semantic state.  These are useful to the

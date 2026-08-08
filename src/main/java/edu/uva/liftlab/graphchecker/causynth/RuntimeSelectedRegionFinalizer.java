@@ -188,6 +188,13 @@ public final class RuntimeSelectedRegionFinalizer {
         RuntimeClosure closure = failureDirectedClosure(program, graph,
                 runtimeInstances, selectedSkeletons);
         applyClosure(program, closure);
+        // Member leaves are a property of the exact target-first program,
+        // not of the initial over-approximate region set.  Project only after
+        // closure filtering, and recompute field relevance against those
+        // retained definitions so a discarded target/producer cannot widen a
+        // bounded member relation.
+        projectFailureRelevantContainerMembers(program.regions, graph,
+                laneByInstance);
         CausynthArtifactWriter.writeRegions(regions.toPath(),
                 regionEdges.toPath(), program);
         return new Result(closure.instanceCount, closure.reached.size(),
@@ -507,6 +514,20 @@ public final class RuntimeSelectedRegionFinalizer {
                 text(region.get("regionId"))));
         Map<String, Set<Long>> demandedAccesses =
                 demandedRuntimeAccesses(program.regionEdges);
+        Map<String, Long> fatalPrefixCutoffs = new LinkedHashMap<>();
+        Map<String, List<Map<String, Object>>> fatalPrefixContexts =
+                new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, Object>> entry
+                : closure.instances.entrySet()) {
+            List<Map<String, Object>> contexts = rows(
+                    entry.getValue().get("fatalPrefixContexts"));
+            if (!contexts.isEmpty()) {
+                fatalPrefixContexts.put(entry.getKey(), contexts);
+            }
+            long cutoff = longNumber(entry.getValue().get(
+                    "fatalPrefixEventSeq"), -1L);
+            if (cutoff >= 0L) fatalPrefixCutoffs.put(entry.getKey(), cutoff);
+        }
 
         for (Map<String, Object> region : program.regions) {
             String regionId = text(region.get("regionId"));
@@ -530,11 +551,13 @@ public final class RuntimeSelectedRegionFinalizer {
             region.put("symbolicInputs", filterPorts(
                     rows(region.get("symbolicInputs")), regionId,
                     rootCalls, false, closure.demandedInputs,
-                    demandedAccesses));
+                    demandedAccesses, fatalPrefixCutoffs,
+                    fatalPrefixContexts));
             region.put("outputs", filterPorts(
                     rows(region.get("outputs")), regionId,
                     rootCalls, true, closure.demandedOutputs,
-                    demandedAccesses));
+                    demandedAccesses, fatalPrefixCutoffs,
+                    fatalPrefixContexts));
         }
     }
 
@@ -542,7 +565,10 @@ public final class RuntimeSelectedRegionFinalizer {
             List<Map<String, Object>> ports, String regionId,
             Set<Long> rootCalls, boolean output,
             Set<String> demandedPorts,
-            Map<String, Set<Long>> demandedAccesses) throws IOException {
+            Map<String, Set<Long>> demandedAccesses,
+            Map<String, Long> fatalPrefixCutoffs,
+            Map<String, List<Map<String, Object>>> fatalPrefixContexts)
+            throws IOException {
         List<Map<String, Object>> retained = new ArrayList<>();
         for (Map<String, Object> port : ports) {
             long rootCallId = portRootCallId(port, output);
@@ -553,12 +579,72 @@ public final class RuntimeSelectedRegionFinalizer {
                     || !demandedPorts.contains(demand)) {
                 continue;
             }
-            retainExactRuntimeAccesses(port, demand, output,
+            // Region definitions are shared by all observed target
+            // occurrences.  Every retained occurrence gets its own shallow
+            // port row so one fatal cutoff cannot trim another occurrence's
+            // canonical runtime-access catalog.
+            Map<String, Object> selected = new LinkedHashMap<>(port);
+            String instance = instanceKey(regionId, rootCallId);
+            List<Map<String, Object>> contexts = output
+                    ? Collections.<Map<String, Object>>emptyList()
+                    : fatalPrefixContexts.getOrDefault(instance,
+                    Collections.<Map<String, Object>>emptyList());
+            List<Map<String, Object>> portContexts =
+                    fatalPrefixContextsForPort(contexts,
+                            text(port.get("portId")));
+            if (!portContexts.isEmpty()) {
+                selected.put("fatalPrefixContexts", portContexts);
+            }
+            Long cutoff = output ? null : fatalPrefixCutoffs.get(instance);
+            if (cutoff != null && DependencyRole.valueFrontier(
+                    selected.get("dependencyRole"))) {
+                trimFatalPrefixAccesses(selected, cutoff);
+            }
+            retainExactRuntimeAccesses(selected, demand, output,
                     demandedAccesses.getOrDefault(demand,
                             Collections.<Long>emptySet()));
-            retained.add(port);
+            retained.add(selected);
         }
         return retained;
+    }
+
+    private static List<Map<String, Object>> fatalPrefixContextsForPort(
+            List<Map<String, Object>> contexts, String portId) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> context : contexts) {
+            if (!strings(context.get("inputPorts")).contains(portId)) {
+                continue;
+            }
+            Map<String, Object> compact = new LinkedHashMap<>(context);
+            compact.remove("inputPorts");
+            result.add(compact);
+        }
+        return result;
+    }
+
+    private static void trimFatalPrefixAccesses(
+            Map<String, Object> port, long cutoff) {
+        List<Map<String, Object>> accesses = rows(
+                port.get("runtimeAccesses"));
+        if (!accesses.isEmpty()) {
+            List<Map<String, Object>> prefix = new ArrayList<>();
+            for (Map<String, Object> access : accesses) {
+                long event = longNumber(access.get("eventSeq"), -1L);
+                if (event >= 0L && event <= cutoff) prefix.add(access);
+            }
+            port.put("runtimeAccesses", prefix);
+            port.put("fatalPrefixAuthority",
+                    "EXACT_RUNTIME_ACCESS_PREFIX_V1");
+        } else if ("PROTOCOL_INPUT".equals(
+                text(port.get("sourceKind")))) {
+            port.put("fatalPrefixAuthority",
+                    "TRUSTED_PROTOCOL_RECEIVE_PREFIX_V1");
+        } else if ("ACCESSOR_RETURN".equals(
+                text(port.get("sourceKind")))) {
+            port.put("fatalPrefixAuthority",
+                    "EXACT_RUNTIME_ACCESSOR_PREFIX_V1");
+        }
+        port.put("fatalPrefixEventSeq", cutoff);
     }
 
     /** Keeps only concrete accesses selected by retained causal edges. */
@@ -915,6 +1001,212 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Object> edge, String blocker) {
         edge.put("boundedContainerStateAdmission", "BLOCKED");
         edge.put("boundedContainerStateBlocker", blocker);
+    }
+
+    /**
+     * Carries demanded scalar leaves across a bounded container timeline by
+     * the exact mutation that introduced the member.  The token is trace
+     * local and comes from {@code Map.put} provenance; neither a concrete key
+     * value nor an iteration slot participates in its identity.
+     */
+    static void projectDemandedContainerMembers(
+            List<Map<String, Object>> regions, Set<String> demandedFields,
+            Map<String, Long> laneByInstance) {
+        Map<String, Set<Long>> writerLanes = new LinkedHashMap<>();
+        Set<String> incompleteWriters = new LinkedHashSet<>();
+        for (Map<String, Object> region : regions) {
+            String regionId = text(region.get("regionId"));
+            for (Map<String, Object> output : rows(region.get("outputs"))) {
+                for (Map<String, Object> access
+                        : rows(output.get("runtimeAccesses"))) {
+                    if (!JavaContainerTypes.associativePut(text(
+                            access.get("mutatorDeclaredCallee")))) {
+                        continue;
+                    }
+                    String token = text(access.get("containerMemberToken"));
+                    int container = number(access.get("containerObjectId"),
+                            0);
+                    long root = longNumber(access.get("rootCallId"), -1L);
+                    Long lane = laneByInstance.get(instanceKey(regionId,
+                            root));
+                    String containerKey = memberContainerKey(access,
+                            container);
+                    if (!token.isEmpty() && container > 0 && lane != null) {
+                        writerLanes.computeIfAbsent(containerKey,
+                                ignored -> new LinkedHashSet<>()).add(lane);
+                    } else if (container > 0) {
+                        incompleteWriters.add(containerKey);
+                    }
+                }
+            }
+        }
+
+        for (Map<String, Object> region : regions) {
+            String regionId = text(region.get("regionId"));
+            Map<String, Map<String, Object>> inputsById =
+                    new LinkedHashMap<>();
+            for (Map<String, Object> input
+                    : rows(region.get("symbolicInputs"))) {
+                inputsById.put(text(input.get("portId")), input);
+            }
+            for (Map<String, Object> output : rows(region.get("outputs"))) {
+                if (!"MUTATION_POST_STATE".equals(text(output.get(
+                        "boundedContainerStateRole")))) {
+                    continue;
+                }
+                for (Map<String, Object> access
+                        : rows(output.get("runtimeAccesses"))) {
+                    if (!JavaContainerTypes.associativePut(text(
+                            access.get("mutatorDeclaredCallee")))) {
+                        continue;
+                    }
+                    String token = text(access.get("containerMemberToken"));
+                    int container = number(access.get("containerObjectId"),
+                            0);
+                    long root = longNumber(access.get("rootCallId"), -1L);
+                    Long lane = laneByInstance.get(instanceKey(regionId,
+                            root));
+                    String containerKey = memberContainerKey(access,
+                            container);
+                    Set<Long> lanes = writerLanes.getOrDefault(
+                            containerKey,
+                            Collections.<Long>emptySet());
+                    if (container <= 0) {
+                        markMemberProjectionBlocked(output,
+                                "MISSING_EXACT_CONTAINER_IDENTITY");
+                        continue;
+                    }
+                    if (token.isEmpty() || lane == null
+                            || lanes.size() != 1
+                            || incompleteWriters.contains(containerKey)) {
+                        markMemberProjectionBlocked(output,
+                                "MISSING_OR_MULTIPLE_MUTATION_WRITER_LANES");
+                        continue;
+                    }
+                    Map<String, Object> projection = memberProjection(
+                            access, demandedFields, lane);
+                    if (projection == null) continue;
+                    addMemberProjection(output, access, projection,
+                            "POST_STATE");
+                    for (String preStatePort : strings(output.get(
+                            "boundedContainerPreStatePorts"))) {
+                        Map<String, Object> input = inputsById.get(
+                                preStatePort);
+                        if (input != null && portRootCallId(input, false)
+                                == root) {
+                            addMemberProjection(input, null, projection,
+                                    "PRE_STATE");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Recomputes leaf relevance over the already closure-filtered program. */
+    static void projectFailureRelevantContainerMembers(
+            List<Map<String, Object>> retainedRegions,
+            List<Map<String, Object>> graph,
+            Map<String, Long> laneByInstance) {
+        projectDemandedContainerMembers(retainedRegions,
+                failureRelevantFields(retainedRegions, graph),
+                laneByInstance);
+    }
+
+    private static String memberContainerKey(Map<String, Object> access,
+                                             int container) {
+        return text(access.get("process")) + "\n" + container;
+    }
+
+    private static Map<String, Object> memberProjection(
+            Map<String, Object> access, Set<String> demandedFields,
+            long writerLane) {
+        if (!"EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1".equals(
+                text(access.get("containerMemberIdentityAuthority")))) {
+            return null;
+        }
+        List<Map<String, Object>> leaves = new ArrayList<>();
+        leaves.add(memberLeaf("PRESENT", "boolean", ""));
+        for (Map<String, Object> binding
+                : rows(access.get("containerMemberFieldBindings"))) {
+            String declaration = text(binding.get("field"));
+            DeclaredFieldCell field = DeclaredFieldCell.parse(declaration);
+            if (field == null || !field.primitive()
+                    || !demandedFields.contains(declaration)) {
+                continue;
+            }
+            Map<String, Object> leaf = memberLeaf(
+                    "VALUE_FIELD", field.type, declaration);
+            leaf.put("fieldEventSeq", binding.get("eventSeq"));
+            leaves.add(leaf);
+        }
+        Map<String, Object> projection = new LinkedHashMap<>();
+        projection.put("memberToken", access.get("containerMemberToken"));
+        projection.put("identityAuthority",
+                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1");
+        projection.put("containerObjectId",
+                access.get("containerObjectId"));
+        projection.put("keyObjectId", access.get("containerKeyObjectId"));
+        projection.put("valueObjectId",
+                access.get("containerValueObjectId"));
+        projection.put("mutationInvocationId",
+                access.get("mutationInvocationId"));
+        projection.put("writerLaneId", writerLane);
+        projection.put("leaves", leaves);
+        return projection;
+    }
+
+    private static Map<String, Object> memberLeaf(
+            String kind, String javaType, String declaration) {
+        Map<String, Object> leaf = new LinkedHashMap<>();
+        leaf.put("kind", kind);
+        leaf.put("javaType", javaType);
+        if (!declaration.isEmpty()) leaf.put("field", declaration);
+        return leaf;
+    }
+
+    private static void addMemberProjection(
+            Map<String, Object> port, Map<String, Object> exactAccess,
+            Map<String, Object> projection, String stateRole) {
+        Map<String, Object> copy = new LinkedHashMap<>(projection);
+        copy.put("stateRole", stateRole);
+        addUniqueMap(port, "boundedContainerMemberProjections", copy,
+                "memberToken");
+        if (exactAccess != null) {
+            exactAccess.put("boundedContainerMemberProjection", copy);
+        }
+        port.put("boundedContainerMemberProjectionAdmission", "PROVED");
+        port.put("boundedContainerMemberProjectionAuthority",
+                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1");
+        port.put("containerTimelineWriterPolicy",
+                "SINGLE_WRITER_REQUIRED");
+    }
+
+    private static void markMemberProjectionBlocked(
+            Map<String, Object> port, String blocker) {
+        port.put("boundedContainerMemberProjectionAdmission", "BLOCKED");
+        port.put("boundedContainerMemberProjectionBlocker", blocker);
+        port.put("containerTimelineWriterPolicy",
+                "SINGLE_WRITER_REQUIRED");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void addUniqueMap(Map<String, Object> target, String key,
+                                     Map<String, Object> value,
+                                     String identityKey) {
+        List<Map<String, Object>> values;
+        Object existing = target.get(key);
+        if (existing instanceof List<?>) {
+            values = (List<Map<String, Object>>) existing;
+        } else {
+            values = new ArrayList<>();
+            target.put(key, values);
+        }
+        String identity = text(value.get(identityKey));
+        for (Map<String, Object> candidate : values) {
+            if (identity.equals(text(candidate.get(identityKey)))) return;
+        }
+        values.add(value);
     }
 
     private static long firstPositive(long... values) {
@@ -1487,6 +1779,8 @@ public final class RuntimeSelectedRegionFinalizer {
         if (outputRegion == null) return false;
         Map<String, Object> derivedOutput = derivedRpcDescendantOutput(
                 whole, source, sourceState, authority, selection);
+        Map<String, Object> member = index.exactContainerMember(source);
+        copyContainerMemberIdentity(member, derivedOutput, false);
         List<Map<String, Object>> outputs = rows(
                 outputRegion.get("outputs"));
         addPortIfAbsent(outputs, derivedOutput);
@@ -1495,16 +1789,34 @@ public final class RuntimeSelectedRegionFinalizer {
         markProjectedDescendantInput(targetInput.port, whole,
                 source.declaration, target.type, false, authority,
                 selection);
+        copyContainerMemberIdentity(member, targetInput.port, true);
         targetInput.port.put("runtimeAccesses",
                 Collections.singletonList(targetInput.access));
 
         Map<String, Object> projection = projectedRpcDescendantFlow(whole,
                 source, target, text(derivedOutput.get("portId")),
                 text(targetInput.port.get("portId")), authority, selection);
+        copyContainerMemberIdentity(member, projection, false);
         if (emittedEdges.add(text(projection.get("edgeId")))) {
             program.regionEdges.add(projection);
         }
         return true;
+    }
+
+    private static void copyContainerMemberIdentity(
+            Map<String, Object> member, Map<String, Object> target,
+            boolean sourcePrefix) {
+        if (member == null || target == null) return;
+        String prefix = sourcePrefix ? "rpcSource" : "";
+        for (String field : new String[]{"containerMemberToken",
+                "containerMemberIdentityAuthority"}) {
+            Object value = member.get(field);
+            if (value == null) continue;
+            String name = sourcePrefix
+                    ? prefix + Character.toUpperCase(field.charAt(0))
+                    + field.substring(1) : field;
+            target.put(name, value);
+        }
     }
 
     /**
@@ -1519,20 +1831,20 @@ public final class RuntimeSelectedRegionFinalizer {
      * same value on both sides.  That is a declared path match between two
      * byte-identical declarations, never an inference from a name.</p>
      *
-     * <p>The descent is seeded from a declared spine field whose recorded
-     * value object is unique on both sides, which makes the producer object
-     * and the reconstructed object correspond.  From a corresponding pair it
-     * continues into every declared field <em>both sides actually recorded</em>
-     * on those two objects: a scalar leaf becomes an equality, another spine
-     * field becomes the next pair.  Nothing is projected where one side has
-     * no recorded access, and no port is invented for a field that was never
-     * observed.</p>
+     * <p>The descent is seeded by the exact server-result and caller-result
+     * objects recorded on the trusted response edge.  From that corresponding
+     * carrier pair it continues into every declared field <em>both sides
+     * actually recorded</em>: a scalar leaf becomes an equality, another
+     * spine field becomes the next pair.  Nothing is projected where one side
+     * has no recorded access, and no port is invented for a field that was
+     * never observed.</p>
      *
-     * <p>A container field stops the descent.  Element correspondence is
-     * declared, not recorded — the trace carries no element identity — so
-     * projecting through one would be an assumption about which element, not
-     * about the transport.  Those keep their named gap.  The whole descent is
-     * bounded by {@link LoopBoundPolicy#SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY}
+     * <p>A reference-array field descends only when both sides record the
+     * exact array object, index, and element identity and the configured
+     * transport declares element-order preservation.  Lists/maps and arrays
+     * with missing, conflicting, or over-bound evidence keep a named gap.
+     * The whole descent is bounded by
+     * {@link LoopBoundPolicy#SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY}
      * corresponding pairs.</p>
      */
     private static void addDeclaredCarrierProjections(
@@ -1549,10 +1861,16 @@ public final class RuntimeSelectedRegionFinalizer {
         long toRoot = longNumber(whole.get("toRootCallId"), -1L);
         long sendSeq = longNumber(whole.get("sendEventSeq"), -1L);
         long producerLowerSeq = longNumber(whole.get("receiveEventSeq"), -1L);
-        long producerUpperSeq = longNumber(whole.get(
-                "producerResultEventSeq"), -1L);
         long consumerLowerSeq = longNumber(whole.get(
                 "callerResultEventSeq"), -1L);
+        // The server method result starts response transport; it does not
+        // finish it.  Hadoop IPC (like many RPC stacks) reads the returned
+        // carrier in a serializer after the server stub has returned.  The
+        // caller-result event is the first recorded fence that proves that
+        // serialization and reconstruction have completed.  Exact producer
+        // region/root/object filtering below keeps this wider transaction
+        // window from admitting consumer or unrelated-object accesses.
+        long producerUpperSeq = responseProjectionUpperSeq(whole);
         if (sendSeq < 0L || producerLowerSeq < 0L
                 || producerUpperSeq < producerLowerSeq
                 || consumerLowerSeq < 0L) {
@@ -1561,31 +1879,58 @@ public final class RuntimeSelectedRegionFinalizer {
 
         Deque<int[]> work = new ArrayDeque<>();
         Set<String> visited = new LinkedHashSet<>();
-        for (int[] pair : seedCarrierObjectPairs(index, fromRegion, fromRoot,
-                toRegion, toRoot, producerLowerSeq, producerUpperSeq,
-                consumerLowerSeq, consumerUpperSeq)) {
-            work.addLast(pair);
-        }
+        int[] carrierPair = exactDeclaredCarrierRootPair(whole);
+        if (carrierPair == null) return;
+        work.addLast(carrierPair);
         while (!work.isEmpty() && visited.size()
                 < LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
             int[] pair = work.removeFirst();
             if (!visited.add(pair[0] + "\n" + pair[1])) continue;
 
             Map<String, RpcDescendantCandidate> producerFields =
-                    lastDefinitionsOn(index, pair[0], sendSeq);
+                    lastDefinitionsOn(index, pair[0], producerUpperSeq);
             for (Map.Entry<String, RpcDescendantCandidate> entry
                     : producerFields.entrySet()) {
                 DeclaredFieldCell field = DeclaredFieldCell.parse(
                         entry.getKey());
-                if (field == null
-                        || rpcProjectableContainerType(field.type)) {
-                    continue;
-                }
+                if (field == null) continue;
                 RpcDescendantCandidate source = entry.getValue();
                 List<RpcDescendantCandidate> reads =
                         reconstructedReadsOn(index, pair[1], entry.getKey(),
-                                toRegion, toRoot, sendSeq, consumerLowerSeq);
+                                toRegion, toRoot, sendSeq, consumerLowerSeq,
+                                consumerUpperSeq);
                 if (reads.isEmpty()) continue;
+                if (rpcProjectableContainerType(field.type)) {
+                    // Lists/maps retain their existing bounded-container
+                    // algebra.  This recorder package proves only JVM
+                    // reference-array element identity.
+                    if (!rpcProjectableReferenceArrayType(field.type)) {
+                        continue;
+                    }
+                    int rebuiltArray = uniqueValueObject(reads);
+                    ArrayElementProjection elements =
+                            exactDeclaredArrayElementPairs(
+                                    rows(source.binding.get(
+                                            "runtimeArrayElementBindings")),
+                                    source.valueObjectId,
+                                    combinedArrayElementBindings(reads),
+                                    rebuiltArray,
+                                    source.eventSeq,
+                                    consumerLowerSeq,
+                                    sendSeq,
+                                    consumerLowerSeq);
+                    if (!elements.proved()) {
+                        markRpcProjectionBlocked(index, reads,
+                                elements.blocker, elements.width);
+                        continue;
+                    }
+                    for (int[] elementPair : elements.pairs) {
+                        work.addLast(elementPair);
+                    }
+                    markArrayElementProjectionProved(index, reads,
+                            elements.width);
+                    continue;
+                }
                 if (rpcCarrierReferenceType(field.type)) {
                     int next = uniqueValueObject(reads);
                     if (next != 0 && source.valueObjectId != 0) {
@@ -1608,55 +1953,38 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Corresponding producer/consumer objects to start a declared descent
-     * from: a spine declaration written once into the reply and observed once
-     * after it arrives.  Anything ambiguous on either side is not a
-     * correspondence and is left alone.
+     * End fence for reading a returned response carrier.
+     *
+     * <p>A server-stub method exit only publishes the carrier to the RPC
+     * stack. Serialization may read that object afterwards. The matching
+     * caller-result event is the first recorded event that proves the
+     * response transfer, including serialization, has completed.</p>
      */
-    private static List<int[]> seedCarrierObjectPairs(
-            RpcDescendantProjectionIndex index, String fromRegion,
-            long fromRoot, String toRegion, long toRoot,
-            long producerLowerSeq, long producerUpperSeq,
-            long consumerLowerSeq, long consumerUpperSeq) {
-        Map<String, Set<Integer>> produced = new LinkedHashMap<>();
-        Map<String, Set<Integer>> received = new LinkedHashMap<>();
-        for (RpcDescendantCandidate candidate
-                : index.candidates(fromRegion, fromRoot, "HEAP_WRITE")) {
-            if (candidate.valueObjectId == 0
-                    || candidate.eventSeq < producerLowerSeq
-                    || candidate.eventSeq > producerUpperSeq
-                    || !rpcCarrierReferenceType(candidate.type)) {
-                continue;
-            }
-            produced.computeIfAbsent(candidate.declaration,
-                    ignored -> new LinkedHashSet<>()).add(
-                    candidate.valueObjectId);
+    static long responseProjectionUpperSeq(Map<String, Object> flow) {
+        long producerResult = longNumber(flow.get(
+                "producerResultEventSeq"), -1L);
+        long callerResult = longNumber(flow.get(
+                "callerResultEventSeq"), -1L);
+        return producerResult >= 0L && callerResult >= producerResult
+                ? callerResult : -1L;
+    }
+
+    /**
+     * Exact carrier roots recorded at the two ends of one trusted response.
+     * A descendant value is deliberately not used as a seed: doing so would
+     * start the walk at (for example) two arrays and skip the declared field
+     * that establishes what those arrays mean.  Missing result identity is a
+     * hard stop, never an invitation to pair by a value or occurrence.
+     */
+    static int[] exactDeclaredCarrierRootPair(Map<String, Object> flow) {
+        if (!"EXACT_RUNTIME_PROTOCOL_CALLSITE_RESULT_V1".equals(
+                text(flow.get("callsiteAuthority")))) {
+            return null;
         }
-        for (String transfer : new String[]{"HEAP_READ", "HEAP_WRITE"}) {
-            for (RpcDescendantCandidate candidate
-                    : index.candidates(toRegion, toRoot, transfer)) {
-                if (candidate.valueObjectId == 0
-                        || candidate.eventSeq < consumerLowerSeq
-                        || candidate.eventSeq >= consumerUpperSeq
-                        || !rpcCarrierReferenceType(candidate.type)) {
-                    continue;
-                }
-                received.computeIfAbsent(candidate.declaration,
-                        ignored -> new LinkedHashSet<>()).add(
-                        candidate.valueObjectId);
-            }
-        }
-        List<int[]> result = new ArrayList<>();
-        for (Map.Entry<String, Set<Integer>> entry : produced.entrySet()) {
-            Set<Integer> consumer = received.get(entry.getKey());
-            if (entry.getValue().size() != 1 || consumer == null
-                    || consumer.size() != 1) {
-                continue;
-            }
-            result.add(new int[]{entry.getValue().iterator().next(),
-                    consumer.iterator().next()});
-        }
-        return result;
+        int producer = number(flow.get("producerResultObjectId"), 0);
+        int consumer = number(flow.get("callerResultObjectId"), 0);
+        return producer == 0 || consumer == 0
+                ? null : new int[]{producer, consumer};
     }
 
     /**
@@ -1665,11 +1993,12 @@ public final class RuntimeSelectedRegionFinalizer {
      * reply carried.
      */
     private static Map<String, RpcDescendantCandidate> lastDefinitionsOn(
-            RpcDescendantProjectionIndex index, int object, long sendSeq) {
+            RpcDescendantProjectionIndex index, int object,
+            long producerResultSeq) {
         Map<String, RpcDescendantCandidate> result = new LinkedHashMap<>();
         for (RpcDescendantCandidate candidate
                 : index.onReceiver("HEAP_WRITE", object)) {
-            if (candidate.eventSeq >= sendSeq) continue;
+            if (candidate.eventSeq >= producerResultSeq) continue;
             RpcDescendantCandidate prior = result.get(candidate.declaration);
             if (prior == null || prior.eventSeq < candidate.eventSeq) {
                 result.put(candidate.declaration, candidate);
@@ -1687,13 +2016,14 @@ public final class RuntimeSelectedRegionFinalizer {
     private static List<RpcDescendantCandidate> reconstructedReadsOn(
             RpcDescendantProjectionIndex index, int object,
             String declaration, String toRegion, long toRoot, long sendSeq,
-            long consumerLowerSeq) {
+            long consumerLowerSeq, long consumerUpperSeq) {
         List<RpcDescendantCandidate> result = new ArrayList<>();
         for (RpcDescendantCandidate read
                 : index.onReceiver("HEAP_READ", object)) {
             if (!declaration.equals(read.declaration)
                     || !toRegion.equals(read.region)
-                    || read.rootCallId != toRoot) {
+                    || read.rootCallId != toRoot
+                    || read.eventSeq >= consumerUpperSeq) {
                 continue;
             }
             long latest = -1L;
@@ -1721,6 +2051,289 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         return values.size() == 1 ? values.iterator().next() : 0;
+    }
+
+    private static List<Map<String, Object>> combinedArrayElementBindings(
+            List<RpcDescendantCandidate> candidates) {
+        Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
+        for (RpcDescendantCandidate candidate : candidates) {
+            for (Map<String, Object> access : rows(candidate.binding.get(
+                    "runtimeArrayElementBindings"))) {
+                unique.put(CausynthJson.write(access), access);
+            }
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    /**
+     * Pairs two reconstructed reference arrays solely by exact object id and
+     * the order-preserving index declared by the configured transport.
+     */
+    static ArrayElementProjection exactDeclaredArrayElementPairs(
+            List<Map<String, Object>> producerAccesses, int producerArray,
+            List<Map<String, Object>> consumerAccesses, int consumerArray,
+            long producerLowerExclusive, long producerUpperExclusive,
+            long consumerLowerExclusive, long consumerUpperExclusive) {
+        if (producerArray == 0 || consumerArray == 0) {
+            return ArrayElementProjection.blocked(
+                    "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY", -1);
+        }
+        // A declared carrier contract relates the two logical result
+        // objects, not their serializers.  Prefer the exact array snapshot
+        // recorded when each result field was published.  Older traces may
+        // still prove the same fact through concrete construction writes or
+        // a complete read traversal, in that order.
+        ArrayElementIndex producer = ArrayElementIndex.buildLogicalResult(
+                producerAccesses, producerArray,
+                producerLowerExclusive, producerUpperExclusive,
+                "ARRAY_WRITE", "ARRAY_READ");
+        ArrayElementIndex consumer = ArrayElementIndex.buildLogicalResult(
+                consumerAccesses, consumerArray,
+                consumerLowerExclusive, consumerUpperExclusive,
+                "ARRAY_WRITE", "ARRAY_READ");
+        int width = Math.max(producer.width, consumer.width);
+        if (!producer.blocker.isEmpty()) {
+            return ArrayElementProjection.blocked(producer.blocker, width);
+        }
+        if (!consumer.blocker.isEmpty()) {
+            return ArrayElementProjection.blocked(consumer.blocker, width);
+        }
+        if (width > LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
+            return ArrayElementProjection.blocked("BOUND_INSUFFICIENT",
+                    width);
+        }
+        if ((!producer.exactSnapshot && producer.elements.isEmpty())
+                || (!consumer.exactSnapshot && consumer.elements.isEmpty())
+                || !producer.elements.keySet().equals(
+                consumer.elements.keySet())) {
+            return ArrayElementProjection.blocked(
+                    "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY", width);
+        }
+        List<int[]> pairs = new ArrayList<>();
+        for (int index = 0; index < width; index++) {
+            Integer left = producer.elements.get(index);
+            Integer right = consumer.elements.get(index);
+            if (left == null || right == null || left == 0 || right == 0) {
+                return ArrayElementProjection.blocked(
+                        "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY", width);
+            }
+            pairs.add(new int[]{left, right});
+        }
+        return ArrayElementProjection.proved(pairs, width);
+    }
+
+    private static void markArrayElementProjectionProved(
+            RpcDescendantProjectionIndex index,
+            List<RpcDescendantCandidate> candidates, int width) {
+        for (RpcDescendantCandidate candidate : candidates) {
+            ExactPort port = index.exactInputPort(candidate);
+            if (port == null) continue;
+            port.port.put("rpcArrayElementProjectionAdmission", "PROVED");
+            port.port.put("rpcArrayElementProjectionAuthority",
+                    "EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_ORDER_V1");
+            port.port.put("observedContainerWidth", width);
+        }
+    }
+
+    static final class ArrayElementProjection {
+        final List<int[]> pairs;
+        final String blocker;
+        final int width;
+
+        private ArrayElementProjection(List<int[]> pairs, String blocker,
+                                       int width) {
+            this.pairs = pairs;
+            this.blocker = blocker;
+            this.width = width;
+        }
+
+        private static ArrayElementProjection proved(List<int[]> pairs,
+                                                      int width) {
+            return new ArrayElementProjection(pairs, "", width);
+        }
+
+        private static ArrayElementProjection blocked(String blocker,
+                                                       int width) {
+            return new ArrayElementProjection(
+                    Collections.<int[]>emptyList(), blocker, width);
+        }
+
+        boolean proved() {
+            return blocker.isEmpty();
+        }
+    }
+
+    private static final class ArrayElementIndex {
+        private final Map<Integer, Integer> elements =
+                new LinkedHashMap<>();
+        private String blocker = "";
+        private int width;
+        private boolean exactSnapshot;
+
+        private static ArrayElementIndex buildLogicalResult(
+                List<Map<String, Object>> accesses, int array,
+                long lowerExclusive, long upperExclusive,
+                String... fallbacks) {
+            ArrayElementIndex snapshot = latestSnapshot(accesses, array,
+                    lowerExclusive, upperExclusive);
+            if (snapshot != null) return snapshot;
+            for (String kind : fallbacks) {
+                ArrayElementIndex candidate = build(accesses, kind, array,
+                        lowerExclusive, upperExclusive);
+                if (!candidate.blocker.isEmpty()
+                        || !candidate.elements.isEmpty()) {
+                    return candidate;
+                }
+            }
+            return new ArrayElementIndex();
+        }
+
+        /** Latest exact FIELD_WRITE-bound snapshot in the result window. */
+        private static ArrayElementIndex latestSnapshot(
+                List<Map<String, Object>> accesses, int array,
+                long lowerExclusive, long upperExclusive) {
+            long latestBoundary = -1L;
+            for (Map<String, Object> access : accesses) {
+                if (!"ARRAY_SNAPSHOT".equals(text(access.get("kind")))
+                        || array != number(access.get("arrayObjectId"), 0)) {
+                    continue;
+                }
+                long boundary = longNumber(
+                        access.get("snapshotBoundarySeq"), -1L);
+                if (boundary < lowerExclusive
+                        || boundary >= upperExclusive) {
+                    continue;
+                }
+                latestBoundary = Math.max(latestBoundary, boundary);
+            }
+            if (latestBoundary < 0L) return null;
+
+            ArrayElementIndex result = new ArrayElementIndex();
+            result.exactSnapshot = true;
+            int declaredLength = -1;
+            long snapshotLastEvent = -1L;
+            for (Map<String, Object> access : accesses) {
+                if (!"ARRAY_SNAPSHOT".equals(text(access.get("kind")))
+                        || array != number(access.get("arrayObjectId"), 0)
+                        || latestBoundary != longNumber(
+                        access.get("snapshotBoundarySeq"), -1L)) {
+                    continue;
+                }
+                if (!"EXACT_RUNTIME_REFERENCE_ARRAY_SNAPSHOT_V1".equals(
+                        text(access.get("authority")))) {
+                    result.blocker =
+                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
+                    return result;
+                }
+                int length = number(access.get("arrayLength"), -1);
+                if (length < 0 || declaredLength >= 0
+                        && declaredLength != length) {
+                    result.blocker =
+                            "AMBIGUOUS_ARRAY_ELEMENT_IDENTITY";
+                    return result;
+                }
+                declaredLength = length;
+                result.width = length;
+                snapshotLastEvent = Math.max(snapshotLastEvent,
+                        longNumber(access.get("eventSeq"), -1L));
+                if (length == 0) continue;
+                int index = number(access.get("arrayIndex"), -1);
+                int element = number(access.get("elementObjectId"), 0);
+                if (index < 0 || index >= length || element == 0) {
+                    result.blocker =
+                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
+                    return result;
+                }
+                Integer prior = result.elements.putIfAbsent(index, element);
+                if (prior != null && prior != element) {
+                    result.blocker =
+                            "AMBIGUOUS_ARRAY_ELEMENT_IDENTITY";
+                    return result;
+                }
+            }
+            if (declaredLength < 0) {
+                result.blocker = "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
+                return result;
+            }
+            if (declaredLength > LoopBoundPolicy
+                    .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
+                result.blocker = "BOUND_INSUFFICIENT";
+                return result;
+            }
+            // The field write publishes the initial logical value.  Exact
+            // program writes after that snapshot but before the result fence
+            // update the same array state; take the latest write per index.
+            Map<Integer, Long> latestWrite = new LinkedHashMap<>();
+            for (Map<String, Object> access : accesses) {
+                long event = longNumber(access.get("eventSeq"), -1L);
+                if (!"ARRAY_WRITE".equals(text(access.get("kind")))
+                        || array != number(access.get("arrayObjectId"), 0)
+                        || event <= snapshotLastEvent
+                        || event >= upperExclusive) {
+                    continue;
+                }
+                if (!"EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_V1".equals(
+                        text(access.get("authority")))) {
+                    result.blocker =
+                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
+                    return result;
+                }
+                int index = number(access.get("arrayIndex"), -1);
+                int element = number(access.get("elementObjectId"), 0);
+                if (index < 0 || index >= declaredLength || element == 0) {
+                    result.blocker =
+                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
+                    return result;
+                }
+                if (event > latestWrite.getOrDefault(index, -1L)) {
+                    latestWrite.put(index, event);
+                    result.elements.put(index, element);
+                }
+            }
+            if (declaredLength != result.elements.size()) {
+                result.blocker = "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
+            }
+            return result;
+        }
+
+        private static ArrayElementIndex build(
+                List<Map<String, Object>> accesses, String kind, int array,
+                long lowerExclusive, long upperExclusive) {
+            ArrayElementIndex result = new ArrayElementIndex();
+            for (Map<String, Object> access : accesses) {
+                long event = longNumber(access.get("eventSeq"), -1L);
+                if (!kind.equals(text(access.get("kind")))
+                        || array != number(access.get("arrayObjectId"), 0)
+                        || event <= lowerExclusive
+                        || event >= upperExclusive) {
+                    continue;
+                }
+                if (!"EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_V1".equals(
+                        text(access.get("authority")))) {
+                    result.blocker =
+                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
+                    return result;
+                }
+                int index = number(access.get("arrayIndex"), -1);
+                int element = number(access.get("elementObjectId"), 0);
+                if (index < 0 || element == 0) {
+                    result.blocker =
+                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
+                    return result;
+                }
+                result.width = Math.max(result.width, index + 1);
+                Integer prior = "ARRAY_WRITE".equals(kind)
+                        ? result.elements.put(index, element)
+                        : result.elements.putIfAbsent(index, element);
+                if (!"ARRAY_WRITE".equals(kind)
+                        && prior != null && prior != element) {
+                    result.blocker =
+                            "AMBIGUOUS_ARRAY_ELEMENT_IDENTITY";
+                    return result;
+                }
+            }
+            return result;
+        }
     }
 
     /**
@@ -2082,6 +2695,20 @@ public final class RuntimeSelectedRegionFinalizer {
                 || "java.util.ArrayList".equals(value);
     }
 
+    private static boolean rpcProjectableReferenceArrayType(String type) {
+        String value = text(type).trim();
+        if (value.startsWith("[")) {
+            return value.startsWith("[L") || value.startsWith("[[");
+        }
+        if (!value.endsWith("[]")) return false;
+        String component = value.substring(0, value.length() - 2).trim();
+        if (component.endsWith("[]")) return true;
+        return !("boolean".equals(component) || "byte".equals(component)
+                || "char".equals(component) || "short".equals(component)
+                || "int".equals(component) || "long".equals(component)
+                || "float".equals(component) || "double".equals(component));
+    }
+
     /**
      * Semantic value leaves the current VM/SMT contract can represent
      * directly.  A carrier object below a boundary is never one of them, so
@@ -2230,6 +2857,17 @@ public final class RuntimeSelectedRegionFinalizer {
                 binding.get("mutationInvocationId"));
         access.put("mutatorDeclaredCallee",
                 binding.get("mutatorDeclaredCallee"));
+        access.put("containerMemberToken",
+                binding.get("containerMemberToken"));
+        access.put("containerMemberIdentityAuthority",
+                binding.get("containerMemberIdentityAuthority"));
+        access.put("containerObjectId", binding.get("containerObjectId"));
+        access.put("containerKeyObjectId",
+                binding.get("containerKeyObjectId"));
+        access.put("containerValueObjectId",
+                binding.get("containerValueObjectId"));
+        access.put("containerMemberFieldBindings",
+                binding.get("containerMemberFieldBindings"));
         access.put("staticAccessSiteId", first(
                 text(binding.get("siteId")), staticAccessSiteId(edge)));
         accesses.add(access);
@@ -3606,8 +4244,9 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, List<String>> explicit =
                     explicitFatalSeedsBySite.get(regionId);
             if (explicit != null && !explicit.isEmpty()) {
-                Set<String> seeds = new LinkedHashSet<>();
                 Set<String> observedSites = new LinkedHashSet<>();
+                Map<String, List<Map<String, Object>>> evidenceBySite =
+                        new LinkedHashMap<>();
                 for (Map<String, Object> evidence
                         : rows(instance.get("observedFatalTargets"))) {
                     if (!"OBSERVED_FATAL_TARGET".equals(
@@ -3622,17 +4261,74 @@ public final class RuntimeSelectedRegionFinalizer {
                     List<String> siteSeeds = explicit.get(site);
                     if (siteSeeds != null) {
                         observedSites.add(site);
-                        seeds.addAll(siteSeeds);
+                        evidenceBySite.computeIfAbsent(site,
+                                ignored -> new ArrayList<>()).add(evidence);
                     }
                 }
-                if (seeds.isEmpty()) {
+                if (evidenceBySite.isEmpty()) {
                     throw new IOException("exception-context activation did "
                             + "not observe its explicit fatal target branch: "
                             + instanceKey(regionId, rootCallId));
                 }
                 instance.put("observedFatalTargetSites",
                         new ArrayList<>(observedSites));
-                return backwardInputs(regionId, rootCallId, seeds);
+
+                Set<String> retained = new LinkedHashSet<>();
+                List<Map<String, Object>> contexts = new ArrayList<>();
+                for (Map.Entry<String, List<Map<String, Object>>> entry
+                        : evidenceBySite.entrySet()) {
+                    List<Map<String, Object>> occurrences = entry.getValue();
+                    occurrences.sort(Comparator.comparingLong(value ->
+                            longNumber(value.get("eventSeq"),
+                                    Long.MAX_VALUE)));
+                    int selectedIndex = selectedFatalOccurrence(occurrences);
+                    Map<String, Object> selected = occurrences.get(
+                            selectedIndex);
+                    long cutoff = longNumber(selected.get("eventSeq"), -1L);
+                    if (cutoff < 0L) {
+                        throw new IOException("FATAL_PREFIX_EVIDENCE_GAP: "
+                                + "observed fatal target has no eventSeq: "
+                                + instanceKey(regionId, rootCallId) + " "
+                                + entry.getKey());
+                    }
+                    List<String> inputs = retainFatalPrefixInputs(instance,
+                            backwardInputs(regionId, rootCallId,
+                                    explicit.get(entry.getKey())), cutoff);
+                    retained.addAll(inputs);
+                    Map<String, Object> context = new LinkedHashMap<>();
+                    context.put("schemaVersion", 1);
+                    context.put("authority",
+                            "EXACT_FATAL_BRANCH_OCCURRENCE_PREFIX_V1");
+                    context.put("siteId", entry.getKey());
+                    context.put("occurrence", selectedIndex + 1);
+                    context.put("eventSeq", cutoff);
+                    context.put("observedOutcome",
+                            selected.get("observedOutcome"));
+                    if (selected.get("requiredOutcome") instanceof Boolean) {
+                        context.put("requiredOutcome",
+                                selected.get("requiredOutcome"));
+                    }
+                    List<String> ports = new ArrayList<>();
+                    for (String demand : inputs) {
+                        Map<String, Object> port = this.inputs.get(demand);
+                        String portId = port == null ? ""
+                                : text(port.get("portId"));
+                        if (!portId.isEmpty()) ports.add(portId);
+                    }
+                    context.put("inputPorts", ports);
+                    contexts.add(context);
+                }
+                instance.put("fatalPrefixContexts", contexts);
+                // Preserve the compact legacy field only when it is
+                // unambiguous.  Multi-site activations are projected by site
+                // later in Scheduler and must never share one max cutoff.
+                if (contexts.size() == 1) {
+                    instance.put("fatalPrefixEventSeq",
+                            contexts.get(0).get("eventSeq"));
+                } else {
+                    instance.remove("fatalPrefixEventSeq");
+                }
+                return new ArrayList<>(retained);
             }
             List<String> seeds = fatalSeeds.getOrDefault(regionId,
                     Collections.<String>emptyList());
@@ -3645,6 +4341,128 @@ public final class RuntimeSelectedRegionFinalizer {
                         Collections.<String>emptyList()));
             }
             return backwardInputs(regionId, rootCallId, seeds);
+        }
+
+        /** Same occurrence rule as Scheduler.TargetBranch.select. */
+        private int selectedFatalOccurrence(
+                List<Map<String, Object>> occurrences) {
+            int fallback = 0;
+            for (int index = 0; index < occurrences.size(); index++) {
+                Map<String, Object> occurrence = occurrences.get(index);
+                Object required = occurrence.get("requiredOutcome");
+                Object observed = occurrence.get("observedOutcome");
+                if (required instanceof Boolean
+                        && observed instanceof Boolean
+                        && required.equals(observed)) {
+                    return index;
+                }
+            }
+            return fallback;
+        }
+
+        /**
+         * A static backward slice says which boundary ports may feed the
+         * fatal predicate; the exact trace says which of those ports existed
+         * when that predicate was reached.  A value observed only after the
+         * fatal branch cannot be one of its inputs and is therefore removed.
+         * Missing ordering evidence is different: admitting that port would
+         * create a free symbolic leaf, so it is a named, fail-closed gap.
+         */
+        private List<String> retainFatalPrefixInputs(
+                Map<String, Object> instance, List<String> candidates,
+                long fatalEventSeq) throws IOException {
+            List<String> retained = new ArrayList<>();
+            List<String> rejectedAfterFatal = new ArrayList<>();
+            List<String> missingEvidence = new ArrayList<>();
+            for (String demand : candidates) {
+                Map<String, Object> port = inputs.get(demand);
+                if (port == null) continue;
+                // Structural owners remain concrete replay support.  They do
+                // not become causal/symbolic leaves merely because their
+                // construction has no independently timestamped value.
+                if (!DependencyRole.valueFrontier(
+                        port.get("dependencyRole"))) {
+                    retained.add(demand);
+                    continue;
+                }
+                FatalPrefixEvidence evidence = fatalPrefixEvidence(
+                        port, fatalEventSeq);
+                if (evidence.atOrBefore) {
+                    retained.add(demand);
+                } else if (evidence.observedAfter) {
+                    rejectedAfterFatal.add(text(port.get("portId")));
+                } else {
+                    missingEvidence.add(text(port.get("portId")));
+                }
+            }
+            if (!rejectedAfterFatal.isEmpty()) {
+                instance.put("postFatalInputPorts",
+                        rejectedAfterFatal);
+            }
+            if (!missingEvidence.isEmpty()) {
+                throw new IOException("FATAL_PREFIX_EVIDENCE_GAP: target "
+                        + instanceKey(text(instance.get("regionId")),
+                        longNumber(instance.get("rootCallId"), -1L))
+                        + " has demanded ports without exact runtime order: "
+                        + missingEvidence);
+            }
+            return retained;
+        }
+
+        private FatalPrefixEvidence fatalPrefixEvidence(
+                Map<String, Object> port, long fatalEventSeq) {
+            List<Map<String, Object>> accesses = rows(
+                    port.get("runtimeAccesses"));
+            if (!accesses.isEmpty()) {
+                List<Map<String, Object>> prefix = new ArrayList<>();
+                boolean observed = false;
+                boolean after = false;
+                for (Map<String, Object> access : accesses) {
+                    long event = longNumber(access.get("eventSeq"), -1L);
+                    if (event < 0L) continue;
+                    observed = true;
+                    if (event <= fatalEventSeq) {
+                        prefix.add(access);
+                    } else {
+                        after = true;
+                    }
+                }
+                if (!prefix.isEmpty()) {
+                    return FatalPrefixEvidence.before();
+                }
+                if (observed && after) {
+                    return FatalPrefixEvidence.after();
+                }
+                return FatalPrefixEvidence.missing();
+            }
+
+            if ("PROTOCOL_INPUT".equals(text(port.get("sourceKind")))) {
+                if (!"TRUSTED_CONFIGURED_RPC_MAPPING_V1".equals(
+                        text(port.get("authority")))) {
+                    return FatalPrefixEvidence.missing();
+                }
+                String direction = text(port.get("protocolDirection"));
+                long event = "RESPONSE".equals(direction)
+                        ? longNumber(port.get("callerResultEventSeq"), -1L)
+                        : "REQUEST".equals(direction)
+                        ? longNumber(port.get("receiveEventSeq"), -1L)
+                        : -1L;
+                if (event < 0L) return FatalPrefixEvidence.missing();
+                return event <= fatalEventSeq
+                        ? FatalPrefixEvidence.before()
+                        : FatalPrefixEvidence.after();
+            }
+
+            // Accessor-return ports are emitted only from an exact runtime
+            // binding and carry that occurrence directly on the port.
+            if ("ACCESSOR_RETURN".equals(text(port.get("sourceKind")))) {
+                long event = longNumber(port.get("eventSeq"), -1L);
+                if (event < 0L) return FatalPrefixEvidence.missing();
+                return event <= fatalEventSeq
+                        ? FatalPrefixEvidence.before()
+                        : FatalPrefixEvidence.after();
+            }
+            return FatalPrefixEvidence.missing();
         }
 
         private List<String> inputsForOutput(String regionId,
@@ -3756,6 +4574,29 @@ public final class RuntimeSelectedRegionFinalizer {
                     ignored -> new ArrayList<>());
             if (!values.contains(value)) values.add(value);
         }
+
+        private static final class FatalPrefixEvidence {
+            private final boolean atOrBefore;
+            private final boolean observedAfter;
+
+            private FatalPrefixEvidence(boolean atOrBefore,
+                                        boolean observedAfter) {
+                this.atOrBefore = atOrBefore;
+                this.observedAfter = observedAfter;
+            }
+
+            private static FatalPrefixEvidence before() {
+                return new FatalPrefixEvidence(true, false);
+            }
+
+            private static FatalPrefixEvidence after() {
+                return new FatalPrefixEvidence(false, true);
+            }
+
+            private static FatalPrefixEvidence missing() {
+                return new FatalPrefixEvidence(false, false);
+            }
+        }
     }
 
     private static final class ContextCell {
@@ -3777,6 +4618,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 new LinkedHashMap<>();
         private final Map<String, List<RpcDescendantCandidate>> byReceiver =
                 new LinkedHashMap<>();
+        private final Map<String, List<Map<String, Object>>> membersByValue =
+                new LinkedHashMap<>();
         private final StaticValueFlowIndex valueFlow;
 
         private RpcDescendantProjectionIndex(
@@ -3790,6 +4633,10 @@ public final class RuntimeSelectedRegionFinalizer {
                 indexPorts(regionId, rows(region.get("outputs")), true);
             }
             for (Map<String, Object> edge : graph) {
+                for (Map<String, Object> binding
+                        : rows(edge.get("runtimeFieldBindings"))) {
+                    indexContainerMember(binding);
+                }
                 String transfer = text(edge.get("transferKind"));
                 if (!"HEAP_READ".equals(transfer)
                         && !"HEAP_WRITE".equals(transfer)) {
@@ -3807,6 +4654,38 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
             valueFlow = new StaticValueFlowIndex(graph);
+        }
+
+        private void indexContainerMember(Map<String, Object> binding) {
+            String token = text(binding.get("containerMemberToken"));
+            String authority = text(binding.get(
+                    "containerMemberIdentityAuthority"));
+            String process = text(binding.get("process"));
+            int value = number(binding.get("containerValueObjectId"), 0);
+            if (token.isEmpty() || process.isEmpty() || value == 0
+                    || !"EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1".equals(
+                    authority)) {
+                return;
+            }
+            membersByValue.computeIfAbsent(process + "\n" + value,
+                    ignored -> new ArrayList<>()).add(binding);
+        }
+
+        private Map<String, Object> exactContainerMember(
+                RpcDescendantCandidate candidate) {
+            String process = text(candidate.binding.get("process"));
+            if (process.isEmpty() || candidate.receiverObjectId == 0) {
+                return null;
+            }
+            Map<String, Map<String, Object>> byToken =
+                    new LinkedHashMap<>();
+            for (Map<String, Object> member : membersByValue.getOrDefault(
+                    process + "\n" + candidate.receiverObjectId,
+                    Collections.<Map<String, Object>>emptyList())) {
+                byToken.put(text(member.get("containerMemberToken")), member);
+            }
+            return byToken.size() == 1
+                    ? byToken.values().iterator().next() : null;
         }
 
         private void indexCandidate(Map<String, Object> edge,

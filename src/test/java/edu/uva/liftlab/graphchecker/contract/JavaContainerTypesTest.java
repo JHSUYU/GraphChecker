@@ -60,4 +60,16 @@ public class JavaContainerTypesTest {
         assertFalse(JavaContainerTypes.structuralCardinalityOperation(
                 "<example.State: int size()>"));
     }
+
+    @Test
+    public void identifiesOnlyExactAssociativePut() {
+        assertTrue(JavaContainerTypes.associativePut(
+                "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>"));
+        assertTrue(JavaContainerTypes.associativePut(
+                "<java.util.HashMap: java.lang.Object put(java.lang.Object,java.lang.Object)>"));
+        assertFalse(JavaContainerTypes.associativePut(
+                "<java.util.Map: java.lang.Object remove(java.lang.Object)>"));
+        assertFalse(JavaContainerTypes.associativePut(
+                "<example.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>"));
+    }
 }

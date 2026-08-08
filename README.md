@@ -184,6 +184,13 @@ no runtime evidence should be decided at planning time.
 the closed path set, so a leaf no recorded predicate reads may demote to
 concrete *for composition only*.
 
+**Later — remove non-semantic fingerprints.** RPC occurrence and payload
+binding already use no value, argument, or payload fingerprint.  The remaining
+fingerprints identify/check generated artifacts and equivalent closure
+contracts; simplify those to direct canonical identities where possible and
+remove redundant hash-equality gates.  This is cleanup, not part of the
+HDFS-11741 semantic-SAT critical path.
+
 **#14** — condense the test suite to roughly 40. **#9 (T5)** — the realizability
 loop exists as a tool (`experiments/hdfs/hdfs-11741/smt_realizability_refine.py`
 plus `environment-axioms.smt2`); re-run its axioms once `expiryDate` has a real

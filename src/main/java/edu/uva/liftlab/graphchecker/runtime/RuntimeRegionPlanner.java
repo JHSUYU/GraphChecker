@@ -9,8 +9,10 @@ import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.causynth.ProtocolCarrierReconstruction;
 import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
+import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
 import edu.uva.liftlab.graphchecker.contract.BoundedPathSeed;
+import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
@@ -52,6 +54,8 @@ final class RuntimeRegionPlanner {
             .create();
     private static final Pattern FIELD = Pattern.compile(
             "^<[^:]+:\\s+([^()<>]+)\\s+[^\\s()>]+>$");
+    private static final Pattern METHOD_PARAMETER_CELL = Pattern.compile(
+            "^(<.+>)\\.param([0-9]+):(.+)$");
     private static final Pattern STATIC_SITE = Pattern.compile(
             "^(<.*>)#u([0-9]+)$");
 
@@ -1808,6 +1812,15 @@ final class RuntimeRegionPlanner {
         // Every selected leaf is known only here: accessor materializations
         // join the frontier after the value slice.
         addProtocolCarrierPorts(inputPorts, regionInputs, rootCallId);
+        List<Map<String, Object>> exactBranches = exactBranchReplay(
+                rows(region.get("branchPolicies")), stateSlice.branchSites,
+                trace, invocationCalls, relationBoundarySeq,
+                rejectionReasons, outputPort);
+        if (exactBranches == null) return null;
+        removeGuardOnlyPathEnablers(inputPorts,
+                stateSlice.guardOnlyInputPorts, regionInputs, rootCallId,
+                outputPort, declaration, stateSlice.branchSites,
+                exactBranches);
 
         List<String> staticSites = new ArrayList<>(stateSlice.staticSites);
         if (!staticSites.contains(staticAccessSiteId)) {
@@ -1857,13 +1870,8 @@ final class RuntimeRegionPlanner {
             slice.addProperty("outputBoundaryKind",
                     "EXACT_FIELD_WRITE_AFTER_ASSIGNMENT");
         }
-        JsonArray exactBranches = exactBranchReplay(
-                rows(region.get("branchPolicies")), stateSlice.branchSites,
-                trace, invocationCalls, relationBoundarySeq,
-                rejectionReasons, outputPort);
-        if (exactBranches == null) return null;
-        if (exactBranches.size() > 0) {
-            slice.add("branchReplay", exactBranches);
+        if (!exactBranches.isEmpty()) {
+            slice.add("branchReplay", toJsonTreeFast(exactBranches));
         }
         addConcretePrimitiveCallReturns(slice, trace, invocationCalls,
                 stateSlice.staticSites, inputPorts, regionInputs,
@@ -2151,12 +2159,12 @@ final class RuntimeRegionPlanner {
     }
 
     /** Exact, invocation-local replay ordinals for a projected output. */
-    private static JsonArray exactBranchReplay(
+    private static List<Map<String, Object>> exactBranchReplay(
             List<Map<String, Object>> policies, Set<String> selectedSites,
             TraceIndex trace, Set<Long> invocationCalls,
             long outputBoundarySeq, List<String> rejectionReasons,
             String outputPort) {
-        JsonArray result = new JsonArray();
+        List<Map<String, Object>> result = new ArrayList<>();
         if (invocationCalls == null || selectedSites.isEmpty()
                 || outputBoundarySeq < 0L) {
             return result;
@@ -2214,7 +2222,7 @@ final class RuntimeRegionPlanner {
                         "callId", event.callId));
             }
             replay.put("occurrences", occurrences);
-            result.add(toJsonTreeFast(replay));
+            result.add(replay);
         }
         return result;
     }
@@ -2697,7 +2705,7 @@ final class RuntimeRegionPlanner {
      * value read back out of a rebuilt carrier keeps demanding the server
      * region that produced it.
      */
-    private static void addProtocolCarrierPorts(
+    static void addProtocolCarrierPorts(
             List<String> inputPorts, List<Map<String, Object>> regionInputs,
             long rootCallId) {
         if (inputPorts.isEmpty()) return;
@@ -2707,12 +2715,47 @@ final class RuntimeRegionPlanner {
                     ProtocolCarrierReconstruction.responsePort(input);
             if (carrier.isEmpty()
                     || longNumber(input.get("rootCallId"), -1L) != rootCallId
-                    || !selected.contains(text(input.get("portId")))
-                    || !selected.add(carrier)) {
+                    || !selected.contains(text(input.get("portId")))) {
                 continue;
             }
+            // The exact descendant edge already carries this selected leaf;
+            // demanding its whole decoded response as well would duplicate
+            // the same RPC dependency.  Decide per selected input so another
+            // unprojected leaf of the same carrier can still retain it.
+            if (exactRpcDescendantProjectionInput(input)
+                    || !selected.add(carrier)) continue;
             inputPorts.add(carrier);
         }
+    }
+
+    private static boolean exactRpcDescendantProjectionInput(
+            Map<String, Object> input) {
+        if (!Boolean.TRUE.equals(input.get("rpcDescendantProjectionInput"))
+                || !text(input.get(
+                ProtocolCarrierReconstruction.PROJECTION_GAP)).isEmpty()
+                || !text(input.get("rpcProjectionBlocker")).isEmpty()
+                || !"TRUSTED_CONFIGURED_RPC_MAPPING_V1".equals(text(
+                input.get(ProtocolCarrierReconstruction.AUTHORITY)))) {
+            return false;
+        }
+        String authority = text(input.get("rpcProjectionAuthority"));
+        if (!"TRUSTED_CONFIGURED_RPC_MAPPING_V1".equals(authority)
+                && !DECLARED_CARRIER_AUTHORITY.equals(authority)) {
+            return false;
+        }
+        String selection = text(
+                input.get("rpcProjectionSelectionAuthority"));
+        if (!"STATIC_DEF_USE_CONTAINER_PROJECTION_V1".equals(selection)
+                && !"STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1".equals(
+                selection)
+                && !DECLARED_CARRIER_SELECTION.equals(selection)) {
+            return false;
+        }
+        String carrierMapping = text(
+                input.get(ProtocolCarrierReconstruction.MAPPING_ID));
+        return !carrierMapping.isEmpty()
+                && carrierMapping.equals(
+                text(input.get("rpcProjectionMappingId")));
     }
 
     private static void addIfAllowed(List<String> methods,
@@ -2721,6 +2764,88 @@ final class RuntimeRegionPlanner {
                 && !constructor(method) && !methods.contains(method)) {
             methods.add(method);
         }
+    }
+
+    /**
+     * Keeps a producer's observed reachability guards concrete when their
+     * symbolic-state authority belongs to a different output mutation.
+     *
+     * <p>The value/control distinction is already available from
+     * {@link RefinedFlowIndex#dependencySlice}: the initial backward slice
+     * supplies value inputs and the existing guard fixpoint adds control
+     * inputs.  This method only consumes that provenance; it performs no new
+     * graph search.  The guard and its observed replay outcome remain in the
+     * member slice.</p>
+     */
+    static void removeGuardOnlyPathEnablers(
+            List<String> inputPorts, Set<String> guardOnlyInputPorts,
+            List<Map<String, Object>> regionInputs, long rootCallId,
+            String outputPort, String outputCell,
+            Set<String> selectedBranchSites,
+            List<Map<String, Object>> branchPolicies) {
+        if (inputPorts.isEmpty() || guardOnlyInputPorts.isEmpty()) return;
+
+        Set<String> observedPrefixGuards = new LinkedHashSet<>();
+        for (Map<String, Object> branch : branchPolicies) {
+            String site = text(branch.get("siteId"));
+            if (!selectedBranchSites.contains(site)
+                    || !"EXPLORE".equals(text(branch.get("policy")))
+                    || Boolean.TRUE.equals(branch.get("loopControlGuard"))
+                    || Boolean.TRUE.equals(branch.get("failureTarget"))
+                    || !Boolean.TRUE.equals(branch.get("observed"))
+                    || !(branch.get("requiredOutcome") instanceof Boolean)) {
+                continue;
+            }
+            observedPrefixGuards.add(site);
+        }
+        if (observedPrefixGuards.isEmpty()) return;
+
+        Set<String> candidates = new LinkedHashSet<>(inputPorts);
+        candidates.retainAll(guardOnlyInputPorts);
+        if (candidates.isEmpty()) return;
+
+        Map<String, Boolean> removable = new LinkedHashMap<>();
+        Set<String> represented = new LinkedHashSet<>();
+        for (Map<String, Object> input : regionInputs) {
+            String port = text(input.get("portId"));
+            long boundRoot = "PROTOCOL_INPUT".equals(
+                    text(input.get("sourceKind")))
+                    ? longNumber(input.get("toRootCallId"), -1L)
+                    : longNumber(input.get("rootCallId"), -1L);
+            if (boundRoot != rootCallId || !candidates.contains(port)) {
+                continue;
+            }
+            represented.add(port);
+            boolean pathOnly = guardOnlyBoundedFrontier(input, outputPort,
+                    outputCell, observedPrefixGuards);
+            removable.put(port, removable.containsKey(port)
+                    ? removable.get(port) && pathOnly : pathOnly);
+        }
+        inputPorts.removeIf(port -> represented.contains(port)
+                && Boolean.TRUE.equals(removable.get(port)));
+    }
+
+    private static boolean guardOnlyBoundedFrontier(
+            Map<String, Object> input, String outputPort, String outputCell,
+            Set<String> observedPrefixGuards) {
+        if (!"ACCESSOR_RETURN".equals(text(input.get("sourceKind")))
+                || !DependencyRole.VALUE_FRONTIER.equals(
+                text(input.get("dependencyRole")))
+                || !"BOUNDED_STATE_FRONTIER".equals(
+                text(input.get("symbolicDemand")))
+                || !"STATIC_ACCESSOR_SEMANTIC_MUTATION_GUARD_V1".equals(
+                text(input.get("boundedStateFrontierAuthority")))
+                || strings(input.get("boundedMutationOutputPorts"))
+                .contains(outputPort)
+                || strings(input.get("boundedMutationOutputCells"))
+                .contains(outputCell)) {
+            return false;
+        }
+        for (String guard : strings(input.get(
+                "boundedMutationGuardSites"))) {
+            if (observedPrefixGuards.contains(guard)) return true;
+        }
+        return false;
     }
 
     private static void addIfAllowed(Set<String> methods,
@@ -2900,6 +3025,13 @@ final class RuntimeRegionPlanner {
             action.put("objectId", port.get("rootObjectId"));
             String javaType = leafType(
                     strings(port.get("fieldPathDeclarations")));
+            if ("PROTOCOL_INPUT".equals(text(port.get("sourceKind")))) {
+                Matcher parameter = METHOD_PARAMETER_CELL.matcher(
+                        text(port.get("cell")));
+                if (parameter.matches()) {
+                    javaType = parameter.group(3);
+                }
+            }
             // A projected container carries the exact static transport type.
             // Prefer it over a lossy boundary declaration (for example an
             // Object-typed helper parameter), while all ordinary inputs keep
@@ -2938,9 +3070,57 @@ final class RuntimeRegionPlanner {
                         Collections.singletonList(path));
             }
             action.putAll(materialization.actionFields());
+            action.put("dependencyRole",
+                    effectiveDependencyRole(action,
+                            text(action.get("javaType"))));
             result.add(action);
         }
         return result;
+    }
+
+    /**
+     * Separates semantic solver leaves from the object graph needed only to
+     * replay a region.  Static slicing may conservatively label an object
+     * read as a value; once its exact Java type is known there is no reason to
+     * recursively demand a producer for that reference.  Bounded container
+     * state is the deliberate exception: its member relation is a semantic
+     * value even though the carrier itself is a reference.
+     */
+    static String effectiveDependencyRole(Map<String, Object> port,
+                                          String javaType) {
+        String demand = text(port.get("symbolicDemand"));
+        if ("BOUNDED_CONTAINER_STATE".equals(demand)) {
+            return DependencyRole.VALUE_FRONTIER;
+        }
+        String declared = text(port.get("dependencyRole"));
+        if (DependencyRole.CONCRETE_STRUCTURE_CARRIER.equals(declared)
+                || demand.startsWith("CONCRETE_")
+                || Boolean.TRUE.equals(port.get("captureRootOnly"))
+                || Boolean.TRUE.equals(port.get("loopControlOnly"))
+                || Boolean.TRUE.equals(port.get("controlOnly"))
+                || Boolean.TRUE.equals(port.get("pathAssumptionOnly"))) {
+            return DependencyRole.CONCRETE_STRUCTURE_CARRIER;
+        }
+        return symbolicLeafType(javaType)
+                ? DependencyRole.VALUE_FRONTIER
+                : DependencyRole.CONCRETE_STRUCTURE_CARRIER;
+    }
+
+    private static boolean symbolicLeafType(String javaType) {
+        String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
+                javaType);
+        if (descriptor.length() == 1
+                && "ZBCSIJFD".indexOf(descriptor.charAt(0)) >= 0) {
+            return true;
+        }
+        if ("Ljava/lang/String;".equals(descriptor)) return true;
+        int component = 0;
+        while (component < descriptor.length()
+                && descriptor.charAt(component) == '[') {
+            component++;
+        }
+        return component > 0 && component + 1 == descriptor.length()
+                && "ZBCSIJFD".indexOf(descriptor.charAt(component)) >= 0;
     }
 
     private static void addMaterializationMethods(
@@ -3204,6 +3384,8 @@ final class RuntimeRegionPlanner {
             ReturnSlice result = backwardSlice(regionId, rootCallId,
                     outputCell, exactHeapOutput, allowedMethods, inputs,
                     outputs, boundaryUpperSeq);
+            Set<String> valueInputPorts = new LinkedHashSet<>(
+                    result.inputPorts);
             for (String method : seedMethods) {
                 if (!method.isEmpty() && allowedMethods.contains(method)) {
                     result.methods.add(method);
@@ -3249,6 +3431,8 @@ final class RuntimeRegionPlanner {
                     changed |= result.cells.size() != before;
                 }
             } while (changed);
+            result.guardOnlyInputPorts.addAll(result.inputPorts);
+            result.guardOnlyInputPorts.removeAll(valueInputPorts);
             return result;
         }
 
@@ -3653,6 +3837,8 @@ final class RuntimeRegionPlanner {
 
     private static final class ReturnSlice {
         private final Set<String> inputPorts = new LinkedHashSet<>();
+        private final Set<String> guardOnlyInputPorts =
+                new LinkedHashSet<>();
         private final Set<String> methods = new LinkedHashSet<>();
         private final Set<String> staticSites = new LinkedHashSet<>();
         private final Set<String> branchSites = new LinkedHashSet<>();
@@ -3672,6 +3858,7 @@ final class RuntimeRegionPlanner {
 
         private void merge(ReturnSlice other) {
             inputPorts.addAll(other.inputPorts);
+            guardOnlyInputPorts.addAll(other.guardOnlyInputPorts);
             methods.addAll(other.methods);
             staticSites.addAll(other.staticSites);
             branchSites.addAll(other.branchSites);
@@ -4086,6 +4273,55 @@ final class RuntimeRegionPlanner {
             this.receiverObjectId = receiverObjectId;
             this.valueObjectId = valueObjectId;
             this.primitiveValue = safe(primitiveValue);
+        }
+    }
+
+    /**
+     * Exact identity observation for one reference-array element access.
+     *
+     * <p>The array and element ids are trace-local evidence only.  The
+     * transport layer may use the recorded index when a configured wire
+     * contract explicitly preserves element order; neither the element value
+     * nor an invocation ordinal participates in the correspondence.</p>
+     */
+    static final class ArrayAccessEvent {
+        final long seq;
+        final String kind;
+        final String method;
+        final long callId;
+        final int unitIndex;
+        final String siteId;
+        final int arrayObjectId;
+        final int index;
+        final int elementObjectId;
+        /** FIELD_WRITE event that published this exact array snapshot. */
+        final long snapshotBoundarySeq;
+        /** Exact runtime length for ARRAY_SNAPSHOT, otherwise {@code -1}. */
+        final int arrayLength;
+
+        ArrayAccessEvent(long seq, String kind, String method, long callId,
+                         int unitIndex, String siteId, int arrayObjectId,
+                         int index, int elementObjectId) {
+            this(seq, kind, method, callId, unitIndex, siteId,
+                    arrayObjectId, index, elementObjectId, -1L, -1);
+        }
+
+        ArrayAccessEvent(long seq, String kind, String method, long callId,
+                         int unitIndex, String siteId, int arrayObjectId,
+                         int index, int elementObjectId,
+                         long snapshotBoundarySeq, int arrayLength) {
+            this.seq = seq;
+            this.kind = safe(kind);
+            this.method = safe(method);
+            this.callId = callId;
+            this.unitIndex = unitIndex;
+            this.siteId = unitIndex >= 0 && !this.method.isEmpty()
+                    ? this.method + "#u" + unitIndex : safe(siteId);
+            this.arrayObjectId = arrayObjectId;
+            this.index = index;
+            this.elementObjectId = elementObjectId;
+            this.snapshotBoundarySeq = snapshotBoundarySeq;
+            this.arrayLength = arrayLength;
         }
     }
 

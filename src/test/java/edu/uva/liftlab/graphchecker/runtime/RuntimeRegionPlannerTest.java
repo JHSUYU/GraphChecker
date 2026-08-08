@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import edu.uva.liftlab.graphchecker.causynth.ProtocolCarrierReconstruction;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 
@@ -707,6 +708,52 @@ public class RuntimeRegionPlannerTest {
                 writerPlan.get("closureGoals")).get(0).get("outputClosure"));
         assertTrue(closure.contains(
                 "inputPorts=[REGION.2.in.value, REGION.2.in.response]"));
+    }
+
+    @Test
+    public void exactScalarProjectionDoesNotDemandWholeResponseCarrier() {
+        Map<String, Object> projected = projectedCarrierInput(
+                "REGION.2.in.value",
+                "STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1");
+        List<String> selected = new ArrayList<>(
+                Collections.singletonList("REGION.2.in.value"));
+
+        RuntimeRegionPlanner.addProtocolCarrierPorts(selected,
+                Collections.singletonList(projected), 3L);
+
+        assertEquals(Collections.singletonList("REGION.2.in.value"),
+                selected);
+
+        projected.put(ProtocolCarrierReconstruction.PROJECTION_GAP,
+                "MISSING_EXACT_PROTOCOL_CARRIER_PROJECTION");
+        selected = new ArrayList<>(
+                Collections.singletonList("REGION.2.in.value"));
+        RuntimeRegionPlanner.addProtocolCarrierPorts(selected,
+                Collections.singletonList(projected), 3L);
+        assertEquals(Arrays.asList("REGION.2.in.value",
+                "REGION.2.in.response"), selected);
+    }
+
+    @Test
+    public void carrierSuppressionIsPerSelectedProjectedInput() {
+        Map<String, Object> projected = projectedCarrierInput(
+                "REGION.2.in.keys",
+                "STATIC_DEF_USE_CONTAINER_PROJECTION_V1");
+        projected.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
+        Map<String, Object> unprojected = object(
+                "portId", "REGION.2.in.version", "rootCallId", 3,
+                "protocolCarrierResponsePort", "REGION.2.in.response",
+                "protocolCarrierMappingId", "example.response",
+                "protocolCarrierAuthority",
+                "TRUSTED_CONFIGURED_RPC_MAPPING_V1");
+        List<String> selected = new ArrayList<>(Arrays.asList(
+                "REGION.2.in.keys", "REGION.2.in.version"));
+
+        RuntimeRegionPlanner.addProtocolCarrierPorts(selected,
+                Arrays.asList(projected, unprojected), 3L);
+
+        assertEquals(Arrays.asList("REGION.2.in.keys",
+                "REGION.2.in.version", "REGION.2.in.response"), selected);
     }
 
     @Test
@@ -2435,6 +2482,129 @@ public class RuntimeRegionPlannerTest {
         assertTrue(!definitions.contains(unrelated));
         assertTrue(!String.valueOf(goal.get("baselineObservedMethods"))
                 .contains(noise));
+        Map<String, Object> username = rows(goal.get("symbolize")).stream()
+                .filter(row -> "REGION.1.in.username".equals(
+                        row.get("symbol")))
+                .findFirst().get();
+        assertEquals("java.lang.String", username.get("javaType"));
+        assertEquals("VALUE_FRONTIER", username.get("dependencyRole"));
+        Map<String, Object> expiryAction = rows(goal.get("symbolize"))
+                .stream().filter(row -> "REGION.1.in.expiry".equals(
+                        row.get("symbol"))).findFirst().get();
+        assertEquals("VALUE_FRONTIER",
+                expiryAction.get("dependencyRole"));
+        Map<String, Object> objectCarrier = rows(goal.get("symbolize"))
+                .stream().filter(row -> "REGION.1.in.protobuf".equals(
+                        row.get("symbol"))).findFirst().get();
+        assertEquals("CONCRETE_STRUCTURE_CARRIER",
+                objectCarrier.get("dependencyRole"));
+    }
+
+    @Test
+    public void dependencyRoleKeepsBoundedContainersAndCompactLeavesOnly() {
+        assertEquals("VALUE_FRONTIER",
+                RuntimeRegionPlanner.effectiveDependencyRole(object(
+                        "dependencyRole", "VALUE_FRONTIER",
+                        "symbolicDemand", "BOUNDED_CONTAINER_STATE"),
+                        "java.util.Map"));
+        assertEquals("VALUE_FRONTIER",
+                RuntimeRegionPlanner.effectiveDependencyRole(object(
+                        "dependencyRole", "VALUE_FRONTIER"), "int[]"));
+        assertEquals("VALUE_FRONTIER",
+                RuntimeRegionPlanner.effectiveDependencyRole(object(
+                        "dependencyRole", "VALUE_FRONTIER"),
+                        "java.lang.String"));
+        assertEquals("CONCRETE_STRUCTURE_CARRIER",
+                RuntimeRegionPlanner.effectiveDependencyRole(object(
+                        "dependencyRole", "VALUE_FRONTIER"),
+                        "example.PendingMove"));
+        assertEquals("CONCRETE_STRUCTURE_CARRIER",
+                RuntimeRegionPlanner.effectiveDependencyRole(object(
+                        "dependencyRole", "VALUE_FRONTIER"),
+                        "example.Response"));
+    }
+
+    @Test
+    public void exactObservedGuardOnlyBoundedFrontierIsNotAMemberInput() {
+        String guard = "<example.Producer: example.Keys reply()>#u4";
+        Map<String, Object> input = boundedGuardInput(
+                "REGION.1.in.enabled", guard,
+                Collections.singletonList("REGION.1.out.other"),
+                Collections.singletonList("<example.State: int other>"));
+        Map<String, Object> staticPolicy = prefixBranch(guard);
+        List<String> ports = new ArrayList<>(Arrays.asList(
+                "REGION.1.in.keys", "REGION.1.in.enabled"));
+
+        // Static policy construction precedes runtime replay and deliberately
+        // carries no observation authority.  It must fail closed.
+        RuntimeRegionPlanner.removeGuardOnlyPathEnablers(ports,
+                Collections.singleton("REGION.1.in.enabled"),
+                Collections.singletonList(input), 11L,
+                "REGION.1.out.keys", "<example.Response: int[] keys>",
+                Collections.singleton(guard),
+                Collections.singletonList(staticPolicy));
+
+        assertEquals(Arrays.asList("REGION.1.in.keys",
+                "REGION.1.in.enabled"), ports);
+
+        // exactBranchReplay enriches a copy only after observing this
+        // activation.  That enriched policy is the pruning authority.
+        Map<String, Object> exactReplay = new LinkedHashMap<>(staticPolicy);
+        exactReplay.put("observed", true);
+        exactReplay.put("observedOutcome", true);
+        exactReplay.put("selectedOccurrence", 1);
+        RuntimeRegionPlanner.removeGuardOnlyPathEnablers(ports,
+                Collections.singleton("REGION.1.in.enabled"),
+                Collections.singletonList(input), 11L,
+                "REGION.1.out.keys", "<example.Response: int[] keys>",
+                Collections.singleton(guard),
+                Collections.singletonList(exactReplay));
+
+        assertEquals(Collections.singletonList("REGION.1.in.keys"), ports);
+        assertTrue(!staticPolicy.containsKey("observed"));
+    }
+
+    @Test
+    public void guardThatAlsoFeedsSelectedValueRemainsAMemberInput() {
+        String guard = "<example.Producer: example.Keys reply()>#u4";
+        Map<String, Object> input = boundedGuardInput(
+                "REGION.1.in.enabled", guard,
+                Collections.singletonList("REGION.1.out.other"),
+                Collections.singletonList("<example.State: int other>"));
+        List<String> ports = new ArrayList<>(Collections.singletonList(
+                "REGION.1.in.enabled"));
+
+        RuntimeRegionPlanner.removeGuardOnlyPathEnablers(ports,
+                Collections.<String>emptySet(),
+                Collections.singletonList(input), 11L,
+                "REGION.1.out.keys", "<example.Response: int[] keys>",
+                Collections.singleton(guard), Collections.singletonList(
+                        observedPrefixBranch(guard)));
+
+        assertEquals(Collections.singletonList("REGION.1.in.enabled"),
+                ports);
+    }
+
+    @Test
+    public void guardForSelectedBoundedMutationRemainsAMemberInput() {
+        String guard = "<example.Producer: example.Keys reply()>#u4";
+        String outputPort = "REGION.1.out.keys";
+        String outputCell = "<example.Response: int[] keys>";
+        Map<String, Object> input = boundedGuardInput(
+                "REGION.1.in.expired", guard,
+                Collections.singletonList(outputPort),
+                Collections.singletonList(outputCell));
+        List<String> ports = new ArrayList<>(Collections.singletonList(
+                "REGION.1.in.expired"));
+
+        RuntimeRegionPlanner.removeGuardOnlyPathEnablers(ports,
+                Collections.singleton("REGION.1.in.expired"),
+                Collections.singletonList(input), 11L,
+                outputPort, outputCell, Collections.singleton(guard),
+                Collections.singletonList(observedPrefixBranch(guard)));
+
+        assertEquals(Collections.singletonList("REGION.1.in.expired"),
+                ports);
     }
 
     @Test
@@ -2896,5 +3066,48 @@ public class RuntimeRegionPlannerTest {
             result.put(String.valueOf(values[index]), values[index + 1]);
         }
         return result;
+    }
+
+    private static Map<String, Object> projectedCarrierInput(
+            String portId, String selectionAuthority) {
+        return object(
+                "portId", portId, "rootCallId", 3,
+                "protocolCarrierResponsePort", "REGION.2.in.response",
+                "protocolCarrierMappingId", "example.response",
+                "protocolCarrierAuthority",
+                "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
+                "rpcDescendantProjectionInput", true,
+                "rpcProjectionAuthority",
+                "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
+                "rpcProjectionSelectionAuthority", selectionAuthority,
+                "rpcProjectionMappingId", "example.response");
+    }
+
+    private static Map<String, Object> boundedGuardInput(
+            String portId, String guardSite, List<String> outputPorts,
+            List<String> outputCells) {
+        return object(
+                "portId", portId, "rootCallId", 11L,
+                "sourceKind", "ACCESSOR_RETURN",
+                "dependencyRole", "VALUE_FRONTIER",
+                "symbolicDemand", "BOUNDED_STATE_FRONTIER",
+                "boundedStateFrontierAuthority",
+                "STATIC_ACCESSOR_SEMANTIC_MUTATION_GUARD_V1",
+                "boundedMutationGuardSites",
+                Collections.singletonList(guardSite),
+                "boundedMutationOutputPorts", outputPorts,
+                "boundedMutationOutputCells", outputCells);
+    }
+
+    private static Map<String, Object> observedPrefixBranch(String site) {
+        Map<String, Object> result = prefixBranch(site);
+        result.put("observed", true);
+        return result;
+    }
+
+    private static Map<String, Object> prefixBranch(String site) {
+        return object("siteId", site, "policy", "EXPLORE",
+                "failureTarget", false, "loopControlGuard", false,
+                "requiredOutcome", true);
     }
 }

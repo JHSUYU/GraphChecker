@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.causynth.CausynthJson;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
@@ -412,6 +413,68 @@ public final class CausynthTraceRecorder {
                         receiverObjectId, valueObjectId, primitiveValue);
         synchronized (LOCK) {
             writeFieldTraceLine(event);
+            if ("FIELD_WRITE".equals(kind)
+                    && valueObject instanceof Object[]) {
+                recordReferenceArraySnapshotLocked(method,
+                        activeCall == null ? 0L : activeCall.callId,
+                        unitIndex, valueObject, (Object[]) valueObject, id);
+            }
+        }
+    }
+
+    /**
+     * Captures the logical value of a reference-array field when it is
+     * published.  This is the result-object boundary used by declared RPC
+     * carrier contracts; it does not depend on a particular serializer
+     * subsequently loading the array.
+     */
+    private static void recordReferenceArraySnapshotLocked(
+            String method, long callId, int unitIndex, Object array,
+            Object[] elements, long boundarySeq) {
+        int retained = Math.min(elements.length,
+                LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY);
+        // Preserve an exact empty snapshot as a row too.  arrayLength, rather
+        // than the sentinel index, is the semantic width.
+        int rows = Math.max(1, retained);
+        for (int index = 0; index < rows; index++) {
+            long id = EVENT_COUNTER.incrementAndGet();
+            if (id > maxEvents) return;
+            int elementIndex = elements.length == 0 ? -1 : index;
+            Object element = elements.length == 0 ? null : elements[index];
+            RuntimeRegionPlanner.ArrayAccessEvent event =
+                    new RuntimeRegionPlanner.ArrayAccessEvent(id,
+                            "ARRAY_SNAPSHOT", method, callId, unitIndex,
+                            siteId(method, unitIndex), identity(array),
+                            elementIndex, identity(element), boundarySeq,
+                            elements.length);
+            writeArrayTraceLine(event);
+        }
+    }
+
+    /** Records one exact aaload/aastore of a reference-array element. */
+    public static void recordArrayElement(String kind, String method,
+                                          int unitIndex, Object array,
+                                          int index, Object element) {
+        if (method == null || !("ARRAY_READ".equals(kind)
+                || "ARRAY_WRITE".equals(kind))) {
+            return;
+        }
+        initialize();
+        if (contextOnlyConcolicReplay) {
+            return;
+        }
+        long id = EVENT_COUNTER.incrementAndGet();
+        if (id > maxEvents) {
+            return;
+        }
+        ActiveCall activeCall = ACTIVE_CALLS.get().peek();
+        RuntimeRegionPlanner.ArrayAccessEvent event =
+                new RuntimeRegionPlanner.ArrayAccessEvent(id, kind, method,
+                        activeCall == null ? 0L : activeCall.callId,
+                        unitIndex, siteId(method, unitIndex),
+                        identity(array), index, identity(element));
+        synchronized (LOCK) {
+            writeArrayTraceLine(event);
         }
     }
 
@@ -780,7 +843,7 @@ public final class CausynthTraceRecorder {
                             selectedSkeletons,
                             activationGraph.runtimeInstances,
                             trace.methods, trace.execution,
-                            trace.fields, trace.protocol,
+                            trace.fields, trace.arrays, trace.protocol,
                             refinedGraph.toPath());
             long refinementMillis = elapsedMillis(refinementStart);
             long candidatePlanningStart = System.nanoTime();
@@ -1250,6 +1313,7 @@ public final class CausynthTraceRecorder {
             TraceData part = future.get();
             trace.methods.addAll(part.methods);
             trace.fields.addAll(part.fields);
+            trace.arrays.addAll(part.arrays);
             trace.execution.addAll(part.execution);
             trace.protocol.addAll(part.protocol);
         } catch (InterruptedException interrupted) {
@@ -1347,6 +1411,21 @@ public final class CausynthTraceRecorder {
                     row.intValue("fieldReceiverObjectId", 0),
                     row.intValue("valueObjectId", 0),
                     row.stringValue("primitiveValue")));
+        } else if (!skeletonOnly && ("ARRAY_READ".equals(eventKind)
+                || "ARRAY_WRITE".equals(eventKind)
+                || "ARRAY_SNAPSHOT".equals(eventKind))) {
+            trace.arrays.add(new RuntimeRegionPlanner.ArrayAccessEvent(
+                    row.longValue("seq", 0L),
+                    eventKind,
+                    row.stringValue("method"),
+                    row.longValue("callId", 0L),
+                    row.intValue("unitIndex", -1),
+                    row.stringValue("siteId"),
+                    row.intValue("arrayObjectId", 0),
+                    row.intValue("arrayIndex", -1),
+                    row.intValue("elementObjectId", 0),
+                    row.longValue("snapshotBoundarySeq", -1L),
+                    row.intValue("arrayLength", -1)));
         } else if (!skeletonOnly && ("RPC_SEND".equals(eventKind)
                 || "RPC_RECEIVE".equals(eventKind))) {
             trace.protocol.add(new RuntimeRegionPlanner.ProtocolEvent(
@@ -1436,6 +1515,23 @@ public final class CausynthTraceRecorder {
                 "fieldReceiverObjectId", event.receiverObjectId,
                 "valueObjectId", event.valueObjectId,
                 "primitiveValue", event.primitiveValue);
+    }
+
+    private static void writeArrayTraceLine(
+            RuntimeRegionPlanner.ArrayAccessEvent event) {
+        writeTraceRow(
+                "schemaVersion", 3,
+                "event", event.kind,
+                "seq", event.seq,
+                "method", event.method,
+                "callId", event.callId,
+                "siteId", event.siteId,
+                "unitIndex", event.unitIndex,
+                "arrayObjectId", event.arrayObjectId,
+                "arrayIndex", event.index,
+                "elementObjectId", event.elementObjectId,
+                "snapshotBoundarySeq", event.snapshotBoundarySeq,
+                "arrayLength", event.arrayLength);
     }
 
     private static void writeProtocolTraceLine(
@@ -1736,6 +1832,8 @@ public final class CausynthTraceRecorder {
                 new ArrayList<>();
         private final List<RuntimeRegionPlanner.FieldAccessEvent> fields =
                 new ArrayList<>();
+        private final List<RuntimeRegionPlanner.ArrayAccessEvent> arrays =
+                new ArrayList<>();
         private final List<RuntimeRegionPlanner.RuntimeEvent> execution =
                 new ArrayList<>();
         private final List<RuntimeRegionPlanner.ProtocolEvent> protocol =
@@ -1744,6 +1842,7 @@ public final class CausynthTraceRecorder {
         private void sort() {
             methods.sort((left, right) -> Long.compare(left.seq, right.seq));
             fields.sort((left, right) -> Long.compare(left.seq, right.seq));
+            arrays.sort((left, right) -> Long.compare(left.seq, right.seq));
             execution.sort((left, right) ->
                     Long.compare(left.seq, right.seq));
             protocol.sort((left, right) -> Long.compare(left.seq, right.seq));

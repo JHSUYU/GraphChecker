@@ -30,7 +30,7 @@ public class RuntimeWorkflowDiscoveryTest {
     public final TemporaryFolder folder = new TemporaryFolder();
 
     @Test
-    public void causalDiscoveryFollowsBothRolesAndRejectsMissingRole() {
+    public void causalDiscoveryFollowsValuesButNotStructureCarriers() {
         JsonObject protocol = new JsonObject();
         protocol.addProperty("sourceKind", "PROTOCOL_INPUT");
         protocol.addProperty("dependencyRole", "VALUE_FRONTIER");
@@ -38,7 +38,14 @@ public class RuntimeWorkflowDiscoveryTest {
         JsonObject carrier = new JsonObject();
         carrier.addProperty("dependencyRole",
                 "CONCRETE_STRUCTURE_CARRIER");
-        assertTrue(RuntimeWorkflowDiscovery.causalAction(carrier));
+        assertTrue(!RuntimeWorkflowDiscovery.causalAction(carrier));
+        JsonObject responseCarrier = carrier.deepCopy();
+        responseCarrier.addProperty("sourceKind", "PROTOCOL_INPUT");
+        responseCarrier.addProperty("protocolDirection", "RESPONSE");
+        responseCarrier.addProperty("authority",
+                "TRUSTED_CONFIGURED_RPC_MAPPING_V1");
+        responseCarrier.addProperty("mappingId", "rpc.keys.response");
+        assertTrue(RuntimeWorkflowDiscovery.causalAction(responseCarrier));
         try {
             RuntimeWorkflowDiscovery.causalAction(new JsonObject());
             fail("missing dependency role must fail closed");
@@ -48,18 +55,145 @@ public class RuntimeWorkflowDiscoveryTest {
     }
 
     @Test
-    public void structureCarrierStillDiscoversItsProducer() throws Exception {
+    public void structureCarrierStaysInTargetButDoesNotDemandProducer()
+            throws Exception {
         String targetInstance = "REGION.T@test#call2";
+        Map<String, Object> target = targetPlanWithInput(targetInstance,
+                "CONCRETE_STRUCTURE_CARRIER");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> targetGoal = ((List<Map<String, Object>>)
+                target.get("closureGoals")).get(0);
+        targetGoal.put("symbolize", Arrays.asList(
+                ((List<?>) targetGoal.get("symbolize")).get(0),
+                object("portId", "REGION.T.in.scalar",
+                        "symbol", "REGION.T.in.scalar",
+                        "cell", "<T: int scalar>",
+                        "javaType", "int",
+                        "location", "HEAP_OBJECT_FIELD",
+                        "sourceKind", "FIELD_READ",
+                        "dependencyRole", "VALUE_FRONTIER")));
         File plans = writePlans("carrier-producer.jsonl",
                 readyCarrierProducerPlan(targetInstance),
-                targetPlanWithInput(targetInstance,
-                        "CONCRETE_STRUCTURE_CARRIER"));
+                leafProducerPlan("REGION.S", 3, targetInstance,
+                        "REGION.T.in.scalar"),
+                target);
 
         String discovery = run(plans, "discover");
 
-        assertTrue(discovery.contains("PRODUCER\t"));
-        assertTrue(discovery.contains("\tREGION.P\t"
-                + "REGION.P@test#call1\tGOAL.PRODUCER"));
+        assertTrue(discovery.contains("\tREGION.S\t"));
+        assertTrue(!discovery.contains("\tREGION.P\t"));
+        assertTrue(discovery.contains("TARGET\t"));
+        assertTrue(String.valueOf(targetGoal.get("symbolize"))
+                .contains("REGION.T.in.value"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void onlyTrustedResponseCarrierExtendsProducerClosure()
+            throws Exception {
+        String targetInstance = "REGION.T@test#call2";
+        String producerInstance = "REGION.P@test#call1";
+        Map<String, Object> ordinary = readyCarrierProducerPlan(
+                targetInstance);
+        Map<String, Object> upstream = leafProducerPlan("REGION.N", 3,
+                producerInstance, "REGION.P.in.registry");
+        Map<String, Object> target = targetPlanWithInput(targetInstance,
+                "VALUE_FRONTIER");
+        File ordinaryPlans = writePlans("ordinary-conduit.jsonl",
+                ordinary, upstream, target);
+
+        String ordinaryDiscovery = run(ordinaryPlans, "discover");
+        assertTrue(ordinaryDiscovery.contains("\tREGION.P\t"));
+        assertTrue(!ordinaryDiscovery.contains("\tREGION.N\t"));
+
+        Map<String, Object> trusted = readyCarrierProducerPlan(
+                targetInstance);
+        Map<String, Object> producerGoal = ((List<Map<String, Object>>)
+                trusted.get("closureGoals")).get(0);
+        Map<String, Object> response = ((List<Map<String, Object>>)
+                producerGoal.get("symbolize")).get(0);
+        response.put("sourceKind", "PROTOCOL_INPUT");
+        response.put("protocolDirection", "RESPONSE");
+        response.put("authority",
+                "TRUSTED_CONFIGURED_RPC_MAPPING_V1");
+        response.put("mappingId", "rpc.keys.response");
+        File trustedPlans = writePlans("trusted-conduit.jsonl",
+                trusted, leafProducerPlan("REGION.N", 3,
+                        producerInstance, "REGION.P.in.registry"),
+                targetPlanWithInput(targetInstance, "VALUE_FRONTIER"));
+
+        String trustedDiscovery = run(trustedPlans, "discover");
+        assertTrue(trustedDiscovery.contains("\tREGION.P\t"));
+        assertTrue(trustedDiscovery.contains("\tREGION.N\t"));
+    }
+
+    @Test
+    public void exactTrustedRpcProjectionExtendsConcreteCarrier()
+            throws Exception {
+        String target = "REGION.T@test#call2";
+        Map<String, Object> projected = projectedLeafProducerPlan(
+                "REGION.N", 3, "REGION.P@test#call1",
+                "REGION.P.in.registry", true);
+        File plans = writePlans("projected-carrier.jsonl",
+                readyCarrierProducerPlan(target), projected,
+                targetPlanWithInput(target));
+
+        String discovery = run(plans, "discover");
+
+        assertTrue(discovery.contains("\tREGION.P\t"));
+        assertTrue(discovery.contains("\tREGION.N\t"));
+    }
+
+    @Test
+    public void untrustedRpcProjectionDoesNotExtendConcreteCarrier()
+            throws Exception {
+        String target = "REGION.T@test#call2";
+        Map<String, Object> untrusted = projectedLeafProducerPlan(
+                "REGION.N", 3, "REGION.P@test#call1",
+                "REGION.P.in.registry", false);
+        File plans = writePlans("untrusted-projected-carrier.jsonl",
+                readyCarrierProducerPlan(target), untrusted,
+                targetPlanWithInput(target));
+
+        String discovery = run(plans, "discover");
+
+        assertTrue(discovery.contains("\tREGION.P\t"));
+        assertTrue(!discovery.contains("\tREGION.N\t"));
+    }
+
+    @Test
+    public void boundedContainersAndScalarLeavesDemandProducers()
+            throws Exception {
+        String targetInstance = "REGION.T@test#call9";
+        List<String> ports = Arrays.asList("REGION.T.in.map",
+                "REGION.T.in.array", "REGION.T.in.scalar");
+        Map<String, Object> target = targetPlanWithInputs(targetInstance,
+                ports);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> goal = ((List<Map<String, Object>>)
+                target.get("closureGoals")).get(0);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> actions = (List<Map<String, Object>>)
+                goal.get("symbolize");
+        actions.get(0).put("javaType", "java.util.Map");
+        actions.get(0).put("symbolicDemand",
+                "BOUNDED_CONTAINER_STATE");
+        actions.get(1).put("javaType", "example.Key[]");
+        actions.get(1).put("symbolicDemand",
+                "BOUNDED_CONTAINER_STATE");
+
+        File plans = writePlans("value-frontier-producers.jsonl",
+                leafProducerPlan("REGION.M", 1, targetInstance,
+                        ports.get(0)),
+                leafProducerPlan("REGION.A", 2, targetInstance,
+                        ports.get(1)),
+                leafProducerPlan("REGION.S", 3, targetInstance,
+                        ports.get(2)), target);
+
+        String discovery = run(plans, "discover");
+        assertTrue(discovery.contains("\tREGION.M\t"));
+        assertTrue(discovery.contains("\tREGION.A\t"));
+        assertTrue(discovery.contains("\tREGION.S\t"));
     }
 
     @Test
@@ -354,19 +488,20 @@ public class RuntimeWorkflowDiscoveryTest {
     }
 
     @Test
-    public void targetBindingsPreferRicherExactCausalClosureDeterministically()
+    public void targetBindingsPreferLowerResidualFreedomDeterministically()
             throws Exception {
-        String shallow = "REGION.T@test#call1";
-        String rich = "REGION.T@test#call9";
+        String residual = "REGION.T@test#call1";
+        String closed = "REGION.T@test#call9";
         List<Map<String, Object>> rows = Arrays.asList(
-                targetPlanWithInput(shallow),
-                leafProducerPlan("REGION.P1", 2, shallow,
+                targetPlanWithInputs(residual, Arrays.asList(
+                        "REGION.T.in.value", "REGION.T.in.unbound")),
+                leafProducerPlan("REGION.P1", 2, residual,
                         "REGION.T.in.value"),
-                targetPlanWithInputs(rich, Arrays.asList(
+                targetPlanWithInputs(closed, Arrays.asList(
                         "REGION.T.in.value", "REGION.T.in.other")),
-                leafProducerPlan("REGION.P2", 10, rich,
+                leafProducerPlan("REGION.P2", 10, closed,
                         "REGION.T.in.value"),
-                leafProducerPlan("REGION.P3", 11, rich,
+                leafProducerPlan("REGION.P3", 11, closed,
                         "REGION.T.in.other"));
         File forward = writeRows("rank-forward.jsonl", rows);
         List<Map<String, Object>> reversed = new ArrayList<>(rows);
@@ -378,7 +513,177 @@ public class RuntimeWorkflowDiscoveryTest {
 
         assertEquals(forwardBindings, backwardBindings);
         assertTrue(forwardBindings.split("\\R")[0].contains(
-                rich + "\tGOAL.TARGET"));
+                closed + "\tGOAL.TARGET"));
+    }
+
+    @Test
+    public void equalResidualTargetsPreferLowerReplayCostDeterministically()
+            throws Exception {
+        String small = "REGION.T@test#call9";
+        String large = "REGION.T@test#call1";
+        Map<String, Object> upstream = leafProducerPlan(
+                "REGION.UP", 2, "REGION.MID@test#call3",
+                "REGION.MID.in.value");
+        Map<String, Object> middle = producerWithIncomingDependencyPlan(
+                large, "REGION.MID.in.value", upstream);
+        List<Map<String, Object>> rows = Arrays.asList(
+                protocolTargetPlanWithInput(large),
+                upstream,
+                middle,
+                protocolTargetPlanWithInput(small),
+                leafProducerPlan("REGION.ONE", 10, small,
+                        "REGION.T.in.value"));
+        File forward = writeRows("rank-cost-forward.jsonl", rows);
+        List<Map<String, Object>> reversed = new ArrayList<>(rows);
+        Collections.reverse(reversed);
+        File backward = writeRows("rank-cost-backward.jsonl", reversed);
+
+        String forwardBindings = run(forward, "target-bindings");
+        String backwardBindings = run(backward, "target-bindings");
+
+        assertEquals(forwardBindings, backwardBindings);
+        assertTrue(forwardBindings.split("\\R")[0].contains(
+                small + "\tGOAL.TARGET"));
+    }
+
+    @Test
+    public void provedStatefulClosureBeatsCheaperStatelessClosure()
+            throws Exception {
+        String stateless = "REGION.T@test#call1";
+        String stateful = "REGION.T@test#call9";
+        Map<String, Object> state = provedBoundedStateProducerPlan(
+                "REGION.STATE", 3, "REGION.MID@test#call3",
+                "REGION.MID.in.value");
+        Map<String, Object> presentation =
+                producerWithIncomingDependencyPlan(stateful,
+                        "REGION.MID.in.value", state);
+        List<Map<String, Object>> rows = Arrays.asList(
+                targetPlanWithInput(stateless),
+                leafProducerPlan("REGION.CHEAP", 2, stateless,
+                        "REGION.T.in.value"),
+                targetPlanWithInput(stateful), state, presentation);
+        File forward = writeRows("rank-state-forward.jsonl", rows);
+        List<Map<String, Object>> reversed = new ArrayList<>(rows);
+        Collections.reverse(reversed);
+        File backward = writeRows("rank-state-backward.jsonl", reversed);
+
+        String forwardBindings = run(forward, "target-bindings");
+        String backwardBindings = run(backward, "target-bindings");
+
+        assertEquals(forwardBindings, backwardBindings);
+        assertTrue(forwardBindings.split("\\R")[0].contains(
+                stateful + "\tGOAL.TARGET"));
+        String demands = run(forward, "producer-demands",
+                "--target-instance", stateful);
+        assertEquals(2, demands.trim().split("\\R").length);
+        assertTrue(demands.contains("REGION.STATE"));
+        assertTrue(demands.contains("REGION.MID"));
+    }
+
+    @Test
+    public void stateEvidenceMustCoverEachFatalOperandBeforeCostWins()
+            throws Exception {
+        String oneBacked = "REGION.T@test#call1";
+        String twoBacked = "REGION.T@test#call9";
+
+        String oneMiddle = "REGION.ONE.MID@test#call3";
+        String oneInput = "REGION.ONE.MID.in.state";
+        Map<String, Object> oneState = provedBoundedStateProducerPlan(
+                "REGION.ONE.STATE", 2, oneMiddle, oneInput);
+        Map<String, Object> onePresentation =
+                producerWithIncomingDependencyPlan("REGION.ONE.MID", 3,
+                        oneBacked, "REGION.T.in.left", oneInput, oneState);
+
+        String leftMiddle = "REGION.TWO.LEFT@test#call11";
+        String leftInput = "REGION.TWO.LEFT.in.state";
+        Map<String, Object> leftState = provedBoundedStateProducerPlan(
+                "REGION.TWO.LEFT.STATE", 10, leftMiddle, leftInput);
+        Map<String, Object> leftPresentation =
+                producerWithIncomingDependencyPlan("REGION.TWO.LEFT", 11,
+                        twoBacked, "REGION.T.in.left", leftInput,
+                        leftState);
+        String rightMiddle = "REGION.TWO.RIGHT@test#call13";
+        String rightInput = "REGION.TWO.RIGHT.in.state";
+        Map<String, Object> rightState = provedBoundedStateProducerPlan(
+                "REGION.TWO.RIGHT.STATE", 12, rightMiddle, rightInput);
+        Map<String, Object> rightPresentation =
+                producerWithIncomingDependencyPlan("REGION.TWO.RIGHT", 13,
+                        twoBacked, "REGION.T.in.right", rightInput,
+                        rightState);
+
+        List<String> fatalInputs = Arrays.asList("REGION.T.in.left",
+                "REGION.T.in.right");
+        List<Map<String, Object>> rows = Arrays.asList(
+                targetPlanWithInputs(oneBacked, fatalInputs), oneState,
+                onePresentation, leafProducerPlan("REGION.ONE.PLAIN", 4,
+                        oneBacked, "REGION.T.in.right"),
+                targetPlanWithInputs(twoBacked, fatalInputs), leftState,
+                leftPresentation, rightState, rightPresentation);
+        File forward = writeRows("rank-state-coverage-forward.jsonl", rows);
+        List<Map<String, Object>> reversed = new ArrayList<>(rows);
+        Collections.reverse(reversed);
+        File backward = writeRows("rank-state-coverage-backward.jsonl",
+                reversed);
+
+        String forwardBindings = run(forward, "target-bindings");
+        String backwardBindings = run(backward, "target-bindings");
+
+        assertEquals(forwardBindings, backwardBindings);
+        assertTrue(forwardBindings.split("\\R")[0].contains(
+                twoBacked + "\tGOAL.TARGET"));
+    }
+
+    @Test
+    public void targetLocalStateTransitionDoesNotBiasTargetRank()
+            throws Exception {
+        String directState = "REGION.T@test#call1";
+        String cheap = "REGION.T@test#call9";
+        Map<String, Object> upstream = leafProducerPlan(
+                "REGION.UP", 2, "REGION.MID@test#call3",
+                "REGION.MID.in.value");
+        Map<String, Object> direct = producerWithIncomingDependencyPlan(
+                directState, "REGION.MID.in.value", upstream);
+        markProvedBoundedStateTransition(direct);
+        List<Map<String, Object>> rows = Arrays.asList(
+                targetPlanWithInput(directState), upstream, direct,
+                targetPlanWithInput(cheap),
+                leafProducerPlan("REGION.CHEAP", 10, cheap,
+                        "REGION.T.in.value"));
+        File forward = writeRows("rank-target-state-forward.jsonl", rows);
+        List<Map<String, Object>> reversed = new ArrayList<>(rows);
+        Collections.reverse(reversed);
+        File backward = writeRows("rank-target-state-backward.jsonl",
+                reversed);
+
+        String forwardBindings = run(forward, "target-bindings");
+        String backwardBindings = run(backward, "target-bindings");
+
+        assertEquals(forwardBindings, backwardBindings);
+        assertTrue(forwardBindings.split("\\R")[0].contains(
+                cheap + "\tGOAL.TARGET"));
+    }
+
+    @Test
+    public void exactProtocolPresentationBeatsCheaperForwardingClosure()
+            throws Exception {
+        String forwarding = "REGION.T@test#call9";
+        String presented = "REGION.T@test#call1";
+        Map<String, Object> upstream = leafProducerPlan(
+                "REGION.UP", 2, "REGION.MID@test#call3",
+                "REGION.MID.in.value");
+        Map<String, Object> middle = producerWithIncomingDependencyPlan(
+                presented, "REGION.MID.in.value", upstream);
+        File plans = writePlans("rank-presentation.jsonl",
+                targetPlanWithInput(forwarding),
+                leafProducerPlan("REGION.CHEAP", 10, forwarding,
+                        "REGION.T.in.value"),
+                protocolTargetPlanWithInput(presented),
+                upstream, middle);
+
+        String bindings = run(plans, "target-bindings");
+
+        assertTrue(bindings.split("\\R")[0].contains(
+                presented + "\tGOAL.TARGET"));
     }
 
     @Test
@@ -638,6 +943,18 @@ public class RuntimeWorkflowDiscoveryTest {
                 "rootSelector", object("kind", "GLOBAL_INVOCATION",
                         "method", "<T: void run()>", "ordinal", 1),
                 "closureGoals", Collections.singletonList(goal));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> protocolTargetPlanWithInput(
+            String instance) {
+        Map<String, Object> plan = targetPlanWithInput(instance);
+        Map<String, Object> goal = ((List<Map<String, Object>>)
+                plan.get("closureGoals")).get(0);
+        Map<String, Object> input = ((List<Map<String, Object>>)
+                goal.get("symbolize")).get(0);
+        input.put("sourceKind", "PROTOCOL_INPUT");
+        return plan;
     }
 
     private static Map<String, Object> targetPlanWithInputs(
@@ -938,11 +1255,68 @@ public class RuntimeWorkflowDiscoveryTest {
     }
 
     @SuppressWarnings("unchecked")
+    private static Map<String, Object> projectedLeafProducerPlan(
+            String region, long call, String targetInstance,
+            String targetPort, boolean trusted) {
+        Map<String, Object> plan = leafProducerPlan(region, call,
+                targetInstance, targetPort);
+        Map<String, Object> goal = ((List<Map<String, Object>>)
+                plan.get("closureGoals")).get(0);
+        Map<String, Object> edge = ((List<Map<String, Object>>)
+                goal.get("edgeBindings")).get(0);
+        edge.put("rpcDescendantProjection", true);
+        edge.put("projectionOfEdgeId", "EDGE.RPC.BASE");
+        edge.put("fieldPathDeclarations", Collections.singletonList(
+                "<Wire: java.lang.Object projected>"));
+        if (!trusted) {
+            edge.put("correlationAuthority", "UNTRUSTED");
+        }
+        return plan;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> provedBoundedStateProducerPlan(
+            String region, long call, String targetInstance,
+            String targetPort) {
+        Map<String, Object> plan = leafProducerPlan(region, call,
+                targetInstance, targetPort);
+        markProvedBoundedStateTransition(plan);
+        return plan;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void markProvedBoundedStateTransition(
+            Map<String, Object> plan) {
+        Map<String, Object> goal = ((List<Map<String, Object>>)
+                plan.get("closureGoals")).get(0);
+        Map<String, Object> closure = (Map<String, Object>)
+                goal.get("outputClosure");
+        Map<String, Object> member = ((List<Map<String, Object>>)
+                closure.get("members")).get(0);
+        Map<String, Object> slice = (Map<String, Object>)
+                member.get("slice");
+        slice.put("outputBoundaryKind",
+                "DEFINITION_INVOCATION_NORMAL_EXIT");
+        slice.put("containerPreStateAuthority",
+                "EARLIEST_READ_IN_EXACT_DEFINITION_INVOCATION_V1");
+        slice.put("foldedMutationCount", 1);
+    }
+
+    @SuppressWarnings("unchecked")
     private static Map<String, Object> producerWithIncomingDependencyPlan(
             String targetInstance, String inputPort,
             Map<String, Object> upstream) {
+        return producerWithIncomingDependencyPlan("REGION.MID", 3,
+                targetInstance, "REGION.T.in.value", inputPort, upstream);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> producerWithIncomingDependencyPlan(
+            String region, long call, String targetInstance,
+            String targetPort, String inputPort,
+            Map<String, Object> upstream) {
         Map<String, Object> middle = leafProducerPlan(
-                "REGION.MID", 3, targetInstance, "REGION.T.in.value");
+                region, call, targetInstance, targetPort);
         Map<String, Object> goal = ((List<Map<String, Object>>)
                 middle.get("closureGoals")).get(0);
         goal.put("symbolize", Collections.singletonList(object(

@@ -120,6 +120,61 @@ public class ConcolicSummaryImporterTest {
                 imported.diagnostics).get(0).get("code").getAsString());
     }
 
+    @Test
+    public void capturedOutputBeforeResourceCapImportsAsBoundedCompletion()
+            throws Exception {
+        PathImport imported = importOutputPath("captured-resource-cap",
+                outputBoundaryTask(2), resourceCapOutputResult(2));
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertTrue(summary.get("normalExit").getAsBoolean());
+        assertTrue(summary.get("boundedExit").getAsBoolean());
+        assertTrue(summary.get("relationallyComplete").getAsBoolean());
+        assertEquals(2,
+                summary.getAsJsonObject("outputExpressions").size());
+    }
+
+    @Test
+    public void resourceCapKeepsCapturedPortsAndNamesMissingPorts()
+            throws Exception {
+        PathImport imported = importOutputPath("missing-resource-output",
+                outputBoundaryTask(2), resourceCapOutputResult(1));
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(1, imported.result.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertTrue(summary.get("boundedExit").getAsBoolean());
+        assertTrue(!summary.get("relationallyComplete").getAsBoolean());
+        assertEquals(1,
+                summary.getAsJsonObject("outputExpressions").size());
+        JsonObject diagnostic = ArtifactIO.readJsonl(
+                imported.diagnostics).get(0);
+        assertEquals("INCOMPLETE_RELATION",
+                diagnostic.get("code").getAsString());
+        assertTrue(diagnostic.get("detail").getAsString()
+                .contains("OUTPUT_CAPTURE_COUNT:"
+                        + "REGION.BOUNDARY.out.1:0"));
+    }
+
+    @Test
+    public void resourceCapWithoutAnyDemandedOutputRemainsAGap()
+            throws Exception {
+        PathImport imported = importOutputPath("empty-resource-output",
+                outputBoundaryTask(2), resourceCapOutputResult(0));
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals(1, imported.result.diagnosticCount);
+        JsonObject diagnostic = ArtifactIO.readJsonl(
+                imported.diagnostics).get(0);
+        assertEquals("REPLAY_LOOP_RESOURCE_CAP",
+                diagnostic.get("code").getAsString());
+        assertTrue(diagnostic.get("detail").getAsString()
+                .contains("no demanded output relation was captured "
+                        + "before cut"));
+    }
+
     private static JsonObject resourceCapResult(boolean alsoUnrollBound) {
         JsonObject raw = pathResult(false, true);
         raw.addProperty("exitKind", "CUT");
@@ -136,6 +191,19 @@ public class ConcolicSummaryImporterTest {
             pathCut.addProperty("backedgeId", "<L: void run()>#backedge:u4->u1");
             raw.add("pathCut", pathCut);
         }
+        return raw;
+    }
+
+    private static JsonObject resourceCapOutputResult(int capturedCount) {
+        JsonObject raw = outputBoundaryResult(capturedCount);
+        raw.addProperty("exitKind", "BOUNDED");
+        JsonObject cap = new JsonObject();
+        cap.addProperty("kind", "REPLAY_LOOP_RESOURCE_CAP");
+        cap.addProperty("loopId", "<L: void offerService()>#loop:u38");
+        cap.addProperty("maxLoopBodies", 32);
+        cap.addProperty("attemptedBody", 33);
+        cap.addProperty("reason", "REPLAY_LOOP_RESOURCE_CAP");
+        raw.add("replayResourceCut", cap);
         return raw;
     }
 
@@ -721,6 +789,25 @@ public class ConcolicSummaryImporterTest {
         raw.addProperty("taskId", task.get("taskId").getAsString());
         JsonObject region = new JsonObject();
         region.addProperty("regionId", "REGION.SEED");
+        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(task));
+        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
+        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+        return new PathImport(ConcolicSummaryImporter.importSummaries(
+                results, tasks, regions, output, diagnostics), output,
+                diagnostics);
+    }
+
+    private PathImport importOutputPath(String name, JsonObject task,
+                                        JsonObject raw) throws Exception {
+        Path directory = folder.newFolder(name).toPath();
+        Path results = directory.resolve("results.jsonl");
+        Path tasks = directory.resolve("tasks.jsonl");
+        Path regions = directory.resolve("regions.jsonl");
+        Path output = directory.resolve("summaries.jsonl");
+        Path diagnostics = directory.resolve("diagnostics.jsonl");
+        raw.addProperty("taskId", task.get("taskId").getAsString());
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", task.get("regionId").getAsString());
         ArtifactIO.replaceJsonl(tasks, Collections.singletonList(task));
         ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
         ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));

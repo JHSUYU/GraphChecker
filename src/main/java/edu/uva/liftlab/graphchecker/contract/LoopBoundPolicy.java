@@ -22,6 +22,17 @@ public final class LoopBoundPolicy {
      */
     public static final int SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY = 32;
     /**
+     * Maximum number of restartable state transitions composed into one
+     * single-writer history.
+     *
+     * <p>This is deliberately a third ledger.  It is neither the symbolic
+     * CFG backedge bound nor the amount of concrete work one replay may do.
+     * A VM summary admitted to this history denotes one exact activation-
+     * boundary transition; composition may alpha-rename that transition this
+     * many times.</p>
+     */
+    public static final int MAX_STATE_TIMELINE_TRANSITIONS = 8;
+    /**
      * Body entries one execution-scope loop may run in one activation before
      * the replay is cut.
      *

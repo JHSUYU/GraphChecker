@@ -3,15 +3,16 @@ package edu.uva.liftlab.graphchecker.contract;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class DependencyRoleTest {
     @Test
-    public void bothRolesAreCausalButOnlyValueIsSymbolicEligible() {
+    public void onlyValueFrontierExtendsSymbolicCausalClosure() {
         assertTrue(DependencyRole.causalFollow(
                 DependencyRole.VALUE_FRONTIER));
-        assertTrue(DependencyRole.causalFollow(
+        assertFalse(DependencyRole.causalFollow(
                 DependencyRole.CONCRETE_STRUCTURE_CARRIER));
         assertTrue(DependencyRole.valueFrontier(
                 DependencyRole.VALUE_FRONTIER));

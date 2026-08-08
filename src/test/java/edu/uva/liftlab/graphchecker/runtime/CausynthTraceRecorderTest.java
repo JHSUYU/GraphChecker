@@ -42,6 +42,12 @@ public class CausynthTraceRecorderTest {
             CausynthTraceRecorder.recordField("FIELD_READ", method, 7,
                     "<example.Root: java.lang.Object child>",
                     methodReceiver, fieldReceiver, value, "");
+            Object[] carrierArray = new Object[]{value};
+            CausynthTraceRecorder.recordField("FIELD_WRITE", method, 8,
+                    "<example.Root: java.lang.Object[] carrier>",
+                    methodReceiver, fieldReceiver, carrierArray, "");
+            CausynthTraceRecorder.recordArrayElement("ARRAY_READ", method,
+                    9, carrierArray, 0, value);
             CausynthTraceRecorder.recordRpc("SEND", "TEST_RPC",
                     "native-1", null);
             CausynthTraceRecorder.exitActiveMethod(null, "");
@@ -51,12 +57,20 @@ public class CausynthTraceRecorderTest {
                     output.resolve("runtime_trace.jsonl"),
                     StandardCharsets.UTF_8);
             JsonObject field = null;
+            JsonObject arrayRow = null;
+            JsonObject snapshot = null;
             JsonObject rpc = null;
             for (String line : lines) {
                 JsonObject row = JsonParser.parseString(line)
                         .getAsJsonObject();
                 if ("FIELD_READ".equals(row.get("event").getAsString())) {
                     field = row;
+                } else if ("ARRAY_READ".equals(
+                        row.get("event").getAsString())) {
+                    arrayRow = row;
+                } else if ("ARRAY_SNAPSHOT".equals(
+                        row.get("event").getAsString())) {
+                    snapshot = row;
                 } else if ("RPC_SEND".equals(
                         row.get("event").getAsString())) {
                     rpc = row;
@@ -70,6 +84,17 @@ public class CausynthTraceRecorderTest {
             assertNotEquals(0, field.get("valueObjectId").getAsInt());
             assertNotEquals(field.get("fieldReceiverObjectId").getAsInt(),
                     field.get("valueObjectId").getAsInt());
+            assertEquals(call, arrayRow.get("callId").getAsLong());
+            assertEquals(9, arrayRow.get("unitIndex").getAsInt());
+            assertEquals(0, arrayRow.get("arrayIndex").getAsInt());
+            assertNotEquals(0, arrayRow.get("arrayObjectId").getAsInt());
+            assertEquals(field.get("valueObjectId").getAsInt(),
+                    arrayRow.get("elementObjectId").getAsInt());
+            assertEquals(8, snapshot.get("unitIndex").getAsInt());
+            assertEquals(1, snapshot.get("arrayLength").getAsInt());
+            assertEquals(0, snapshot.get("arrayIndex").getAsInt());
+            assertTrue(snapshot.get("snapshotBoundarySeq").getAsLong()
+                    < snapshot.get("seq").getAsLong());
             assertEquals("native-1",
                     rpc.get("correlationId").getAsString());
             assertEquals(call, rpc.get("callId").getAsLong());

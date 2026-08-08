@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.causynth.CausynthJson;
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -27,6 +28,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -70,6 +72,20 @@ final class RuntimeRefinedGraphBuilder {
                          List<RuntimeRegionPlanner.FieldAccessEvent> fields,
                          List<RuntimeRegionPlanner.ProtocolEvent> protocol,
                          Path output) throws IOException {
+        return refine(candidateGraph, selectedSkeletons, runtimeInstances,
+                methods, runtime, fields,
+                Collections.<RuntimeRegionPlanner.ArrayAccessEvent>emptyList(),
+                protocol, output);
+    }
+
+    static Result refine(File candidateGraph, File selectedSkeletons,
+                         Collection<Map<String, Object>> runtimeInstances,
+                         List<RuntimeRegionPlanner.MethodEvent> methods,
+                         List<RuntimeRegionPlanner.RuntimeEvent> runtime,
+                         List<RuntimeRegionPlanner.FieldAccessEvent> fields,
+                         List<RuntimeRegionPlanner.ArrayAccessEvent> arrays,
+                         List<RuntimeRegionPlanner.ProtocolEvent> protocol,
+                         Path output) throws IOException {
         if (candidateGraph == null || !candidateGraph.isFile()) {
             throw new IOException("candidate static graph not found: "
                     + candidateGraph);
@@ -87,6 +103,8 @@ final class RuntimeRefinedGraphBuilder {
                 runtime);
         List<RuntimeRegionPlanner.FieldAccessEvent> fieldEvents = sortedFields(
                 fields);
+        Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
+                arraysByObject = arraysByObject(arrays, methodEvents);
         List<RuntimeRegionPlanner.ProtocolEvent> protocolEvents =
                 sortedProtocol(protocol);
         ProtocolCallsiteIndex protocolCallsites = new ProtocolCallsiteIndex(
@@ -110,6 +128,8 @@ final class RuntimeRefinedGraphBuilder {
                         eventsForCalls(calls, runtimeByCall);
                 Map<Long, RuntimeRegionPlanner.RuntimeEvent>
                         completedCalls = completedCalls(activationRuntime);
+                Map<Long, List<RuntimeRegionPlanner.RuntimeEvent>>
+                        callArguments = callArguments(activationRuntime);
                 collectAccessorBindings(activation, activationRuntime,
                         accessorBindingsBySite);
                 List<RuntimeRegionPlanner.FieldAccessEvent> activationFields =
@@ -183,7 +203,11 @@ final class RuntimeRefinedGraphBuilder {
                                             boundaryRooted
                                                     ? PATH_AUTHORITY
                                                     : FIELD_ACCESS_AUTHORITY,
-                                            container, event, completion));
+                                            container, event, completion,
+                                            callArguments.getOrDefault(
+                                                    event.invocationId,
+                                                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList()),
+                                            activationFields));
                         }
                     }
                 }
@@ -226,7 +250,8 @@ final class RuntimeRefinedGraphBuilder {
                     edge.put("runtimeObserved", false);
                 } else {
                     edge.put("runtimeAccessorBindings",
-                            encodeAccessorBindings(bindings, edge));
+                            encodeAccessorBindings(bindings, edge,
+                                    arraysByObject));
                     edge.put("runtimeObserved", true);
                     runtimeBoundCounter[0]++;
                 }
@@ -236,7 +261,8 @@ final class RuntimeRefinedGraphBuilder {
                 List<RuntimeFieldBinding> bindings = values(
                         bindingsBySite.get(site));
                 if (!bindings.isEmpty()) {
-                    List<Map<String, Object>> encoded = encodeBindings(bindings);
+                    List<Map<String, Object>> encoded = encodeBindings(
+                            bindings, arraysByObject);
                     edge.put("runtimeFieldBindings", encoded);
                     List<String> uniquePath = uniquePath(bindings);
                     List<String> uniqueDeclarations =
@@ -442,6 +468,21 @@ final class RuntimeRefinedGraphBuilder {
             if ("CALL_SITE_RETURN".equals(event.kind)
                     && event.invocationId > 0L) {
                 result.put(event.invocationId, event);
+            }
+        }
+        return result;
+    }
+
+    private static Map<Long, List<RuntimeRegionPlanner.RuntimeEvent>>
+            callArguments(List<RuntimeRegionPlanner.RuntimeEvent> events) {
+        Map<Long, List<RuntimeRegionPlanner.RuntimeEvent>> result =
+                new LinkedHashMap<>();
+        for (RuntimeRegionPlanner.RuntimeEvent event : events) {
+            if ("CALL_ARGUMENT".equals(event.kind)
+                    && event.invocationId > 0L
+                    && event.argumentIndex >= 0) {
+                result.computeIfAbsent(event.invocationId,
+                        ignored -> new ArrayList<>()).add(event);
             }
         }
         return result;
@@ -700,23 +741,100 @@ final class RuntimeRefinedGraphBuilder {
 
     private static List<Map<String, Object>> encodeBindings(
             Collection<RuntimeFieldBinding> bindings) {
+        return encodeBindings(bindings,
+                Collections.<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
+                        emptyMap());
+    }
+
+    private static List<Map<String, Object>> encodeBindings(
+            Collection<RuntimeFieldBinding> bindings,
+            Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
+                    arraysByObject) {
         Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
         for (RuntimeFieldBinding binding : bindings) {
             Map<String, Object> encoded = binding.toMap();
+            attachArrayElementBindings(encoded, binding.root.process,
+                    binding.event.valueObjectId, arraysByObject);
             unique.put(CausynthJson.write(encoded), encoded);
         }
         return new ArrayList<>(unique.values());
     }
 
+    private static Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
+            arraysByObject(
+            Collection<RuntimeRegionPlanner.ArrayAccessEvent> events,
+            Collection<RuntimeRegionPlanner.MethodEvent> methods) {
+        Map<Long, String> processByCall = new LinkedHashMap<>();
+        for (RuntimeRegionPlanner.MethodEvent method : methods) {
+            processByCall.put(method.callId, method.process);
+        }
+        Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>> result =
+                new LinkedHashMap<>();
+        List<RuntimeRegionPlanner.ArrayAccessEvent> sorted =
+                new ArrayList<>(events == null
+                        ? Collections.<RuntimeRegionPlanner.ArrayAccessEvent>
+                                emptyList() : events);
+        sorted.sort((left, right) -> Long.compare(left.seq, right.seq));
+        for (RuntimeRegionPlanner.ArrayAccessEvent event : sorted) {
+            String process = processByCall.get(event.callId);
+            if (event.arrayObjectId == 0 || process == null
+                    || process.isEmpty()) continue;
+            result.computeIfAbsent(process + "\n" + event.arrayObjectId,
+                    ignored -> new ArrayList<>()).add(event);
+        }
+        return result;
+    }
+
     private static List<Map<String, Object>> encodeAccessorBindings(
             Collection<RuntimeAccessorBinding> bindings,
-            Map<String, Object> edge) {
+            Map<String, Object> edge,
+            Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
+                    arraysByObject) {
         Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
         for (RuntimeAccessorBinding binding : bindings) {
             Map<String, Object> encoded = binding.toMap(edge);
+            attachArrayElementBindings(encoded,
+                    binding.activation.root.process,
+                    binding.returned.objectId, arraysByObject);
             unique.put(CausynthJson.write(encoded), encoded);
         }
         return new ArrayList<>(unique.values());
+    }
+
+    /** Carries exact element identity with every reference-array value. */
+    private static void attachArrayElementBindings(
+            Map<String, Object> encoded, String process, int valueObjectId,
+            Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
+                    arraysByObject) {
+        List<RuntimeRegionPlanner.ArrayAccessEvent> accesses =
+                arraysByObject.getOrDefault(process + "\n" + valueObjectId,
+                        Collections.<RuntimeRegionPlanner.ArrayAccessEvent>
+                                emptyList());
+        if (accesses.isEmpty()) return;
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (RuntimeRegionPlanner.ArrayAccessEvent access : accesses) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("kind", access.kind);
+            row.put("eventSeq", access.seq);
+            row.put("method", access.method);
+            row.put("callId", access.callId);
+            row.put("siteId", access.siteId);
+            row.put("unitIndex", access.unitIndex);
+            row.put("arrayObjectId", access.arrayObjectId);
+            row.put("arrayIndex", access.index);
+            row.put("elementObjectId", access.elementObjectId);
+            if ("ARRAY_SNAPSHOT".equals(access.kind)) {
+                row.put("snapshotBoundarySeq", access.snapshotBoundarySeq);
+                row.put("arrayLength", access.arrayLength);
+                row.put("authority",
+                        "EXACT_RUNTIME_REFERENCE_ARRAY_SNAPSHOT_V1");
+            } else {
+                row.put("authority",
+                        "EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_V1");
+            }
+            rows.add(row);
+        }
+        encoded.put("runtimeArrayElementBindings", rows);
     }
 
     private static List<String> uniquePath(
@@ -1406,13 +1524,19 @@ final class RuntimeRefinedGraphBuilder {
         private final RuntimeRegionPlanner.FieldAccessEvent containerRead;
         private final RuntimeRegionPlanner.RuntimeEvent mutationEnter;
         private final RuntimeRegionPlanner.RuntimeEvent mutationCompletion;
+        private final List<RuntimeRegionPlanner.RuntimeEvent>
+                mutationArguments;
+        private final List<RuntimeRegionPlanner.FieldAccessEvent>
+                activationFields;
 
         private RuntimeFieldBinding(String regionId,
                                     RuntimeRegionPlanner.MethodEvent root,
                                     RuntimeRegionPlanner.FieldAccessEvent event,
                                     RuntimeFieldPath path) {
             this(regionId, root, event, path, "DECLARED_FIELD_ACCESS",
-                    PATH_AUTHORITY, null, null, null);
+                    PATH_AUTHORITY, null, null, null,
+                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
+                    Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList());
         }
 
         private RuntimeFieldBinding(String regionId,
@@ -1421,7 +1545,9 @@ final class RuntimeRefinedGraphBuilder {
                                     RuntimeFieldPath path,
                                     String bindingKind) {
             this(regionId, root, event, path, bindingKind, PATH_AUTHORITY,
-                    null, null, null);
+                    null, null, null,
+                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
+                    Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList());
         }
 
         private RuntimeFieldBinding(String regionId,
@@ -1431,7 +1557,9 @@ final class RuntimeRefinedGraphBuilder {
                                     String bindingKind,
                                     String authority) {
             this(regionId, root, event, path, bindingKind, authority,
-                    null, null, null);
+                    null, null, null,
+                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
+                    Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList());
         }
 
         private RuntimeFieldBinding(String regionId,
@@ -1442,7 +1570,9 @@ final class RuntimeRefinedGraphBuilder {
                                     String authority,
                                     RuntimeRegionPlanner.FieldAccessEvent containerRead,
                                     RuntimeRegionPlanner.RuntimeEvent mutationEnter,
-                                    RuntimeRegionPlanner.RuntimeEvent mutationCompletion) {
+                                    RuntimeRegionPlanner.RuntimeEvent mutationCompletion,
+                                    List<RuntimeRegionPlanner.RuntimeEvent> mutationArguments,
+                                    List<RuntimeRegionPlanner.FieldAccessEvent> activationFields) {
             this.regionId = regionId;
             this.root = root;
             this.event = event;
@@ -1452,6 +1582,12 @@ final class RuntimeRefinedGraphBuilder {
             this.containerRead = containerRead;
             this.mutationEnter = mutationEnter;
             this.mutationCompletion = mutationCompletion;
+            this.mutationArguments = mutationArguments == null
+                    ? Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList()
+                    : mutationArguments;
+            this.activationFields = activationFields == null
+                    ? Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList()
+                    : activationFields;
         }
 
         private Map<String, Object> toMap() {
@@ -1487,8 +1623,81 @@ final class RuntimeRefinedGraphBuilder {
                         mutationEnter.invocationId);
                 result.put("mutatorDeclaredCallee",
                         mutationEnter.declaredCallee);
+                addAssociativeMemberIdentity(result);
             }
             return result;
+        }
+
+        /**
+         * Names one map member by its defining mutation, never by its value or
+         * iteration position.  Object ids are retained only as trace-local
+         * evidence for attaching the member's demanded field leaves.
+         */
+        private void addAssociativeMemberIdentity(
+                Map<String, Object> result) {
+            if (!JavaContainerTypes.associativePut(
+                    mutationEnter.declaredCallee)
+                    || mutationEnter.objectId == 0
+                    || mutationEnter.invocationId <= 0L) {
+                return;
+            }
+            RuntimeRegionPlanner.RuntimeEvent key = uniqueArgument(0);
+            RuntimeRegionPlanner.RuntimeEvent value = uniqueArgument(1);
+            if (key == null || value == null || key.objectId == 0
+                    || value.objectId == 0) {
+                return;
+            }
+            String provenance = root.process + "\n"
+                    + mutationEnter.objectId + "\n"
+                    + mutationEnter.invocationId;
+            result.put("containerMemberToken", "MEMBER."
+                    + UUID.nameUUIDFromBytes(provenance.getBytes(
+                    StandardCharsets.UTF_8)));
+            result.put("containerMemberIdentityAuthority",
+                    "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1");
+            result.put("containerObjectId", mutationEnter.objectId);
+            result.put("containerKeyObjectId", key.objectId);
+            result.put("containerValueObjectId", value.objectId);
+
+            Map<String, RuntimeRegionPlanner.FieldAccessEvent> latest =
+                    new LinkedHashMap<>();
+            for (RuntimeRegionPlanner.FieldAccessEvent field
+                    : activationFields) {
+                if (field.seq >= mutationEnter.seq
+                        || field.receiverObjectId != value.objectId
+                        || field.primitiveValue.isEmpty()) {
+                    continue;
+                }
+                RuntimeRegionPlanner.FieldAccessEvent previous =
+                        latest.get(field.field);
+                if (previous == null || field.seq > previous.seq) {
+                    latest.put(field.field, field);
+                }
+            }
+            List<Map<String, Object>> leaves = new ArrayList<>();
+            for (RuntimeRegionPlanner.FieldAccessEvent field
+                    : latest.values()) {
+                Map<String, Object> leaf = new LinkedHashMap<>();
+                leaf.put("field", field.field);
+                leaf.put("eventSeq", field.seq);
+                leaf.put("callId", field.callId);
+                leaf.put("siteId", field.siteId);
+                leaf.put("fieldReceiverObjectId",
+                        field.receiverObjectId);
+                leaves.add(leaf);
+            }
+            result.put("containerMemberFieldBindings", leaves);
+        }
+
+        private RuntimeRegionPlanner.RuntimeEvent uniqueArgument(int index) {
+            RuntimeRegionPlanner.RuntimeEvent selected = null;
+            for (RuntimeRegionPlanner.RuntimeEvent argument
+                    : mutationArguments) {
+                if (argument.argumentIndex != index) continue;
+                if (selected != null) return null;
+                selected = argument;
+            }
+            return selected;
         }
     }
 

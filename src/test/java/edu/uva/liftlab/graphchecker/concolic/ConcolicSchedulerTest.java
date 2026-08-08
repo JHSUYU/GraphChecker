@@ -28,7 +28,7 @@ public class ConcolicSchedulerTest {
     public final TemporaryFolder folder = new TemporaryFolder();
 
     @Test
-    public void targetStructureCarrierRemainsConcrete() throws Exception {
+    public void targetStructureCarrierIsNotAnInputAction() throws Exception {
         File regions = write("carrier-regions.jsonl", region());
         File plans = write("carrier-plans.jsonl", carrierTargetPlan());
         File edges = writeEmpty("carrier-edges.jsonl");
@@ -40,11 +40,11 @@ public class ConcolicSchedulerTest {
 
         JsonArray actions = result.executionTasks.get(0)
                 .getAsJsonArray("inputActions");
-        assertEquals("CONCRETE", mode(actions, "REGION.1.in.registry"));
+        assertFalse(hasInputAction(actions, "REGION.1.in.registry"));
     }
 
     @Test
-    public void loopControlOnlyInputRemainsConcrete() throws Exception {
+    public void loopControlOnlyInputIsNotAnInputAction() throws Exception {
         File regions = write("loop-input-regions.jsonl", region());
         File plans = write("loop-input-plans.jsonl", loopInputTargetPlan());
         File edges = writeEmpty("loop-input-edges.jsonl");
@@ -56,11 +56,11 @@ public class ConcolicSchedulerTest {
 
         JsonArray actions = result.executionTasks.get(0)
                 .getAsJsonArray("inputActions");
-        assertEquals("CONCRETE", mode(actions, "REGION.1.in.running"));
+        assertFalse(hasInputAction(actions, "REGION.1.in.running"));
     }
 
     @Test
-    public void unclosedReferenceBoundaryLeafRemainsConcrete()
+    public void unclosedReferenceBoundaryLeafIsNotAnInputAction()
             throws Exception {
         Map<String, Object> action = heapLeaf(
                 "REGION.1.in.value", "example.Payload", "int", "value");
@@ -79,11 +79,8 @@ public class ConcolicSchedulerTest {
         ConcolicScheduler.Result result = ConcolicScheduler.schedule(
                 arguments(regions, plans, edges, refined, output));
 
-        JsonObject scheduled = inputAction(result.executionTasks.get(0)
-                .getAsJsonArray("inputActions"), "REGION.1.in.value");
-        assertEquals("CONCRETE", scheduled.get("mode").getAsString());
-        assertEquals("EXACT_TRACE_REFERENCE_LEAF_UNDER_APPROX_V1",
-                scheduled.get("replayAuthority").getAsString());
+        assertFalse(hasInputAction(result.executionTasks.get(0)
+                .getAsJsonArray("inputActions"), "REGION.1.in.value"));
     }
 
     @Test
@@ -109,7 +106,7 @@ public class ConcolicSchedulerTest {
         JsonArray actions = result.executionTasks.get(0)
                 .getAsJsonArray("inputActions");
         assertEquals("SYMBOLIC", mode(actions, "REGION.1.in.guarded"));
-        assertEquals("CONCRETE", mode(actions, "REGION.1.in.payload"));
+        assertFalse(hasInputAction(actions, "REGION.1.in.payload"));
     }
 
     @Test
@@ -152,7 +149,7 @@ public class ConcolicSchedulerTest {
         ConcolicScheduler.Result result = ConcolicScheduler.schedule(
                 arguments(regions, plans, edges, refined, output));
 
-        assertEquals("CONCRETE", mode(result.executionTasks.get(0)
+        assertFalse(hasInputAction(result.executionTasks.get(0)
                 .getAsJsonArray("inputActions"),
                 "REGION.1.in.protocol"));
     }
@@ -228,8 +225,8 @@ public class ConcolicSchedulerTest {
                 .getAsJsonArray("inputActions");
 
         assertEquals("SYMBOLIC", mode(actions, "REGION.1.in.expiry"));
-        assertEquals("CONCRETE", mode(actions, "REGION.1.in.manager"));
-        assertEquals("CONCRETE", mode(actions,
+        assertFalse(hasInputAction(actions, "REGION.1.in.manager"));
+        assertFalse(hasInputAction(actions,
                 "REGION.1.in.assertions"));
     }
 
@@ -256,6 +253,12 @@ public class ConcolicSchedulerTest {
         size.put("declaredCallee",
                 "<example.CustomCollection: int size()>");
 
+        Map<String, Object> unrelatedMutationCount = heapLeaf(
+                "REGION.1.in.count", "java.io.ByteArrayOutputStream",
+                "int", "count");
+        unrelatedMutationCount.put("symbolicDemand",
+                "BOUNDED_STATE_FRONTIER");
+
         Map<String, Object> expiry = heapLeaf(
                 "REGION.1.in.expiry", "example.Key", "long",
                 "expiryDate");
@@ -264,7 +267,8 @@ public class ConcolicSchedulerTest {
 
         File regions = write("structure-regions.jsonl", region());
         File plans = write("structure-plans.jsonl", targetPlanWithActions(
-                switchTable, ordinal, size, expiry, keyId));
+                switchTable, ordinal, size, unrelatedMutationCount,
+                expiry, keyId));
         File edges = writeEmpty("structure-edges.jsonl");
         File refined = write("structure-refined.jsonl", refinedEdge());
         File output = folder.newFolder("structure-schedule");
@@ -274,19 +278,11 @@ public class ConcolicSchedulerTest {
         JsonArray actions = result.executionTasks.get(0)
                 .getAsJsonArray("inputActions");
 
-        assertEquals("CONCRETE", mode(actions,
+        assertFalse(hasInputAction(actions,
                 "REGION.1.in.switchTable"));
-        assertEquals("COMPILER_SWITCH_DISPATCH_TABLE",
-                inputAction(actions, "REGION.1.in.switchTable")
-                        .get("structureControlReason").getAsString());
-        assertEquals("CONCRETE", mode(actions, "REGION.1.in.ordinal"));
-        assertEquals("ENUM_DISPATCH_ORDINAL",
-                inputAction(actions, "REGION.1.in.ordinal")
-                        .get("structureControlReason").getAsString());
-        assertEquals("CONCRETE", mode(actions, "REGION.1.in.size"));
-        assertEquals("FIXED_CONTAINER_CARDINALITY",
-                inputAction(actions, "REGION.1.in.size")
-                        .get("structureControlReason").getAsString());
+        assertFalse(hasInputAction(actions, "REGION.1.in.ordinal"));
+        assertFalse(hasInputAction(actions, "REGION.1.in.size"));
+        assertFalse(hasInputAction(actions, "REGION.1.in.count"));
         assertEquals("SYMBOLIC", mode(actions, "REGION.1.in.expiry"));
         assertEquals("SYMBOLIC", mode(actions, "REGION.1.in.keyId"));
     }
@@ -377,6 +373,42 @@ public class ConcolicSchedulerTest {
                 scheduledTarget.get("policy").getAsString());
         assertEquals("TARGET_REACH_SELECTED_FAILURE_BRANCH",
                 scheduledTarget.get("policyReason").getAsString());
+    }
+
+    @Test
+    public void selectedFatalSiteProjectsItsOwnPrefixInputs()
+            throws Exception {
+        Map<String, Object> selected = heapLeaf(
+                "REGION.1.in.selected", "example.Key", "long",
+                "expiryDate");
+        selected.put("fatalPrefixContexts", Collections.singletonList(
+                object("siteId", "<T: void f()>#u1", "occurrence", 1,
+                        "eventSeq", 50L)));
+        selected.put("runtimeAccesses", java.util.Arrays.asList(
+                object("eventSeq", 40L), object("eventSeq", 60L)));
+        Map<String, Object> otherSite = heapLeaf(
+                "REGION.1.in.other", "example.Key", "int", "keyId");
+        otherSite.put("fatalPrefixContexts", Collections.singletonList(
+                object("siteId", "<T: void f()>#u9", "occurrence", 1,
+                        "eventSeq", 80L)));
+
+        File regions = write("site-prefix-regions.jsonl", region());
+        File plans = write("site-prefix-plans.jsonl",
+                targetPlanWithActions(selected, otherSite));
+        File edges = writeEmpty("site-prefix-edges.jsonl");
+        File refined = write("site-prefix-refined.jsonl", refinedEdge());
+        File output = folder.newFolder("site-prefix-schedule");
+
+        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                arguments(regions, plans, edges, refined, output));
+
+        JsonArray actions = result.executionTasks.get(0)
+                .getAsJsonArray("inputActions");
+        assertEquals(1, actions.size());
+        JsonObject action = inputAction(actions, "REGION.1.in.selected");
+        assertEquals(50L, action.get("fatalPrefixEventSeq").getAsLong());
+        assertEquals(1, action.getAsJsonArray("runtimeAccesses").size());
+        assertFalse(hasInputAction(actions, "REGION.1.in.other"));
     }
 
     @Test
@@ -662,6 +694,79 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    public void selectedOccurrenceOwnsIncomingProtocolTrust()
+            throws Exception {
+        String first = "REGION.1@test#call1";
+        String second = "REGION.1@test#call2";
+        Map<String, Object> logical = protocolArgumentTargetPlan();
+        logical.put("logicalRegionId", "REGION.1@owner7");
+        logical.put("summaryReuseKey", "REGION.1@owner7");
+        logical.put("logicalInstanceCount", 2);
+        Map<String, Object> goal = ((java.util.List<Map<String, Object>>)
+                logical.get("closureGoals")).get(0);
+        Map<String, Object> exactFirst = GSON.fromJson(GSON.toJson(goal),
+                Map.class);
+        Map<String, Object> exactSecond = GSON.fromJson(GSON.toJson(goal),
+                Map.class);
+        ((Map<String, Object>) ((java.util.List<Map<String, Object>>)
+                exactFirst.get("symbolize")).get(0)).put("symbol",
+                "REGION.1.in.protocol.first");
+        ((Map<String, Object>) ((java.util.List<Map<String, Object>>)
+                exactSecond.get("symbolize")).get(0)).put("symbol",
+                "REGION.1.in.protocol.second");
+        logical.put("occurrences", java.util.Arrays.asList(
+                object("regionInstanceId", first, "rootCallId", 1,
+                        "closureGoals", Collections.singletonList(
+                                exactFirst)),
+                object("regionInstanceId", second, "rootCallId", 2,
+                        "closureGoals", Collections.singletonList(
+                                exactSecond))));
+        goal.put("executionOccurrence", object(
+                "regionInstanceId", first, "rootCallId", 1));
+        Map<String, Object> selectedBinding = trustedProtocolBinding();
+        selectedBinding.put("toRegionInstance", second);
+        selectedBinding.put("toInputPort",
+                "REGION.1.in.protocol.second");
+        goal.put("edgeBindings", Collections.singletonList(
+                selectedBinding));
+
+        File regions = write("selected-binding-regions.jsonl", region());
+        File plans = write("selected-binding-plans.jsonl", logical);
+        File edges = writeEmpty("selected-binding-edges.jsonl");
+        File refined = write("selected-binding-refined.jsonl",
+                refinedEdge());
+        File output = folder.newFolder("selected-binding-schedule");
+        ConcolicScheduler.Arguments arguments =
+                ConcolicScheduler.Arguments.parse(new String[]{
+                        "--regions", regions.getPath(),
+                        "--region-plan", plans.getPath(),
+                        "--edge-validations", edges.getPath(),
+                        "--refined-graph", refined.getPath(),
+                        "--output-dir", output.getPath(),
+                        "--region-id", "REGION.1",
+                        "--region-instance-id", second,
+                        "--goal-id", "GOAL.1",
+                        "--max-jobs", "1",
+                        "--max-loop-iterations", "8"});
+
+        ConcolicScheduler.Result result =
+                ConcolicScheduler.schedule(arguments);
+
+        JsonObject task = result.executionTasks.get(0);
+        assertEquals(first, task.get("regionInstanceId").getAsString());
+        assertEquals("SYMBOLIC", inputAction(task.getAsJsonArray(
+                "inputActions"), "REGION.1.in.protocol")
+                .get("mode").getAsString());
+        assertEquals(1, task.getAsJsonArray("edgeBindings").size());
+        assertEquals(second, task.getAsJsonArray("edgeBindings").get(0)
+                .getAsJsonObject().get("toRegionInstance").getAsString());
+        assertEquals("REGION.1.in.protocol.second",
+                task.getAsJsonArray("edgeBindings").get(0)
+                        .getAsJsonObject().get("toInputPort").getAsString());
+    }
+
+    @Test
     public void schedulerComposesOnlySchemaThreeRuntimeFieldFlow() {
         Map<String, Object> binding = object(
                 "schemaVersion", 3,
@@ -786,6 +891,60 @@ public class ConcolicSchedulerTest {
                 whole.get("pathSeedKey").getAsString());
         assertTrue(!task.get("pathSeedKey").getAsString().equals(
                 whole.get("pathSeedKey").getAsString()));
+    }
+
+    @Test
+    public void producerProjectionDeduplicatesEquivalentOccurrenceEdge()
+            throws Exception {
+        File regions = write("projected-duplicate-regions.jsonl",
+                projectableOutputRegion());
+        File plans = write("projected-duplicate-plans.jsonl",
+                duplicateProjectedEdgePlan(false));
+        File edges = writeEmpty("projected-duplicate-edges.jsonl");
+        File refined = write("projected-duplicate-refined.jsonl",
+                refinedEdge());
+        File projection = write("projected-duplicate-projection.jsonl",
+                producerProjection(Collections.singleton(
+                        "REGION.1.out.keep"), Collections.singleton(
+                        "EDGE.KEEP")));
+
+        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                arguments(regions, plans, edges, refined,
+                        folder.newFolder("projected-duplicate-schedule"),
+                        projection));
+
+        JsonObject occurrence = result.executionTasks.get(0)
+                .getAsJsonObject("occurrenceInstantiationCatalog")
+                .getAsJsonArray("occurrences").get(0).getAsJsonObject();
+        assertEquals(1, occurrence.getAsJsonArray("bindingIds").size());
+        assertEquals("EDGE.KEEP", occurrence.getAsJsonArray("bindingIds")
+                .get(0).getAsString());
+    }
+
+    @Test
+    public void producerProjectionRejectsConflictingDuplicateEdge()
+            throws Exception {
+        File regions = write("projected-conflict-regions.jsonl",
+                projectableOutputRegion());
+        File plans = write("projected-conflict-plans.jsonl",
+                duplicateProjectedEdgePlan(true));
+        File edges = writeEmpty("projected-conflict-edges.jsonl");
+        File refined = write("projected-conflict-refined.jsonl",
+                refinedEdge());
+        File projection = write("projected-conflict-projection.jsonl",
+                producerProjection(Collections.singleton(
+                        "REGION.1.out.keep"), Collections.singleton(
+                        "EDGE.KEEP")));
+
+        try {
+            ConcolicScheduler.schedule(arguments(regions, plans, edges,
+                    refined, folder.newFolder(
+                            "projected-conflict-schedule"), projection));
+            fail("different occurrence projections for one edge must fail");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains(
+                    "conflicting occurrence projection EDGE.KEEP"));
+        }
     }
 
     @Test
@@ -929,6 +1088,109 @@ public class ConcolicSchedulerTest {
                 action.get("symbolicDemand").getAsString());
         assertEquals("EARLIEST_READ_IN_EXACT_DEFINITION_INVOCATION_V1",
                 action.get("preStateSelectionAuthority").getAsString());
+    }
+
+    @Test
+    public void schedulerCarriesExactSingleWriterMemberTimeline()
+            throws Exception {
+        Map<String, Object> regionsRow = outputRegion();
+        Map<String, Object> pre = ((java.util.List<Map<String, Object>>)
+                regionsRow.get("symbolicInputs")).get(0);
+        Map<String, Object> post = ((java.util.List<Map<String, Object>>)
+                regionsRow.get("outputs")).get(0);
+        Map<String, Object> preProjection = memberProjection("PRE_STATE");
+        Map<String, Object> postProjection = memberProjection("POST_STATE");
+        pre.put("boundedContainerMemberProjections",
+                Collections.singletonList(preProjection));
+        post.put("boundedContainerStateRole", "MUTATION_POST_STATE");
+        post.put("boundedContainerMemberProjectionAdmission", "PROVED");
+        post.put("containerTimelineWriterPolicy",
+                "SINGLE_WRITER_REQUIRED");
+        post.put("boundedContainerPreStatePorts",
+                Collections.singletonList("REGION.1.in.demanded"));
+        post.put("boundedContainerMemberProjections",
+                Collections.singletonList(postProjection));
+        post.put("runtimeAccesses", Collections.singletonList(object(
+                "eventSeq", 20,
+                "boundedContainerMemberProjection", postProjection)));
+
+        Map<String, Object> plan = boundedMapFieldOutputPlan();
+        Map<String, Object> goal = ((java.util.List<Map<String, Object>>)
+                plan.get("closureGoals")).get(0);
+        Map<String, Object> closure = (Map<String, Object>) goal.get(
+                "outputClosure");
+        Map<String, Object> member = ((java.util.List<Map<String, Object>>)
+                closure.get("members")).get(0);
+        Map<String, Object> output = (Map<String, Object>) member.get(
+                "output");
+        Map<String, Object> slice = (Map<String, Object>) member.get(
+                "slice");
+        output.put("kind", "HEAP_STATE");
+        output.put("javaTypeDescriptor", "Ljava/util/Map;");
+        slice.put("containerPreStatePort", "REGION.1.in.demanded");
+        slice.put("selectedRuntimeEventSeq", 20);
+        slice.put("outputBoundaryKind",
+                "DEFINITION_INVOCATION_NORMAL_EXIT");
+        slice.put("containerPreStateAuthority",
+                "EARLIEST_READ_IN_EXACT_DEFINITION_INVOCATION_V1");
+        slice.put("observedDefinitionCallId", 4);
+        slice.put("containerPreStateEventSeq", 10);
+        slice.put("definitionCompletionSeq", 21);
+        slice.put("foldedMutationCount", 1);
+        slice.put("foldedMutationCompletionSeqs",
+                Collections.singletonList(20));
+
+        File regions = write("timeline-regions.jsonl", regionsRow);
+        File plans = write("timeline-plans.jsonl", plan);
+        File edges = writeEmpty("timeline-edges.jsonl");
+        File refined = write("timeline-refined.jsonl", refinedEdge());
+        File scheduled = folder.newFolder("timeline-schedule");
+
+        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                arguments(regions, plans, edges, refined, scheduled));
+
+        JsonObject step = result.executionTasks.get(0)
+                .getAsJsonObject("outputClosure")
+                .getAsJsonArray("members").get(0).getAsJsonObject()
+                .getAsJsonObject("slice")
+                .getAsJsonObject("boundedContainerTimelineStep");
+        assertTrue(String.valueOf(step), step != null
+                && step.has("admission"));
+        assertEquals("PROVED", step.get("admission").getAsString());
+        assertEquals("ENGINE_STATE_CHAIN_BOUND_V1",
+                step.get("boundAuthority").getAsString());
+        assertEquals(LoopBoundPolicy.MAX_STATE_TIMELINE_TRANSITIONS,
+                step.get("stateChainBound").getAsInt());
+        assertEquals("ONE_DEFINITION_INVOCATION",
+                step.get("transitionGranularity").getAsString());
+        assertEquals("REGION.1.in.demanded",
+                step.get("preStatePort").getAsString());
+        assertEquals("REGION.1.out.value",
+                step.get("postStatePort").getAsString());
+        assertEquals("MEMBER.1", step.get("memberToken").getAsString());
+        assertEquals(2, step.getAsJsonArray("memberProjections").size());
+        assertFalse(step.toString().contains("fieldEventSeq"));
+    }
+
+    private static Map<String, Object> memberProjection(String role) {
+        return object(
+                "memberToken", "MEMBER.1",
+                "identityAuthority",
+                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1",
+                "containerObjectId", 99,
+                "keyObjectId", 100,
+                "valueObjectId", 101,
+                "mutationInvocationId", 5,
+                "writerLaneId", "lane.writer",
+                "stateRole", role,
+                "leaves", java.util.Arrays.asList(
+                        object("kind", "PRESENT", "javaType", "boolean"),
+                        object("kind", "VALUE_FIELD", "javaType", "int",
+                                "field", "<example.Key: int keyId>",
+                                "fieldEventSeq", 6),
+                        object("kind", "VALUE_FIELD", "javaType", "long",
+                                "field", "<example.Key: long expiry>",
+                                "fieldEventSeq", 7)));
     }
 
     private ConcolicScheduler.Arguments arguments(
@@ -1244,6 +1506,27 @@ public class ConcolicSchedulerTest {
                 "closureGoals", Collections.singletonList(goal));
     }
 
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> duplicateProjectedEdgePlan(
+            boolean conflict) {
+        Map<String, Object> result = projectableMultiOutputPlan();
+        Map<String, Object> goal = ((java.util.List<Map<String, Object>>)
+                result.get("closureGoals")).get(0);
+        java.util.List<Map<String, Object>> original =
+                (java.util.List<Map<String, Object>>) goal.get(
+                        "edgeBindings");
+        Map<String, Object> duplicate = new java.util.LinkedHashMap<>(
+                original.get(0));
+        if (conflict) duplicate.put("mappingId", "rpc.conflict");
+        java.util.List<Map<String, Object>> bindings =
+                new java.util.ArrayList<>();
+        bindings.add(original.get(0));
+        bindings.add(duplicate);
+        bindings.add(original.get(1));
+        goal.put("edgeBindings", bindings);
+        return result;
+    }
+
     private static Map<String, Object> projectedInput(
             String symbol, int index, String method) {
         return object("symbol", symbol,
@@ -1474,6 +1757,17 @@ public class ConcolicSchedulerTest {
 
     private static String mode(JsonArray actions, String symbol) {
         return inputAction(actions, symbol).get("mode").getAsString();
+    }
+
+    private static boolean hasInputAction(JsonArray actions,
+                                          String symbol) {
+        for (JsonElement element : actions) {
+            JsonObject action = element.getAsJsonObject();
+            if (symbol.equals(action.get("symbol").getAsString())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static JsonObject inputAction(JsonArray actions,
