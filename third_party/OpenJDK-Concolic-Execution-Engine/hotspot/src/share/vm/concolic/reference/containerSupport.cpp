@@ -65,6 +65,15 @@ bool ContainerSupport::follows_callee_body(const std::string &callee_name) {
   return callee_name == "<init>";
 }
 
+bool ContainerSupport::claims_state(MethodSymbolizerHandle &handle) {
+  Method *callee = handle.get_callee_method();
+  if (callee == NULL || callee->is_static()) return false;
+  oop receiver = handle.get_param<oop>(0);
+  if (receiver == NULL) return false;
+  return receiver->is_symbolic()
+      || ConcolicMngr::ctx->find_container_state(receiver) != NULL;
+}
+
 bool ContainerSupport::measures(Expression *length, Expression *state) {
   if (length == NULL || state == NULL) return false;
   ContainerExpression *size = length->as_container_expression();

@@ -32,6 +32,17 @@ void attach_result(oop result, Expression *expression, oop owner = NULL);
 // destination class more harshly than an untracked one, which is silently
 // tolerated on the same line today.
 bool follows_callee_body(const std::string &callee_name);
+// True when the engine holds a claim about this receiver: it is symbolic, or
+// it carries container state (its own, or an owner's if it is a view).  An
+// unmodeled operation only has something to contradict when such a claim
+// exists, and only then must it fail closed.  On a receiver the engine
+// claims nothing about, the body's concrete answer is the only answer there
+// is, and a symbolic argument reaching an *internal* helper is not evidence
+// to the contrary: every public operation of these classes is checked over
+// its whole parameter list first, so a helper is reachable only after that
+// check already declined.  Charging the helper for an operand the public
+// entry point had already cleared abandons the region for nothing.
+bool claims_state(MethodSymbolizerHandle &handle);
 // True when `length` is exactly the element count of `state`, so an array
 // declared with it holds a collection of that state and nothing else.  This
 // is the `new T[c.size()]` destination `Collection.toArray(T[])` fills

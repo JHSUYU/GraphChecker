@@ -89,7 +89,7 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
     }
     return recording;
   }
-  if (handle.general_check_param_symbolized()
+  if (ContainerSupport::claims_state(handle)
       && !ContainerSupport::follows_callee_body(callee_name)) {
     ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
         "ASSOCIATIVE_OPERATION_UNSUPPORTED", handle).c_str());
