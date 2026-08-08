@@ -182,15 +182,33 @@ to report rather than a deviation to correct.
 
 ## TODO (ordered: first what falsifies the report, then what binds the query)
 
-**1 — The silent drop (fail-open; ahead of everything).** The accepted
-candidate composed all six regions of the seven-row plan and reported
-`gaps: 0`, yet the four `CONFIRMED_RUNTIME_IDENTITY` field-flow edges
-KeyManager→Dispatcher became zero channels in the query — every channel it
-does contain is Dispatcher-to-itself — leaving the presented keyId bound by
-nothing but its own int range. Find where composition dropped a confirmed
-channel (demand walk, port selection, or `composable()`), and wire the
-Acceptance audit in so a recurrence cannot be quiet. A fail-closed defect
-costs a proof; this one manufactured one.
+**1 — The silent drop: measured, and it is not one.** *(closed; kept
+because the misreading is easy to repeat.)* The KeyManager→Dispatcher
+edges are in the query and are load-bearing. Two of the four are in
+`resolvedEdgeBindings` and become channels; the other two are consumed by
+a site outside this target's demanded closure, which is the design. The
+presented keyId is bound: forcing it to an unrecorded value is UNSAT,
+forcing it to a recorded one is SAT, and deleting the single
+`state_writer_value__…` assertion carrying that edge makes the unrecorded
+value SAT again.
+
+Two artifacts produced the false reading, and both will produce it again.
+A channel is named `resolved_state_channel__<target>__<target>` — the
+suffix is the *reader* port twice, never the writer, so every channel
+looks like a self-loop and grepping names finds no producer region. And
+the equality that binds a fatal operand can sit as a conjunct inside the
+one giant `fatal_path` assertion rather than in its own named assert, so
+"the only assertion naming this symbol is its type range" is true of a
+symbol that is nonetheless bound. **Decide boundness with the solver, not
+with grep**: assert the symbol equal to a value the trace never recorded
+and check.
+
+The Acceptance audit this item asked for is wired in anyway
+(`droppedEdgeEvidenceAudit` in the composition manifest): every input the
+query presents without a producer is looked up in the validated runtime
+edges through the shared `AutomaticRegionEdge` gate, and a hit becomes
+`DROPPED_CONFIRMED_EDGE_EVIDENCE:<occurrence>:<edgeId>`. On this candidate
+it reports zero, which is what the ablation independently says.
 
 **2 — Rank targets by residual freedom, not producer count.** `TargetRank`
 prefers `producerGoals` count, which chose the write-phase handshake (9)

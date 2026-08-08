@@ -580,13 +580,22 @@ do_compose() {
   [[ -z "${fatal_region}" ]] || selection+=(--fatal-region "${fatal_region}")
   [[ -z "${fatal_region_instance_id}" ]] \
     || selection+=(--region-instance-id "${fatal_region_instance_id}")
+  # The composer audits its own freedoms against the validated runtime edges:
+  # an input it left without a producer while a confirmed edge already named
+  # that consumer port is dropped evidence, not an honest freedom.
+  local -a evidence
+  evidence=()
+  if [[ -n "${runtime_edge_validations}" \
+    && -f "${runtime_edge_validations}" ]]; then
+    evidence+=(--edge-validations "${runtime_edge_validations}")
+  fi
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
     --fatal-query "${fatal_queries}" \
     "${PATH_LIST_ARGUMENTS[@]}" \
     --regions "${refined_regions}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
-    "${selection[@]}" "$@"
+    "${evidence[@]}" "${selection[@]}" "$@"
 }
 
 do_reach() {

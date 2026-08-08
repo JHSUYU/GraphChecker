@@ -883,6 +883,128 @@ public class ConcolicSmtComposerTest {
                 occurrence.get("solverTerm").getAsString());
     }
 
+    /**
+     * A free input is an honest freedom only while nothing proved a producer
+     * for it.  Once the validated runtime edges name that exact consumer
+     * port, composing without it dropped evidence, and {@code gaps: 0} over
+     * that is a false report.
+     */
+    @Test
+    public void unboundInputWithConfirmedEdgeEvidenceBecomesNamedGap()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.INPUT", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        JsonObject input = new JsonObject();
+        input.addProperty("_type", "SymbolExpression");
+        input.addProperty("_java_type", "I");
+        input.addProperty("_exp", "REGION.1.in.0");
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("INPUT", producerInstance,
+                        20, input,
+                        Collections.singletonList("REGION.1.in.0"),
+                        Collections.singletonList(edge))),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)),
+                new JsonArray(),
+                Collections.singletonList(validatedEdge("EDGE.DROPPED",
+                        "CONFIRMED_RUNTIME_IDENTITY", "REGION.1.out.0",
+                        "REGION.1.in.0")),
+                edge);
+
+        assertEquals(result.manifest.toString(), "AUDITED",
+                result.manifest.get("droppedEdgeEvidenceAudit")
+                        .getAsString());
+        assertTrue(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "DROPPED_CONFIRMED_EDGE_EVIDENCE:"
+                                + producerInstance + ":REGION.1.in.0"
+                                + ":EDGE.DROPPED"));
+        assertEquals(result.manifest.toString(), "CANDIDATE_WITH_GAPS",
+                result.manifest.get("state").getAsString());
+    }
+
+    /**
+     * The audit reuses the shared admission gate and never widens it.  An
+     * edge the gate rejects could not have bound anything, so naming it
+     * would be a false alarm.  With nothing to report the composed query is
+     * byte-identical to the same composition audited against nothing, so
+     * switching the audit on cannot move a relation that already held.
+     */
+    @Test
+    public void unconfirmedEdgeEvidenceLeavesTheFreeInputUnreported()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.INPUT", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        JsonObject input = new JsonObject();
+        input.addProperty("_type", "SymbolExpression");
+        input.addProperty("_java_type", "I");
+        input.addProperty("_exp", "REGION.1.in.0");
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("INPUT", producerInstance,
+                        20, input,
+                        Collections.singletonList("REGION.1.in.0"),
+                        Collections.singletonList(edge))),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)),
+                new JsonArray(),
+                Collections.singletonList(validatedEdge("EDGE.UNPROVEN",
+                        "OBSERVED_RUNTIME_CANDIDATE", "REGION.1.out.0",
+                        "REGION.1.in.0")),
+                edge);
+
+        assertEquals(result.manifest.toString(), "AUDITED",
+                result.manifest.get("droppedEdgeEvidenceAudit")
+                        .getAsString());
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "DROPPED_CONFIRMED_EDGE_EVIDENCE"));
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+
+        ConcolicSmtComposer.Result unaudited = compose(fatalInstance,
+                Collections.singletonList(summary("INPUT", producerInstance,
+                        20, input,
+                        Collections.singletonList("REGION.1.in.0"),
+                        Collections.singletonList(edge))),
+                edge);
+        assertEquals(unaudited.smtLib, result.smtLib);
+    }
+
+    /**
+     * Without the validated edge artifact the audit cannot run.  It says so
+     * in the manifest instead of leaving the freedom silently unexamined.
+     */
+    @Test
+    public void missingEdgeArtifactIsNamedRatherThanSilentlySkipped()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.INPUT", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        JsonObject input = new JsonObject();
+        input.addProperty("_type", "SymbolExpression");
+        input.addProperty("_java_type", "I");
+        input.addProperty("_exp", "REGION.1.in.0");
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("INPUT", producerInstance,
+                        20, input,
+                        Collections.singletonList("REGION.1.in.0"),
+                        Collections.singletonList(edge))),
+                edge);
+
+        assertEquals(result.manifest.toString(),
+                "EDGE_VALIDATIONS_NOT_SUPPLIED",
+                result.manifest.get("droppedEdgeEvidenceAudit")
+                        .getAsString());
+    }
+
     @Test
     public void oneDeclaredArrayFieldReachesOneContainerEquality()
             throws Exception {
@@ -1642,6 +1764,15 @@ public class ConcolicSmtComposerTest {
             String fatalInstance, java.util.List<RelationSummary> summaries,
             java.util.List<JsonObject> regionRows, JsonArray constraints,
             JsonObject... firstHops) throws Exception {
+        return compose(fatalInstance, summaries, regionRows, constraints,
+                null, firstHops);
+    }
+
+    private ConcolicSmtComposer.Result compose(
+            String fatalInstance, java.util.List<RelationSummary> summaries,
+            java.util.List<JsonObject> regionRows, JsonArray constraints,
+            java.util.List<JsonObject> edgeValidations,
+            JsonObject... firstHops) throws Exception {
         Path directory = temporary.newFolder().toPath();
         Path fatal = directory.resolve("fatal.jsonl");
         Path summaryFile = directory.resolve("summaries.jsonl");
@@ -1659,17 +1790,49 @@ public class ConcolicSmtComposerTest {
         writeJsonl(regions, regionRows.toArray(
                 new JsonObject[regionRows.size()]));
 
-        ConcolicSmtComposer.Arguments arguments =
-                ConcolicSmtComposer.Arguments.parse(new String[]{
+        java.util.List<String> argv = new java.util.ArrayList<>(
+                Arrays.asList(
                         "--fatal-query", fatal.toString(),
                         "--summaries", summaryFile.toString(),
                         "--regions", regions.toString(),
                         "--output", output.toString(),
                         "--manifest", manifest.toString(),
                         "--fatal-region", "REGION.0",
-                        "--region-instance-id", fatalInstance
-                });
-        return ConcolicSmtComposer.compose(arguments);
+                        "--region-instance-id", fatalInstance));
+        if (edgeValidations != null) {
+            Path validations = directory.resolve("edge_validations.jsonl");
+            writeJsonl(validations, edgeValidations.toArray(
+                    new JsonObject[edgeValidations.size()]));
+            argv.add("--edge-validations");
+            argv.add(validations.toString());
+        }
+        return ConcolicSmtComposer.compose(
+                ConcolicSmtComposer.Arguments.parse(
+                        argv.toArray(new String[argv.size()])));
+    }
+
+    /**
+     * One validated runtime edge row, admissible to the shared evidence
+     * gate.  {@code state} is a parameter so a test can hand the audit an
+     * edge the gate rejects and check that it stays silent.
+     */
+    private static JsonObject validatedEdge(String edgeId, String state,
+                                            String fromPort, String toPort) {
+        JsonObject edge = new JsonObject();
+        edge.addProperty("schemaVersion", 3);
+        edge.addProperty("kind", "RUNTIME_FIELD_FLOW");
+        edge.addProperty("state", state);
+        edge.addProperty("transportKind", "HEAP");
+        edge.addProperty("edgeId", edgeId);
+        edge.addProperty("fromRegion", regionOf(fromPort));
+        edge.addProperty("toRegion", regionOf(toPort));
+        edge.addProperty("fromPort", fromPort);
+        edge.addProperty("toPort", toPort);
+        JsonArray bindings = new JsonArray();
+        bindings.add(binding(edgeId, "REGION.1@Test#call10", fromPort,
+                "REGION.1@Test#call20", toPort, 10, 20));
+        edge.add("bindings", bindings);
+        return edge;
     }
 
     private static RelationSummary summary(

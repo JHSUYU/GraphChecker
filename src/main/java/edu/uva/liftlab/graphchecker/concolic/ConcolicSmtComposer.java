@@ -193,6 +193,11 @@ public final class ConcolicSmtComposer {
         emitter.emitExactCausalInputAliases(
                 resolved.selectedRegionSummaries.values());
         emitter.finishBindings();
+        boolean auditedEdgeEvidence = arguments.edgeValidations != null;
+        if (auditedEdgeEvidence) {
+            auditDroppedEdgeEvidence(emitter, ports,
+                    ArtifactIO.readJsonl(arguments.edgeValidations));
+        }
         emitter.finish();
         String composedSmt = emitter.render();
 
@@ -216,6 +221,9 @@ public final class ConcolicSmtComposer {
                 GSON.toJsonTree(emitter.suppliedInputs));
         manifest.add("canonicalPortOccurrences",
                 emitter.canonicalPortOccurrences());
+        manifest.addProperty("droppedEdgeEvidenceAudit",
+                auditedEdgeEvidence ? "AUDITED"
+                        : "EDGE_VALIDATIONS_NOT_SUPPLIED");
         JsonArray gaps = new JsonArray();
         appendGaps(gaps, "COMPOSITION_GAP", emitter.unsupported);
         manifest.add("gaps", gaps);
@@ -231,6 +239,51 @@ public final class ConcolicSmtComposer {
                 artifact(arguments.fatalQueries));
         manifest.add("summaryInputArtifacts", summaryInputArtifacts);
         return new Result(composedSmt, manifest);
+    }
+
+    /**
+     * Names evidence that was proven and then dropped.
+     *
+     * <p>An input the query presents without a producer is a freedom: the
+     * model lets it take any value of its type, so a condition that turns on
+     * it asserts almost nothing.  That freedom is honest only while no
+     * producer for it was ever proven.  When the validated runtime edges
+     * already carry an admissible write/read pair naming that exact consumer
+     * port, the composition dropped a relation it was entitled to use, and
+     * reporting no gap over it is a false report - worse than never having
+     * found the evidence, because silence cannot be told from a genuine
+     * absence.</p>
+     *
+     * <p>The admission gate is the shared one.  An edge counts only where
+     * {@link AutomaticRegionEdge#composable} already admits it, so this audit
+     * can never widen what the composer is allowed to believe: an edge whose
+     * evidence the gate rejects could not have bound anything, and naming it
+     * here would be a false alarm.  One gap per unbound consumer port keeps
+     * the report proportional to the freedoms, not to the trace.</p>
+     */
+    private static void auditDroppedEdgeEvidence(Emitter emitter,
+                                                 PortIndex ports,
+                                                 List<JsonObject> edges) {
+        Map<String, PortOccurrence> unbound = new LinkedHashMap<>();
+        for (PortOccurrence occurrence : emitter.mentionedPorts) {
+            if (ports.isInput(occurrence.portId)
+                    && !emitter.suppliedInputs.contains(occurrence.portId)) {
+                unbound.putIfAbsent(occurrence.portId, occurrence);
+            }
+        }
+        if (unbound.isEmpty()) return;
+        Set<String> reported = new LinkedHashSet<>();
+        for (JsonObject edge : edges) {
+            String consumer = string(edge, "toPort");
+            PortOccurrence occurrence = unbound.get(consumer);
+            if (occurrence == null || reported.contains(consumer)
+                    || !AutomaticRegionEdge.composable(edge)) {
+                continue;
+            }
+            reported.add(consumer);
+            emitter.unsupported.add("DROPPED_CONFIRMED_EDGE_EVIDENCE:"
+                    + occurrence + ":" + string(edge, "edgeId"));
+        }
     }
 
     private static void requireObservedCoverage(JsonObject summary,
@@ -4967,6 +5020,7 @@ public final class ConcolicSmtComposer {
         private Path regions;
         private Path output;
         private Path manifest;
+        private Path edgeValidations;
         private String fatalRegion = "";
         private String regionInstanceId = "";
         private String compositionMode = "CLOSED_PATH_SET";
@@ -4992,6 +5046,8 @@ public final class ConcolicSmtComposer {
                     result.output = Paths.get(value);
                 } else if ("manifest".equals(key)) {
                     result.manifest = Paths.get(value);
+                } else if ("edge-validations".equals(key)) {
+                    result.edgeValidations = Paths.get(value);
                 } else if ("fatal-region".equals(key)) {
                     result.fatalRegion = firstNonBlank(value);
                 } else if ("region-instance-id".equals(key)) {
