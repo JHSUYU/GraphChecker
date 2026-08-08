@@ -1080,11 +1080,28 @@ public final class ConcolicSummaryImporter {
                     continue;
                 }
             }
+            // A port published as the activation's own return value has no
+            // capture site to bind, so the root observation is the whole
+            // relation - and only when this is the one output demanded, since
+            // one returned value cannot be several ports.
+            boolean rootPublished = (specs == null || specs.isEmpty())
+                    && closure.outputPorts().size() == 1;
             JsonElement root = rootOutputExpression(raw);
-            if ((specs == null || specs.isEmpty())
-                    && closure.outputPorts().size() == 1
-                    && root != null) {
+            if (rootPublished && root != null) {
                 result.add(port, root);
+                continue;
+            }
+            if (rootPublished) {
+                JsonObject identity = rootReferenceIdentity(raw,
+                        closure.member(port), task);
+                if (identity != null) {
+                    identities.add(port, identity);
+                    continue;
+                }
+                // Nothing was ever counted here, so a capture count names the
+                // wrong thing.  Say what the root observation actually was.
+                issues.add("OUTPUT_ROOT_VALUE_UNRELATED:" + port + ":"
+                        + rootOutputKind(raw));
                 continue;
             }
             issues.add("OUTPUT_CAPTURE_COUNT:" + port + ":"
@@ -1211,6 +1228,52 @@ public final class ConcolicSummaryImporter {
         JsonElement expression = wrapper.get("expression");
         return expression != null && !expression.isJsonNull()
                 ? expression.deepCopy() : null;
+    }
+
+    /** What the custom VM observed the activation's root output to be. */
+    private static String rootOutputKind(JsonObject raw) {
+        JsonElement encoded = raw.get("rootOutputExpression");
+        return encoded != null && encoded.isJsonObject()
+                ? string(encoded.getAsJsonObject(), "kind") : "";
+    }
+
+    /**
+     * Admits a returned reference as the object the activation handed on.
+     *
+     * <p>This is the same rule a reference-valued write already follows -
+     * a reference with no expression relates an object, not a value - applied
+     * where the port is published as the activation's return value and so has
+     * no write to hook.  The port's declared type is what decides it: only
+     * the closure states that, which is why the runtime records the object
+     * and this admits it.  A primitive return with no expression stays a
+     * genuine failure, exactly as it does at a write.</p>
+     *
+     * <p>The recorded object number counts objects inside one activation, so
+     * it is unique only there.  A composition mints one constant per distinct
+     * identity record and lets equal records denote the same object, so the
+     * publishing port and activation are carried in the record: without them
+     * two activations of one region would both hand on their own first object
+     * and be read as having handed on the same one.</p>
+     */
+    private static JsonObject rootReferenceIdentity(
+            JsonObject raw, OutputClosureContract.Member member,
+            ExecutionTask task) {
+        if (member == null) return null;
+        String descriptor = member.javaTypeDescriptor();
+        if (!descriptor.startsWith("L") && !descriptor.startsWith("[")) {
+            return null;
+        }
+        JsonElement encoded = raw.get("rootOutputReferenceIdentity");
+        if (encoded == null || !encoded.isJsonObject()) return null;
+        JsonObject identity = encoded.getAsJsonObject();
+        if (!CONCRETE_REFERENCE_IDENTITY_AUTHORITY.equals(
+                string(identity, "authority"))) {
+            return null;
+        }
+        JsonObject scoped = identity.deepCopy();
+        scoped.addProperty("outputPort", member.portId());
+        scoped.addProperty("regionInstanceId", task.regionInstanceId());
+        return scoped;
     }
 
     private static JsonArray symbolicInputs(JsonObject raw) {

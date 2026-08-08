@@ -1549,6 +1549,44 @@ public final class ConcolicRegionRuntime {
         return identity;
     }
 
+    /**
+     * States what a region's own root output related, when it related no
+     * value.
+     *
+     * <p>A demanded output published as the region's return value has no
+     * capture site to hook: there is no write, only the value the activation
+     * hands back.  The VM is asked for it directly, and for a plain object it
+     * answers with an observation carrying no expression — the same answer it
+     * gives for a reference-valued write, and it means the same thing here:
+     * an object was handed on and no value inside it was related.  Recording
+     * the identity keeps that a stated relation instead of an unexplained
+     * empty capture; whether an alias is what this port may publish is the
+     * importer's judgement, because only the closure declares the port's
+     * type.  A value the VM did relate, a boxed primitive it could not, and a
+     * thrown exception all stay outside this: none of them is an object this
+     * activation handed on as its output.</p>
+     */
+    private static JsonObject rootOutputReferenceIdentity(
+            ActiveRegion active, JsonElement observation, Object output) {
+        if (active == null || output == null
+                || output instanceof Throwable
+                || observation == null || !observation.isJsonObject()) {
+            return null;
+        }
+        JsonObject wrapper = observation.getAsJsonObject();
+        JsonElement expression = wrapper.get("expression");
+        if (expression != null && !expression.isJsonNull()) return null;
+        // The VM names a descriptor only for a boxed primitive, whose
+        // missing expression is a genuine capture failure, never an alias.
+        if (!string(wrapper, "javaTypeDescriptor").isEmpty()) return null;
+        JsonObject identity = new JsonObject();
+        identity.addProperty("authority",
+                CONCRETE_REFERENCE_IDENTITY_AUTHORITY);
+        identity.addProperty("objectId", active.objectToken(output));
+        identity.addProperty("runtimeType", output.getClass().getName());
+        return identity;
+    }
+
     private static void addOutputCaptureOccurrence(JsonObject row,
             OutputCaptureSpec request, int occurrence, int versionOrdinal) {
         row.addProperty("outputSiteId", request.outputSiteId());
@@ -2622,7 +2660,13 @@ public final class ConcolicRegionRuntime {
                     && !"OUTPUT_BOUNDARY".equals(completedExitKind)) {
                 try {
                     String expression = api.expression(output);
-                    result.add("rootOutputExpression", parseJson(expression));
+                    JsonElement observation = parseJson(expression);
+                    result.add("rootOutputExpression", observation);
+                    JsonObject identity = rootOutputReferenceIdentity(
+                            active, observation, output);
+                    if (identity != null) {
+                        result.add("rootOutputReferenceIdentity", identity);
+                    }
                 } catch (Throwable throwable) {
                     result.addProperty("outputExpressionError",
                             rootCause(throwable));
