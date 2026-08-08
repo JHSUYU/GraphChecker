@@ -106,8 +106,19 @@ together:
 - freedoms too wide → **SAT may be false** (unconstrained producers)
 - paths too few → **UNSAT may be false** (bounds are an under-approximation)
 
-Degenerate SAT (`reachCondition.formula == "true"`, empty `valuations[].values`)
-is not success. `expiryDate` plausibility is **not** checked at this stage.
+Degenerate SAT is not success, but neither field that once stated it means
+what it looks like. `reachCondition.formula` disjoins over Boolean roots
+alone, so with none of those it reads `"true"` by arity; `valuations[].values`
+is one entry per Boolean root, so empty is arity again. Both are silent on
+whether anything was constrained. The verdict lives in
+`reachCondition.degeneracyCheck`, computed from the root space itself: a
+space that refused a valuation is constrained, one enumerated whole and never
+refused is degenerate, and an unenumerated one says so. Only the constrained
+side is provable from one direction, so degeneracy is claimed only where the
+space was really covered. Never accept the existential witness as evidence of
+constraint — those values are the solver naming freedoms it was handed, so a
+long list of them argues the opposite. `expiryDate` plausibility is **not**
+checked at this stage.
 
 A third degeneracy hides better than either, because every structural check
 passes: the fatal condition is asserted, the formula is not `true`, the
