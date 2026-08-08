@@ -418,6 +418,13 @@ public class ConcolicSchedulerTest {
                 GSON.toJson(first), Map.class);
         second.put("goalId", "GOAL.2");
         second.put("pathSeedKey", "PATH.SEED.TRUE");
+        // Two seeds are distinct because their decisions differ, not because
+        // they were labelled differently: the second goal drives the prefix
+        // guard the other way.
+        ((Map<String, Object>) ((java.util.List<Map<String, Object>>)
+                ((java.util.List<Map<String, Object>>) second.get("branches"))
+                        .get(0).get("occurrences")).get(0))
+                .put("outcome", true);
         java.util.List<Map<String, Object>> goals =
                 new java.util.ArrayList<>();
         goals.add(first);
@@ -441,6 +448,10 @@ public class ConcolicSchedulerTest {
         for (JsonObject task : result.executionTasks) {
             seeds.add(task.get("pathSeedKey").getAsString());
             tasks.add(task.get("taskId").getAsString());
+            // The published name is the name of the published contract.
+            assertEquals(edu.uva.liftlab.graphchecker.contract.BoundedPathSeed
+                            .key(task.getAsJsonArray("branches")),
+                    task.get("pathSeedKey").getAsString());
         }
         assertEquals(2, seeds.size());
         assertEquals(2, tasks.size());
@@ -762,6 +773,19 @@ public class ConcolicSchedulerTest {
         assertTrue(!task.get("taskId").getAsString().equals(
                 unprojected.executionTasks.get(0).get("taskId")
                         .getAsString()));
+        // Projection drops a guard, so the projected task walks a narrower
+        // bounded path than the goal did.  Its published name must be the
+        // name of the contract it publishes, not of the one it dropped.
+        JsonObject whole = unprojected.executionTasks.get(0);
+        assertEquals(2, whole.getAsJsonArray("branches").size());
+        assertEquals(edu.uva.liftlab.graphchecker.contract.BoundedPathSeed
+                        .key(task.getAsJsonArray("branches")),
+                task.get("pathSeedKey").getAsString());
+        assertEquals(edu.uva.liftlab.graphchecker.contract.BoundedPathSeed
+                        .key(whole.getAsJsonArray("branches")),
+                whole.get("pathSeedKey").getAsString());
+        assertTrue(!task.get("pathSeedKey").getAsString().equals(
+                whole.get("pathSeedKey").getAsString()));
     }
 
     @Test

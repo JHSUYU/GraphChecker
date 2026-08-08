@@ -10,6 +10,7 @@ import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.causynth.ProtocolCarrierReconstruction;
 import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.contract.BoundedPathSeed;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
@@ -715,33 +716,8 @@ final class RuntimeRegionPlanner {
 
     private static String pathSeedKey(
             List<Map<String, Object>> branches) {
-        List<String> decisions = new ArrayList<>();
-        for (Map<String, Object> branch : branches) {
-            String site = text(branch.get("siteId"));
-            if (site.isEmpty()) continue;
-            StringBuilder decision = new StringBuilder(site);
-            List<Map<String, Object>> occurrences = rows(
-                    branch.get("occurrences"));
-            if (occurrences.isEmpty()) {
-                decision.append("\nUNOBSERVED");
-            } else {
-                occurrences.sort(Comparator.comparingInt(value ->
-                        integer(value.get("occurrence"), Integer.MAX_VALUE)));
-                for (Map<String, Object> occurrence : occurrences) {
-                    decision.append('\n')
-                            .append(integer(occurrence.get("occurrence"), -1))
-                            .append('=')
-                            .append(String.valueOf(
-                                    occurrence.get("outcome")));
-                }
-            }
-            decisions.add(decision.toString());
-        }
-        Collections.sort(decisions);
-        String identity = decisions.isEmpty()
-                ? "EMPTY_BOUNDED_PATH" : String.join("\n--\n", decisions);
-        return "PATH.SEED." + UUID.nameUUIDFromBytes(
-                identity.getBytes(StandardCharsets.UTF_8));
+        return BoundedPathSeed.key(
+                toJsonTreeFast(branches).getAsJsonArray());
     }
 
     /**

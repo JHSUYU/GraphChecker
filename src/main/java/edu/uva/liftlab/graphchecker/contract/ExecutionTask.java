@@ -63,6 +63,7 @@ public final class ExecutionTask {
         task.addProperty("goalKind", goal.kind().name());
         task.add(InputActionCatalog.FIELD, inputActions.deepCopy());
         task.add("branches", branches.deepCopy());
+        bindPathSeedToBranches(task);
         loopBound.writeTo(task);
         if (edgeBindings.size() > 0) {
             task.add("edgeBindings", edgeBindings.deepCopy());
@@ -98,6 +99,27 @@ public final class ExecutionTask {
                 occurrenceCatalog.deepCopy());
         task.add("producerProjection", producerProjection.deepCopy());
         return new ExecutionTask(task);
+    }
+
+    /**
+     * Renames the bounded path after the branch contract this task publishes.
+     *
+     * <p>A goal's key names the goal's whole branch list, but a task may carry
+     * a narrower one: projecting a producer onto a subset of its output ports
+     * keeps only the guards that sub-closure names.  Carrying the goal's key
+     * beside the projected contract publishes a name for a path the task does
+     * not describe -- two tasks whose contracts are byte-identical then claim
+     * to be different paths, and a valuation solved under one name has no
+     * standing on the other even though the decisions are the same.</p>
+     *
+     * <p>A task with no seed contract at all keeps none: an empty key is how
+     * a caller says there is no bounded path to attest, and inventing the
+     * key of an empty branch list would claim one.</p>
+     */
+    private static void bindPathSeedToBranches(JsonObject task) {
+        if (string(task, "pathSeedKey").isEmpty()) return;
+        task.addProperty("pathSeedKey",
+                BoundedPathSeed.key(array(task, "branches")));
     }
 
     public JsonObject json() {
