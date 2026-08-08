@@ -246,6 +246,13 @@ public:
                                    Expression *sym_exp);
   void set_stack_slot(int offset, Expression *sym_exp, sym_rid_t sym_rid,
                       int index);
+  /**
+   * Claim `sym_exp` for the rest of this activation on behalf of a shadow
+   * slot.  Every slot store goes through this: a slot may name an expression
+   * whose only other owner is free to release it on the next write to the
+   * same location.
+   */
+  void retain_for_activation(Expression *sym_exp);
 
   inline Expression *get_stack_slot(int offset) {
     return this->get_stack_entry(offset).exp;
@@ -265,6 +272,11 @@ public:
   }
 
   inline void set_local_slot(int offset, Expression *exp) {
+    // Same claim as the stack slots: a local names an expression it does not
+    // own, and IINC is the one producer that reaches a slot without going
+    // through set_stack_slot, so nothing else would ever take a reference on
+    // this value's behalf.
+    this->retain_for_activation(exp);
     this->get_last_local().set_slot(offset, exp);
   }
 
