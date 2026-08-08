@@ -55,6 +55,7 @@ public final class RegionPathWorklist {
         private final Set<String> gapKeys = new LinkedHashSet<>();
         private final Set<String> emitted = new LinkedHashSet<>();
         private final Set<String> observedFlipKeys = new LinkedHashSet<>();
+        private final List<JsonObject> abandonedFlips = new ArrayList<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
         private Planner(List<JsonObject> summaries,
@@ -344,6 +345,18 @@ public final class RegionPathWorklist {
             if (!emitted.add(key)) {
                 return;
             }
+            // A contract that contradicts the seed it must be replayed
+            // against is refused by admission on static grounds alone, so
+            // proposing it buys a solve and a full replay whose only possible
+            // outcome is that refusal.  Ask now, and name the flip that never
+            // ran; the answer is the admission check itself, so the early and
+            // the late verdict are the same verdict.
+            String conflict = ConcolicSummaryImporter.plannedReplaySeedConflict(
+                    taskById.get(path.sourceTaskId()), replay);
+            if (!conflict.isEmpty()) {
+                abandoned("PATH_FLIP_CONTRACT_SEED_CONFLICT", key, conflict);
+                return;
+            }
 
             JsonObject task = new JsonObject();
             task.addProperty("schemaVersion", 3);
@@ -458,6 +471,7 @@ public final class RegionPathWorklist {
                 }
                 explorationGaps.add(gap);
             }
+            explorationGaps.addAll(abandonedFlips);
             result.add("explorationGaps", GSON.toJsonTree(explorationGaps));
             return result;
         }
@@ -478,6 +492,20 @@ public final class RegionPathWorklist {
             }
             return inputRegions.size() == 1
                     ? inputRegions.iterator().next() : "";
+        }
+
+        /**
+         * Names a flip this planner refuses to propose.  It joins the flips
+         * an execution explored and abandoned rather than the planning gaps,
+         * because it is charged to itself: the closure stays auditable and
+         * the run proceeds.
+         */
+        private void abandoned(String kind, String queryKey, String reason) {
+            JsonObject gap = new JsonObject();
+            gap.addProperty("kind", kind);
+            gap.addProperty("queryKey", queryKey);
+            gap.addProperty("reason", reason);
+            abandonedFlips.add(gap);
         }
 
         private void gap(String kind, String reason, String region,

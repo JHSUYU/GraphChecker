@@ -1053,6 +1053,60 @@ public class RegionPathWorklistTest {
         summary.add("branchMappings", canonical);
     }
 
+    /**
+     * A flip whose contract contradicts the seed it would be replayed against
+     * is refused by admission on static grounds, so proposing it spends a
+     * solve and a full replay to be told what was already known.  It never
+     * enters the worklist, and it is named where the flips an execution
+     * abandoned are named -- the closure still reaches a state.
+     */
+    @Test
+    public void aContractContradictingItsSeedIsNeverProposed() {
+        JsonObject summary = summary("ACT.SEEDED",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject task = executionTask("ACT.SEEDED",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonArray branches = new JsonArray();
+        branches.add(seedBranch("SITE.0", true));
+        branches.add(seedBranch("SITE.1", false));
+        task.add("branches", branches);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(1, result.tasks.size());
+        assertEquals("SITE.0",
+                replayContract(result.tasks.get(0)).source().siteId());
+        assertTrue(result.manifest.getAsJsonArray("gaps").isEmpty());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                result.manifest.get("state").getAsString());
+        JsonArray abandoned = result.manifest.getAsJsonArray(
+                "explorationGaps");
+        assertEquals(1, abandoned.size());
+        JsonObject refused = abandoned.get(0).getAsJsonObject();
+        assertEquals("PATH_FLIP_CONTRACT_SEED_CONFLICT",
+                refused.get("kind").getAsString());
+        assertEquals("replay event conflicts with task seed at SITE.1#1",
+                refused.get("reason").getAsString());
+        assertFalse(refused.get("queryKey").getAsString().isEmpty());
+    }
+
+    private static JsonObject seedBranch(String site, boolean outcome) {
+        JsonObject branch = new JsonObject();
+        branch.addProperty("siteId", site);
+        branch.addProperty("policy", "EXPLORE");
+        JsonObject occurrence = new JsonObject();
+        occurrence.addProperty("occurrence", 1);
+        occurrence.addProperty("outcome", outcome);
+        JsonArray occurrences = new JsonArray();
+        occurrences.add(occurrence);
+        branch.add("occurrences", occurrences);
+        return branch;
+    }
+
     private static BranchReplayContract replayContract(JsonObject task) {
         return BranchReplayContract.fromJson(task.getAsJsonObject(
                 "replayContract"));

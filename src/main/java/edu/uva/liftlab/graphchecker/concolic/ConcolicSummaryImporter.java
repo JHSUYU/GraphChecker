@@ -476,28 +476,17 @@ public final class ConcolicSummaryImporter {
             String pathSeedKey, List<BranchEvent> seedEvents,
             List<BranchEvent> observed, BranchReplayContract replay) {
         Map<String, Set<Boolean>> seed = outcomesBySite(seedEvents);
+        String conflict = replayContractSeedConflict(seed, replay);
+        if (!conflict.isEmpty()) {
+            return seedDetail(pathSeedKey, conflict);
+        }
         List<BranchEvent> expected = new ArrayList<>();
         for (BranchWitness witness : replay.orderedPrefix()) {
             if (witness.isPcPredicateDecision()) continue;
-            BranchEvent event = new BranchEvent(witness.siteId(),
-                    witness.occurrence(), witness.sourceTakenOutcome());
-            String inconsistency = replaySeedInconsistency(seed, event);
-            if (!inconsistency.isEmpty()) {
-                return seedDetail(pathSeedKey, inconsistency);
-            }
-            expected.add(event);
+            expected.add(new BranchEvent(witness.siteId(),
+                    witness.occurrence(), witness.sourceTakenOutcome()));
         }
         BranchWitness source = replay.source();
-        if (source.isPcPredicateDecision()) {
-            return seedDetail(pathSeedKey,
-                    "replay source is not a source-level branch event");
-        }
-        BranchEvent originalSource = new BranchEvent(source.siteId(),
-                source.occurrence(), source.sourceTakenOutcome());
-        String inconsistency = replaySeedInconsistency(seed, originalSource);
-        if (!inconsistency.isEmpty()) {
-            return seedDetail(pathSeedKey, inconsistency);
-        }
         expected.add(new BranchEvent(source.siteId(), source.occurrence(),
                 replay.requiredTakenOutcome()));
 
@@ -542,6 +531,56 @@ public final class ConcolicSummaryImporter {
                     + expected.get(next).display());
         }
         return "";
+    }
+
+    /**
+     * The contradiction between a replay contract and the task seed it must be
+     * replayed against, or empty when there is none.
+     *
+     * <p>Nothing here reads runtime evidence: the contract and the seed are
+     * both fixed when the flip is proposed, so a contract this names is
+     * refused by admission no matter which activation executes it.  That is
+     * what lets the planner ask the same question before it spends a solve and
+     * a replay to learn the answer, and it is why the two answers cannot
+     * disagree -- they are this one method.</p>
+     */
+    static String replayContractSeedConflict(
+            Map<String, Set<Boolean>> seed, BranchReplayContract replay) {
+        for (BranchWitness witness : replay.orderedPrefix()) {
+            if (witness.isPcPredicateDecision()) continue;
+            String issue = replaySeedInconsistency(seed, new BranchEvent(
+                    witness.siteId(), witness.occurrence(),
+                    witness.sourceTakenOutcome()));
+            if (!issue.isEmpty()) return issue;
+        }
+        BranchWitness source = replay.source();
+        if (source.isPcPredicateDecision()) {
+            return "replay source is not a source-level branch event";
+        }
+        return replaySeedInconsistency(seed, new BranchEvent(source.siteId(),
+                source.occurrence(), source.sourceTakenOutcome()));
+    }
+
+    /**
+     * Plan-time form of {@link #replayContractSeedConflict}, reading the seed
+     * off the source execution task the flip would be replayed against.
+     *
+     * <p>This is an additional early answer, never a replacement: a source
+     * task that states no parsable seed contract is not decided here at all,
+     * and the flip proceeds to admission, which still fails closed on it.  So
+     * the early answer only ever refuses what the late answer refuses.</p>
+     */
+    public static String plannedReplaySeedConflict(
+            JsonObject sourceTask, BranchReplayContract replay) {
+        if (sourceTask == null) return "";
+        JsonElement branches = sourceTask.get("branches");
+        if (branches == null || !branches.isJsonArray()
+                || branches.getAsJsonArray().size() == 0) {
+            return "";
+        }
+        BranchEventCatalog seed = taskSeedEvents(branches.getAsJsonArray());
+        if (!seed.issue.isEmpty()) return "";
+        return replayContractSeedConflict(outcomesBySite(seed.events), replay);
     }
 
     private static String replaySeedInconsistency(

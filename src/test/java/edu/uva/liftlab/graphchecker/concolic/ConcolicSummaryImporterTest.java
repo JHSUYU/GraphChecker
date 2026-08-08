@@ -548,6 +548,58 @@ public class ConcolicSummaryImporterTest {
         assertEquals(0, imported.result.diagnosticCount);
     }
 
+    /**
+     * The seed campaign witnessed an outcome at a site the recording only ever
+     * witnessed the other way, and the flip's replay prefix carries that
+     * event.  The planner may refuse such a contract before spending a solve
+     * and a replay on it, but only if it refuses exactly what admission
+     * refuses -- so both verdicts are pinned against each other here, in the
+     * refusing direction and in the admitting one.
+     */
+    @Test
+    public void contractSeedConflictIsTheSameVerdictEarlyAndLate()
+            throws Exception {
+        BranchReplayContract conflicting = BranchReplayContract.flip(
+                Collections.singletonList(BranchWitness.vmPc(seedSite(),
+                        seedMethod(), 3, 1, false, branchPredicate(false), 0,
+                        new JsonObject())),
+                BranchWitness.vmPc(seedSite(), seedMethod(), 3, 2, true,
+                        branchPredicate(true), 1, new JsonObject()));
+        JsonObject conflicted = pathTask(true);
+        conflicted.add("replayContract", conflicting.toJson());
+
+        String early = ConcolicSummaryImporter.plannedReplaySeedConflict(
+                conflicted, conflicting);
+        assertEquals("replay event conflicts with task seed at "
+                + seedSite() + "#1", early);
+        PathImport refused = importPath("contract-seed-conflict", conflicted,
+                pathResult(true, true));
+        assertEquals(0, refused.result.validSummaryCount);
+        JsonObject diagnostic = ArtifactIO.readJsonl(
+                refused.diagnostics).get(0);
+        assertEquals("PATH_SEED_MISMATCH",
+                diagnostic.get("code").getAsString());
+        assertTrue(diagnostic.get("detail").getAsString().endsWith(early));
+
+        JsonObject consistent = pathTask(true);
+        assertEquals("", ConcolicSummaryImporter.plannedReplaySeedConflict(
+                consistent, BranchReplayContract.fromJson(
+                        consistent.getAsJsonObject("replayContract"))));
+        assertEquals(1, importPath("contract-seed-agreement", consistent,
+                pathResult(true, false)).result.validSummaryCount);
+
+        // Incomplete information is not a verdict.  A source task stating no
+        // seed is admitted early and still fails closed late, which is the
+        // only direction the two answers are allowed to differ in.
+        JsonObject seedless = pathTask(true);
+        seedless.add("branches", new JsonArray());
+        assertEquals("", ConcolicSummaryImporter.plannedReplaySeedConflict(
+                seedless, conflicting));
+        seedless.add("replayContract", conflicting.toJson());
+        assertEquals(0, importPath("contract-seed-unstated", seedless,
+                pathResult(true, true)).result.validSummaryCount);
+    }
+
     private PathImport importPath(String name, JsonObject task,
                                   JsonObject raw) throws Exception {
         Path directory = folder.newFolder(name).toPath();
