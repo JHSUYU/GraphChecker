@@ -104,13 +104,41 @@ public final class ConcolicSummaryImporter {
                         "UNKNOWN_REGION", task.regionId()));
                 continue;
             }
+            // An aborted symbolic execution stops recording branch events and
+            // path condition at the point it gave up, and the activation then
+            // runs on concretely to whatever exit it reaches.  Every later
+            // attestation therefore reads a truncated execution: coverage of
+            // the recorded sites, the output boundary, the replay prefix.
+            // Charging the truncation to any of them names a gap the run does
+            // not have and hides the one it does, so the abort is charged to
+            // itself, first, and the summary is refused.
+            JsonObject engine = object(raw, "engineSummary");
+            if (bool(engine, "aborted", false)) {
+                diagnostics.add(diagnostic(raw, index,
+                        "SYMBOLIC_EXECUTION_ABORTED",
+                        firstNonBlank(string(engine, "abortReason"),
+                                "UNSPECIFIED")));
+                continue;
+            }
             String exitKind = string(raw, "exitKind");
             if ("CUT".equals(exitKind)
                     || raw.has("pathCut")
                     && !boundedOutputExit(raw, task)) {
+                // The two ledgers cut for opposite reasons and are answered by
+                // opposite work: an unroll bound says the path space was too
+                // wide to walk, a resource cap says a service loop outlasted
+                // the budget of a replay that had not reached its boundary.
+                // The runtime publishes each under its own field and lets the
+                // resource cap outrank the unroll bound; reading only the
+                // unroll field reports the resource cap under the other
+                // ledger's name and with an empty body, which is exactly the
+                // confusion the two ledgers exist to prevent.
+                boolean resourceCut = raw.has("replayResourceCut");
                 diagnostics.add(diagnostic(raw, index,
-                        "LOOP_BOUND_PATH_CUT",
-                        object(raw, "pathCut").toString()));
+                        resourceCut ? "REPLAY_LOOP_RESOURCE_CAP"
+                                : "LOOP_BOUND_PATH_CUT",
+                        object(raw, resourceCut ? "replayResourceCut"
+                                : "pathCut").toString()));
                 // A bounded prefix is useful execution diagnostics, but it is
                 // neither a normal return nor a workload exception relation.
                 // Never let it become a composable region summary.
@@ -124,9 +152,7 @@ public final class ConcolicSummaryImporter {
             }
 
             List<String> issues = new ArrayList<>();
-            JsonObject engine = object(raw, "engineSummary");
-            if (!bool(engine, "complete", false)
-                    || bool(engine, "aborted", false)) {
+            if (!bool(engine, "complete", false)) {
                 issues.add("VM_SUMMARY_INCOMPLETE:"
                         + string(engine, "abortReason"));
             }

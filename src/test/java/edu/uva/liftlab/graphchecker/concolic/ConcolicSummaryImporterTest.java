@@ -89,6 +89,57 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void aServiceLoopResourceCapIsNamedByItsOwnLedger()
+            throws Exception {
+        // The replay resource cap and the unroll bound cut for opposite
+        // reasons.  Reporting the cap under the unroll bound's name -- with an
+        // empty body, because the unroll field was never written -- is the
+        // ledger confusion the split exists to prevent.
+        PathImport imported = importPath("resource-cap", pathTask(false),
+                resourceCapResult(false));
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals(0, ArtifactIO.readJsonl(imported.output).size());
+        JsonObject diagnostic = ArtifactIO.readJsonl(
+                imported.diagnostics).get(0);
+        assertEquals("REPLAY_LOOP_RESOURCE_CAP",
+                diagnostic.get("code").getAsString());
+        assertTrue(diagnostic.get("detail").getAsString()
+                .contains("<L: void offerService()>#loop:u38"));
+    }
+
+    @Test
+    public void theResourceCapOutranksTheUnrollBoundInTheDiagnostic()
+            throws Exception {
+        // The runtime publishes the resource cut first when both fire; the
+        // reader must agree with it, or the two disagree about one run.
+        PathImport imported = importPath("both-cuts", pathTask(false),
+                resourceCapResult(true));
+
+        assertEquals("REPLAY_LOOP_RESOURCE_CAP", ArtifactIO.readJsonl(
+                imported.diagnostics).get(0).get("code").getAsString());
+    }
+
+    private static JsonObject resourceCapResult(boolean alsoUnrollBound) {
+        JsonObject raw = pathResult(false, true);
+        raw.addProperty("exitKind", "CUT");
+        JsonObject cap = new JsonObject();
+        cap.addProperty("kind", "REPLAY_LOOP_RESOURCE_CAP");
+        cap.addProperty("loopId", "<L: void offerService()>#loop:u38");
+        cap.addProperty("maxLoopBodies", 32);
+        cap.addProperty("attemptedBody", 33);
+        cap.addProperty("reason", "REPLAY_LOOP_RESOURCE_CAP");
+        raw.add("replayResourceCut", cap);
+        if (alsoUnrollBound) {
+            JsonObject pathCut = new JsonObject();
+            pathCut.addProperty("kind", "LOOP_BOUND");
+            pathCut.addProperty("backedgeId", "<L: void run()>#backedge:u4->u1");
+            raw.add("pathCut", pathCut);
+        }
+        return raw;
+    }
+
+    @Test
     public void exactOutputBoundaryImportsAsNormalBoundedPrefix()
             throws Exception {
         Path directory = folder.newFolder("output-boundary-import").toPath();
@@ -435,6 +486,65 @@ public class ConcolicSummaryImporterTest {
                 imported.diagnostics).get(0).get("code").getAsString());
         assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
                 .get("detail").getAsString().contains("missing"));
+    }
+
+    @Test
+    public void abortedSymbolicExecutionIsChargedToItselfNotToTheSeed()
+            throws Exception {
+        // The engine gave up mid-region, so it stopped recording branch
+        // events and the activation ran on concretely to a NORMAL exit.
+        // Coverage of the recorded sites necessarily fails, but the gap is
+        // the abort, not a seed mismatch.  Naming the wrong one sends the
+        // reader after a semantics defect that does not exist.
+        JsonObject raw = pathResult(false, true);
+        raw.getAsJsonObject("engineSummary")
+                .addProperty("aborted", true);
+        raw.getAsJsonObject("engineSummary")
+                .addProperty("abortReason", "ASSOCIATIVE_OPERATION_UNSUPPORTED");
+
+        PathImport imported = importPath("aborted-seed", pathTask(false), raw);
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals(1, imported.result.diagnosticCount);
+        JsonObject diagnostic = ArtifactIO.readJsonl(
+                imported.diagnostics).get(0);
+        assertEquals("SYMBOLIC_EXECUTION_ABORTED",
+                diagnostic.get("code").getAsString());
+        assertEquals("ASSOCIATIVE_OPERATION_UNSUPPORTED",
+                diagnostic.get("detail").getAsString());
+    }
+
+    @Test
+    public void abortedSymbolicExecutionIsRefusedEvenWhenCoverageHolds()
+            throws Exception {
+        // A truncated path condition cannot be a region summary even when the
+        // sites that did execute happen to attest the whole seed: the
+        // constraints after the abort are missing, not merely unproven.
+        JsonObject raw = pathResult(true, true);
+        raw.getAsJsonObject("engineSummary")
+                .addProperty("aborted", true);
+        raw.getAsJsonObject("engineSummary")
+                .addProperty("abortReason", "ASSOCIATIVE_MUTATOR_UNSUPPORTED");
+
+        PathImport imported = importPath("aborted-covered",
+                pathTask(false), raw);
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals(0, ArtifactIO.readJsonl(imported.output).size());
+        assertEquals("SYMBOLIC_EXECUTION_ABORTED", ArtifactIO.readJsonl(
+                imported.diagnostics).get(0).get("code").getAsString());
+    }
+
+    @Test
+    public void anUnabortedTruncationIsStillASeedMismatch() throws Exception {
+        // The converse guard: without an abort, a replay that never reached a
+        // recorded site is still refused, and still as a seed mismatch.
+        PathImport imported = importPath("unaborted-truncation",
+                pathTask(false), pathResult(false, true));
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals("PATH_SEED_MISMATCH", ArtifactIO.readJsonl(
+                imported.diagnostics).get(0).get("code").getAsString());
     }
 
     @Test
