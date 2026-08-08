@@ -582,6 +582,10 @@ public final class RegionInstancePlan {
             copyIfPresent(value, shape, "fieldPaths");
             copyIfPresent(value, shape, "outputSiteId");
             copyIfPresent(value, shape, "outputOccurrence");
+            // Two replies of one repeated call are the same cell, type and
+            // boundary; only their position in the activation's own send
+            // order tells them apart, and the path decides that order.
+            copyIfPresent(value, shape, "protocolExchangeOccurrence");
             // Repeated accessor/container reads can intentionally expose the
             // same declared field several times in one bounded activation.
             // Their invocation-local ordinal plus static call/declaration

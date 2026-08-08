@@ -1085,6 +1085,9 @@ final class RuntimeRegionPlanner {
                     plan.get("rootCallId"), -1L);
             Map<String, List<Map<String, Object>>> byEndpoint =
                     new LinkedHashMap<>();
+            Map<String, String> canonicalOutputPort =
+                    canonicalAliasedOutputPorts(producerRegion,
+                            producerRootCallId);
             List<Map<String, Object>> incomingBindings = new ArrayList<>();
             String producerInstance = text(plan.get("regionInstanceId"));
             for (Map<String, Object> binding
@@ -1096,6 +1099,8 @@ final class RuntimeRegionPlanner {
                 String output = outgoing
                         ? text(binding.get("fromOutputPort")) : "";
                 if (outgoing && !output.isEmpty()) {
+                    output = canonicalOutputPort.getOrDefault(output, output);
+                    binding.put("fromOutputPort", output);
                     String endpoint = semanticOutputEndpoint(binding,
                             producerRegion, producerRootCallId);
                     // Missing endpoint metadata must not merge unrelated
@@ -1292,6 +1297,80 @@ final class RuntimeRegionPlanner {
             else if (!selected.equals(candidate)) return "";
         }
         return selected;
+    }
+
+    /**
+     * Folds output ports that observed one write through different access
+     * paths onto one canonical port.
+     *
+     * <p>A heap cell an activation can reach by more than one path is
+     * captured once per path, so a single write becomes several ports that
+     * differ only in how the region navigated to it.  The demanded endpoint
+     * then never converges on a port and the whole producer relation is
+     * refused, although the recording proves one write to one cell.  These
+     * are alias observations, not versions: versions differ in the write
+     * they publish and keep their own ports and their own guarded case.
+     * The path with the fewest indirections is the canonical observation,
+     * which makes the choice deterministic and reads no name.</p>
+     */
+    private static Map<String, String> canonicalAliasedOutputPorts(
+            Map<String, Object> region, long rootCallId) {
+        Map<String, String> result = new LinkedHashMap<>();
+        if (region == null) return result;
+        Map<String, Map<String, Object>> canonical = new LinkedHashMap<>();
+        List<Map<String, Object>> observed = new ArrayList<>();
+        for (Map<String, Object> port : rows(region.get("outputs"))) {
+            if (longNumber(port.get("rootCallId"), -1L) != rootCallId) {
+                continue;
+            }
+            String write = observedWriteIdentity(port);
+            if (write.isEmpty()) continue;
+            observed.add(port);
+            Map<String, Object> best = canonical.get(write);
+            if (best == null || moreDirectAccessPath(port, best)) {
+                canonical.put(write, port);
+            }
+        }
+        for (Map<String, Object> port : observed) {
+            Map<String, Object> best = canonical.get(
+                    observedWriteIdentity(port));
+            result.put(text(port.get("portId")),
+                    text(best.get("portId")));
+        }
+        return result;
+    }
+
+    /**
+     * Identity of the single write a heap output port observed.  Access
+     * path aside, two ports naming the same declared cell of the same
+     * object at the same recorded write are one output.
+     */
+    private static String observedWriteIdentity(Map<String, Object> port) {
+        if ("PROTOCOL_INPUT".equals(text(port.get("sourceKind")))) return "";
+        List<String> declarations = strings(
+                port.get("fieldPathDeclarations"));
+        long owner = longNumber(port.get("fieldReceiverObjectId"), -1L);
+        long event = longNumber(port.get("eventSeq"), -1L);
+        if (declarations.isEmpty() || owner < 0L || event < 0L) return "";
+        return text(port.get("bindingKind")) + "\n"
+                + text(port.get("siteId")) + "\n"
+                + text(port.get("mutatorDeclaredCallee")) + "\n"
+                + declarations.get(declarations.size() - 1) + "\n"
+                + owner + "\n" + event + "\n"
+                + longNumber(port.get("valueObjectId"), -1L) + "\n"
+                + longNumber(port.get("mutationCompletionSeq"), -1L);
+    }
+
+    private static boolean moreDirectAccessPath(Map<String, Object> port,
+                                                Map<String, Object> other) {
+        List<String> path = strings(port.get("fieldPathDeclarations"));
+        List<String> best = strings(other.get("fieldPathDeclarations"));
+        if (path.size() != best.size()) return path.size() < best.size();
+        int order = String.join("\n", path)
+                .compareTo(String.join("\n", best));
+        return order != 0 ? order < 0
+                : text(port.get("portId")).compareTo(
+                        text(other.get("portId"))) < 0;
     }
 
     private static List<Map<String, List<Map<String, Object>>>>
@@ -2693,8 +2772,58 @@ final class RuntimeRegionPlanner {
         }
     }
 
+    /**
+     * Numbers the protocol exchanges one activation opens at one static
+     * client call site.
+     *
+     * <p>Every reply of a repeated call carries the same cell, declared
+     * type, direction and boundary, so nothing static tells two replies of
+     * the same call apart.  What does is the position of the exchange in
+     * this activation's own send order: the caller sends its next request
+     * only after the previous result arrived, so the exchanges of one
+     * activation are totally ordered by the path that activation walks.
+     * That order is what a replay of the same path seed reproduces, which
+     * is why the ordinal — and never the recorded call id, which is
+     * provenance — is the exchange's identity.  Ports of one exchange (a
+     * request's several arguments) share its ordinal and stay separated by
+     * the argument index they already carry.</p>
+     */
+    private static Map<String, Integer> protocolExchangeOccurrences(
+            List<Map<String, Object>> ports, long rootCallId) {
+        Map<String, java.util.SortedSet<Long>> sendsBySite =
+                new LinkedHashMap<>();
+        for (Map<String, Object> port : ports) {
+            if (!"PROTOCOL_INPUT".equals(text(port.get("sourceKind")))
+                    || longNumber(port.get("toRootCallId"), -1L)
+                    != rootCallId) {
+                continue;
+            }
+            long send = longNumber(port.get("sendEventSeq"), -1L);
+            if (send < 0L) continue;
+            sendsBySite.computeIfAbsent(text(port.get("callerSiteId")),
+                    ignored -> new java.util.TreeSet<>()).add(send);
+        }
+        Map<String, Integer> result = new LinkedHashMap<>();
+        for (Map<String, Object> port : ports) {
+            if (!"PROTOCOL_INPUT".equals(text(port.get("sourceKind")))
+                    || longNumber(port.get("toRootCallId"), -1L)
+                    != rootCallId) {
+                continue;
+            }
+            java.util.SortedSet<Long> sends = sendsBySite.get(
+                    text(port.get("callerSiteId")));
+            long send = longNumber(port.get("sendEventSeq"), -1L);
+            if (sends == null || send < 0L) continue;
+            result.put(text(port.get("portId")),
+                    sends.headSet(send).size() + 1);
+        }
+        return result;
+    }
+
     private static List<Map<String, Object>> symbolize(
             List<Map<String, Object>> ports, long rootCallId) {
+        Map<String, Integer> exchangeOccurrence =
+                protocolExchangeOccurrences(ports, rootCallId);
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map<String, Object> port : ports) {
             long boundRootCallId = "PROTOCOL_INPUT".equals(
@@ -2730,6 +2859,11 @@ final class RuntimeRegionPlanner {
                 action.put("location", "REQUEST".equals(
                         text(port.get("protocolDirection")))
                         ? "PROTOCOL_ARGUMENT" : "PROTOCOL_RETURN");
+                Integer exchange = exchangeOccurrence.get(
+                        text(port.get("portId")));
+                if (exchange != null) {
+                    action.put("protocolExchangeOccurrence", exchange);
+                }
             } else if ("PARAMETER".equals(text(port.get("rootKind")))) {
                 action.put("argumentIndex", port.get("rootParameterIndex"));
                 action.put("location", path.isEmpty()
