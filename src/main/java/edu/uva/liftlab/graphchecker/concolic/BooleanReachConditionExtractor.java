@@ -151,9 +151,13 @@ public final class BooleanReachConditionExtractor {
                 ? "UNKNOWN" : !satisfyingValuations.isEmpty()
                 ? "REACHABLE" : "UNREACHABLE";
         JsonObject reachCondition = new JsonObject();
-        reachCondition.addProperty("formula", dnf(inputs,
-                satisfyingValuations, count));
+        String formula = dnf(inputs, satisfyingValuations, count);
+        reachCondition.addProperty("formula", formula);
         reachCondition.addProperty("reachability", reachability);
+        reachCondition.addProperty("degeneracyCheck", degeneracyCheck(
+                formula, reachability, inputs.size(),
+                discovery.existentialNonBooleanRootInputs.size(),
+                discovery.undecodedFreeInputCount));
         report.add("reachCondition", reachCondition);
         JsonArray resultGaps = new JsonArray();
         if (solverErrors > 0) {
@@ -164,6 +168,61 @@ public final class BooleanReachConditionExtractor {
         report.addProperty("state", complete
                 ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
         return report;
+    }
+
+    /**
+     * States whether the degeneracy question was decided, and on what.
+     *
+     * <p>A satisfying model is worth nothing when the reach condition admits
+     * the whole root space: it then says only that the target's method runs,
+     * which the recording already showed.  The formula alone cannot be read
+     * for that.  It is a DNF over the Boolean roots only, so it collapses to
+     * the constant {@code "true"} both when every enumerated valuation is
+     * admitted - the degenerate case - and when there was no Boolean root to
+     * enumerate at all, where {@code "true"} is the DNF's arity and not a
+     * measurement.  An empty {@code values} vector is the same arity restated
+     * and is likewise not evidence.  So the verdict is published, not left to
+     * be inferred from a constant that has two meanings.</p>
+     *
+     * <p>Only two verdicts are provable from an exhaustive Boolean table:
+     * some enumerated valuation is refused, so the condition demonstrably
+     * cuts the root space; or that space is non-empty, was enumerated whole,
+     * and every point of it reaches.  A surviving existential root makes the
+     * space infinite and unenumerated, so neither proof is available and the
+     * check reports itself undecided rather than passing.  Undecided is not a
+     * degeneracy finding: it is the absence of one, and reading it as either
+     * verdict would report a result that was never computed.</p>
+     *
+     * <p>A root is an input no composed producer supplies - a freedom.  Where
+     * there is none the condition has nothing it could be a tautology over,
+     * and satisfiability of the whole composed system is the strongest answer
+     * available rather than the weakest.  That is not degeneracy either, and
+     * it is named too, so it can never be mistaken for a check that ran.  An
+     * unsupplied input whose encoding this report cannot decode is a freedom
+     * it never enumerated, so it blocks the same claim: the space was not
+     * covered whole and the exhaustive reading of it would be a fiction.</p>
+     */
+    private static String degeneracyCheck(String formula,
+                                          String reachability,
+                                          int booleanRootCount,
+                                          int existentialRootCount,
+                                          int undecodedFreeInputCount) {
+        if (!"REACHABLE".equals(reachability)) {
+            return "NOT_APPLICABLE_NO_MODEL";
+        }
+        if (!"true".equals(formula)) {
+            return "CONSTRAINED_ROOT_SPACE";
+        }
+        if (existentialRootCount > 0) {
+            return "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:"
+                    + existentialRootCount;
+        }
+        if (undecodedFreeInputCount > 0) {
+            return "UNDECIDED_UNMODELLED_INPUT_FREEDOMS:"
+                    + undecodedFreeInputCount;
+        }
+        return booleanRootCount == 0 ? "NOT_APPLICABLE_NO_FREE_ROOTS"
+                : "DEGENERATE_UNCONSTRAINED_ROOT_SPACE";
     }
 
     private static void validateCompositionAuthority(
@@ -197,18 +256,32 @@ public final class BooleanReachConditionExtractor {
         List<RootInput> roots = new ArrayList<>();
         List<RootInput> domainInputs = new ArrayList<>();
         List<RootInput> scalarRoots = new ArrayList<>();
+        // An unsupplied input this extractor cannot decode is still a freedom
+        // of the model; it is only one this report cannot name.  Counting it
+        // is what keeps "the root space was enumerated whole" honest, because
+        // a silently dropped freedom would make that claim of an
+        // under-counted space.
+        Set<String> undecoded = new LinkedHashSet<>();
         for (PortOccurrenceInfo occurrence : occurrences.sorted()) {
             PortInfo port = ports.input(occurrence.portId);
             if (port == null) continue;
             ScalarEncoding encoding = ScalarEncoding.of(port.descriptor);
             if (encoding == null
                     || !encoding.occurrenceSort.equals(occurrence.sort)) {
+                if (!upstreamSupplied.contains(port.id)) {
+                    undecoded.add(port.id);
+                }
                 continue;
             }
             boolean declared = canonicalScalarBindingDeclared(smt,
                     occurrence.portTerm, occurrence.solverTerm,
                     occurrence.nullnessSolverTerm, encoding);
-            if (!declared) continue;
+            if (!declared) {
+                if (!upstreamSupplied.contains(port.id)) {
+                    undecoded.add(port.id);
+                }
+                continue;
+            }
             if (port.javaBoolean) {
                 RootInput input = new RootInput(port,
                         occurrence.regionInstanceId, occurrence.solverTerm,
@@ -234,7 +307,8 @@ public final class BooleanReachConditionExtractor {
                 (RootInput value) -> value.port.id).thenComparing(
                 value -> value.regionInstanceId));
         Collections.sort(scalarRoots, byOccurrence);
-        return new Discovery(roots, domainInputs, scalarRoots);
+        return new Discovery(roots, domainInputs, scalarRoots,
+                undecoded.size());
     }
 
     private static boolean canonicalScalarBindingDeclared(
@@ -319,6 +393,8 @@ public final class BooleanReachConditionExtractor {
         JsonObject reachCondition = new JsonObject();
         reachCondition.addProperty("formula", "");
         reachCondition.addProperty("reachability", "UNKNOWN");
+        reachCondition.addProperty("degeneracyCheck",
+                "UNDECIDED_REPORT_INCOMPLETE");
         report.add("reachCondition", reachCondition);
         report.add("gaps", GSON.toJsonTree(gaps));
         report.addProperty("state", "CANDIDATE_WITH_GAPS");
@@ -387,14 +463,17 @@ public final class BooleanReachConditionExtractor {
         private final List<RootInput> rootInputs;
         private final List<RootInput> booleanDomainInputs;
         private final List<RootInput> existentialNonBooleanRootInputs;
+        private final int undecodedFreeInputCount;
 
         private Discovery(List<RootInput> rootInputs,
                           List<RootInput> booleanDomainInputs,
-                          List<RootInput> existentialNonBooleanRootInputs) {
+                          List<RootInput> existentialNonBooleanRootInputs,
+                          int undecodedFreeInputCount) {
             this.rootInputs = rootInputs;
             this.booleanDomainInputs = booleanDomainInputs;
             this.existentialNonBooleanRootInputs =
                     existentialNonBooleanRootInputs;
+            this.undecodedFreeInputCount = undecodedFreeInputCount;
         }
     }
 

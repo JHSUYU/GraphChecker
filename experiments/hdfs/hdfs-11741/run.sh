@@ -1549,6 +1549,7 @@ prepare_observed_seed_relation() {
 probe_observed_candidate() {
   [[ "${partial_probe_enabled:-false}" == true ]] || return 1
   local fingerprint attempt compose_summaries reachability source snapshot
+  local degeneracy
   local index=0
   local -a snapshot_summaries=()
   fingerprint=$(sha256sum "${partial_probe_summary_files[@]}" \
@@ -1614,16 +1615,16 @@ probe_observed_candidate() {
     echo "[hdfs-11741] observed paths are not SAT yet; continuing exploration"
     return 1
   fi
-  # A reach condition of constant true, or a satisfying valuation that binds
-  # nothing, says only that the target's method runs -- which the recording
-  # already showed.  Ending the campaign on it would trade the exploration
-  # that could still constrain the target for an answer that constrains
-  # nothing, so it is not an answer.
-  if ! jq -e '(.reachCondition.formula // "" | . != "" and . != "true")
-      and any(.valuations[]?; .status == "sat"
-        and ((.values // []) | length) > 0)' \
-      "${attempt}/z3-result.json" >/dev/null; then
-    echo "[hdfs-11741] observed-path reach condition constrains nothing; continuing exploration"
+  # A reach condition that admits the whole root space says only that the
+  # target's method runs -- which the recording already showed.  Ending the
+  # campaign on it would trade the exploration that could still constrain the
+  # target for an answer that constrains nothing, so it is not an answer.
+  # This probe is opportunistic and continuing costs only time, so an
+  # undecided verdict keeps exploring too; it is still named, never silent.
+  degeneracy=$(jq -er '.reachCondition.degeneracyCheck
+    // "UNDECIDED_VERDICT_NOT_PUBLISHED"' "${attempt}/z3-result.json")
+  if [[ "${degeneracy}" != CONSTRAINED_* ]]; then
+    echo "[hdfs-11741] observed-path reach condition not proven to constrain (${degeneracy}); continuing exploration"
     return 1
   fi
   cp -f "${attempt}/candidate.smt2" \
@@ -1636,12 +1637,14 @@ probe_observed_candidate() {
     --arg region "${partial_probe_target_region}" \
     --arg instance "${partial_probe_target_instance}" \
     --arg goal "${partial_probe_target_goal}" \
+    --arg degeneracy "${degeneracy}" \
     --arg smt "${partial_probe_output}/candidate.smt2" \
     --arg z3 "${partial_probe_output}/z3-result.json" \
     '{schemaVersion: 1, kind: "HDFS11741_BOUNDED_CANDIDATE",
       target: {campaign: $campaign, regionId: $region,
         regionInstanceId: $instance, goalId: $goal},
-      reachability: "REACHABLE", pathSetComplete: false,
+      reachability: "REACHABLE", degeneracyCheck: $degeneracy,
+      pathSetComplete: false,
       proofScope: "OBSERVED_IMPORTED_VM_PATH_UNDERAPPROX_V1",
       artifacts: {smt: $smt, z3Result: $z3}}' \
     >"${partial_probe_output}/result.json"
@@ -1893,7 +1896,7 @@ run_candidate_for_target() {
   local target_task target_campaign output producer_id producer_binding
   local ignored producer_region producer_instance producer_goal producer_task
   local producer_campaign producer_summary compose_summaries reachability
-  local index discovery_output
+  local index discovery_output degeneracy
   local -a producer_ids=() producer_regions=()
   local -a producer_goals=() producer_tasks=() producer_campaigns=()
   local -a merged_inputs=() seed_specs=() producer_closure_specs=()
@@ -2006,31 +2009,35 @@ run_candidate_for_target() {
   require_nonempty_file "Z3 candidate result" "${output}/z3-result.json"
   reachability=$(jq -er '.reachCondition.reachability' \
     "${output}/z3-result.json")
+  # The extractor decides degeneracy and publishes its verdict, because the
+  # formula alone cannot be read for it: a DNF over zero Boolean roots is the
+  # constant "true" by arity, exactly as it is when every enumerated valuation
+  # is admitted.  A report too old to carry the verdict is undecided, never a
+  # pass - a check that cannot run has to look different from one that ran and
+  # found nothing.
+  degeneracy=$(jq -er '.reachCondition.degeneracyCheck
+    // "UNDECIDED_VERDICT_NOT_PUBLISHED"' "${output}/z3-result.json")
   jq -n --arg campaign "${target_campaign_id}" \
     --arg region "${target_region}" --arg instance "${target_instance}" \
     --arg goal "${target_goal}" --arg reachability "${reachability}" \
+    --arg degeneracy "${degeneracy}" \
     --arg smt "${output}/candidate.smt2" \
     --arg z3 "${output}/z3-result.json" \
     '{schemaVersion: 1, kind: "HDFS11741_BOUNDED_CANDIDATE",
       target: {campaign: $campaign, regionId: $region,
         regionInstanceId: $instance, goalId: $goal},
-      reachability: $reachability,
+      reachability: $reachability, degeneracyCheck: $degeneracy,
       artifacts: {smt: $smt, z3Result: $z3}}' >"${output}/result.json"
-  # The same vacuity test the observed-path probe applies: a reach condition
-  # of constant true, satisfied by a valuation that binds nothing, says only
-  # that the target's method runs.  The probe already refuses to end a
-  # campaign on that, and a witness published as the final answer has to clear
-  # at least the bar an intermediate one does.
   if [[ "${reachability}" == "REACHABLE" ]] \
       && jq -e 'any(.valuations[]?; .status == "sat")' \
         "${output}/z3-result.json" >/dev/null; then
-    if ! jq -e '(.reachCondition.formula // "" | . != "" and . != "true")
-        or any(.valuations[]?; .status == "sat"
-          and (((.values // []) | length) > 0
-            or ((.existentialWitness // []) | length) > 0))' \
-        "${output}/z3-result.json" >/dev/null; then
-      die "candidate reach condition constrains nothing: ${output}"
-    fi
+    case "${degeneracy}" in
+      DEGENERATE_*)
+        die "candidate reach condition constrains nothing (${degeneracy}): ${output}" ;;
+      CONSTRAINED_*) ;;
+      *)
+        echo "[hdfs-11741] degeneracy undecided (${degeneracy}); candidate published without that check" ;;
+    esac
     cp -f "${output}/result.json" "${candidate_root}/sat-result.json"
     echo "[hdfs-11741] SAT: ${output}/candidate.smt2"
     return 0

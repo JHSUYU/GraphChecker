@@ -122,6 +122,194 @@ public class BooleanReachConditionExtractorTest {
                 .get("reachability").getAsString());
         assertEquals("OBSERVED_PATH_UNDERAPPROX",
                 report.get("trustState").getAsString());
+        // No root is no freedom, so there is nothing the condition could be
+        // a tautology over.  That is not the degenerate answer, and it is
+        // named rather than left to look like a check that ran clean.
+        assertEquals(report.toString(), "NOT_APPLICABLE_NO_FREE_ROOTS",
+                degeneracyCheck(report));
+    }
+
+    /**
+     * A refused Boolean valuation proves the condition cuts the root space.
+     */
+    @Test
+    public void aRefusedValuationDecidesTheConditionConstrains()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject report = booleanRootReport("(assert " + BOOL_TERM + ")\n");
+
+        assertEquals(report.toString(), "CONSTRAINED_ROOT_SPACE",
+                degeneracyCheck(report));
+    }
+
+    /**
+     * Every point of a finite root space admitted is the degenerate answer,
+     * and it is the one shape the exhaustive table can prove.
+     */
+    @Test
+    public void anEntirelyAdmittedFiniteRootSpaceIsDegenerate()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject report = booleanRootReport("");
+
+        assertEquals(report.toString(), "true",
+                report.getAsJsonObject("reachCondition")
+                        .get("formula").getAsString());
+        assertEquals(report.toString(),
+                "DEGENERATE_UNCONSTRAINED_ROOT_SPACE",
+                degeneracyCheck(report));
+    }
+
+    /**
+     * An unsupplied input this report cannot decode is a freedom it never
+     * enumerated, so the space was not covered whole and the degenerate
+     * verdict is not available - even though every Boolean valuation reached.
+     */
+    @Test
+    public void anUndecodableFreedomBlocksTheExhaustiveClaim()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject manifest = manifest("REGION.3@Test#call7", BOOL_PORT_TERM,
+                BOOL_TERM);
+        JsonObject opaque = new JsonObject();
+        opaque.addProperty("portId", "REGION.3.in.1");
+        opaque.addProperty("regionInstanceId", "REGION.3@Test#call7");
+        opaque.addProperty("sort", "REF");
+        opaque.addProperty("portTerm", "port__REGION_3_in_1");
+        opaque.addProperty("solverTerm", "sym__port__REGION_3_in_1__ref");
+        manifest.getAsJsonArray("canonicalPortOccurrences").add(opaque);
+        JsonObject region = region();
+        JsonObject reference = new JsonObject();
+        reference.addProperty("portId", "REGION.3.in.1");
+        reference.addProperty("javaType", "java.lang.Object");
+        region.getAsJsonArray("symbolicInputs").add(reference);
+        String smt = "(set-logic ALL)\n"
+                + "(declare-datatypes () ((Value"
+                + " (VBool (valueBool Bool)))))\n"
+                + "(declare-const " + BOOL_TERM + " Bool)\n"
+                + "(declare-const " + BOOL_PORT_TERM + " Value)\n"
+                + "(assert (= " + BOOL_PORT_TERM + " (VBool "
+                + BOOL_TERM + ")))\n";
+
+        JsonObject report = BooleanReachConditionExtractor.extract(smt,
+                manifest, Collections.singletonList(region),
+                new BooleanReachConditionExtractor.Z3Solver("z3", 5_000L),
+                4, 16);
+
+        assertEquals(report.toString(), "true",
+                report.getAsJsonObject("reachCondition")
+                        .get("formula").getAsString());
+        assertEquals(report.toString(),
+                "UNDECIDED_UNMODELLED_INPUT_FREEDOMS:1",
+                degeneracyCheck(report));
+    }
+
+    /**
+     * A surviving existential root leaves the space infinite, so the constant
+     * "true" is the DNF's arity and decides nothing.  The check says it could
+     * not decide instead of passing, and the formula it read is unchanged.
+     */
+    @Test
+    public void anExistentialRootLeavesTheQuestionUndecidedNotPassed()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String instance = "REGION.3@Test#call8";
+        String solverTerm =
+                "sym__port__REGION_3_Test_call8_REGION_3_in_0__int";
+        String portTerm =
+                "port__REGION_3_in_0__instance__REGION_3_Test_call8";
+        JsonObject manifest = manifest(instance, portTerm, solverTerm);
+        manifest.getAsJsonArray("canonicalPortOccurrences").get(0)
+                .getAsJsonObject().addProperty("sort", "INT");
+        JsonObject input = region().getAsJsonArray("symbolicInputs").get(0)
+                .getAsJsonObject();
+        input.addProperty("javaType", "long");
+        String smt = "(set-logic ALL)\n"
+                + "(declare-datatypes () ((Value"
+                + " (VLong (valueLong Int)))))\n"
+                + "(declare-const " + solverTerm + " Int)\n"
+                + "(declare-const " + portTerm + " Value)\n"
+                + "(assert (= " + portTerm + " (VLong "
+                + solverTerm + ")))\n";
+
+        JsonObject report = BooleanReachConditionExtractor.extract(
+                smt, manifest, Collections.singletonList(regionWith(input)),
+                new BooleanReachConditionExtractor.Z3Solver("z3", 5_000L),
+                4, 16);
+
+        // The baseline candidate's exact shape: no Boolean root, so the
+        // formula is "true" and values is empty by arity, with one
+        // existential root surviving.
+        assertEquals(report.toString(), 0, report.getAsJsonObject("roots")
+                .getAsJsonArray("booleanInputs").size());
+        assertEquals(report.toString(), "true",
+                report.getAsJsonObject("reachCondition")
+                        .get("formula").getAsString());
+        assertEquals(report.toString(), 0,
+                report.getAsJsonArray("valuations").get(0).getAsJsonObject()
+                        .getAsJsonArray("values").size());
+        assertEquals(report.toString(),
+                "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:1",
+                degeneracyCheck(report));
+    }
+
+    /**
+     * The verdict is read off the table the report already computed, so the
+     * SMT it was computed from is untouched and every field that existed
+     * before still reads the same.
+     */
+    @Test
+    public void publishingTheVerdictChangesNothingItRead() throws Exception {
+        Assume.assumeTrue(z3Available());
+        String smt = "(set-logic ALL)\n"
+                + "(declare-datatypes () ((Value"
+                + " (VBool (valueBool Bool)))))\n"
+                + "(declare-const " + BOOL_TERM + " Bool)\n"
+                + "(declare-const " + BOOL_PORT_TERM + " Value)\n"
+                + "(assert (= " + BOOL_PORT_TERM + " (VBool "
+                + BOOL_TERM + ")))\n"
+                + "(assert " + BOOL_TERM + ")\n";
+        String before = smt;
+
+        JsonObject report = BooleanReachConditionExtractor.extract(
+                smt, manifest("REGION.3@Test#call7", BOOL_PORT_TERM,
+                        BOOL_TERM),
+                Collections.singletonList(region()),
+                new BooleanReachConditionExtractor.Z3Solver("z3", 5_000L),
+                4, 16);
+
+        assertEquals(before, smt);
+        JsonObject reach = report.getAsJsonObject("reachCondition")
+                .deepCopy();
+        reach.remove("degeneracyCheck");
+        assertEquals("{\"formula\":\"(= " + BOOL_TERM + " true)\","
+                + "\"reachability\":\"REACHABLE\"}", reach.toString());
+    }
+
+    private static final String BOOL_TERM =
+            "sym__port__REGION_3_Test_call7_REGION_3_in_0__bool";
+    private static final String BOOL_PORT_TERM =
+            "port__REGION_3_in_0__instance__REGION_3_Test_call7";
+
+    private static String degeneracyCheck(JsonObject report) {
+        return report.getAsJsonObject("reachCondition")
+                .get("degeneracyCheck").getAsString();
+    }
+
+    private static JsonObject booleanRootReport(String extraAssertion)
+            throws Exception {
+        String smt = "(set-logic ALL)\n"
+                + "(declare-datatypes () ((Value"
+                + " (VBool (valueBool Bool)))))\n"
+                + "(declare-const " + BOOL_TERM + " Bool)\n"
+                + "(declare-const " + BOOL_PORT_TERM + " Value)\n"
+                + "(assert (= " + BOOL_PORT_TERM + " (VBool "
+                + BOOL_TERM + ")))\n" + extraAssertion;
+        return BooleanReachConditionExtractor.extract(smt,
+                manifest("REGION.3@Test#call7", BOOL_PORT_TERM, BOOL_TERM),
+                Collections.singletonList(region()),
+                new BooleanReachConditionExtractor.Z3Solver("z3", 5_000L),
+                4, 16);
     }
 
     private static JsonObject manifest(String instance, String portTerm,
