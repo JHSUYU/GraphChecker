@@ -170,6 +170,16 @@ Every ingredient is engine vocabulary — single-writer timelines, declared
 carrier projections, membership over one table. None of it is case
 knowledge.
 
+**This paragraph is a reading, never a specification.** The relations it
+describes have to fall out of symbolic execution and merging — the lifetime
+arithmetic in particular is whatever executing `updateKeys` produces, and
+writing that formula down here instead of deriving it would skip the only
+thing worth proving. Nothing in `src/` may encode a lag between readers, a
+lifetime expression, or any ranking tuned to reach this story. Build the
+model without it and ask whether the model admits such a solution at all.
+UNSAT is data, not failure, and a different story than this one is a result
+to report rather than a deviation to correct.
+
 ## TODO (ordered: first what falsifies the report, then what binds the query)
 
 **1 — The silent drop (fail-open; ahead of everything).** The accepted
