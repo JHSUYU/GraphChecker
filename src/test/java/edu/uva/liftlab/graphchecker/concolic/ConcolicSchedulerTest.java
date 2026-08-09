@@ -111,9 +111,14 @@ public class ConcolicSchedulerTest {
 
     @Test
     public void protocolArgumentBecomesAnExactMethodArgument() throws Exception {
+        Map<String, Object> plan = protocolArgumentTargetPlan();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> action = ((java.util.List<Map<String, Object>>)
+                ((java.util.List<Map<String, Object>>) plan.get(
+                        "closureGoals")).get(0).get("symbolize")).get(0);
+        action.put("replayOccurrence", 25);
         File regions = write("protocol-argument-regions.jsonl", region());
-        File plans = write("protocol-argument-plans.jsonl",
-                protocolArgumentTargetPlan());
+        File plans = write("protocol-argument-plans.jsonl", plan);
         File edges = writeEmpty("protocol-argument-edges.jsonl");
         File refined = write("protocol-argument-refined.jsonl",
                 refinedEdge());
@@ -122,17 +127,51 @@ public class ConcolicSchedulerTest {
         ConcolicScheduler.Result result = ConcolicScheduler.schedule(
                 arguments(regions, plans, edges, refined, output));
 
-        JsonObject action = result.executionTasks.get(0)
+        JsonObject scheduled = result.executionTasks.get(0)
                 .getAsJsonArray("inputActions").get(0).getAsJsonObject();
-        assertEquals("SYMBOLIC", action.get("mode").getAsString());
+        assertEquals("SYMBOLIC", scheduled.get("mode").getAsString());
         assertEquals("METHOD_ARGUMENT",
-                action.get("bindingMode").getAsString());
+                scheduled.get("bindingMode").getAsString());
         assertEquals("<T: void decode(java.lang.String)>",
-                action.get("method").getAsString());
-        assertEquals(0, action.get("index").getAsInt());
-        assertEquals("java.lang.String", action.get("javaType").getAsString());
+                scheduled.get("method").getAsString());
+        assertEquals(0, scheduled.get("index").getAsInt());
+        assertEquals("java.lang.String",
+                scheduled.get("javaType").getAsString());
+        assertEquals(25, scheduled.get("replayOccurrence").getAsInt());
         assertEquals(1, result.executionTasks.get(0)
                 .getAsJsonArray("edgeBindings").size());
+    }
+
+    @Test
+    public void decodedProtocolLeafUsesReplayLocalFirstOccurrence()
+            throws Exception {
+        Map<String, Object> plan = protocolArgumentTargetPlan();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> action = ((java.util.List<Map<String, Object>>)
+                ((java.util.List<Map<String, Object>>) plan.get(
+                        "closureGoals")).get(0).get("symbolize")).get(0);
+        action.put("sourceKind", "RPC_DECODE_VALUE");
+        action.put("rpcDescendantProjectionInput", true);
+        action.put("replayOccurrence", 25);
+        action.put("helperActivationBoundedOccurrence", 25);
+        action.put("activationLocalStaticSiteOccurrence", 25);
+        File regions = write("decoded-argument-regions.jsonl", region());
+        File plans = write("decoded-argument-plans.jsonl", plan);
+        File edges = writeEmpty("decoded-argument-edges.jsonl");
+        File refined = write("decoded-argument-refined.jsonl",
+                refinedEdge());
+        File output = folder.newFolder("decoded-argument-schedule");
+
+        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                arguments(regions, plans, edges, refined, output));
+
+        JsonObject scheduled = result.executionTasks.get(0)
+                .getAsJsonArray("inputActions").get(0).getAsJsonObject();
+        assertEquals("METHOD_ARGUMENT",
+                scheduled.get("bindingMode").getAsString());
+        assertEquals(1, scheduled.get("replayOccurrence").getAsInt());
+        assertEquals(25, scheduled.get(
+                "activationLocalStaticSiteOccurrence").getAsInt());
     }
 
     @Test
@@ -922,6 +961,68 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
+    public void producerProjectionUsesSelectedExactOccurrenceEdge()
+            throws Exception {
+        File regions = write("projected-later-regions.jsonl",
+                projectableOutputRegion());
+        File plans = write("projected-later-plans.jsonl",
+                laterOccurrenceProjectedPlan());
+        File edges = writeEmpty("projected-later-edges.jsonl");
+        File refined = write("projected-later-refined.jsonl",
+                refinedEdge());
+        File projection = write("projected-later-projection.jsonl",
+                producerProjection(Collections.singleton(
+                        "REGION.1.out.keep"), Collections.singleton(
+                        "EDGE.LATER")));
+
+        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                arguments(regions, plans, edges, refined,
+                        folder.newFolder("projected-later-schedule"),
+                        projection));
+
+        JsonObject task = result.executionTasks.get(0);
+        JsonObject closure = task.getAsJsonObject("outputClosure");
+        JsonObject member = closure.getAsJsonArray("members").get(0)
+                .getAsJsonObject();
+        assertEquals("REGION.1.out.keep", member.getAsJsonObject("output")
+                .get("portId").getAsString());
+        assertEquals("EDGE.LATER", member.getAsJsonObject("slice")
+                .getAsJsonArray("causalEdgeIds").get(0).getAsString());
+        JsonObject exactEdge = closure.getAsJsonArray("causalEdges").get(0)
+                .getAsJsonObject();
+        assertEquals("REGION.1@test#call2", exactEdge
+                .get("fromRegionInstance").getAsString());
+        assertEquals("REGION.1.out.keep.later", exactEdge
+                .get("fromOutputPort").getAsString());
+        assertEquals("EDGE.LATER", task.getAsJsonArray("edgeBindings")
+                .get(0).getAsJsonObject().get("edgeId").getAsString());
+
+        JsonArray occurrences = task.getAsJsonObject(
+                "occurrenceInstantiationCatalog")
+                .getAsJsonArray("occurrences");
+        JsonObject later = null;
+        for (JsonElement occurrence : occurrences) {
+            if (occurrence.isJsonObject()
+                    && "REGION.1@test#call2".equals(occurrence
+                    .getAsJsonObject().get("regionInstanceId")
+                    .getAsString())) {
+                later = occurrence.getAsJsonObject();
+            }
+        }
+        assertTrue(later != null);
+        assertEquals("REGION.1@test#call2",
+                later.get("regionInstanceId").getAsString());
+        JsonObject outputMap = later.getAsJsonArray("outputPortMap")
+                .get(0).getAsJsonObject();
+        assertEquals("REGION.1.out.keep",
+                outputMap.get("canonicalPort").getAsString());
+        assertEquals("REGION.1.out.keep.later",
+                outputMap.get("exactPort").getAsString());
+        assertEquals("EDGE.LATER", later.getAsJsonArray("bindingIds")
+                .get(0).getAsString());
+    }
+
+    @Test
     public void producerProjectionRejectsConflictingDuplicateEdge()
             throws Exception {
         File regions = write("projected-conflict-regions.jsonl",
@@ -1093,55 +1194,8 @@ public class ConcolicSchedulerTest {
     @Test
     public void schedulerCarriesExactSingleWriterMemberTimeline()
             throws Exception {
-        Map<String, Object> regionsRow = outputRegion();
-        Map<String, Object> pre = ((java.util.List<Map<String, Object>>)
-                regionsRow.get("symbolicInputs")).get(0);
-        Map<String, Object> post = ((java.util.List<Map<String, Object>>)
-                regionsRow.get("outputs")).get(0);
-        Map<String, Object> preProjection = memberProjection("PRE_STATE");
-        Map<String, Object> postProjection = memberProjection("POST_STATE");
-        pre.put("boundedContainerMemberProjections",
-                Collections.singletonList(preProjection));
-        post.put("boundedContainerStateRole", "MUTATION_POST_STATE");
-        post.put("boundedContainerMemberProjectionAdmission", "PROVED");
-        post.put("containerTimelineWriterPolicy",
-                "SINGLE_WRITER_REQUIRED");
-        post.put("boundedContainerPreStatePorts",
-                Collections.singletonList("REGION.1.in.demanded"));
-        post.put("boundedContainerMemberProjections",
-                Collections.singletonList(postProjection));
-        post.put("runtimeAccesses", Collections.singletonList(object(
-                "eventSeq", 20,
-                "boundedContainerMemberProjection", postProjection)));
-
-        Map<String, Object> plan = boundedMapFieldOutputPlan();
-        Map<String, Object> goal = ((java.util.List<Map<String, Object>>)
-                plan.get("closureGoals")).get(0);
-        Map<String, Object> closure = (Map<String, Object>) goal.get(
-                "outputClosure");
-        Map<String, Object> member = ((java.util.List<Map<String, Object>>)
-                closure.get("members")).get(0);
-        Map<String, Object> output = (Map<String, Object>) member.get(
-                "output");
-        Map<String, Object> slice = (Map<String, Object>) member.get(
-                "slice");
-        output.put("kind", "HEAP_STATE");
-        output.put("javaTypeDescriptor", "Ljava/util/Map;");
-        slice.put("containerPreStatePort", "REGION.1.in.demanded");
-        slice.put("selectedRuntimeEventSeq", 20);
-        slice.put("outputBoundaryKind",
-                "DEFINITION_INVOCATION_NORMAL_EXIT");
-        slice.put("containerPreStateAuthority",
-                "EARLIEST_READ_IN_EXACT_DEFINITION_INVOCATION_V1");
-        slice.put("observedDefinitionCallId", 4);
-        slice.put("containerPreStateEventSeq", 10);
-        slice.put("definitionCompletionSeq", 21);
-        slice.put("foldedMutationCount", 1);
-        slice.put("foldedMutationCompletionSeqs",
-                Collections.singletonList(20));
-
-        File regions = write("timeline-regions.jsonl", regionsRow);
-        File plans = write("timeline-plans.jsonl", plan);
+        File regions = write("timeline-regions.jsonl", timelineRegion());
+        File plans = write("timeline-plans.jsonl", timelinePlan(2));
         File edges = writeEmpty("timeline-edges.jsonl");
         File refined = write("timeline-refined.jsonl", refinedEdge());
         File scheduled = folder.newFolder("timeline-schedule");
@@ -1170,6 +1224,108 @@ public class ConcolicSchedulerTest {
         assertEquals("MEMBER.1", step.get("memberToken").getAsString());
         assertEquals(2, step.getAsJsonArray("memberProjections").size());
         assertFalse(step.toString().contains("fieldEventSeq"));
+    }
+
+    @Test
+    public void schedulerKeepsSingleReaderMutationAsOneShotRelation()
+            throws Exception {
+        File regions = write("one-shot-regions.jsonl", timelineRegion());
+        File plans = write("one-shot-plans.jsonl", timelinePlan(1));
+        File edges = writeEmpty("one-shot-edges.jsonl");
+        File refined = write("one-shot-refined.jsonl", refinedEdge());
+        File scheduled = folder.newFolder("one-shot-schedule");
+
+        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                arguments(regions, plans, edges, refined, scheduled));
+
+        JsonObject slice = result.executionTasks.get(0)
+                .getAsJsonObject("outputClosure")
+                .getAsJsonArray("members").get(0).getAsJsonObject()
+                .getAsJsonObject("slice");
+        assertFalse(slice.has("boundedContainerTimelineStep"));
+
+        File timelinePlans = write("one-shot-id-timeline-plans.jsonl",
+                timelinePlan(2));
+        File timelineScheduled = folder.newFolder(
+                "one-shot-id-timeline-schedule");
+        ConcolicScheduler.Result timeline = ConcolicScheduler.schedule(
+                arguments(regions, timelinePlans, edges, refined,
+                        timelineScheduled));
+        assertFalse(result.executionTasks.get(0).get("taskId").getAsString()
+                .equals(timeline.executionTasks.get(0)
+                        .get("taskId").getAsString()));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> timelineRegion() {
+        Map<String, Object> region = outputRegion();
+        Map<String, Object> pre = ((java.util.List<Map<String, Object>>)
+                region.get("symbolicInputs")).get(0);
+        Map<String, Object> post = ((java.util.List<Map<String, Object>>)
+                region.get("outputs")).get(0);
+        Map<String, Object> preProjection = memberProjection("PRE_STATE");
+        Map<String, Object> postProjection = memberProjection("POST_STATE");
+        pre.put("boundedContainerMemberProjections",
+                Collections.singletonList(preProjection));
+        post.put("boundedContainerStateRole", "MUTATION_POST_STATE");
+        post.put("boundedContainerMemberProjectionAdmission", "PROVED");
+        post.put("containerTimelineWriterPolicy",
+                "SINGLE_WRITER_REQUIRED");
+        post.put("boundedContainerPreStatePorts",
+                Collections.singletonList("REGION.1.in.demanded"));
+        post.put("boundedContainerMemberProjections",
+                Collections.singletonList(postProjection));
+        post.put("runtimeAccesses", Collections.singletonList(object(
+                "eventSeq", 20,
+                "boundedContainerMemberProjection", postProjection)));
+        return region;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> timelinePlan(int readerCount) {
+        Map<String, Object> plan = boundedMapFieldOutputPlan();
+        Map<String, Object> goal = ((java.util.List<Map<String, Object>>)
+                plan.get("closureGoals")).get(0);
+        Map<String, Object> closure = (Map<String, Object>) goal.get(
+                "outputClosure");
+        Map<String, Object> member = ((java.util.List<Map<String, Object>>)
+                closure.get("members")).get(0);
+        Map<String, Object> output = (Map<String, Object>) member.get(
+                "output");
+        Map<String, Object> slice = (Map<String, Object>) member.get(
+                "slice");
+        output.put("kind", "HEAP_STATE");
+        output.put("javaTypeDescriptor", "Ljava/util/Map;");
+        slice.put("containerPreStatePort", "REGION.1.in.demanded");
+        slice.put("selectedRuntimeEventSeq", 20);
+        slice.put("outputBoundaryKind",
+                "DEFINITION_INVOCATION_NORMAL_EXIT");
+        slice.put("containerPreStateAuthority",
+                "EARLIEST_READ_IN_EXACT_DEFINITION_INVOCATION_V1");
+        slice.put("observedDefinitionCallId", 4);
+        slice.put("containerPreStateEventSeq", 10);
+        slice.put("definitionCompletionSeq", 21);
+        slice.put("foldedMutationCount", 1);
+        slice.put("foldedMutationCompletionSeqs",
+                Collections.singletonList(20));
+
+        java.util.List<Map<String, Object>> causalEdges =
+                new java.util.ArrayList<>();
+        java.util.List<String> causalEdgeIds = new java.util.ArrayList<>();
+        for (int index = 0; index < readerCount; index++) {
+            String edgeId = "EDGE.TIMELINE." + index;
+            Map<String, Object> edge = projectedEdge(edgeId,
+                    "REGION.1.out.value",
+                    "REGION.T.in.reader" + index, 30 + index * 10L);
+            edge.put("toRegionInstance",
+                    "REGION.T@test#call" + (index + 1));
+            causalEdges.add(edge);
+            causalEdgeIds.add(edgeId);
+        }
+        closure.put("causalEdges", causalEdges);
+        slice.put("causalEdgeIds", causalEdgeIds);
+        goal.put("edgeBindings", causalEdges);
+        return plan;
     }
 
     private static Map<String, Object> memberProjection(String role) {
@@ -1525,6 +1681,78 @@ public class ConcolicSchedulerTest {
         bindings.add(original.get(1));
         goal.put("edgeBindings", bindings);
         return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> laterOccurrenceProjectedPlan() {
+        Map<String, Object> logical = projectableMultiOutputPlan();
+        Map<String, Object> goal = ((java.util.List<Map<String, Object>>)
+                logical.get("closureGoals")).get(0);
+        Map<String, Object> canonicalClosure =
+                (Map<String, Object>) goal.get("outputClosure");
+        canonicalClosure.put("members", Collections.singletonList(
+                ((java.util.List<Map<String, Object>>)
+                        canonicalClosure.get("members")).get(0)));
+        canonicalClosure.put("causalEdges", Collections.singletonList(
+                ((java.util.List<Map<String, Object>>)
+                        canonicalClosure.get("causalEdges")).get(0)));
+        goal.put("symbolize", Collections.singletonList(
+                ((java.util.List<Map<String, Object>>)
+                        goal.get("symbolize")).get(0)));
+        goal.put("branches", Collections.singletonList(
+                ((java.util.List<Map<String, Object>>)
+                        goal.get("branches")).get(0)));
+        goal.put("edgeBindings", Collections.singletonList(
+                ((java.util.List<Map<String, Object>>)
+                        goal.get("edgeBindings")).get(0)));
+        Map<String, Object> exactFirst = GSON.fromJson(GSON.toJson(goal),
+                Map.class);
+        Map<String, Object> exactSecond = GSON.fromJson(GSON.toJson(goal),
+                Map.class);
+        ((Map<String, Object>) ((java.util.List<Map<String, Object>>)
+                exactFirst.get("symbolize")).get(0)).put("index", 0);
+        ((Map<String, Object>) ((java.util.List<Map<String, Object>>)
+                exactSecond.get("symbolize")).get(0)).put("index", 0);
+
+        Map<String, Object> laterEdge = projectedEdge("EDGE.LATER",
+                "REGION.1.out.keep.later", "REGION.T.in.later", 30);
+        laterEdge.put("fromRegionInstance", "REGION.1@test#call2");
+        laterEdge.put("toRegionInstance", "REGION.T@test#call10");
+        Map<String, Object> secondClosure = (Map<String, Object>)
+                exactSecond.get("outputClosure");
+        secondClosure.put("producer", object("regionId", "REGION.1",
+                "regionInstanceId", "REGION.1@test#call2",
+                "rootCallId", 2));
+        Map<String, Object> secondKeep =
+                ((java.util.List<Map<String, Object>>)
+                        secondClosure.get("members")).get(0);
+        ((Map<String, Object>) secondKeep.get("output")).put("portId",
+                "REGION.1.out.keep.later");
+        Map<String, Object> secondSlice =
+                (Map<String, Object>) secondKeep.get("slice");
+        secondSlice.put("outputPort", "REGION.1.out.keep.later");
+        secondSlice.put("causalEdgeIds",
+                Collections.singletonList("EDGE.LATER"));
+        secondClosure.put("causalEdges",
+                Collections.singletonList(laterEdge));
+        exactSecond.put("edgeBindings",
+                Collections.singletonList(laterEdge));
+
+        logical.put("occurrences", java.util.Arrays.asList(
+                object("regionInstanceId", "REGION.1@test#call1",
+                        "rootCallId", 1,
+                        "closureGoals", Collections.singletonList(
+                                exactFirst)),
+                object("regionInstanceId", "REGION.1@test#call2",
+                        "rootCallId", 2,
+                        "closureGoals", Collections.singletonList(
+                                exactSecond))));
+        java.util.List<Map<String, Object>> allBindings =
+                new java.util.ArrayList<>((java.util.List<
+                        Map<String, Object>>) goal.get("edgeBindings"));
+        allBindings.add(laterEdge);
+        goal.put("edgeBindings", allBindings);
+        return logical;
     }
 
     private static Map<String, Object> projectedInput(

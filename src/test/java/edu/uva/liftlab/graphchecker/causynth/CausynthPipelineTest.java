@@ -234,6 +234,66 @@ public class CausynthPipelineTest {
                         "recordFieldWriteStateOutput") + 1));
     }
 
+    @Test
+    public void nestedFieldWriteStateHookUsesCarrierAssignment()
+            throws Exception {
+        G.reset();
+        addCoreReferenceClasses();
+        Scene.v().addClass(new SootClass("java.lang.Integer",
+                Modifier.PUBLIC));
+        SootClass carrier = new SootClass("example.NestedCarrier",
+                Modifier.PUBLIC);
+        carrier.setApplicationClass();
+        Scene.v().addClass(carrier);
+        SootField primitiveLeaf = new SootField("primitiveLeaf",
+                IntType.v(), Modifier.PUBLIC);
+        carrier.addField(primitiveLeaf);
+        SootClass owner = new SootClass("example.NestedOwner",
+                Modifier.PUBLIC);
+        owner.setApplicationClass();
+        Scene.v().addClass(owner);
+        SootField carrierField = new SootField("carrier",
+                carrier.getType(), Modifier.PUBLIC);
+        owner.addField(carrierField);
+        SootMethod method = new SootMethod("write",
+                Collections.<soot.Type>singletonList(carrier.getType()),
+                VoidType.v(), Modifier.PUBLIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local receiver = Jimple.v().newLocal("receiver", owner.getType());
+        Local value = Jimple.v().newLocal("value", carrier.getType());
+        body.getLocals().add(receiver);
+        body.getLocals().add(value);
+        body.getUnits().add(Jimple.v().newIdentityStmt(receiver,
+                Jimple.v().newThisRef(owner.getType())));
+        body.getUnits().add(Jimple.v().newIdentityStmt(value,
+                Jimple.v().newParameterRef(carrier.getType(), 0)));
+        Stmt carrierAssignment = Jimple.v().newAssignStmt(
+                Jimple.v().newInstanceFieldRef(receiver,
+                        carrierField.makeRef()), value);
+        body.getUnits().add(carrierAssignment);
+        Stmt leafAssignment = Jimple.v().newAssignStmt(
+                Jimple.v().newInstanceFieldRef(value,
+                        primitiveLeaf.makeRef()), IntConstant.v(7));
+        body.getUnits().add(leafAssignment);
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+
+        instrumentExactHeapCapture(exactCapture(
+                OutputCaptureSpec.FIELD_WRITE_STATE,
+                method.getSignature(), 2, "",
+                primitiveLeaf.getSignature(), "int",
+                carrierField.getSignature(), primitiveLeaf.getSignature(),
+                Arrays.asList("carrier", "primitiveLeaf")));
+
+        List<Unit> units = new ArrayList<>(body.getUnits());
+        int record = indexOfHook(units, "recordFieldWriteStateOutput");
+        assertEquals(1, count(hookNames(body),
+                "recordFieldWriteStateOutput"));
+        assertTrue(units.indexOf(carrierAssignment) < record);
+        assertTrue(record < units.indexOf(leafAssignment));
+    }
+
     private static SootMethod targetMethod() {
         G.reset();
         Scene.v().addClass(new SootClass("java.lang.Throwable",
@@ -388,6 +448,16 @@ public class CausynthPipelineTest {
             String captureKind, String method, int unitIndex,
             String declaredCallee, String fieldSignature, String javaType)
             throws Exception {
+        return exactCapture(captureKind, method, unitIndex, declaredCallee,
+                fieldSignature, javaType, "", "",
+                Collections.<String>emptyList());
+    }
+
+    private static Object exactCapture(
+            String captureKind, String method, int unitIndex,
+            String declaredCallee, String fieldSignature, String javaType,
+            String definitionFieldSignature, String leafFieldSignature,
+            List<String> fieldPath) throws Exception {
         JsonObject capture = new JsonObject();
         capture.addProperty("captureBindingId", "CAPTURE.test");
         capture.addProperty("captureKind", captureKind);
@@ -397,6 +467,14 @@ public class CausynthPipelineTest {
         capture.addProperty("javaType", javaType);
         capture.addProperty("definitionMethod", method);
         capture.addProperty("definitionUnitIndex", unitIndex);
+        if (!definitionFieldSignature.isEmpty()) {
+            capture.addProperty("definitionFieldSignature",
+                    definitionFieldSignature);
+            capture.addProperty("leafFieldSignature", leafFieldSignature);
+            JsonArray path = new JsonArray();
+            for (String field : fieldPath) path.add(field);
+            capture.add("fieldPath", path);
+        }
         if (!declaredCallee.isEmpty()) {
             capture.addProperty("declaredCallee", declaredCallee);
         }
@@ -468,6 +546,13 @@ public class CausynthPipelineTest {
         return unit instanceof Stmt && ((Stmt) unit).containsInvokeExpr()
                 ? ((Stmt) unit).getInvokeExpr().getMethodRef().name()
                 : "";
+    }
+
+    private static int indexOfHook(List<Unit> units, String name) {
+        for (int index = 0; index < units.size(); index++) {
+            if (name.equals(hookName(units.get(index)))) return index;
+        }
+        return -1;
     }
 
     private static StaticProgram selected(SootMethod method) {

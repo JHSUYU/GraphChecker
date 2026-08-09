@@ -722,16 +722,61 @@ public final class CausynthPipeline {
                 .getLeftOp();
         String signature = CausynthStaticFacts.declaredFieldSignature(
                 field.getFieldRef());
-        if (!capture.fieldSignature().equals(signature)) {
+        if (!capture.definitionFieldSignature().equals(signature)) {
             throw exactHeapCaptureFailure(capture,
                     "FIELD_SIGNATURE_MISMATCH", null);
         }
         List<Unit> after = new ArrayList<>();
+        Value capturedOwner = field.getBase();
+        Value capturedValue = field;
+        Unit inactive = null;
+        if (capture.nestedFieldWriteState()) {
+            if (capture.fieldPath().size() < 2
+                    || !(field.getType() instanceof RefType)) {
+                throw exactHeapCaptureFailure(capture,
+                        "FIELD_PATH_NOT_EXACT", null);
+            }
+            inactive = Jimple.v().newNopStmt();
+            Local current = newTraceLocal(body, field.getType(),
+                    "$causynthWrittenCarrier");
+            after.add(Jimple.v().newAssignStmt(current,
+                    Jimple.v().newStaticInvokeExpr(
+                            exitFieldReader(field.getField()).makeRef(),
+                            field.getBase())));
+            for (int index = 1; index < capture.fieldPath().size(); index++) {
+                boolean leaf = index + 1 == capture.fieldPath().size();
+                after.add(Jimple.v().newIfStmt(
+                        Jimple.v().newEqExpr(current, NullConstant.v()),
+                        inactive));
+                SootField nested = leaf
+                        ? exactInstanceField(current.getType(),
+                        capture.fieldPath().get(index),
+                        capture.leafFieldSignature())
+                        : uniqueInstanceField(current.getType(),
+                        capture.fieldPath().get(index));
+                if (nested == null || nested.isStatic()
+                        || !leaf && !(nested.getType() instanceof RefType)) {
+                    throw exactHeapCaptureFailure(capture,
+                            "FIELD_PATH_NOT_EXACT", null);
+                }
+                Type readType = leaf
+                        && PrimitiveWrapper.forType(nested.getType()) != null
+                        ? RefType.v("java.lang.Object") : nested.getType();
+                Local nestedValue = newTraceLocal(body, readType,
+                        "$causynthWrittenLeaf");
+                after.add(Jimple.v().newAssignStmt(nestedValue,
+                        Jimple.v().newStaticInvokeExpr(
+                                exitFieldReader(nested).makeRef(), current)));
+                capturedOwner = current;
+                capturedValue = nestedValue;
+                if (!leaf) current = nestedValue;
+            }
+        }
         after.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(
                         refs.ref(Hook.PAUSE_OBSERVATION))));
-        Value owner = objectArg(body, field.getBase(), after);
-        Value value = boxedCaptureValue(body, field, field.getType(), after);
+        Value owner = objectArg(body, capturedOwner, after);
+        Value value = boxedCaptureValue(body, capturedValue, after);
         after.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(
                         refs.ref(Hook.RECORD_FIELD_WRITE_STATE_OUTPUT),
@@ -740,6 +785,7 @@ public final class CausynthPipeline {
         after.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(
                         refs.ref(Hook.RESUME_OBSERVATION))));
+        if (inactive != null) after.add(inactive);
         insertAfterSequence(body, selected, after);
     }
 

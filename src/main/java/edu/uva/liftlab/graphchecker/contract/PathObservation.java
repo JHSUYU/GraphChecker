@@ -6,6 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
+import edu.uva.liftlab.graphchecker.concolic.ContainerSmtCodec;
 import edu.uva.liftlab.graphchecker.concolic.InitialContainerObservation;
 import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
 
@@ -288,9 +289,15 @@ public final class PathObservation {
         // region inputs and nondeterministic environment values are boundary
         // leaves, not definitions to chase back into unrelated VM activity.
         Set<String> demanded = new LinkedHashSet<>();
+        Set<String> selectedTokens = new LinkedHashSet<>();
+        Set<String> outputTokens = dependencyTokens(
+                summary.get("outputExpressions"));
+        selectedTokens.addAll(outputTokens);
+        addNonBoundaryTokens(demanded, outputTokens);
         for (Integer position : selected) {
-            addNonBoundaryTokens(demanded,
-                    dependencyTokens(full.get(position)));
+            Set<String> tokens = dependencyTokens(full.get(position));
+            selectedTokens.addAll(tokens);
+            addNonBoundaryTokens(demanded, tokens);
         }
         Set<Integer> dependencies = new LinkedHashSet<>();
         boolean changed;
@@ -302,7 +309,13 @@ public final class PathObservation {
                     continue;
                 }
                 Set<String> tokens = dependencyTokens(full.get(index));
-                if (!overlaps(tokens, demanded)) continue;
+                boolean exactSelectedFieldDefinition =
+                        exactFieldBindingDefinesAny(full.get(index),
+                                selectedTokens);
+                if (!exactSelectedFieldDefinition
+                        && !overlaps(tokens, demanded)) {
+                    continue;
+                }
                 dependencies.add(index);
                 int before = demanded.size();
                 addNonBoundaryTokens(demanded, tokens);
@@ -317,6 +330,30 @@ public final class PathObservation {
             }
         }
         return projected;
+    }
+
+    /**
+     * Keeps the VM's exact materialization of a boundary input when that
+     * input directly controls a selected semantic branch.
+     *
+     * <p>Canonical {@code REGION.in.*} symbols normally terminate relation
+     * slicing.  An exact-field hook is different: it is the VM-recorded
+     * definition that relates such a scalar boundary to the member selected
+     * from a container expression.  Dropping it makes the scalar free in the
+     * merged relation.  Only the symbol side may satisfy the demand; matching
+     * the container side would pull every unrelated field read from the same
+     * object into the relation.</p>
+     */
+    private static boolean exactFieldBindingDefinesAny(
+            JsonElement expression, Set<String> demandedTokens) {
+        if (!ContainerSmtCodec.handlesFieldBinding(expression)) return false;
+        JsonObject binary = expression.getAsJsonObject();
+        JsonElement left = binary.get("_left");
+        JsonElement right = binary.get("_right");
+        JsonElement symbol = ContainerSmtCodec.handlesField(left)
+                ? right : left;
+        Set<String> defined = dependencyTokens(symbol);
+        return overlaps(defined, demandedTokens);
     }
 
     private static void addNonBoundaryTokens(Set<String> target,

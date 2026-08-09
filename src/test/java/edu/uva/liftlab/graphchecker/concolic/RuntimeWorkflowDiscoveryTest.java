@@ -874,7 +874,17 @@ public class RuntimeWorkflowDiscoveryTest {
                 Collections.singletonList("<T: void run()>"),
                 "admission", object("state", "READY", "blockers",
                         Collections.emptyList()),
-                "symbolize", Collections.emptyList(),
+                // The scheduled task below deliberately projects this
+                // unused input away.  Its exact occurrence remains the same
+                // runtime activation, but its compact adapter is a subset of
+                // this full logical occurrence catalog.
+                "symbolize", Collections.singletonList(object(
+                        "symbol", "REGION.1.in.unused",
+                        "cell", "<T: int unused>",
+                        "javaType", "int",
+                        "location", "HEAP_OBJECT_FIELD",
+                        "sourceKind", "FIELD_READ",
+                        "dependencyRole", "VALUE_FRONTIER")),
                 "branches", Collections.emptyList(),
                 "edgeBindings", Collections.emptyList());
         Map<String, Object> logicalGoal = new LinkedHashMap<>(exactGoal);

@@ -142,6 +142,34 @@ public class ConcolicRegionRuntimeTest {
         assertEquals(1, second.observe("CAPTURE.A", "METHOD#u7"));
     }
 
+    @Test
+    public void helperArgumentOccurrencesAreActivationLocalAndSlotScoped() {
+        String constructor = "<test.Key: void <init>(int,long)>";
+        ConcolicRegionRuntime.MaterializationOccurrenceCounter first =
+                new ConcolicRegionRuntime
+                        .MaterializationOccurrenceCounter();
+
+        for (int occurrence = 1; occurrence <= 25; occurrence++) {
+            assertEquals(occurrence,
+                    first.methodArgument(constructor, 0));
+        }
+        assertEquals(25,
+                first.observedMethodArgument(constructor, 0));
+        assertEquals(1, first.methodArgument(constructor, 1));
+        assertEquals(1,
+                first.observedMethodArgument(constructor, 1));
+        assertEquals(1, first.local(constructor, 6, "i0"));
+
+        // A later compatible region activation starts its own replay-stable
+        // helper ordinal instead of inheriting the earlier activation.
+        ConcolicRegionRuntime.MaterializationOccurrenceCounter second =
+                new ConcolicRegionRuntime
+                        .MaterializationOccurrenceCounter();
+        assertEquals(0,
+                second.observedMethodArgument(constructor, 0));
+        assertEquals(1, second.methodArgument(constructor, 0));
+    }
+
     /** Selection index for a capture whose version ordinal is irrelevant. */
     private static ConcolicRegionRuntime.MutationCaptureIndex index(
             int selection) {
@@ -1147,6 +1175,27 @@ public class ConcolicRegionRuntimeTest {
                     ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY);
             ConcolicRegionRuntime.resetForTests();
         }
+    }
+
+    @Test
+    public void terminalSelectedSkipHaltsNonzeroOnlyAfterDurableEvidence() {
+        assertEquals(3, ConcolicRegionRuntime
+                .terminalSelectedSkipHaltStatus(
+                        ConcolicRegionRuntime.SKIP_ENGINE_UNAVAILABLE,
+                        ConcolicRegionRuntime.ENGINE_BUSY_TIMEOUT, true));
+        assertEquals(2, ConcolicRegionRuntime
+                .terminalSelectedSkipHaltStatus(
+                        ConcolicRegionRuntime.SKIP_ENGINE_UNAVAILABLE,
+                        ConcolicRegionRuntime.ENGINE_BUSY_TIMEOUT, false));
+        assertEquals(-1, ConcolicRegionRuntime
+                .terminalSelectedSkipHaltStatus(
+                        ConcolicRegionRuntime.SKIP_ENGINE_UNAVAILABLE,
+                        ConcolicRegionRuntime.ENGINE_BUSY_INTERRUPTED, true));
+        assertEquals(-1, ConcolicRegionRuntime
+                .terminalSelectedSkipHaltStatus(
+                        ConcolicRegionRuntime.SKIP_REPLAY_PREFIX_UNMATCHED,
+                        "a later compatible activation may still match",
+                        true));
     }
 
     @Test

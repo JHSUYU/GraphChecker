@@ -472,6 +472,11 @@ public class ConcolicSmtComposerTest {
         producer.getAsJsonArray("symbolicInputs").add(
                 statePort("REGION.1.in.1", true, "long",
                         "<Test: long changingClock>"));
+        JsonObject changingClock = reference("REGION.1.in.1", "J");
+        row.getAsJsonObject("regionRelation").getAsJsonArray("cases")
+                .get(0).getAsJsonObject().getAsJsonObject("guard")
+                .getAsJsonArray("conditions").add(binary(changingClock,
+                        ">=", typedIntegral("J", 0)));
 
         ConcolicSmtComposer.Result result = compose(fatalInstance,
                 Collections.singletonList(RelationSummary.decode(row)),
@@ -484,6 +489,120 @@ public class ConcolicSmtComposerTest {
                 .contains("UNCLASSIFIED_INPUT"));
         assertTrue(result.smtLib, result.smtLib.contains(
                 "(assert false) ; fail closed: unsupported"));
+    }
+
+    @Test
+    public void unreferencedStaticInputDoesNotBlockBoundedTimeline()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.TIMELINE.STATIC.INPUT",
+                producerInstance, "REGION.1.out.0", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+        JsonObject row = timelineSummary(producerInstance, edge).toJson();
+        row.getAsJsonObject("outputClosure").getAsJsonArray("members")
+                .get(0).getAsJsonObject().getAsJsonObject("slice")
+                .getAsJsonArray("inputPorts").add("REGION.1.in.1");
+        JsonObject producer = region("REGION.1", "java.util.Map",
+                "java.util.Map");
+        producer.getAsJsonArray("symbolicInputs").add(
+                statePort("REGION.1.in.1", true, "long",
+                        "<Test: long staticallyRelevantClock>"));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(RelationSummary.decode(row)),
+                Arrays.asList(region("REGION.0", "java.util.Map", ""),
+                        producer), edge);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        assertFalse(result.manifest.toString(), result.manifest.toString()
+                .contains("UNCLASSIFIED_INPUT"));
+        assertTrue(result.smtLib, result.smtLib.contains("boundedStep7"));
+    }
+
+    @Test
+    public void exactFieldMemberLeafIsDerivedAtEveryTimelineStep()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.TIMELINE.MEMBER.LEAF",
+                producerInstance, "REGION.1.out.0", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+        JsonObject row = timelineSummary(producerInstance, edge).toJson();
+        row.getAsJsonObject("outputClosure").getAsJsonArray("members")
+                .get(0).getAsJsonObject().getAsJsonObject("slice")
+                .getAsJsonArray("inputPorts").add("REGION.1.in.1");
+        JsonObject producer = region("REGION.1", "java.util.Map",
+                "java.util.Map");
+        producer.getAsJsonArray("symbolicInputs").add(
+                statePort("REGION.1.in.1", true, "long",
+                        "<example.Key: long expiry>"));
+        JsonArray conditions = row.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").get(0).getAsJsonObject()
+                .getAsJsonObject("guard").getAsJsonArray("conditions");
+        conditions.add(timelineFieldBinding("REGION.1.in.0",
+                "REGION.1.in.1"));
+        conditions.add(binary(reference("REGION.1.in.1", "J"), ">=",
+                typedIntegral("J", 0)));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(RelationSummary.decode(row)),
+                Arrays.asList(region("REGION.0", "java.util.Map", ""),
+                        producer), edge);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "container_timeline_frozen_input_"));
+        assertTrue(result.smtLib, occurrences(result.smtLib,
+                "container_field__")
+                > LoopBoundPolicy.MAX_STATE_TIMELINE_TRANSITIONS);
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "REGION_1_in_1__instance__REGION_1_Test_call20"));
+        assertTrue(result.smtLib, result.smtLib.contains("boundedStep7"));
+    }
+
+    @Test
+    public void fieldMemberLeafFromDifferentContainerFailsClosed()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.TIMELINE.WRONG.MEMBER",
+                producerInstance, "REGION.1.out.0", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+        JsonObject row = timelineSummary(producerInstance, edge).toJson();
+        row.getAsJsonObject("outputClosure").getAsJsonArray("members")
+                .get(0).getAsJsonObject().getAsJsonObject("slice")
+                .getAsJsonArray("inputPorts").add("REGION.1.in.1");
+        row.getAsJsonObject("outputClosure").getAsJsonArray("members")
+                .get(0).getAsJsonObject().getAsJsonObject("slice")
+                .getAsJsonArray("inputPorts").add("REGION.1.in.2");
+        JsonObject producer = region("REGION.1", "java.util.Map",
+                "java.util.Map");
+        producer.getAsJsonArray("symbolicInputs").add(
+                statePort("REGION.1.in.1", true, "long",
+                        "<example.Key: long expiry>"));
+        producer.getAsJsonArray("symbolicInputs").add(
+                statePort("REGION.1.in.2", true, "java.util.Map",
+                        "<Test: java.util.Map other>"));
+        JsonArray conditions = row.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").get(0).getAsJsonObject()
+                .getAsJsonObject("guard").getAsJsonArray("conditions");
+        conditions.add(timelineFieldBinding("REGION.1.in.2",
+                "REGION.1.in.1"));
+        conditions.add(binary(reference("REGION.1.in.1", "J"), ">=",
+                typedIntegral("J", 0)));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(RelationSummary.decode(row)),
+                Arrays.asList(region("REGION.0", "java.util.Map", ""),
+                        producer), edge);
+
+        assertEquals("CANDIDATE_WITH_GAPS",
+                result.manifest.get("state").getAsString());
+        assertTrue(result.manifest.toString(), result.manifest.toString()
+                .contains("UNCLASSIFIED_INPUT"));
     }
 
     @Test
@@ -2191,6 +2310,27 @@ public class ConcolicSmtComposerTest {
         leaves.add(expiry);
         projection.add("leaves", leaves);
         return projection;
+    }
+
+    private static JsonObject timelineFieldBinding(
+            String mapPort, String valuePort) {
+        JsonObject entryView = associativeOperation("ENTRY_VIEW",
+                associativeState(mapPort));
+        JsonObject iterator = associativeOperation("ITERATOR", entryView);
+        JsonObject next = associativeOperation("NEXT", iterator,
+                typedIntegral("I", 0));
+        JsonObject value = associativeOperation("VALUE", next);
+        JsonObject field = new JsonObject();
+        field.addProperty("_type", "FieldAccessExpression");
+        field.addProperty("_java_type", "J");
+        field.addProperty("ownerClass", "example/Key");
+        field.addProperty("fieldOffset", 24);
+        field.add("owner", value);
+        JsonObject binding = binary(field, "==", reference(valuePort, "J"));
+        binding.addProperty("_code_position",
+                "static void java.lang.System.symbolizeExactField("
+                        + "jobject, jobject, jobject, jobject, jobject):-1");
+        return binding;
     }
 
     private static RelationSummary logicalSummary(

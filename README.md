@@ -1,5 +1,14 @@
 # GraphChecker
 
+> **Project scope and affiliation.** GraphChecker is a purely academic,
+> non-commercial software-engineering and program-analysis research project
+> maintained by a PhD student at the University of Virginia. Its static,
+> runtime, concolic, symbolic-execution, SMT, and fault-modeling components are
+> used only on open-source systems and authorized local test workloads to
+> understand, reproduce, and repair software defects. It has no commercial
+> purpose and is not an offensive-security, exploitation, penetration-testing,
+> malware, or unauthorized-access project.
+
 Automatic bounded concolic pipeline that synthesises an SMT witness for a
 distributed-systems fault from a **passing** workload, and checks it with Z3.
 HDFS-11741 is the case it is developed against; the engine carries no knowledge
@@ -190,6 +199,14 @@ fingerprints identify/check generated artifacts and equivalent closure
 contracts; simplify those to direct canonical identities where possible and
 remove redundant hash-equality gates.  This is cleanup, not part of the
 HDFS-11741 semantic-SAT critical path.
+
+**Later — project demanded RPC leaves directly at the trace boundary.** The
+configured RPC trace already identifies the logical call, direction, and
+result contract.  Extend that contract with demanded field paths and record
+those scalar leaves at the RPC boundary; then retire `ARRAY_SNAPSHOT` and its
+container-member reconstruction compatibility path.  Do not inspect protobuf
+serialization and do not add value or payload fingerprints.  This is a
+simplification after the current semantic-SAT path is established.
 
 **#14** — condense the test suite to roughly 40. **#9 (T5)** — the realizability
 loop exists as a tool (`experiments/hdfs/hdfs-11741/smt_realizability_refine.py`

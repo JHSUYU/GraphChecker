@@ -96,6 +96,8 @@ public final class ConcolicRegionRuntime {
      */
     static final String ENGINE_WAIT_PROPERTY =
             "causynth.concolic.engine.wait.millis";
+    static final String HALT_AFTER_SELECTED_RESULT_PROPERTY =
+            "causynth.concolic.halt.after.selected.result";
     static final long DEFAULT_ENGINE_WAIT_MILLIS = 60_000L;
     static final String ENGINE_BUSY_TIMEOUT =
             "ENGINE_BUSY_TIMEOUT: another concolic region held the symbolic "
@@ -802,8 +804,12 @@ public final class ConcolicRegionRuntime {
                                                String primitiveValue) {
         ActiveRegion active = activeRegion();
         if (active == null) return;
+        int occurrence = active.currentMethodArgumentMaterializationOccurrence(
+                method, argumentIndex);
         for (SymbolizeAction action : active.activation.symbolize) {
-            if (!action.matchesMethodArgument(method, argumentIndex)) {
+            if (!action.matchesMethodArgument(method, argumentIndex)
+                    || !action.acceptsOccurrence(occurrence)
+                    || !active.materialized.add(action.symbol)) {
                 continue;
             }
             if (value == null && !action.declaresArrayInput(
@@ -883,15 +889,22 @@ public final class ConcolicRegionRuntime {
         return boxedOrReference;
     }
 
-    /** Applies a solver model at an exact in-region helper parameter. */
+    /**
+     * Applies a solver model at an exact in-region helper parameter.
+     * Repeated calls are selected by an activation-local ordinal, just like
+     * repeated local-definition materializations.
+     */
     public static Object materializeMethodArgument(String method,
                                                    int argumentIndex,
                                                    Object boxedOrReference,
                                                    String primitiveValue) {
         ActiveRegion active = activeRegion();
         if (active == null) return boxedOrReference;
+        int occurrence = active.nextMethodArgumentMaterializationOccurrence(
+                method, argumentIndex);
         for (SymbolizeAction action : active.activation.symbolize) {
-            if (!action.matchesMethodArgument(method, argumentIndex)) {
+            if (!action.matchesMethodArgument(method, argumentIndex)
+                    || !action.acceptsOccurrence(occurrence)) {
                 continue;
             }
             if (boxedOrReference != null
@@ -2767,8 +2780,7 @@ public final class ConcolicRegionRuntime {
             return;
         }
         boolean written = appendResult(result, rawEngineSummary);
-        if (Boolean.getBoolean(
-                "causynth.concolic.halt.after.selected.result")) {
+        if (Boolean.getBoolean(HALT_AFTER_SELECTED_RESULT_PROPERTY)) {
             // A concolic replay is an isolated worker.  Long-running system
             // tests need not finish after the selected bounded activation has
             // durably emitted its VM summary.
@@ -3891,7 +3903,27 @@ public final class ConcolicRegionRuntime {
         result.addProperty("taskId", activation.taskId);
         result.addProperty("skipKind", skipKind);
         result.addProperty("reason", reason);
-        appendResult(result);
+        boolean written = appendResult(result);
+        int haltStatus = terminalSelectedSkipHaltStatus(skipKind, reason,
+                written);
+        if (haltStatus >= 0 && Boolean.getBoolean(
+                HALT_AFTER_SELECTED_RESULT_PROPERTY)) {
+            // A durable terminal skip is not a successful replay result.
+            // Exit promptly but nonzero so the caller records the abandoned
+            // replay instead of running the rest of a long-lived workload.
+            Runtime.getRuntime().halt(haltStatus);
+        }
+    }
+
+    static int terminalSelectedSkipHaltStatus(
+            String skipKind, String reason, boolean written) {
+        boolean terminal = SKIP_ENGINE_UNAVAILABLE.equals(skipKind)
+                && ENGINE_BUSY_TIMEOUT.equals(reason)
+                || SKIP_NOT_STARTED.equals(skipKind)
+                && safe(reason).startsWith(
+                "custom concolic System API is unavailable");
+        if (!terminal) return -1;
+        return written ? 3 : 2;
     }
 
     private static boolean appendResult(JsonObject result) {
@@ -4432,6 +4464,33 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /** Activation-local ordinals for repeated live-in materializations. */
+    static final class MaterializationOccurrenceCounter {
+        private final Map<String, Integer> occurrences =
+                new LinkedHashMap<>();
+
+        int local(String method, int unitIndex, String local) {
+            return observe("LOCAL\u0000" + safe(method) + "#u"
+                    + unitIndex + "::" + safe(local));
+        }
+
+        int methodArgument(String method, int argumentIndex) {
+            return observe("ARGUMENT\u0000" + safe(method) + "#arg"
+                    + argumentIndex);
+        }
+
+        int observedMethodArgument(String method, int argumentIndex) {
+            return occurrences.getOrDefault("ARGUMENT\u0000" + safe(method)
+                    + "#arg" + argumentIndex, 0);
+        }
+
+        private int observe(String key) {
+            int occurrence = occurrences.getOrDefault(key, 0) + 1;
+            occurrences.put(key, occurrence);
+            return occurrence;
+        }
+    }
+
     /** One selected mutator receiver waiting for its method completion. */
     static final class PendingMutationCapture {
         private final OutputCaptureSpec request;
@@ -4536,8 +4595,9 @@ public final class ConcolicRegionRuntime {
         // attested against the recorded outcome set of the same sites.
         private final Map<String, Set<Boolean>> witnessedOutcomes =
                 new LinkedHashMap<>();
-        private final Map<String, Integer> localMaterializationOccurrences =
-                new LinkedHashMap<>();
+        private final MaterializationOccurrenceCounter
+                materializationOccurrences =
+                new MaterializationOccurrenceCounter();
         private final Map<String, Integer> accessorCallOccurrences =
                 new LinkedHashMap<>();
         private final OutputCaptureOccurrenceCounter outputCaptureOccurrences =
@@ -4763,12 +4823,20 @@ public final class ConcolicRegionRuntime {
 
         private int nextLocalMaterializationOccurrence(
                 String method, int unitIndex, String local) {
-            String key = safe(method) + "#u" + unitIndex + "::"
-                    + safe(local);
-            int occurrence = localMaterializationOccurrences
-                    .getOrDefault(key, 0) + 1;
-            localMaterializationOccurrences.put(key, occurrence);
-            return occurrence;
+            return materializationOccurrences.local(method, unitIndex,
+                    local);
+        }
+
+        private int nextMethodArgumentMaterializationOccurrence(
+                String method, int argumentIndex) {
+            return materializationOccurrences.methodArgument(method,
+                    argumentIndex);
+        }
+
+        private int currentMethodArgumentMaterializationOccurrence(
+                String method, int argumentIndex) {
+            return materializationOccurrences.observedMethodArgument(
+                    method, argumentIndex);
         }
 
         private int nextOutputCaptureOccurrence(OutputCaptureSpec request) {
@@ -5364,7 +5432,6 @@ public final class ConcolicRegionRuntime {
         private final String bindingMode;
         private final String method;
         private final String local;
-        private final String leafField;
         private final String accessField;
         private final String accessOwnerClass;
         private final String accessFieldSignature;
@@ -5429,8 +5496,6 @@ public final class ConcolicRegionRuntime {
                     "accessorDeclaredCallee");
             this.accessorImplementationMethod = string(json,
                     "accessorImplementationMethod");
-            this.leafField = this.fieldPath.isEmpty() ? ""
-                    : this.fieldPath.get(this.fieldPath.size() - 1);
             String explicitLeafSignature = string(json,
                     "leafFieldSignature");
             this.fieldPaths = new ArrayList<>(

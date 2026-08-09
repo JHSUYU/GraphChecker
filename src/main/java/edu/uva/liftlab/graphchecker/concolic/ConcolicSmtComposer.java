@@ -1522,22 +1522,16 @@ public final class ConcolicSmtComposer {
                 "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1";
         private final String preStatePort;
         private final String postStatePort;
-        private final String memberToken;
-        private final String writerLaneId;
         private final long containerObjectId;
         private final int bound;
         private final String blocker;
 
         private BoundedTimelineStep(String preStatePort,
                                     String postStatePort,
-                                    String memberToken,
-                                    String writerLaneId,
                                     long containerObjectId,
                                     int bound, String blocker) {
             this.preStatePort = preStatePort;
             this.postStatePort = postStatePort;
-            this.memberToken = memberToken;
-            this.writerLaneId = writerLaneId;
             this.containerObjectId = containerObjectId;
             this.bound = bound;
             this.blocker = blocker;
@@ -1593,8 +1587,7 @@ public final class ConcolicSmtComposer {
             if (bound != LoopBoundPolicy.MAX_STATE_TIMELINE_TRANSITIONS) {
                 return blocked("INVALID_STATE_CHAIN_BOUND", summary);
             }
-            return new BoundedTimelineStep(pre, post, token, lane,
-                    container, bound, "");
+            return new BoundedTimelineStep(pre, post, container, bound, "");
         }
 
         private static boolean sameStep(JsonObject left,
@@ -1665,8 +1658,7 @@ public final class ConcolicSmtComposer {
             } catch (IllegalArgumentException ignored) {
                 // The named blocker below closes the formula.
             }
-            return new BoundedTimelineStep("", "", "", "", 0L,
-                    bound, blocker);
+            return new BoundedTimelineStep("", "", 0L, bound, blocker);
         }
 
         private String channelIdentity(RelationSummary summary) {
@@ -3584,9 +3576,10 @@ public final class ConcolicSmtComposer {
                     selected, timeline);
             Set<String> frozen = timelineFrozenInputs(selected,
                     recurrence.keySet());
+            Set<String> derived = timelineDerivedInputs(selected, timeline);
             if (!recurrence.containsKey(timeline.preStatePort)
                     || !classifiedTimelineInputs(selected, recurrence,
-                    frozen)) {
+                    frozen, derived)) {
                 unsupported.add("BoundedContainerTimelineGap:"
                         + selected.regionId() + ":UNCLASSIFIED_INPUT");
                 regionSummary(selected);
@@ -3709,13 +3702,89 @@ public final class ConcolicSmtComposer {
             return result;
         }
 
-        /** Every repeated input is either an exact recurrence pair or an
-         * explicitly replay-invariant port.  Anything else would become a
-         * new solver freedom on each alpha-renamed step. */
+        /**
+         * Finds scalar inputs the VM defines from the current timeline state.
+         * Every case that mentions such an input must contain its own exact
+         * field materialization, and that field owner must be rooted only in
+         * this timeline's pre-state port.  Alpha-renaming can then apply the
+         * relation at each step without either freeing the scalar or freezing
+         * an old member's value after the container changes.
+         */
+        private Set<String> timelineDerivedInputs(
+                RelationSummary selected, BoundedTimelineStep timeline) {
+            Set<String> derived = new LinkedHashSet<>();
+            Set<String> unsafe = new LinkedHashSet<>();
+            for (JsonElement element : array(object(selected.toJson(),
+                    "regionRelation"), "cases")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject pathCase = element.getAsJsonObject();
+                Set<String> mentioned = new LinkedHashSet<>();
+                collectTimelineInputPorts(pathCase, selected.regionId(),
+                        mentioned);
+                Set<String> defined = new LinkedHashSet<>();
+                collectTimelineFieldDefinitions(pathCase,
+                        selected.regionId(), timeline.preStatePort, defined);
+                derived.addAll(defined);
+                for (String input : mentioned) {
+                    if (!defined.contains(input)) unsafe.add(input);
+                }
+            }
+            derived.removeAll(unsafe);
+            return derived;
+        }
+
+        private void collectTimelineFieldDefinitions(
+                JsonElement expression, String region, String preStatePort,
+                Set<String> result) {
+            if (expression == null || expression.isJsonNull()) return;
+            if (expression.isJsonArray()) {
+                for (JsonElement item : expression.getAsJsonArray()) {
+                    collectTimelineFieldDefinitions(item, region,
+                            preStatePort, result);
+                }
+                return;
+            }
+            if (!expression.isJsonObject()) return;
+            JsonObject object = expression.getAsJsonObject();
+            if (ContainerSmtCodec.handlesFieldBinding(object)) {
+                JsonElement left = object.get("_left");
+                JsonElement right = object.get("_right");
+                JsonElement field = ContainerSmtCodec.handlesField(left)
+                        ? left : right;
+                JsonElement symbol = field == left ? right : left;
+                Set<String> ownerInputs = new LinkedHashSet<>();
+                collectTimelineInputPorts(field, region, ownerInputs);
+                String input = symbol != null && symbol.isJsonObject()
+                        ? findPort(string(symbol.getAsJsonObject(), "_exp"))
+                        : "";
+                if (ports.isInput(input) && region.equals(regionOf(input))
+                        && ownerInputs.size() == 1
+                        && ownerInputs.contains(preStatePort)) {
+                    result.add(input);
+                }
+                return;
+            }
+            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+                collectTimelineFieldDefinitions(entry.getValue(), region,
+                        preStatePort, result);
+            }
+        }
+
+        /** Every relation-mentioned repeated input is either an exact
+         * recurrence pair or an explicitly replay-invariant port.  Static
+         * closure inputs that the VM relation does not mention create no SMT
+         * term and therefore no new freedom on an alpha-renamed step. */
         private boolean classifiedTimelineInputs(RelationSummary selected,
                                                  Map<String, String> recurrence,
-                                                 Set<String> frozen) {
+                                                 Set<String> frozen,
+                                                 Set<String> derived) {
             for (String input : frozen) {
+                if (!ports.isInput(input)
+                        || !selected.regionId().equals(regionOf(input))) {
+                    return false;
+                }
+            }
+            for (String input : derived) {
                 if (!ports.isInput(input)
                         || !selected.regionId().equals(regionOf(input))) {
                     return false;
@@ -3726,8 +3795,10 @@ public final class ConcolicSmtComposer {
                     "regionRelation"), selected.regionId(), mentioned);
             Set<String> classified = new LinkedHashSet<>(frozen);
             classified.addAll(recurrence.keySet());
-            return classified.containsAll(selected.outputClosure()
-                    .executionScope().inputPorts())
+            classified.addAll(derived);
+            Set<String> scoped = selected.outputClosure().executionScope()
+                    .inputPorts();
+            return scoped.containsAll(mentioned)
                     && classified.containsAll(mentioned);
         }
 
@@ -5357,6 +5428,7 @@ public final class ConcolicSmtComposer {
             Port port = ports.get(id);
             return port != null && port.explicitReplayInvariant();
         }
+
     }
 
     private static final class Port {
@@ -5394,6 +5466,7 @@ public final class ConcolicSmtComposer {
                     || bool(metadata, "pathAssumptionOnly", false)
                     || demand.startsWith("CONCRETE_");
         }
+
     }
 
     private static final class RawSymbol {

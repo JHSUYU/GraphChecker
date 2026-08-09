@@ -612,8 +612,6 @@ verify_region_artifacts() {
   local skeleton="${runtime}/skeleton-pass"
   require_nonempty_file "pass-1 selected region skeletons" \
     "${skeleton}/region_skeletons.jsonl"
-  require_nonempty_file "pass-1 runtime region graph" \
-    "${skeleton}/runtime_region_graph.jsonl"
   require_nonempty_file "pass-1 runtime trace" \
     "${skeleton}/runtime_trace.jsonl"
   require_nonempty_file "pass-1 streaming manifest" \
@@ -1243,6 +1241,10 @@ run_seed_tasks_parallel() {
     done
     die "${#failures[@]} of ${#unique[@]} region seed campaign(s) failed"
   fi
+  if command -v hardlink >/dev/null 2>&1; then
+    hardlink --quiet --content --include '\.class$' \
+      "${seed_campaign_root}"
+  fi
 }
 
 combine_jsonl_unique() {
@@ -1665,12 +1667,11 @@ close_region_paths() {
   local state="${campaign}/path-state"
   local summaries="${state}/summaries.jsonl"
   local tasks="${state}/tasks.jsonl"
-  local raw="${state}/raw-results.jsonl"
   local records="${state}/records.jsonl"
   local iteration=1 replay_count=0 planner worklist query task_dir outcome
   local z3 solver_timeout goal_kind
   local -a queries=() record_inputs=() summary_inputs=()
-  local -a task_inputs=() raw_inputs=()
+  local -a task_inputs=()
 
   goal_kind=$(jq -er --arg goal "${goal}" \
     'select(.goalId == $goal) | .goalKind' \
@@ -1698,7 +1699,6 @@ close_region_paths() {
     "${campaign}/seed-summaries.jsonl"
   combine_jsonl_unique taskId "${tasks}" \
     "${campaign}/execution_task_plan.jsonl"
-  combine_jsonl_unique taskId "${raw}" "${campaign}/seed-results.jsonl"
   : >"${records}"
   z3=$(configured_value z3_bin)
   solver_timeout=$(configured_value solver_timeout_ms)
@@ -1755,7 +1755,6 @@ close_region_paths() {
     record_inputs=("${records}")
     summary_inputs=("${summaries}")
     task_inputs=("${tasks}")
-    raw_inputs=("${raw}")
     for query in "${queries[@]}"; do
       task_dir="${planner}/task-${query}"
       require_nonempty_file "path exploration record" \
@@ -1764,7 +1763,6 @@ close_region_paths() {
       if [[ -s "${task_dir}/summaries.jsonl" ]]; then
         summary_inputs+=("${task_dir}/summaries.jsonl")
         task_inputs+=("${task_dir}/execution_task_plan.jsonl")
-        raw_inputs+=("${task_dir}/raw-results.jsonl")
       fi
     done
     combine_jsonl_unique queryKey "${state}/next-records.jsonl" \
@@ -1775,11 +1773,8 @@ close_region_paths() {
         "${summary_inputs[@]}"
       combine_jsonl_unique taskId "${state}/next-tasks.jsonl" \
         "${task_inputs[@]}"
-      combine_jsonl_unique taskId "${state}/next-raw.jsonl" \
-        "${raw_inputs[@]}"
       mv -f "${state}/next-summaries.jsonl" "${summaries}"
       mv -f "${state}/next-tasks.jsonl" "${tasks}"
-      mv -f "${state}/next-raw.jsonl" "${raw}"
     fi
     iteration=$((iteration + 1))
   done

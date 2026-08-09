@@ -420,7 +420,14 @@ public final class BooleanReachConditionExtractor {
         ConcolicConstraintSolver.SolverOutput check(String smt)
                 throws IOException,
                 InterruptedException {
-            return ConcolicConstraintSolver.run(executable, smt,
+            String query = smt;
+            if (SmtArrayExtensionalityAudit
+                    .provesExtensionalityRedundant(smt)) {
+                query = "(set-option :smt.array.extensional false)\n"
+                        + "(set-option :smt.random_seed 7)\n"
+                        + "(set-option :sat.random_seed 7)\n" + smt;
+            }
+            return ConcolicConstraintSolver.run(executable, query,
                     timeoutMillis);
         }
 

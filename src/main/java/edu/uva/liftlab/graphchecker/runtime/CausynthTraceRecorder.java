@@ -947,11 +947,9 @@ public final class CausynthTraceRecorder {
             clearInMemoryTrace();
             requireClosedTrace(new File(directory,
                     "streaming_trace_manifest.json"));
-            long traceLoadStart = System.nanoTime();
             TraceData trace = loadExistingTrace(new File(directory,
                     "runtime_trace.jsonl"), test, true);
             trace.sort();
-            long traceLoadMillis = elapsedMillis(traceLoadStart);
             File skeletons = new File(outputDirectory,
                     "region_skeletons.jsonl");
             if (candidateSkeletons == null) {
@@ -960,11 +958,9 @@ public final class CausynthTraceRecorder {
             }
             File planningSkeletons = candidateSkeletons;
 
-            long runtimeGraphStart = System.nanoTime();
             RuntimeRegionPlanner.Result graph =
                     RuntimeRegionPlanner.planSkeletonGraph(planningSkeletons,
                             trace.methods);
-            long runtimeGraphMillis = elapsedMillis(runtimeGraphStart);
             if (graph.staticRegionCount == 0) {
                 throw new IOException(
                         "skeleton aggregation selected no static regions");
@@ -976,22 +972,6 @@ public final class CausynthTraceRecorder {
             }
             writeSelectedSkeletons(candidateSkeletons, skeletons,
                     graph.runtimeInstances);
-            StringBuilder encoded = new StringBuilder();
-            encoded.append(CausynthJson.objectWithoutNulls(
-                    "schemaVersion", 1,
-                    "kind", "RUNTIME_REGION_GRAPH_METADATA",
-                    "status", "COMPLETE",
-                    "traceLoadMillis", traceLoadMillis,
-                    "staticCandidateRegionPlanning",
-                    "PRECOMPUTED_DURING_ANALYZE",
-                    "runtimeActivationGraphMillis", runtimeGraphMillis,
-                    "nodeCount", graph.runtimeInstances.size(),
-                    "edgeCount", graph.runtimeGraphEdges.size()))
-                    .append('\n');
-            encoded.append(graph.runtimeInstancesJsonl());
-            encoded.append(graph.runtimeGraphEdgesJsonl());
-            writeFile(new File(outputDirectory,
-                    "runtime_region_graph.jsonl"), encoded.toString());
         }
     }
 
@@ -1691,80 +1671,13 @@ public final class CausynthTraceRecorder {
                 regions, regionEdges, flowIndex, regionFile,
                 regionEdgeFile, runtimeSeeds, trace.methods,
                 trace.execution, trace.fields);
-        copyObservedFatalTargets(runtimeSeeds, planned.runtimeInstances);
         writeRuntimePlanArtifacts(directory,
-                planned.edgeValidationsJsonl(), planned.regionPlansJsonl(),
-                planned.runtimeInstances);
-    }
-
-    /** Preserves target-site evidence when the planner normalizes activations. */
-    private static void copyObservedFatalTargets(
-            Collection<Map<String, Object>> seeds,
-            Collection<Map<String, Object>> planned) {
-        Map<String, Map<String, Object>> byRegionAndCall =
-                new LinkedHashMap<>();
-        for (Map<String, Object> seed : seeds == null
-                ? Collections.<Map<String, Object>>emptyList() : seeds) {
-            byRegionAndCall.put(runtimeActivationKey(seed), seed);
-        }
-        for (Map<String, Object> activation : planned == null
-                ? Collections.<Map<String, Object>>emptyList() : planned) {
-            Map<String, Object> seed = byRegionAndCall.get(
-                    runtimeActivationKey(activation));
-            if (seed == null) continue;
-            List<Map<String, Object>> evidence = mapRows(
-                    seed.get("observedFatalTargets"));
-            if (!evidence.isEmpty()) {
-                activation.put("observedFatalTargets", evidence);
-            }
-            Object sites = seed.get("observedFatalTargetSites");
-            if (sites instanceof Collection<?>) {
-                activation.put("observedFatalTargetSites",
-                        new ArrayList<>((Collection<?>) sites));
-            }
-        }
-    }
-
-    private static String runtimeActivationKey(Map<String, Object> row) {
-        return String.valueOf(row.get("regionId")) + "\n"
-                + String.valueOf(row.get("rootCallId"));
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> mapRows(Object value) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        if (value instanceof Collection<?>) {
-            for (Object item : (Collection<?>) value) {
-                if (item instanceof Map<?, ?>) {
-                    result.add(new LinkedHashMap<>(
-                            (Map<String, Object>) item));
-                }
-            }
-        }
-        return result;
+                planned.edgeValidationsJsonl(), planned.regionPlansJsonl());
     }
 
     private static void writeRuntimePlanArtifacts(
             File directory,
-            String edgeValidations, String regionPlans,
-            String runtimeInstances) throws IOException {
-        writeFile(new File(directory,
-                        "runtime_region_edge_validation.jsonl"),
-                edgeValidations);
-        writeFile(new File(directory,
-                        "concolic_region_plan.jsonl"),
-                regionPlans);
-        if (!runtimeInstances.isEmpty()) {
-            writeFile(new File(directory,
-                            "runtime_region_instances.jsonl"),
-                    runtimeInstances);
-        }
-    }
-
-    private static void writeRuntimePlanArtifacts(
-            File directory,
-            String edgeValidations, String regionPlans,
-            Collection<Map<String, Object>> runtimeInstances)
+            String edgeValidations, String regionPlans)
             throws IOException {
         writeFile(new File(directory,
                         "runtime_region_edge_validation.jsonl"),
@@ -1772,25 +1685,6 @@ public final class CausynthTraceRecorder {
         writeFile(new File(directory,
                         "concolic_region_plan.jsonl"),
                 regionPlans);
-        writeJsonMapLines(new File(directory,
-                "runtime_region_instances.jsonl"),
-                runtimeInstances);
-    }
-
-    private static void writeJsonMapLines(
-            File file, Collection<Map<String, Object>> rows)
-            throws IOException {
-        File parent = file.getParentFile();
-        if (parent != null) {
-            Files.createDirectories(parent.toPath());
-        }
-        try (BufferedWriter writer = Files.newBufferedWriter(file.toPath(),
-                StandardCharsets.UTF_8)) {
-            for (Map<String, Object> row : rows) {
-                writer.write(CausynthJson.write(row));
-                writer.newLine();
-            }
-        }
     }
 
     private static void writeFile(File file, String value) throws IOException {

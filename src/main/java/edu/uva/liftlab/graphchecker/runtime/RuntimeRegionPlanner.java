@@ -8,11 +8,13 @@ import com.google.gson.JsonObject;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.causynth.ProtocolCarrierReconstruction;
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
 import edu.uva.liftlab.graphchecker.contract.BoundedPathSeed;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
@@ -144,21 +146,6 @@ final class RuntimeRegionPlanner {
             }
         }
         result.runtimeInstances.addAll(activationByCall.values());
-        for (Map.Entry<Long, Map<String, Object>> entry
-                : activationByCall.entrySet()) {
-            long parent = trace.nearestAncestor(entry.getKey(),
-                    activationByCall.keySet());
-            if (parent == 0L) {
-                continue;
-            }
-            Map<String, Object> edge = new LinkedHashMap<>();
-            edge.put("schemaVersion", 3);
-            edge.put("kind", "RUNTIME_ACTIVATION_EDGE");
-            edge.put("fromActivation", activationByCall.get(parent).get(
-                    "activationId"));
-            edge.put("toActivation", entry.getValue().get("activationId"));
-            result.runtimeGraphEdges.add(edge);
-        }
         return result;
     }
 
@@ -1685,6 +1672,18 @@ final class RuntimeRegionPlanner {
         long outputEventSeq = longNumber(output.get("eventSeq"), -1L);
         Set<Long> invocationCalls = trace.exactOutputInvocationCalls(
                 rootCallId, outputEventSeq);
+        FieldAccessEvent carrierWrite = allRpcContainerProjection
+                ? trace.exactRpcCarrierWrite(outputEventSeq,
+                invocationCalls) : null;
+        boolean declaredNestedCarrier = allRpcContainerProjection
+                && trusted.stream().anyMatch(binding -> strings(
+                binding.get("fieldPathDeclarations")).size() > 1);
+        // A projected leaf below a declared carrier must be captured at the
+        // unique write that publishes that carrier.  Capturing every write at
+        // the leaf's shared constructor site would mix sibling objects (for
+        // example retiring/current/next state) into one arbitrary version
+        // choice.  A direct one-leaf mapping keeps its existing exact write.
+        if (declaredNestedCarrier && carrierWrite == null) return null;
         ExactMutationFold mutationFold = null;
         long relationBoundarySeq = Math.max(outputEventSeq,
                 longNumber(output.get("mutationCompletionSeq"), -1L));
@@ -1769,9 +1768,18 @@ final class RuntimeRegionPlanner {
         }
         ProtocolCarrierReconstruction decode =
                 ProtocolCarrierReconstruction.of(regionInputs);
+        List<String> decodedLeafPorts = decodedLeafPortsFor(
+                outputPortRow, outputEventSeq);
+        String decodedLeafPort = decodedLeafPorts.isEmpty() ? ""
+                : decodedLeafPorts.get(0);
+        String decodedResponsePort = decodedLeafPorts.isEmpty() ? ""
+                : decodedLeafPorts.get(1);
         String carrierPort = decode.responsePortFor(rootCallId,
                 outputEventSeq);
-        ReturnSlice stateSlice = carrierPort.isEmpty()
+        ReturnSlice stateSlice = !decodedLeafPort.isEmpty()
+                ? carrierSlice(decodedLeafPort, definitionMethod, allowed,
+                text(region.get("rootMethod")))
+                : carrierPort.isEmpty()
                 ? refinedFlow.dependencySlice(
                 text(plan.get("regionId")), rootCallId, declaration,
                 sliceOutput, allowed, regionInputs, regionOutputs,
@@ -1783,6 +1791,9 @@ final class RuntimeRegionPlanner {
                 : carrierSlice(carrierPort, definitionMethod, allowed,
                 text(region.get("rootMethod")));
         if (stateSlice == null) return null;
+        if (!decodedResponsePort.isEmpty()) {
+            stateSlice.inputPorts.add(decodedResponsePort);
+        }
 
         List<String> inputPorts = new ArrayList<>(stateSlice.inputPorts);
         if (priorStateInput != null) {
@@ -1804,6 +1815,8 @@ final class RuntimeRegionPlanner {
         if (methods.isEmpty()) return null;
         Set<String> methodSet = new LinkedHashSet<>(methods);
         methodSet.add(definitionMethod);
+        if (carrierWrite != null) methodSet.add(carrierWrite.method);
+        methods = new ArrayList<>(methodSet);
         if (!addReachingAccessorMaterializations(inputPorts, regionInputs,
                 rootCallId, methodSet, relationBoundarySeq,
                 invocationCalls, rejectionReasons, outputPort)) {
@@ -1825,6 +1838,10 @@ final class RuntimeRegionPlanner {
         List<String> staticSites = new ArrayList<>(stateSlice.staticSites);
         if (!staticSites.contains(staticAccessSiteId)) {
             staticSites.add(staticAccessSiteId);
+        }
+        if (carrierWrite != null
+                && !staticSites.contains(carrierWrite.siteId)) {
+            staticSites.add(carrierWrite.siteId);
         }
         List<String> sites = new ArrayList<>(stateSlice.branchSites);
 
@@ -1901,12 +1918,34 @@ final class RuntimeRegionPlanner {
                 : OutputCaptureSpec.FIELD_WRITE_STATE);
         capture.addProperty("outputPort", outputPort);
         capture.addProperty("outputCell", declaration);
-        capture.add("fieldPath", stringsJson(Collections.singletonList(
-                path.get(path.size() - 1))));
+        List<String> capturePath = new ArrayList<>();
+        String captureDefinition = declaration;
+        String captureMethod = definitionMethod;
+        int captureUnit = definitionUnitIndex;
+        String captureStaticSite = staticAccessSiteId;
+        if (carrierWrite != null) {
+            FieldPathSpec.DeclaredField carrier =
+                    FieldPathSpec.declaredField(carrierWrite.field);
+            FieldPathSpec.DeclaredField leaf =
+                    FieldPathSpec.declaredField(declaration);
+            if (carrier == null || leaf == null) return null;
+            capturePath.add(carrier.name());
+            capturePath.add(leaf.name());
+            captureDefinition = carrierWrite.field;
+            captureMethod = carrierWrite.method;
+            captureUnit = carrierWrite.unitIndex;
+            captureStaticSite = carrierWrite.siteId;
+            capture.addProperty("definitionFieldSignature",
+                    captureDefinition);
+            capture.addProperty("leafFieldSignature", declaration);
+        } else {
+            capturePath.add(path.get(path.size() - 1));
+        }
+        capture.add("fieldPath", stringsJson(capturePath));
         capture.addProperty("fieldSignature", declaration);
         capture.addProperty("javaType", javaType);
-        capture.addProperty("definitionMethod", definitionMethod);
-        capture.addProperty("definitionUnitIndex", definitionUnitIndex);
+        capture.addProperty("definitionMethod", captureMethod);
+        capture.addProperty("definitionUnitIndex", captureUnit);
         if (mutation) {
             capture.addProperty("declaredCallee", declaredCallee);
         }
@@ -1915,8 +1954,9 @@ final class RuntimeRegionPlanner {
                 + staticAccessSiteId + ":"
                 + declaredCallee + ":" + declaration
                 : OutputCaptureSpec.FIELD_WRITE_STATE + ":"
-                + staticAccessSiteId + ":"
-                + declaration;
+                + captureStaticSite + ":"
+                + captureDefinition + (carrierWrite == null ? ""
+                : "=>" + declaration);
         capture.addProperty("outputSiteId", captureSiteId);
         capture.addProperty("outputOccurrence", replayOccurrence);
         capture.addProperty("replayOccurrence", replayOccurrence);
@@ -1944,6 +1984,60 @@ final class RuntimeRegionPlanner {
                 text(plan.get("regionId")),
                 text(plan.get("regionInstanceId")), rootCallId,
                 outputPort, declaration, "HEAP_STATE", javaType, slice);
+    }
+
+    static List<String> decodedLeafPortsFor(
+            Map<String, Object> outputPort, long writerEventSeq) {
+        Map<String, Object> mapping = decodedLeafMappingFor(outputPort,
+                writerEventSeq);
+        if (mapping == null) return Collections.emptyList();
+        String input = text(mapping.get("inputPort"));
+        if (input.isEmpty()) {
+            throw new IllegalStateException("decoded RPC leaf mapping has "
+                    + "no input for writer event " + writerEventSeq);
+        }
+        String response = text(mapping.get(
+                ProtocolCarrierReconstruction.RESPONSE_PORT));
+        if (response.isEmpty()) {
+            throw new IllegalStateException("decoded RPC leaf mapping has "
+                    + "no response port for writer event "
+                    + writerEventSeq);
+        }
+        List<String> result = new ArrayList<>(2);
+        result.add(input);
+        result.add(response);
+        return result;
+    }
+
+    private static Map<String, Object> decodedLeafMappingFor(
+            Map<String, Object> outputPort, long writerEventSeq) {
+        List<Map<String, Object>> mappings = rows(outputPort == null ? null
+                : outputPort.get(RuntimeSelectedRegionFinalizer
+                .RPC_DECODED_LEAF_INPUTS));
+        if (mappings.isEmpty()) return null;
+        Map<String, Object> found = null;
+        for (Map<String, Object> mapping : mappings) {
+            if (longNumber(mapping.get("writerEventSeq"), -1L)
+                    != writerEventSeq
+                    || !DECLARED_CARRIER_AUTHORITY.equals(
+                    text(mapping.get("authority")))) {
+                continue;
+            }
+            if (found != null && (!text(found.get("inputPort")).equals(
+                    text(mapping.get("inputPort")))
+                    || !text(found.get(ProtocolCarrierReconstruction
+                    .RESPONSE_PORT)).equals(text(mapping.get(
+                    ProtocolCarrierReconstruction.RESPONSE_PORT))))) {
+                throw new IllegalStateException("ambiguous decoded RPC "
+                        + "leaf input for writer event " + writerEventSeq);
+            }
+            found = mapping;
+        }
+        if (found == null) {
+            throw new IllegalStateException("decoded RPC leaf output has no "
+                    + "input for writer event " + writerEventSeq);
+        }
+        return found;
     }
 
     /**
@@ -3054,6 +3148,24 @@ final class RuntimeRegionPlanner {
                 if (exchange != null) {
                     action.put("protocolExchangeOccurrence", exchange);
                 }
+            } else if (RuntimeSelectedRegionFinalizer.RPC_DECODE_VALUE
+                    .equals(text(port.get("sourceKind")))) {
+                Matcher parameter = METHOD_PARAMETER_CELL.matcher(
+                        text(port.get("cell")));
+                int argumentIndex = integer(
+                        port.get("helperArgumentIndex"), -1);
+                String helperMethod = text(port.get("helperMethod"));
+                if (!parameter.matches() || argumentIndex < 0
+                        || argumentIndex != Integer.parseInt(
+                        parameter.group(2))
+                        || !helperMethod.equals(parameter.group(1))) {
+                    continue;
+                }
+                // Reuse the explicit method-argument scheduler contract.
+                // This is a helper parameter reached from an exact Soot
+                // identity edge, not a local guessed from its spelling.
+                action.put("argumentIndex", argumentIndex);
+                action.put("location", "PROTOCOL_ARGUMENT");
             } else if ("PARAMETER".equals(text(port.get("rootKind")))) {
                 action.put("argumentIndex", port.get("rootParameterIndex"));
                 action.put("location", path.isEmpty()
@@ -4044,7 +4156,6 @@ final class RuntimeRegionPlanner {
         final List<Map<String, Object>> regionPlans = new ArrayList<>();
         final List<Map<String, Object>> edgeValidations = new ArrayList<>();
         final List<Map<String, Object>> runtimeInstances = new ArrayList<>();
-        final List<Map<String, Object>> runtimeGraphEdges = new ArrayList<>();
         int staticRegionCount;
 
         String regionPlansJsonl() {
@@ -4053,14 +4164,6 @@ final class RuntimeRegionPlanner {
 
         String edgeValidationsJsonl() {
             return jsonl(edgeValidations);
-        }
-
-        String runtimeInstancesJsonl() {
-            return jsonl(runtimeInstances);
-        }
-
-        String runtimeGraphEdgesJsonl() {
-            return jsonl(runtimeGraphEdges);
         }
 
         private static String jsonl(List<Map<String, Object>> rows) {
@@ -4277,6 +4380,45 @@ final class RuntimeRegionPlanner {
     }
 
     /**
+     * Selects the stable source-side assignment that publishes the exact
+     * object owning a demanded RPC leaf.
+     *
+     * <p>Wire and implementation fields need not have the same name or
+     * declaring type.  Concrete object identity is used only to discover the
+     * source role in this trace; replay retains only the unique static
+     * {@code (method, unit, field)} role.  Multiple roles fail closed.</p>
+     */
+    static FieldAccessEvent uniqueRpcCarrierPublication(
+            FieldAccessEvent leaf, Set<Long> invocationCalls,
+            Collection<FieldAccessEvent> fields) {
+        if (leaf == null || invocationCalls == null
+                || !"FIELD_WRITE".equals(leaf.kind)
+                || leaf.receiverObjectId == 0) {
+            return null;
+        }
+        Map<String, FieldAccessEvent> byStaticRole = new LinkedHashMap<>();
+        for (FieldAccessEvent candidate : fields) {
+            if (candidate.seq <= leaf.seq
+                    || !"FIELD_WRITE".equals(candidate.kind)
+                    || !invocationCalls.contains(candidate.callId)
+                    || candidate.valueObjectId != leaf.receiverObjectId
+                    || candidate.unitIndex < 0
+                    || candidate.method.isEmpty()
+                    || FieldPathSpec.declaredField(candidate.field) == null) {
+                continue;
+            }
+            String role = candidate.method + "\n" + candidate.unitIndex
+                    + "\n" + candidate.field;
+            FieldAccessEvent previous = byStaticRole.get(role);
+            if (previous == null || candidate.seq < previous.seq) {
+                byStaticRole.put(role, candidate);
+            }
+        }
+        return byStaticRole.size() == 1
+                ? byStaticRole.values().iterator().next() : null;
+    }
+
+    /**
      * Exact identity observation for one reference-array element access.
      *
      * <p>The array and element ids are trace-local evidence only.  The
@@ -4432,6 +4574,9 @@ final class RuntimeRegionPlanner {
 
     private static final class TraceIndex {
         private final List<MethodEvent> methods;
+        private final List<FieldAccessEvent> fields;
+        private final Map<Long, FieldAccessEvent> fieldBySeq =
+                new LinkedHashMap<>();
         private final Map<Long, MethodEvent> methodByCall =
                 new LinkedHashMap<>();
         private final Map<String, List<MethodEvent>> methodsByName =
@@ -4452,6 +4597,7 @@ final class RuntimeRegionPlanner {
                            Collection<RuntimeEvent> runtimeEvents,
                            Collection<FieldAccessEvent> fieldEvents) {
             methods = sorted(methodEvents, value -> value.seq);
+            fields = sorted(fieldEvents, value -> value.seq);
             for (MethodEvent event : methods) {
                 methodByCall.put(event.callId, event);
                 methodsByName.computeIfAbsent(event.method,
@@ -4465,9 +4611,13 @@ final class RuntimeRegionPlanner {
                         ignored -> new ArrayList<>()).add(event);
                 registerEventCall(event.seq, event.callId);
             }
-            for (FieldAccessEvent event : sorted(fieldEvents,
-                    value -> value.seq)) {
+            for (FieldAccessEvent event : fields) {
                 registerEventCall(event.seq, event.callId);
+                if (fieldBySeq.put(event.seq, event) != null) {
+                    // Sequence numbers are the runtime occurrence authority;
+                    // an ambiguous duplicate can never select a carrier.
+                    fieldBySeq.remove(event.seq);
+                }
             }
         }
 
@@ -4514,17 +4664,6 @@ final class RuntimeRegionPlanner {
             }
             result.sort(Comparator.comparingLong(value -> value.seq));
             return result;
-        }
-
-        private long nearestAncestor(long call, Set<Long> candidates) {
-            MethodEvent current = methodByCall.get(call);
-            while (current != null && current.parentCallId != 0L) {
-                if (candidates.contains(current.parentCallId)) {
-                    return current.parentCallId;
-                }
-                current = methodByCall.get(current.parentCallId);
-            }
-            return 0L;
         }
 
         private MethodEvent nearestAuthoritativeAncestor(
@@ -4578,6 +4717,23 @@ final class RuntimeRegionPlanner {
             }
             corridor.addAll(subtree(caller));
             return corridor;
+        }
+
+        /**
+         * Finds the unique reference write that publishes the object owning
+         * one configured RPC scalar leaf.
+         *
+         * <p>The trace-local object flow discovers the source-side role;
+         * neither the wire field name nor the concrete object identity enters
+         * replay.  Replay captures {@code carrier.leaf} at that unique static
+         * assignment instead of treating sibling objects written at one leaf
+         * constructor site as interchangeable versions.</p>
+         */
+        private FieldAccessEvent exactRpcCarrierWrite(
+                long leafEventSeq, Set<Long> invocationCalls) {
+            FieldAccessEvent leaf = fieldBySeq.get(leafEventSeq);
+            return uniqueRpcCarrierPublication(leaf, invocationCalls,
+                    fields);
         }
 
         /**

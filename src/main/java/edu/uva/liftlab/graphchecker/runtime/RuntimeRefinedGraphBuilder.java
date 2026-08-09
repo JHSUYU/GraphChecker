@@ -53,6 +53,8 @@ final class RuntimeRefinedGraphBuilder {
             "TRUSTED_CONFIGURED_RPC_MAPPING_V1";
     static final String PROTOCOL_CALLSITE_AUTHORITY =
             "EXACT_RUNTIME_PROTOCOL_CALLSITE_RESULT_V1";
+    static final String ASSOCIATIVE_MEMBER_AUTHORITY =
+            "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1";
 
     private static final Type ROW_TYPE =
             new TypeToken<Map<String, Object>>() { }.getType();
@@ -1002,6 +1004,15 @@ final class RuntimeRefinedGraphBuilder {
         return declaration.substring(separator + 1, end);
     }
 
+    private static String associativeMemberToken(String process,
+                                                  int containerObjectId,
+                                                  long invocationId) {
+        String provenance = process + "\n" + containerObjectId + "\n"
+                + invocationId;
+        return "MEMBER." + UUID.nameUUIDFromBytes(provenance.getBytes(
+                StandardCharsets.UTF_8));
+    }
+
     private static List<String> parameterTypes(String signature) {
         Matcher matcher = METHOD.matcher(signature);
         if (!matcher.matches() || matcher.group(4).trim().isEmpty()) {
@@ -1647,14 +1658,11 @@ final class RuntimeRefinedGraphBuilder {
                     || value.objectId == 0) {
                 return;
             }
-            String provenance = root.process + "\n"
-                    + mutationEnter.objectId + "\n"
-                    + mutationEnter.invocationId;
-            result.put("containerMemberToken", "MEMBER."
-                    + UUID.nameUUIDFromBytes(provenance.getBytes(
-                    StandardCharsets.UTF_8)));
+            result.put("containerMemberToken", associativeMemberToken(
+                    root.process, mutationEnter.objectId,
+                    mutationEnter.invocationId));
             result.put("containerMemberIdentityAuthority",
-                    "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1");
+                    ASSOCIATIVE_MEMBER_AUTHORITY);
             result.put("containerObjectId", mutationEnter.objectId);
             result.put("containerKeyObjectId", key.objectId);
             result.put("containerValueObjectId", value.objectId);

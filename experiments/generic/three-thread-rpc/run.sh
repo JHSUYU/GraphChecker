@@ -757,17 +757,15 @@ publish_path_wave() {
   local state_dir=$2
   local summaries=$3
   local execution_tasks=$4
-  local raw_results=$5
-  local records=$6
+  local records=$5
   local task_dir
-  local -a task_dirs summary_inputs task_inputs raw_inputs record_inputs
+  local -a task_dirs summary_inputs task_inputs record_inputs
 
   mapfile -t task_dirs < <(find "${wave_dir}" -mindepth 1 -maxdepth 1 \
     -type d -name 'task-*' | LC_ALL=C sort)
   [[ ${#task_dirs[@]} -gt 0 ]] || die "path wave has no task directories"
   summary_inputs=("${summaries}")
   task_inputs=("${execution_tasks}")
-  raw_inputs=("${raw_results}")
   record_inputs=("${records}")
 
   for task_dir in "${task_dirs[@]}"; do
@@ -780,7 +778,6 @@ publish_path_wave() {
       require_file "path replay imported summary" \
         "${task_dir}/concolic_region_summaries.jsonl"
       task_inputs+=("${task_dir}/execution_task_plan.jsonl")
-      raw_inputs+=("${task_dir}/concolic_region_results.jsonl")
       summary_inputs+=("${task_dir}/concolic_region_summaries.jsonl")
     fi
   done
@@ -789,13 +786,10 @@ publish_path_wave() {
     "${summary_inputs[@]}"
   combine_jsonl_unique taskId "${state_dir}/next_execution_tasks.jsonl" \
     "${task_inputs[@]}"
-  combine_jsonl_unique taskId "${state_dir}/next_raw_results.jsonl" \
-    "${raw_inputs[@]}"
   combine_jsonl_unique queryKey "${state_dir}/next_records.jsonl" \
     "${record_inputs[@]}"
   mv -f "${state_dir}/next_summaries.jsonl" "${summaries}"
   mv -f "${state_dir}/next_execution_tasks.jsonl" "${execution_tasks}"
-  mv -f "${state_dir}/next_raw_results.jsonl" "${raw_results}"
   mv -f "${state_dir}/next_records.jsonl" "${records}"
 }
 
@@ -806,7 +800,7 @@ explore_region_paths() {
   local schedule=$4
   local classes=$5
   local campaign=$6
-  local summaries execution_tasks raw_results records state_dir planner_dir
+  local summaries execution_tasks records state_dir planner_dir
   local z3 solver_timeout planner_status query_key iteration jobs task_dir
   local wave_limit
   local bound_spec bound_property bound_option bound_value
@@ -821,15 +815,12 @@ explore_region_paths() {
   mkdir -p "${state_dir}"
   summaries="${campaign}/observed_path_summaries.jsonl"
   execution_tasks="${state_dir}/observed_execution_tasks.jsonl"
-  raw_results="${campaign}/raw_results.jsonl"
   records="${campaign}/path_exploration_records.jsonl"
   : >"${records}"
   combine_jsonl_unique summaryId "${summaries}" \
     "${schedule}/concolic_region_summaries.jsonl"
   combine_jsonl_unique taskId "${execution_tasks}" \
     "${schedule}/execution_task_plan.jsonl"
-  combine_jsonl_unique taskId "${raw_results}" \
-    "${schedule}/concolic_region_results.jsonl"
   z3=$(configured_value z3_bin) || return $?
   solver_timeout=$(configured_value solver_timeout_ms) || return $?
   jobs=${CAUSYNTH_CONCOLIC_JOBS:-$(nproc)}
@@ -917,7 +908,7 @@ explore_region_paths() {
       die "${label} path wave ${iteration} failed; inspect ${planner_dir}"
     fi
     publish_path_wave "${planner_dir}" "${state_dir}" "${summaries}" \
-      "${execution_tasks}" "${raw_results}" "${records}"
+      "${execution_tasks}" "${records}"
     discard_successful_iteration "${campaign}"
     iteration=$((iteration + 1))
   done

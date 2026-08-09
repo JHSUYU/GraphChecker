@@ -709,7 +709,7 @@ public final class RuntimeWorkflowDiscovery {
         }
         Occurrence selected = actual.require(
                 selectedTarget.regionInstanceId);
-        if (!selected.sameInstantiation(selectedTarget.occurrence)) {
+        if (!selected.sameIdentity(selectedTarget.occurrence)) {
             throw new IOException("scheduled target task occurrence does "
                     + "not match selected runtime evidence: "
                     + selectedTarget.regionInstanceId);
@@ -723,9 +723,15 @@ public final class RuntimeWorkflowDiscovery {
                     string(action, "symbol"));
             if (!port.isEmpty()) canonicalInputs.add(port);
         }
-        if (!selected.exactInputByCanonical.keySet().equals(
-                canonicalInputs) || !selected.canonicalOutputByExact
-                .isEmpty()) {
+        Map<String, String> expectedInputs = new LinkedHashMap<>();
+        for (String canonical : canonicalInputs) {
+            String exact = selectedTarget.occurrence
+                    .exactInputByCanonical.get(canonical);
+            if (exact != null) expectedInputs.put(canonical, exact);
+        }
+        if (!selected.exactInputByCanonical.equals(expectedInputs)
+                || expectedInputs.size() != canonicalInputs.size()
+                || !selected.canonicalOutputByExact.isEmpty()) {
             throw new IOException("scheduled target task occurrence port "
                     + "map does not cover the target inputs exactly: "
                     + selectedTarget.regionInstanceId);
@@ -758,7 +764,9 @@ public final class RuntimeWorkflowDiscovery {
             }
         }
         if (!touchingBindings.containsAll(selected.bindingIds)
-                || !selected.bindingIds.containsAll(demandedBindings)) {
+                || !selected.bindingIds.containsAll(demandedBindings)
+                || !selectedTarget.occurrence.bindingIds.containsAll(
+                selected.bindingIds)) {
             throw new IOException("scheduled target occurrence binding "
                     + "ledger is incomplete: "
                     + selectedTarget.regionInstanceId);
@@ -1483,14 +1491,9 @@ public final class RuntimeWorkflowDiscovery {
             bindingIds = stringSet(encoded, "bindingIds");
         }
 
-        private boolean sameInstantiation(Occurrence other) {
+        private boolean sameIdentity(Occurrence other) {
             return other != null && rootCallId == other.rootCallId
-                    && regionInstanceId.equals(other.regionInstanceId)
-                    && exactInputByCanonical.equals(
-                    other.exactInputByCanonical)
-                    && canonicalOutputByExact.equals(
-                    other.canonicalOutputByExact)
-                    && bindingIds.equals(other.bindingIds);
+                    && regionInstanceId.equals(other.regionInstanceId);
         }
 
         private String exactInput(String canonical) throws IOException {
