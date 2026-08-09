@@ -63,6 +63,7 @@ import soot.toolkits.graph.BriefUnitGraph;
 import soot.toolkits.graph.MHGDominatorsFinder;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -301,6 +302,22 @@ public final class CausynthPipeline {
         String signature = plan.rootMethod();
         Set<String> instrumentationMethods =
                 new LinkedHashSet<>(plan.instrumentationMethods());
+        final SootMethod logicalRoot;
+        try {
+            logicalRoot = Scene.v().getMethod(signature);
+        } catch (RuntimeException missing) {
+            throw new IllegalStateException(
+                    "Selected concolic root is unavailable: " + signature,
+                    missing);
+        }
+        SootMethod replayEntry = plan.replayAnchorAllowed()
+                ? selectConcolicReplayEntry(logicalRoot,
+                plan.replayAnchorMethods()) : logicalRoot;
+        String replayEntrySignature = replayEntry.getSignature();
+        // The logical region remains rooted at signature.  The replay entry
+        // is only the finite activation at which the VM starts recording, so
+        // its loops are still part of the bounded execution semantics.
+        instrumentationMethods.add(replayEntrySignature);
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
         taggedMethods.addAll(materializationSelection.localMethods());
         taggedMethods.addAll(materializationSelection.methodArgumentMethods());
@@ -309,6 +326,9 @@ public final class CausynthPipeline {
         for (ExactHeapOutputCapture capture : exactHeapOutputs) {
             taggedMethods.add(capture.method());
         }
+        Stmt delayedReplayArm = selectDelayedReplayArmCall(
+                replayEntry, plan.targetMethod(), taggedMethods,
+                plan.outputRelation(), plan.replayAnchorAllowed());
         for (String methodSignature : taggedMethods) {
             try {
                 SootMethod method = Scene.v().getMethod(methodSignature);
@@ -343,11 +363,11 @@ public final class CausynthPipeline {
         // completed mutation state is emitted while its region is still active.
         instrumentConcolicExactHeapOutputs(exactHeapOutputs, refs);
         try {
-            SootMethod method = Scene.v().getMethod(signature);
+            SootMethod method = replayEntry;
             if (method == null || !method.isConcrete()) {
                 throw new IllegalStateException(
                         "Selected concolic root is not a concrete method: "
-                                + signature);
+                                + replayEntrySignature);
             }
             Body body = method.retrieveActiveBody();
             List<Unit> originalUnits = snapshotUnits(body);
@@ -356,7 +376,8 @@ public final class CausynthPipeline {
             if (method.isConstructor() && insertionPoint == null) {
                 throw new IllegalStateException(
                         "Selected constructor root has no initialized-this "
-                                + "instrumentation point: " + signature);
+                                + "instrumentation point: "
+                                + replayEntrySignature);
             }
             Value receiver = NullConstant.v();
             if (!method.isStatic()) {
@@ -371,11 +392,28 @@ public final class CausynthPipeline {
             Unit tokenInitialization = Jimple.v().newAssignStmt(token,
                     LongConstant.v(0L));
             entry.add(tokenInitialization);
+            List<Unit> activation = entry;
+            Unit delayedInactive = null;
+            if (delayedReplayArm != null) {
+                Local attempted = newTraceLocal(body, IntType.v(),
+                        "$causynthRegionAttempted");
+                entry.add(Jimple.v().newAssignStmt(attempted,
+                        IntConstant.v(0)));
+                activation = new ArrayList<>();
+                delayedInactive = Jimple.v().newNopStmt();
+                activation.add(Jimple.v().newIfStmt(
+                        Jimple.v().newNeExpr(attempted,
+                                IntConstant.v(0)), delayedInactive));
+                // One engine acquisition attempt per replay activation.  A
+                // throwing target never reaches this assignment or the arm.
+                activation.add(Jimple.v().newAssignStmt(attempted,
+                        IntConstant.v(1)));
+            }
             ArrayType objectArrayType = ArrayType.v(
                     RefType.v("java.lang.Object"), 1);
             Local rootArguments = newTraceLocal(body, objectArrayType,
                     "$causynthRootArguments");
-            entry.add(Jimple.v().newAssignStmt(rootArguments,
+            activation.add(Jimple.v().newAssignStmt(rootArguments,
                     Jimple.v().newNewArrayExpr(
                             RefType.v("java.lang.Object"),
                             IntConstant.v(method.getParameterCount()))));
@@ -391,17 +429,17 @@ public final class CausynthPipeline {
                 } catch (RuntimeException ignored) {
                     continue;
                 }
-                entry.add(Jimple.v().newAssignStmt(
+                activation.add(Jimple.v().newAssignStmt(
                         Jimple.v().newArrayRef(rootArguments,
                                 IntConstant.v(index)),
-                        objectArg(body, parameter, entry)));
+                        objectArg(body, parameter, activation)));
             }
             Unit enterRegion = Jimple.v().newAssignStmt(token,
                     Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.ENTER_REGION_FRAME),
                             StringConstant.v(signature), receiver,
                             rootArguments));
-            entry.add(enterRegion);
+            activation.add(enterRegion);
             Unit regionStart = enterRegion;
             for (int index = 0; index < method.getParameterCount(); index++) {
                 Value parameter;
@@ -411,27 +449,28 @@ public final class CausynthPipeline {
                     continue;
                 }
                 Value primitiveValue = primitiveValueString(body,
-                        parameter, entry);
+                        parameter, activation);
                 if (PrimitiveWrapper.forType(parameter.getType()) != null) {
                     addPrimitiveArgumentMaterialization(body, parameter,
-                            token, index, primitiveValue, entry,
+                            token, index, primitiveValue, activation,
                             refs.ref(Hook.MATERIALIZE_ARGUMENT),
                             refs.ref(Hook.PAUSE_OBSERVATION),
                             refs.ref(Hook.RESUME_OBSERVATION));
                 } else {
-                    Value objectValue = objectArg(body, parameter, entry);
+                    Value objectValue = objectArg(body, parameter,
+                            activation);
                     Local modeled = newTraceLocal(body,
                             RefType.v("java.lang.Object"),
                             "$causynthArgumentModel");
-                    entry.add(Jimple.v().newInvokeStmt(
+                    activation.add(Jimple.v().newInvokeStmt(
                             Jimple.v().newStaticInvokeExpr(
                                     refs.ref(Hook.PAUSE_OBSERVATION))));
-                    entry.add(Jimple.v().newAssignStmt(modeled,
+                    activation.add(Jimple.v().newAssignStmt(modeled,
                             Jimple.v().newStaticInvokeExpr(
                                     refs.ref(Hook.MATERIALIZE_ARGUMENT), token,
                                     IntConstant.v(index), objectValue,
                                     primitiveValue)));
-                    entry.add(Jimple.v().newInvokeStmt(
+                    activation.add(Jimple.v().newInvokeStmt(
                             Jimple.v().newStaticInvokeExpr(
                                     refs.ref(Hook.RESUME_OBSERVATION))));
                     Value converted = parameter.getType() instanceof RefType
@@ -439,22 +478,30 @@ public final class CausynthPipeline {
                             parameter.getType()).getClassName())
                             ? modeled : Jimple.v().newCastExpr(modeled,
                             parameter.getType());
-                    entry.add(Jimple.v().newAssignStmt(parameter,
+                    activation.add(Jimple.v().newAssignStmt(parameter,
                             converted));
-                    entry.add(Jimple.v().newInvokeStmt(
+                    activation.add(Jimple.v().newInvokeStmt(
                             Jimple.v().newStaticInvokeExpr(
                                     refs.ref(Hook.PAUSE_OBSERVATION))));
-                    entry.add(Jimple.v().newInvokeStmt(
+                    activation.add(Jimple.v().newInvokeStmt(
                             Jimple.v().newStaticInvokeExpr(
                                     refs.ref(Hook.SYMBOLIZE_ARGUMENT), token,
                                     IntConstant.v(index), parameter,
                                     primitiveValue)));
-                    entry.add(Jimple.v().newInvokeStmt(
+                    activation.add(Jimple.v().newInvokeStmt(
                             Jimple.v().newStaticInvokeExpr(
                                     refs.ref(Hook.RESUME_OBSERVATION))));
                 }
             }
-            insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+            if (delayedReplayArm == null) {
+                insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+            } else {
+                activation.add(delayedInactive);
+                insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+                // The arm is on the normal fall-through edge.  If the exact
+                // target throws, neither attempted nor enterRegionFrame runs.
+                insertAfterSequence(body, delayedReplayArm, activation);
+            }
 
             for (Unit unit : originalUnits) {
                 if (!(unit instanceof Stmt)) {
@@ -486,7 +533,8 @@ public final class CausynthPipeline {
         } catch (RuntimeException exception) {
             throw new IllegalStateException(
                     "Could not instrument selected concolic region root "
-                            + signature, exception);
+                            + signature + " at replay entry "
+                            + replayEntrySignature, exception);
         }
         instrumentConcolicAccessorCallContexts(materializationSelection, refs);
         instrumentConcolicCallArgumentOutputs(callArgumentOutputs, refs);
@@ -495,11 +543,256 @@ public final class CausynthPipeline {
                 materializationSelection, refs);
         instrumentConcolicMaterializations(materializationSelection, refs);
         instrumentConcolicBranches(branchSelection, refs);
-        LOG.info("Instrumented symbolic-region root {} for concolic replay; "
+        LOG.info("Instrumented symbolic-region root {} at replay entry {} "
+                        + "for concolic replay{}; "
                         + "bounded {} CFG backedges at {} loop-body "
                         + "iterations each",
-                signature, boundedBackedges,
+                signature, replayEntrySignature,
+                delayedReplayArm == null ? ""
+                        : " with post-target engine arm",
+                boundedBackedges,
                 plan.loopBound().maxBackedgeTraversals());
+    }
+
+    /**
+     * Selects a unique normal-return boundary at which the symbolic engine
+     * may be armed without losing any demanded replay semantics.
+     *
+     * <p>This is deliberately fail-closed.  It applies only to an output
+     * relation with a stable root selector, and only when the explicit task
+     * target is not itself part of the methods that must be replayed.  The
+     * declared target call must occur exactly once in the replay entry.</p>
+     */
+    static Stmt selectDelayedReplayArmCall(
+            SootMethod replayEntry, String targetSignature,
+            Collection<String> replayDemandSignatures,
+            boolean outputRelation, boolean replayAnchorAllowed) {
+        if (!outputRelation || !replayAnchorAllowed
+                || replayEntry == null || !replayEntry.isConcrete()
+                || targetSignature == null
+                || targetSignature.trim().isEmpty()
+                || replayDemandSignatures == null
+                || replayDemandSignatures.contains(targetSignature)) {
+            return null;
+        }
+        Body body;
+        try {
+            body = replayEntry.retrieveActiveBody();
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
+        Stmt selected = null;
+        for (Unit unit : body.getUnits()) {
+            if (!(unit instanceof Stmt)
+                    || !((Stmt) unit).containsInvokeExpr()
+                    || !targetSignature.equals(((Stmt) unit)
+                    .getInvokeExpr().getMethodRef().getSignature())) {
+                continue;
+            }
+            if (selected != null) return null;
+            selected = (Stmt) unit;
+        }
+        return selected != null && body.getUnits().getSuccOf(selected) != null
+                ? selected : null;
+    }
+
+    /**
+     * Chooses the nearest same-receiver activation that encloses both the
+     * task target and every demanded output method.
+     *
+     * <p>A thread root such as {@code run()} can spend an unbounded concrete
+     * prefix in connection setup before it reaches the code the task asks the
+     * VM to summarize.  Starting the single symbolic engine at that root lets
+     * an unrelated node monopolize it.  The deepest common caller is the same
+     * logical region activation, but starts after that prefix and still
+     * encloses all demanded effects.  We only move the entry when direct
+     * application-call evidence proves the enclosure and the receiver and
+     * argument shapes are unchanged; otherwise the logical root is retained.
+     */
+    static SootMethod selectConcolicReplayEntry(
+            SootMethod logicalRoot, Collection<String> demandedSignatures) {
+        if (logicalRoot == null || !logicalRoot.isConcrete()
+                || demandedSignatures == null
+                || demandedSignatures.isEmpty()) {
+            return logicalRoot;
+        }
+        Set<SootMethod> demanded = new LinkedHashSet<>();
+        for (String signature : demandedSignatures) {
+            if (signature == null || signature.trim().isEmpty()) continue;
+            try {
+                SootMethod method = Scene.v().getMethod(signature);
+                if (!method.equals(logicalRoot)) demanded.add(method);
+            } catch (RuntimeException missing) {
+                return logicalRoot;
+            }
+        }
+        if (demanded.isEmpty()) return logicalRoot;
+
+        Map<SootMethod, Integer> selfDepth = selfCallDepth(logicalRoot);
+        List<Map.Entry<SootMethod, Integer>> candidates = new ArrayList<>(
+                selfDepth.entrySet());
+        candidates.sort((left, right) -> Integer.compare(
+                right.getValue(), left.getValue()));
+        for (Map.Entry<SootMethod, Integer> entry : candidates) {
+            SootMethod candidate = entry.getKey();
+            if (candidate.equals(logicalRoot)
+                    || !compatibleReplayEntry(logicalRoot, candidate)
+                    || inNontrivialSelfCallCycle(candidate)
+                    || !reachesAllDemanded(candidate, demanded,
+                    logicalRoot)) {
+                continue;
+            }
+            return candidate;
+        }
+        return logicalRoot;
+    }
+
+    /** Receiver-preserving path used only to prove the activation nesting. */
+    private static Map<SootMethod, Integer> selfCallDepth(
+            SootMethod logicalRoot) {
+        Map<SootMethod, Integer> depth = new LinkedHashMap<>();
+        ArrayDeque<SootMethod> pending = new ArrayDeque<>();
+        depth.put(logicalRoot, 0);
+        pending.add(logicalRoot);
+        while (!pending.isEmpty()) {
+            SootMethod caller = pending.removeFirst();
+            int nextDepth = depth.get(caller) + 1;
+            for (SootMethod callee : directSelfCallees(caller)) {
+                if (!compatibleReplayEntry(logicalRoot, callee)
+                        || depth.containsKey(callee)) continue;
+                depth.put(callee, nextDepth);
+                pending.addLast(callee);
+            }
+        }
+        return depth;
+    }
+
+    static boolean compatibleReplayEntry(
+            SootMethod logicalRoot, SootMethod candidate) {
+        return candidate != null && candidate.isConcrete()
+                && !candidate.isConstructor()
+                && !candidate.isStaticInitializer()
+                && logicalRoot.isStatic() == candidate.isStatic()
+                && logicalRoot.getDeclaringClass().equals(
+                candidate.getDeclaringClass())
+                && logicalRoot.getParameterTypes().equals(
+                candidate.getParameterTypes())
+                && logicalRoot.getReturnType().equals(
+                candidate.getReturnType());
+    }
+
+    /** A cyclic helper cannot prove a strictly nested replay boundary. */
+    private static boolean inNontrivialSelfCallCycle(SootMethod candidate) {
+        Set<SootMethod> reached = new LinkedHashSet<>();
+        ArrayDeque<SootMethod> pending = new ArrayDeque<>(
+                directSelfCallees(candidate));
+        while (!pending.isEmpty() && reached.size() <= 4096) {
+            SootMethod method = pending.removeFirst();
+            if (method.equals(candidate)) return true;
+            if (!reached.add(method)) continue;
+            pending.addAll(directSelfCallees(method));
+        }
+        return false;
+    }
+
+    static Set<SootMethod> directApplicationCallees(
+            SootMethod caller) {
+        Set<SootMethod> result = new LinkedHashSet<>();
+        if (caller == null || !caller.isConcrete()) return result;
+        Body body;
+        try {
+            body = caller.retrieveActiveBody();
+        } catch (RuntimeException unavailable) {
+            return result;
+        }
+        for (Unit unit : body.getUnits()) {
+            if (!(unit instanceof Stmt)
+                    || !((Stmt) unit).containsInvokeExpr()) continue;
+            try {
+                SootMethodRef reference = ((Stmt) unit).getInvokeExpr()
+                        .getMethodRef();
+                SootMethod callee = reference.declaringClass()
+                        .getMethodUnsafe(reference.getSubSignature());
+                if (callee == null) callee = reference.tryResolve();
+                if (callee != null && callee.isConcrete()
+                        && callee.getDeclaringClass().isApplicationClass()) {
+                    result.add(callee);
+                }
+            } catch (RuntimeException unresolved) {
+                // An unresolved or polymorphic edge cannot prove that moving
+                // the replay entry preserves the demanded enclosure.
+            }
+        }
+        return result;
+    }
+
+    private static Set<SootMethod> directSelfCallees(SootMethod caller) {
+        Set<SootMethod> result = new LinkedHashSet<>();
+        if (caller == null || !caller.isConcrete()) return result;
+        Body body;
+        try {
+            body = caller.retrieveActiveBody();
+        } catch (RuntimeException unavailable) {
+            return result;
+        }
+        Local thisLocal = null;
+        if (!caller.isStatic()) {
+            try {
+                thisLocal = body.getThisLocal();
+            } catch (RuntimeException unavailable) {
+                return result;
+            }
+        }
+        for (Unit unit : body.getUnits()) {
+            if (!(unit instanceof Stmt)
+                    || !((Stmt) unit).containsInvokeExpr()) continue;
+            InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
+            boolean sameReceiver = caller.isStatic()
+                    && !(invoke instanceof InstanceInvokeExpr);
+            if (invoke instanceof InstanceInvokeExpr && thisLocal != null) {
+                sameReceiver = ((InstanceInvokeExpr) invoke).getBase()
+                        .equivTo(thisLocal);
+            }
+            if (!sameReceiver) continue;
+            try {
+                SootMethodRef reference = invoke.getMethodRef();
+                SootMethod callee = reference.declaringClass()
+                        .getMethodUnsafe(reference.getSubSignature());
+                if (callee == null) callee = reference.tryResolve();
+                if (callee != null && caller.getDeclaringClass().equals(
+                        callee.getDeclaringClass())) {
+                    result.add(callee);
+                }
+            } catch (RuntimeException unresolved) {
+                // No exact receiver-preserving edge, so no anchor proof.
+            }
+        }
+        return result;
+    }
+
+    private static boolean reachesAllDemanded(
+            SootMethod start, Set<SootMethod> demanded,
+            SootMethod logicalRoot) {
+        Set<SootMethod> remaining = new LinkedHashSet<>(demanded);
+        remaining.remove(start);
+        if (remaining.isEmpty()) return true;
+        Set<SootMethod> reached = new LinkedHashSet<>();
+        ArrayDeque<SootMethod> pending = new ArrayDeque<>();
+        reached.add(start);
+        pending.add(start);
+        while (!pending.isEmpty() && reached.size() <= 4096) {
+            SootMethod method = pending.removeFirst();
+            for (SootMethod callee : directApplicationCallees(method)) {
+                if (callee.equals(logicalRoot) || !reached.add(callee)) {
+                    continue;
+                }
+                if (remaining.remove(callee) && remaining.isEmpty()) {
+                    return true;
+                }
+                pending.addLast(callee);
+            }
+        }
+        return false;
     }
 
     /** Captures the exact value presented at a configured protocol call. */

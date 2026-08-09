@@ -7,21 +7,21 @@ import static org.junit.Assert.assertTrue;
 
 public class JavaContainerTypesTest {
     @Test
-    public void classifiesOnlyExistingModeledContainerOperations() {
-        assertTrue(JavaContainerTypes.modeledContainerOperation(
+    public void classifiesSymbolicResultOperations() {
+        assertTrue(JavaContainerTypes.symbolicResultOperation(
                 "<java.util.Map: java.lang.Object get(java.lang.Object)>"));
-        assertTrue(JavaContainerTypes.modeledContainerOperation(
+        assertTrue(JavaContainerTypes.symbolicResultOperation(
                 "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>"));
-        assertTrue(JavaContainerTypes.modeledContainerOperation(
+        assertTrue(JavaContainerTypes.symbolicResultOperation(
                 "<java.util.List: java.lang.Object get(int)>"));
-        assertTrue(JavaContainerTypes.modeledContainerOperation(
+        assertTrue(JavaContainerTypes.symbolicResultOperation(
                 "<java.util.Set: boolean add(java.lang.Object)>"));
 
-        assertFalse(JavaContainerTypes.modeledContainerOperation(
+        assertTrue(JavaContainerTypes.symbolicResultOperation(
                 "<java.util.Iterator: java.lang.Object next()>"));
-        assertFalse(JavaContainerTypes.modeledContainerOperation(
+        assertFalse(JavaContainerTypes.symbolicResultOperation(
                 "<java.util.Map: void clear()>"));
-        assertFalse(JavaContainerTypes.modeledContainerOperation(
+        assertFalse(JavaContainerTypes.symbolicResultOperation(
                 "<example.State: java.lang.Object get(java.lang.Object)>"));
     }
 

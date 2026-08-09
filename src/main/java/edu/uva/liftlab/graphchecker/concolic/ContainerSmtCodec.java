@@ -545,6 +545,7 @@ public final class ContainerSmtCodec {
                         + operation);
                 return null;
             }
+            requireAssociativeMember(entry.state, entry.index, host);
             String value = "KEY".equals(operation)
                     ? "(assoc_key_at " + entry.state.text + " "
                     + entry.index.text + ")"
@@ -562,6 +563,9 @@ public final class ContainerSmtCodec {
             Term cursor = host.operand(expression.get("receiver"),
                     Sort.INDEXED);
             Term index = host.operand(positions.get(0), Sort.INT);
+            if (cursor != null && index != null) {
+                requireIndexedMember(cursor, index, host);
+            }
             return cursor == null || index == null ? null
                     : host.unbox(new Term("(indexed_read " + cursor.text
                     + " " + index.text + ")", Sort.VALUE), javaType);
@@ -577,6 +581,7 @@ public final class ContainerSmtCodec {
             }
             Term index = host.operand(positions.get(0), Sort.INT);
             if (index == null) return null;
+            requireAssociativeMember(view.state, index, host);
             String value = "KEY_VIEW".equals(view.kind)
                     ? "(assoc_key_at " + view.state.text + " "
                     + index.text + ")"
@@ -595,6 +600,7 @@ public final class ContainerSmtCodec {
             }
             Term value = host.box(observed.get(0));
             if (value == null) return null;
+            requireAssociativeMember(entry.state, entry.index, host);
             String selected = "OBSERVE_KEY".equals(operation)
                     ? "(assoc_key_at " + entry.state.text + " "
                     + entry.index.text + ")"
@@ -665,6 +671,9 @@ public final class ContainerSmtCodec {
             }
             if ("READ".equals(operation) && arguments.size() == 1) {
                 Term index = host.operand(arguments.get(0), Sort.INT);
+                if (index != null) {
+                    requireIndexedMember(receiver, index, host);
+                }
                 return index == null ? null
                         : host.unbox(new Term("(indexed_read "
                         + receiver.text + " " + index.text + ")",
@@ -749,6 +758,7 @@ public final class ContainerSmtCodec {
                     && arguments.size() == 1) {
                 Term index = host.operand(arguments.get(0), Sort.INT);
                 if (index == null) return null;
+                requireAssociativeMember(receiver, index, host);
                 String literal = literalSlot(index.text);
                 return literal.isEmpty()
                         ? new Term("(assoc_remove " + receiver.text
@@ -820,6 +830,78 @@ public final class ContainerSmtCodec {
                 "(ite (= " + key.text + " " + mutatedKey.text + ") "
                         + mutatedValue.text + " " + previous.text + ")",
                 Sort.VALUE);
+    }
+
+    /**
+     * Positional container projections are Java operations, not total SMT
+     * array reads.  Keep their definedness explicit so an out-of-range slot
+     * cannot become an unconstrained symbolic member.  The host decides how
+     * to scope the predicate: one replay path may assert it directly, while
+     * the composed query attaches it to the owning guarded path case.
+     */
+    private static void requireIndexedMember(
+            Term state, Term index, Host host) {
+        host.require("(let ((s " + state.text + ") (i " + index.text
+                + ")) (and (<= 0 i) (< i (indexed_size s))))");
+    }
+
+    private static void requireAssociativeMember(
+            Term state, Term index, Host host) {
+        host.require(associativeMemberRequirement(state, index));
+    }
+
+    private static String associativeMemberRequirement(
+            Term state, Term index) {
+        return "(let ((s " + state.text + ") (i " + index.text
+                + ")) (and (<= 0 i) (< i (assoc_size s))"
+                + " (assoc_has s (assoc_key_at s i))))";
+    }
+
+    /**
+     * Returns the real associative removals on one output's receiver spine.
+     * Arguments are deliberately not searched: a nested container passed as
+     * a value cannot explain a missing member in the output state itself.
+     */
+    static List<AssociativeRemovalEffect> associativeRemovalEffects(
+            JsonElement expression, Host host) {
+        List<AssociativeRemovalEffect> result = new java.util.ArrayList<>();
+        JsonElement cursor = expression;
+        while (cursor != null && cursor.isJsonObject()) {
+            JsonObject relation = cursor.getAsJsonObject();
+            if (!EXPRESSION_TYPE.equals(string(relation, "_type"))
+                    || !"ASSOCIATIVE".equals(string(relation, "shape"))) {
+                break;
+            }
+            String operation = string(relation, "operation");
+            JsonArray arguments = array(relation, "arguments");
+            JsonElement receiverIr = relation.get("receiver");
+            if ("REMOVE".equals(operation) && arguments.size() == 1) {
+                Term state = host.operand(receiverIr, Sort.ASSOCIATIVE);
+                Term key = host.box(arguments.get(0));
+                if (state != null && key != null) {
+                    result.add(new AssociativeRemovalEffect(key,
+                            "(assoc_has " + state.text + " "
+                                    + key.text + ")"));
+                }
+            } else if ("REMOVE_AT".equals(operation)
+                    && arguments.size() == 1) {
+                Term state = host.operand(receiverIr, Sort.ASSOCIATIVE);
+                Term index = host.operand(arguments.get(0), Sort.INT);
+                if (state != null && index != null) {
+                    result.add(new AssociativeRemovalEffect(new Term(
+                            "(assoc_key_at " + state.text + " "
+                                    + index.text + ")", Sort.VALUE),
+                            associativeMemberRequirement(state, index)));
+                }
+            }
+            if (!("PUT".equals(operation)
+                    || "REMOVE".equals(operation)
+                    || "REMOVE_AT".equals(operation))) {
+                break;
+            }
+            cursor = receiverIr;
+        }
+        return result;
     }
 
     private static Term associativeSize(JsonElement expression, Host host) {
@@ -979,6 +1061,17 @@ public final class ContainerSmtCodec {
             this.operation = operation;
             this.receiver = receiver;
             this.arguments = arguments;
+        }
+    }
+
+    static final class AssociativeRemovalEffect {
+        final Term removedKey;
+        final String precondition;
+
+        private AssociativeRemovalEffect(Term removedKey,
+                                         String precondition) {
+            this.removedKey = removedKey;
+            this.precondition = precondition;
         }
     }
 }

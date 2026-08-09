@@ -51,6 +51,7 @@ partial_probe_target_goal=""
 partial_probe_target_reach=""
 partial_probe_output=""
 declare -a partial_probe_summary_files=()
+replay_engine_fingerprint=""
 
 # Concolic exploration has two independent parallelism levels.  Region jobs
 # run different logical closure campaigns, while path jobs execute the
@@ -711,6 +712,51 @@ configured_value() {
   printf '%s\n' "${value}"
 }
 
+# A task id identifies what to replay, not which VM/runtime semantics produced
+# its summary.  Keep that second identity beside every reusable campaign so a
+# rebuilt concolic VM or GraphChecker runtime cannot silently reuse relations
+# emitted by older code.
+initialize_replay_engine_fingerprint() {
+  local tools_jar runtime_jar jdk libjvm
+  local -a libjvms=()
+  tools_jar=$(configured_value graphchecker_jar)
+  runtime_jar="${graphchecker_dir}/target/GraphChecker-1.0-SNAPSHOT.jar"
+  jdk=$(configured_value custom_jdk_home)
+  require_file "GraphChecker tool jar" "${tools_jar}"
+  require_file "GraphChecker runtime jar" "${runtime_jar}"
+  require_directory "custom concolic JDK" "${jdk}"
+  while IFS= read -r libjvm; do
+    [[ -n "${libjvm}" ]] && libjvms+=("${libjvm}")
+  done < <(find "${jdk}" -type f \
+    \( -name libjvm.so -o -name libjvm.dylib -o -name jvm.dll \) \
+    -print | sort)
+  (( ${#libjvms[@]} == 1 )) \
+    || die "expected one custom VM library under ${jdk}; found ${#libjvms[@]}"
+  replay_engine_fingerprint=$({
+    printf '%s\n' 'HDFS11741_REPLAY_ENGINE_V1'
+    sha256sum "${tools_jar}" "${runtime_jar}" "${libjvms[0]}"
+    printf '%s\n' \
+      "blockKeySerialSeed=${HDFS11741_BLOCK_KEY_SERIAL_SEED:-11741}" \
+      "testCapacity=${HDFS11741_TEST_CAPACITY:-1000}" \
+      "heartbeatRecheckMs=${HDFS11741_HEARTBEAT_RECHECK_MS:-300000}" \
+      "keyUpdateIntervalMinutes=${HDFS11741_KEY_UPDATE_INTERVAL_MINUTES:-0}" \
+      "nnUpdateIterations=${hdfs11741_nn_update_iterations}" \
+      "datanodeRefreshIterations=${hdfs11741_datanode_refresh_iterations}" \
+      "balancerRefreshIterations=${hdfs11741_balancer_refresh_iterations}" \
+      "balancerDispatcherThreads=${hdfs11741_balancer_dispatcher_threads}"
+  } | sha256sum | cut -d' ' -f1)
+}
+
+seed_campaign_cache_key() {
+  local canonical_task=$1
+  [[ -n "${replay_engine_fingerprint}" ]] \
+    || die "replay engine fingerprint was not initialized"
+  {
+    printf '%s\n' "${replay_engine_fingerprint}"
+    printf '%s\n' "${canonical_task}"
+  } | sha256sum | cut -d' ' -f1
+}
+
 run_graphchecker_main() {
   local main_class=$1
   shift
@@ -1001,13 +1047,14 @@ prepare_seed_campaign() {
   local schedule_plan=$1
   local task_id=$2
   local goal_kind=$3
-  local campaign singleton results summaries classes
-  local canonical_schedule canonical_singleton
+  local campaign singleton results summaries classes cache_marker
+  local canonical_schedule canonical_singleton expected_cache_key
   campaign=$(seed_campaign_directory "${goal_kind}" "${task_id}")
   singleton="${campaign}/execution_task_plan.jsonl"
   results="${campaign}/seed-results.jsonl"
   summaries="${campaign}/seed-summaries.jsonl"
   classes="${campaign}/classes"
+  cache_marker="${campaign}/replay-cache-key.sha256"
   canonical_schedule=$(jq -ceS -s --arg task "${task_id}" \
     --arg goalKind "${goal_kind}" '
       [.[] | select(.taskId == $task)]
@@ -1018,10 +1065,25 @@ prepare_seed_campaign() {
         else error("expected one executable scheduled task") end
     ' "${schedule_plan}") \
     || die "unknown or non-executable scheduled task: ${task_id}"
+  expected_cache_key=$(seed_campaign_cache_key "${canonical_schedule}")
 
   if [[ -e "${campaign}" ]]; then
     [[ -d "${campaign}" ]] \
       || die "seed campaign path is not a directory: ${campaign}"
+    if [[ ! -s "${cache_marker}" \
+        || "$(tr -d '\r\n' <"${cache_marker}")" \
+          != "${expected_cache_key}" ]]; then
+      case "${campaign}" in
+        "${seed_campaign_root}"/producer/TASK.SEED.*|\
+        "${seed_campaign_root}"/target/TASK.SEED.*) ;;
+        *) die "refusing to invalidate unexpected campaign path: ${campaign}" ;;
+      esac
+      echo "[hdfs-11741] invalidate stale replay campaign: ${campaign}" >&2
+      rm -rf -- "${campaign}"
+    fi
+  fi
+
+  if [[ -e "${campaign}" ]]; then
     require_nonempty_file "seed campaign singleton" "${singleton}"
     require_nonempty_file "seed campaign result" "${results}"
     require_nonempty_file "seed campaign summary" "${summaries}"
@@ -1037,13 +1099,23 @@ prepare_seed_campaign() {
       "${task_id}"
     require_unique_complete_summary "seed campaign summary" "${summaries}" \
       "${task_id}"
-    printf 'REUSE\t%s\n' "${campaign}"
+    printf 'REUSE\t%s\t%s\n' "${campaign}" "${expected_cache_key}"
     return
   fi
 
   mkdir -p "${campaign}"
   printf '%s\n' "${canonical_schedule}" >"${singleton}"
-  printf 'NEW\t%s\n' "${campaign}"
+  printf 'NEW\t%s\t%s\n' "${campaign}" "${expected_cache_key}"
+}
+
+publish_seed_campaign_cache_key() {
+  local campaign=$1
+  local cache_key=$2
+  local marker="${campaign}/replay-cache-key.sha256"
+  local temporary
+  temporary=$(mktemp "${marker}.tmp.XXXXXX")
+  printf '%s\n' "${cache_key}" >"${temporary}"
+  mv -f "${temporary}" "${marker}"
 }
 
 instrument_seed_task() {
@@ -1070,6 +1142,7 @@ replay_concolic_plan() {
   local classes=$3
   local results=$4
   local campaign=$5
+  local replay_timeout_s=${6:-${HDFS11741_REPLAY_TIMEOUT_S:-2400}}
   local hadoop_log_dir="${campaign}/hadoop-logs"
   local normalized jdk graphchecker_jar classpath java_path
   local maven_repository gson_jar replay_status
@@ -1106,7 +1179,7 @@ replay_concolic_plan() {
   (cd "${graphchecker_dir}" && \
       env -u CAUSYNTH_CONCOLIC_TASK_ID -u CAUSYNTH_TRACE_OUTPUT_DIR \
       timeout --signal=TERM --kill-after=60 \
-        "${HDFS11741_REPLAY_TIMEOUT_S:-2400}" \
+        "${replay_timeout_s}" \
       "${java_path}" \
         -Xint \
         -Xmx"${HDFS11741_CONCOLIC_HEAP:-2g}" \
@@ -1117,6 +1190,7 @@ replay_concolic_plan() {
         -Dcausynth.concolic.results="${results}" \
         -Dcausynth.concolic.halt.after.selected.result=true \
         -Dcausynth.concolic.engine.wait.millis="${HDFS11741_ENGINE_WAIT_MS:-60000}" \
+        -Dcausynth.junit.exit.after.run=true \
         -Dcausynth.junit.ignore.timeout=true \
         -Dtest.build.data="${campaign}/test-data" \
         -Djava.io.tmpdir="${campaign}/java-tmp" \
@@ -1166,20 +1240,22 @@ run_seed_task() {
   local schedule_plan=$1
   local task_id=$2
   local goal_kind=$3
-  local prepared state campaign
+  local prepared state campaign cache_key
   prepared=$(prepare_seed_campaign \
     "${schedule_plan}" "${task_id}" "${goal_kind}")
-  IFS=$'\t' read -r state campaign <<< "${prepared}"
+  IFS=$'\t' read -r state campaign cache_key <<< "${prepared}"
   if [[ "${state}" == "REUSE" ]]; then
     echo "[hdfs-11741] reuse ${goal_kind} seed: ${task_id}"
     return
   fi
-  [[ "${state}" == "NEW" && -n "${campaign}" ]] \
+  [[ "${state}" == "NEW" && -n "${campaign}" \
+      && -n "${cache_key}" ]] \
     || die "invalid seed campaign preparation state: ${prepared}"
   echo "[hdfs-11741] seed ${goal_kind}: ${task_id}"
   instrument_seed_task "${campaign}" "${task_id}"
   replay_seed_task "${campaign}" "${task_id}"
   import_seed_task "${campaign}" "${task_id}"
+  publish_seed_campaign_cache_key "${campaign}" "${cache_key}"
 }
 
 run_seed_tasks_parallel() {
@@ -1393,7 +1469,8 @@ run_path_query() {
   # because a campaign with no result cannot be seeded at all.
   set +e
   ( replay_concolic_plan "${task_dir}/execution_task_plan.jsonl" \
-      "${replay_task}" "${classes}" "${raw}" "${task_dir}" )
+      "${replay_task}" "${classes}" "${raw}" "${task_dir}" \
+      "${HDFS11741_PATH_REPLAY_TIMEOUT_S:-180}" )
   local replay_outcome=$?
   set -e
   if [[ "${replay_outcome}" -ne 0 ]]; then
@@ -2049,6 +2126,7 @@ do_candidates() {
   require_nonempty_file "runtime region plan" "${region_plan}"
   require_nonempty_file "scheduled concolic tasks" \
     "${work_root}/schedule/execution_task_plan.jsonl"
+  initialize_replay_engine_fingerprint
   selected_target_binding="${work_root}/schedule/selected_target_binding.tsv"
   if [[ -s "${selected_target_binding}" ]]; then
     discovery_output=$(sed -n '/[^[:space:]]/p' \

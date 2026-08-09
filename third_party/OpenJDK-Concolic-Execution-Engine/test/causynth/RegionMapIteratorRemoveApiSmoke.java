@@ -1,5 +1,5 @@
-import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -26,22 +26,28 @@ public final class RegionMapIteratorRemoveApiSmoke {
 
     private static final class State {
         private final Map<Integer, Value> entries =
-                new HashMap<Integer, Value>();
+                new LinkedHashMap<Integer, Value>();
     }
 
     public static void main(String[] args) {
         State state = new State();
         Value old = new Value(10L);
+        Value fresh = new Value(30L);
         Clock clock = new Clock(20L);
         state.entries.put(7, old);
+        state.entries.put(8, fresh);
 
         System.startConcolicRegion("REGION.iterator", "ACT.iterator");
         System.symbolizeField(state, "entries", "iterator_map");
-        System.symbolizeField(old, "expiry", "iterator_expiry");
         System.symbolizeField(clock, "now", "iterator_now");
+        int iteration = 0;
         for (Iterator<Map.Entry<Integer, Value>> iterator =
                 state.entries.entrySet().iterator(); iterator.hasNext();) {
             Map.Entry<Integer, Value> entry = iterator.next();
+            System.symbolizeExactField(entry.getValue(),
+                    Value.class.getName(), "expiry", "J",
+                    iteration++ == 0 ? "iterator_expiry"
+                            : "iterator_fresh_expiry");
             if (entry.getValue().expiry < clock.now) {
                 iterator.remove();
             }
@@ -50,10 +56,13 @@ public final class RegionMapIteratorRemoveApiSmoke {
         String summary = System.finishConcolicRegion();
 
         require(!state.entries.containsKey(7), summary);
+        require(state.entries.containsKey(8), summary);
         require(summary.contains("iterator_expiry"), summary);
+        require(summary.contains("iterator_fresh_expiry"), summary);
         require(summary.contains("iterator_now"), summary);
         require(relation.contains("\"operation\":\"REMOVE_AT\""), relation);
         require(summary.contains("\"_op\":\"<\""), summary);
+        require(summary.contains("\"_exp\":\"Y_I_1\""), summary);
         if (args.length > 0 && "--dump".equals(args[0])) {
             System.out.println(summary);
         }

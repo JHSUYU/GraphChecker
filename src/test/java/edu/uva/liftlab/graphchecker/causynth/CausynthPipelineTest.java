@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -120,6 +121,104 @@ public class CausynthPipelineTest {
                     .getArg(1)).value);
         }
         body.validate();
+    }
+
+    @Test
+    public void replayEntrySkipsConcretePrefixAtProvedCommonCaller() {
+        G.reset();
+        addCoreReferenceClasses();
+        SootClass service = new SootClass("example.ReplayService",
+                Modifier.PUBLIC);
+        service.setSuperclass(Scene.v().getSootClass("java.lang.Object"));
+        service.setApplicationClass();
+        Scene.v().addClass(service);
+        service.setApplicationClass();
+        SootClass writer = new SootClass("example.ReplayWriter",
+                Modifier.PUBLIC);
+        writer.setSuperclass(Scene.v().getSootClass("java.lang.Object"));
+        writer.setApplicationClass();
+        Scene.v().addClass(writer);
+        writer.setApplicationClass();
+
+        SootMethod run = staticVoidMethod(service, "run");
+        SootMethod connect = staticVoidMethod(service, "connect");
+        SootMethod offer = staticVoidMethod(service, "offer");
+        SootMethod target = staticVoidMethod(service, "target");
+        SootMethod output = staticVoidMethod(writer, "output");
+        run.getActiveBody().getUnits().insertBefore(Jimple.v()
+                        .newInvokeStmt(Jimple.v().newStaticInvokeExpr(
+                                connect.makeRef())),
+                run.getActiveBody().getUnits().getLast());
+        run.getActiveBody().getUnits().insertBefore(Jimple.v()
+                        .newInvokeStmt(Jimple.v().newStaticInvokeExpr(
+                                offer.makeRef())),
+                run.getActiveBody().getUnits().getLast());
+        offer.getActiveBody().getUnits().insertBefore(Jimple.v()
+                        .newInvokeStmt(Jimple.v().newStaticInvokeExpr(
+                                target.makeRef())),
+                offer.getActiveBody().getUnits().getLast());
+        offer.getActiveBody().getUnits().insertBefore(Jimple.v()
+                        .newInvokeStmt(Jimple.v().newStaticInvokeExpr(
+                                output.makeRef())),
+                offer.getActiveBody().getUnits().getLast());
+
+        assertTrue(service.isApplicationClass());
+        assertTrue(offer.isConcrete());
+        assertTrue(CausynthPipeline.compatibleReplayEntry(run, offer));
+        Set<SootMethod> runCallees = CausynthPipeline
+                .directApplicationCallees(run);
+        Set<SootMethod> offerCallees = CausynthPipeline
+                .directApplicationCallees(offer);
+        assertTrue(runCallees.toString(), runCallees.contains(offer));
+        assertTrue(offerCallees.toString(), offerCallees
+                .containsAll(Arrays.asList(target, output)));
+
+        SootMethod selected = CausynthPipeline.selectConcolicReplayEntry(
+                run, Arrays.asList(target.getSignature(),
+                        output.getSignature()));
+
+        assertEquals(offer, selected);
+    }
+
+    @Test
+    public void delayedReplayArmRequiresOneExactUndemandedTargetCall() {
+        G.reset();
+        addCoreReferenceClasses();
+        SootClass service = new SootClass("example.DelayedReplayService",
+                Modifier.PUBLIC);
+        service.setSuperclass(Scene.v().getSootClass("java.lang.Object"));
+        service.setApplicationClass();
+        Scene.v().addClass(service);
+        SootMethod offer = staticVoidMethod(service, "offer");
+        SootMethod target = staticVoidMethod(service, "target");
+        Stmt targetCall = Jimple.v().newInvokeStmt(Jimple.v()
+                .newStaticInvokeExpr(target.makeRef()));
+        offer.getActiveBody().getUnits().insertBefore(targetCall,
+                offer.getActiveBody().getUnits().getLast());
+
+        assertEquals(targetCall,
+                CausynthPipeline.selectDelayedReplayArmCall(offer,
+                        target.getSignature(),
+                        Collections.singleton(offer.getSignature()),
+                        true, true));
+        assertEquals(null,
+                CausynthPipeline.selectDelayedReplayArmCall(offer,
+                        target.getSignature(),
+                        Collections.singleton(target.getSignature()),
+                        true, true));
+        assertEquals(null,
+                CausynthPipeline.selectDelayedReplayArmCall(offer,
+                        target.getSignature(), Collections.emptySet(),
+                        false, true));
+
+        offer.getActiveBody().getUnits().insertBefore(Jimple.v()
+                        .newInvokeStmt(Jimple.v().newStaticInvokeExpr(
+                                target.makeRef())),
+                offer.getActiveBody().getUnits().getLast());
+        assertEquals(null,
+                CausynthPipeline.selectDelayedReplayArmCall(offer,
+                        target.getSignature(), Collections.emptySet(),
+                        true, true));
     }
 
     @Test
@@ -431,6 +530,17 @@ public class CausynthPipelineTest {
                 IntConstant.v(1)));
         body.getUnits().add(Jimple.v().newAssignStmt(integer,
                 Jimple.v().newArrayRef(ints, IntConstant.v(0))));
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+        return method;
+    }
+
+    private static SootMethod staticVoidMethod(
+            SootClass owner, String name) {
+        SootMethod method = new SootMethod(name, Collections.emptyList(),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
         body.getUnits().add(Jimple.v().newReturnVoidStmt());
         return method;
     }

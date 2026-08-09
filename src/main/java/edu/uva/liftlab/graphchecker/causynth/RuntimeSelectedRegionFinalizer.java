@@ -7,7 +7,6 @@ import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -205,9 +204,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 laneByInstance);
         CausynthArtifactWriter.writeRegions(regions.toPath(),
                 regionEdges.toPath(), program);
-        return new Result(closure.instanceCount, closure.reached.size(),
-                closure.targetCount, program.regions,
-                program.regionEdges, closure.targetClosures);
+        return new Result(program.regions, program.regionEdges);
     }
 
     /**
@@ -422,34 +419,9 @@ public final class RuntimeSelectedRegionFinalizer {
 
         ClosureWalk union = walkFailureClosure(targets, instances,
                 demands, predecessors);
-        List<Map<String, Object>> targetClosures = new ArrayList<>();
-        for (String target : targets) {
-            ClosureWalk single = walkFailureClosure(
-                    Collections.singleton(target), instances,
-                    demands, predecessors);
-            Map<String, Object> targetInstance = instances.get(target);
-            Set<String> regionDefinitions = new LinkedHashSet<>();
-            for (String reached : single.reached) {
-                regionDefinitions.add(text(instances.get(reached).get(
-                        "regionId")));
-            }
-            Map<String, Object> metadata = new LinkedHashMap<>();
-            metadata.put("scope", "SINGLE_TARGET_CLOSURE");
-            metadata.put("targetRegionId",
-                    targetInstance.get("regionId"));
-            metadata.put("targetRootCallId",
-                    targetInstance.get("rootCallId"));
-            metadata.put("retainedRegionInstanceCount",
-                    single.reached.size());
-            metadata.put("retainedRegionDefinitionCount",
-                    regionDefinitions.size());
-            metadata.put("retainedCausalEdgeCount",
-                    single.retainedEdges.size());
-            targetClosures.add(metadata);
-        }
-        return new RuntimeClosure(instances, union.reached, targets.size(),
+        return new RuntimeClosure(instances, union.reached,
                 union.retainedEdges, union.demandedInputs,
-                union.demandedOutputs, targetClosures);
+                union.demandedOutputs);
     }
 
     private static ClosureWalk walkFailureClosure(
@@ -3204,14 +3176,15 @@ public final class RuntimeSelectedRegionFinalizer {
                 port.put("fieldPathDeclarations",
                         Collections.singletonList(field));
                 port.put("javaType", declaration.type);
+                port.put("callerMethod", caller);
+                port.put("unitIndex", unitIndex);
+                port.put("declaredCallee", declaredCallee);
+                port.put("declaredFieldSignature", field);
+                port.put("accessorImplementationMethod", implementation);
                 port.put("dependencyCells",
                         Collections.singletonList(text(edge.get("fromCell"))));
                 port.put("replayOccurrence", occurrence);
                 port.put("helperActivationBoundedOccurrence", retained + 1);
-                port.put("materialization", MaterializationSpec.accessorReturn(
-                        declaration.type, field,
-                        Collections.singletonList(declaration.name), caller,
-                        unitIndex, declaredCallee, implementation).toMap());
                 unique.put(key, port);
             }
         }
@@ -5205,6 +5178,11 @@ public final class RuntimeSelectedRegionFinalizer {
             port.put("fieldPathDeclarations",
                     Collections.singletonList(candidate.declaration));
             port.put("javaType", candidate.type);
+            port.put("callerMethod", caller);
+            port.put("unitIndex", unitIndex);
+            port.put("declaredCallee", declaredCallee);
+            port.put("declaredFieldSignature", candidate.declaration);
+            port.put("accessorImplementationMethod", implementation);
             port.put("dependencyCells", Collections.singletonList(
                     text(candidate.edge.get("fromCell"))));
             int occurrence = number(candidate.binding.get(
@@ -5213,10 +5191,6 @@ public final class RuntimeSelectedRegionFinalizer {
                 port.put("replayOccurrence", occurrence);
                 port.put("helperActivationBoundedOccurrence", occurrence);
             }
-            port.put("materialization", MaterializationSpec.accessorReturn(
-                    candidate.type, candidate.declaration,
-                    Collections.singletonList(field.name), caller, unitIndex,
-                    declaredCallee, implementation).toMap());
             port.put("runtimeAccesses", Collections.singletonList(access));
 
             List<Map<String, Object>> inputs = rows(
@@ -5464,62 +5438,32 @@ public final class RuntimeSelectedRegionFinalizer {
     private static final class RuntimeClosure {
         private final Map<String, Map<String, Object>> instances;
         private final Set<String> reached;
-        private final int targetCount;
-        private final int instanceCount;
         private final Set<String> retainedEdges;
         private final Set<String> demandedInputs;
         private final Set<String> demandedOutputs;
-        private final List<Map<String, Object>> targetClosures;
 
         private RuntimeClosure(
                 Map<String, Map<String, Object>> instances,
-                Set<String> reached, int targetCount,
+                Set<String> reached,
                 Set<String> retainedEdges,
                 Set<String> demandedInputs,
-                Set<String> demandedOutputs,
-                List<Map<String, Object>> targetClosures) {
+                Set<String> demandedOutputs) {
             this.instances = instances;
             this.reached = reached;
-            this.targetCount = targetCount;
-            this.instanceCount = instances.size();
             this.retainedEdges = retainedEdges;
             this.demandedInputs = demandedInputs;
             this.demandedOutputs = demandedOutputs;
-            this.targetClosures = targetClosures;
         }
     }
 
     public static final class Result {
-        public final int candidateInstanceCount;
-        public final int retainedInstanceCount;
-        public final int targetInstanceCount;
-        public final int retainedRegionCount;
-        public final int retainedEdgeCount;
-        public final String regionCatalogScope;
-        public final boolean directlySchedulable;
-        public final List<Map<String, Object>> targetClosures;
         /** Finalized region rows exactly as written to the artifact. */
         public final List<Map<String, Object>> regions;
         /** Canonicalized region edges exactly as written to the artifact. */
         public final List<Map<String, Object>> regionEdges;
 
-        private Result(int candidateInstanceCount,
-                       int retainedInstanceCount,
-                       int targetInstanceCount,
-                       List<Map<String, Object>> regions,
-                       List<Map<String, Object>> regionEdges,
-                       List<Map<String, Object>> targetClosures) {
-            this.candidateInstanceCount = candidateInstanceCount;
-            this.retainedInstanceCount = retainedInstanceCount;
-            this.targetInstanceCount = targetInstanceCount;
-            this.retainedRegionCount = regions.size();
-            this.retainedEdgeCount = regionEdges.size();
-            this.regionCatalogScope = targetInstanceCount == 1
-                    ? "SINGLE_TARGET_CLOSURE"
-                    : "MULTI_TARGET_UNION_CATALOG";
-            this.directlySchedulable = targetInstanceCount == 1;
-            this.targetClosures = Collections.unmodifiableList(
-                    new ArrayList<>(targetClosures));
+        private Result(List<Map<String, Object>> regions,
+                       List<Map<String, Object>> regionEdges) {
             this.regions = regions;
             this.regionEdges = regionEdges;
         }

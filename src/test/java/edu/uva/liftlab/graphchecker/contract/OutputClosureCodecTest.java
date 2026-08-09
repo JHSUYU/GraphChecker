@@ -14,22 +14,6 @@ import static org.junit.Assert.fail;
 
 public class OutputClosureCodecTest {
     @Test
-    public void materializedLeafDefinesLogicalPortType() {
-        JsonObject port = new JsonObject();
-        port.addProperty("javaType", "example.GuardNode");
-        JsonObject materialization = new JsonObject();
-        materialization.addProperty("kind", "FIELD_READ");
-        materialization.addProperty("javaType", "boolean");
-        JsonArray accessSites = new JsonArray();
-        accessSites.add("<example.GuardNode: boolean enabled()>#u1");
-        materialization.add("accessSites", accessSites);
-        port.add("materialization", materialization);
-
-        assertEquals("boolean",
-                MaterializationSpec.logicalJavaType(port));
-    }
-
-    @Test
     public void buildsOneCanonicalSingletonAndRoundTrips() {
         JsonObject activation = canonicalActivation("REGION.1.out.0",
                 "<P: int out>", "DF.1");

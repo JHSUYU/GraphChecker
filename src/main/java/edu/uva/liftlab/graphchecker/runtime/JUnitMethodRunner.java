@@ -9,10 +9,27 @@ import java.util.List;
 
 /** Runs one JUnit 4 method without adding JUnit to GraphChecker's API. */
 public final class JUnitMethodRunner {
+    private static final String EXIT_AFTER_RUN_PROPERTY =
+            "causynth.junit.exit.after.run";
+
     private JUnitMethodRunner() {
     }
 
     public static void main(String[] args) throws Exception {
+        if (!Boolean.getBoolean(EXIT_AFTER_RUN_PROPERTY)) {
+            run(args);
+            return;
+        }
+        try {
+            run(args);
+            System.exit(0);
+        } catch (Throwable failure) {
+            failure.printStackTrace(System.err);
+            System.exit(1);
+        }
+    }
+
+    private static void run(String[] args) throws Exception {
         if (args == null || args.length != 2) {
             throw new IllegalArgumentException(
                     "usage: JUnitMethodRunner <class> <method>");

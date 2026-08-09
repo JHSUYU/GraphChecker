@@ -58,6 +58,11 @@ private:
   DetachedObjectStore _detached_object_store;
   ContainerStateStore _container_states;
   ContainerPositionStore _container_positions;
+  // Iterator traversal ordinals name members in the entry state and must not
+  // move backwards after Iterator.remove().  Removal itself addresses the
+  // current (compacted) state, so remember how many earlier members this
+  // cursor removed and translate the stable ordinal to a live index there.
+  ContainerPositionStore _container_removals;
   ContainerOwnerStore _container_owners;
 
   sym_rid_t _sym_rid_counter;
@@ -233,7 +238,7 @@ public:
   void alias_container(oop derived, oop owner);
   int next_container_position(oop cursor);
   int current_container_position(oop cursor);
-  void rewind_container_position(oop cursor);
+  int next_container_removal_position(oop cursor);
 
   inline ShadowStack &get_shadow_stack() { return _s_stack; }
   /**

@@ -15,8 +15,8 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 
 import java.io.BufferedReader;
@@ -3917,9 +3917,11 @@ public final class ConcolicRegionRuntime {
 
     static int terminalSelectedSkipHaltStatus(
             String skipKind, String reason, boolean written) {
-        boolean terminal = SKIP_ENGINE_UNAVAILABLE.equals(skipKind)
-                && ENGINE_BUSY_TIMEOUT.equals(reason)
-                || SKIP_NOT_STARTED.equals(skipKind)
+        // A busy timeout belongs to a losing concurrent activation.  The
+        // activation that owns the engine may still be producing the one
+        // selected result, so halting here would kill valid evidence.  Keep
+        // the skip as a scheduling diagnostic and let the owner finish.
+        boolean terminal = SKIP_NOT_STARTED.equals(skipKind)
                 && safe(reason).startsWith(
                 "custom concolic System API is unavailable");
         if (!terminal) return -1;
@@ -5646,8 +5648,7 @@ public final class ConcolicRegionRuntime {
         private boolean repeatedPrimitiveAccessor() {
             return "LOCAL_DEFINITION".equals(bindingMode)
                     && "CALL_RETURN".equals(location)
-                    && MaterializationSpec
-                    .repeatedPrimitiveAccessorReturn(cell);
+                    && JavaPrimitiveBoxing.unboxReturn(cell);
         }
 
         private boolean matchesStaticField(String actualMethod,

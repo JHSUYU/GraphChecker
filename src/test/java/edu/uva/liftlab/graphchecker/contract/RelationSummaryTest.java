@@ -173,6 +173,33 @@ public class RelationSummaryTest {
         assertTrue(rendered.contains(keyId));
     }
 
+    @Test
+    public void outputValueKeepsExactFieldCoDefinitionForClosureInput() {
+        JsonObject summary = versionedSummary(1);
+        String map = "M_L_field_REGION.V.in.map";
+        String closureInput = "M_I_field_REGION.V.in.nextKeyId";
+        String outputInput = "M_I_field_REGION.V.in.currentKeyId";
+        JsonObject member = summary.getAsJsonObject(
+                        OutputClosureContract.FIELD)
+                .getAsJsonArray("members").get(0).getAsJsonObject();
+        member.getAsJsonObject("slice").getAsJsonArray("inputPorts")
+                .add("REGION.V.in.nextKeyId");
+        summary.getAsJsonObject("outputExpressions").add(port(),
+                symbol(outputInput, "I"));
+        JsonArray path = new JsonArray();
+        path.add(exactFieldBinding(map, closureInput, 32));
+        path.add(exactFieldBinding(map, outputInput, 32));
+        summary.add("pathCondition", path);
+
+        PathObservation observation = PathObservation.decode(summary, null);
+
+        JsonArray projected = observation.relationPathCondition();
+        assertEquals(2, projected.size());
+        String rendered = CanonicalJson.render(projected);
+        assertTrue(rendered.contains(closureInput));
+        assertTrue(rendered.contains(outputInput));
+    }
+
     private static String port() {
         return "REGION.V.out.0";
     }

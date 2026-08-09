@@ -80,6 +80,10 @@ final class ConcolicInstrumentationSelections {
         private final List<CallArgumentOutputCapture> callArgumentOutputs;
         private final List<ExactHeapOutputCapture> exactHeapOutputs;
         private final Set<String> instrumentationMethods;
+        private final Set<String> replayAnchorMethods;
+        private final boolean replayAnchorAllowed;
+        private final String targetMethod;
+        private final boolean outputRelation;
 
         private InstrumentationPlan(ExecutionTask task) throws IOException {
             if (!task.executable()) {
@@ -94,6 +98,10 @@ final class ConcolicInstrumentationSelections {
             receiverClass = jsonString(task.rootSelector(), "receiverClass");
             InputActionCatalog inputActions = task.inputActions();
             JsonArray symbolic = inputActions.symbolic();
+            replayAnchorAllowed = !task.rootSelector().has("arguments")
+                    && !hasRootArgumentSymbolicAction(symbolic);
+            targetMethod = task.targetMethod();
+            outputRelation = task.outputClosure() != null;
             branches = ConcolicBranchSelection.from(task.branches());
             loopBound = task.loopBound();
             materializations = ConcolicMaterializationSelection.from(symbolic);
@@ -104,13 +112,20 @@ final class ConcolicInstrumentationSelections {
             exactHeapOutputs = exactHeapOutputCaptures(
                     task.outputCaptures());
 
+            LinkedHashSet<String> anchorMethods = new LinkedHashSet<>();
+            if (!task.targetMethod().isEmpty()) {
+                anchorMethods.add(task.targetMethod());
+            }
+
             LinkedHashSet<String> methods = new LinkedHashSet<>();
             methods.add(rootMethod);
             OutputClosureContract closure = task.outputClosure();
             if (closure != null) {
                 methods.addAll(closure.executionScope().methods());
+                anchorMethods.addAll(closure.executionScope().methods());
             } else {
                 methods.addAll(branches.methods());
+                anchorMethods.addAll(branches.methods());
             }
             for (CallArgumentOutputCapture capture : callArgumentOutputs) {
                 methods.add(capture.method());
@@ -119,6 +134,8 @@ final class ConcolicInstrumentationSelections {
                 methods.add(capture.method());
             }
             instrumentationMethods = Collections.unmodifiableSet(methods);
+            anchorMethods.remove(rootMethod);
+            replayAnchorMethods = Collections.unmodifiableSet(anchorMethods);
         }
 
         static InstrumentationPlan from(Path taskPlan, String selectedTask)
@@ -206,6 +223,35 @@ final class ConcolicInstrumentationSelections {
 
         Set<String> instrumentationMethods() {
             return instrumentationMethods;
+        }
+
+        Set<String> replayAnchorMethods() {
+            return replayAnchorMethods;
+        }
+
+        boolean replayAnchorAllowed() {
+            return replayAnchorAllowed;
+        }
+
+        String targetMethod() {
+            return targetMethod;
+        }
+
+        boolean outputRelation() {
+            return outputRelation;
+        }
+
+        private static boolean hasRootArgumentSymbolicAction(
+                JsonArray symbolic) {
+            for (JsonElement element : symbolic) {
+                JsonObject action = element.getAsJsonObject();
+                String location = jsonString(action, "location");
+                if ("ARGUMENT".equals(location)
+                        || "ARGUMENT_FIELD_PATH".equals(location)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static List<RootedOutputCapture> rootedOutputCaptures(

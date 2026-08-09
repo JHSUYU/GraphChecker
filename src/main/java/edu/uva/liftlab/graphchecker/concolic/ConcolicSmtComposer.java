@@ -142,6 +142,8 @@ public final class ConcolicSmtComposer {
 
         ResolvedSummaryGraph resolved = resolveSummaryGraph(fatal,
                 resolutionContext, summaries);
+        FatalAbsenceMutationWitness failureWitness =
+                FatalAbsenceMutationWitness.resolve(fatal, resolved, ports);
         // Runtime identity can expose several aliases for one concrete
         // writer/read event. Resolution deliberately admits only aliases
         // backed by an exact producer summary.  Re-scope the context to that
@@ -152,7 +154,8 @@ public final class ConcolicSmtComposer {
                 resolved);
         Emitter emitter = new Emitter(ports,
                 new InvocationKey(string(fatal, "regionId"),
-                        string(resolutionContext, "regionInstanceId")));
+                        string(resolutionContext, "regionInstanceId")),
+                failureWitness);
         emitter.begin(fatal);
         emitter.registerExactEqualityBoundExpressions(
                 resolved.selectedEdges.values());
@@ -177,7 +180,9 @@ public final class ConcolicSmtComposer {
                         : array(path, "constraints")) {
                     pathTerms.add(emitter.constraint(constraint, label));
                 }
-                fatalTerms.add(and(pathTerms));
+                String pathTerm = and(pathTerms);
+                fatalTerms.add(pathTerm);
+                emitter.bindFatalPath(pathOrdinal - 1, pathTerm);
             }
         } finally {
             emitter.restoreSymbolScope(previousFatalScope);
@@ -191,6 +196,7 @@ public final class ConcolicSmtComposer {
 
         emitter.merge(context);
         emitter.mergeEdgeBindings(resolved.selectedEdges.values());
+        emitter.finishFatalAbsenceMutationWitness();
         emitter.emitExactCausalInputAliases(
                 resolved.selectedRegionSummaries.values());
         emitter.finishBindings();
@@ -202,26 +208,20 @@ public final class ConcolicSmtComposer {
         emitter.finish();
         String composedSmt = emitter.render();
 
-        JsonArray summaryInputArtifacts = new JsonArray();
-        for (Path input : arguments.summaries) {
-            summaryInputArtifacts.add(artifact(input));
-        }
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 2);
         manifest.addProperty("kind", "CONCOLIC_COMPOSED_SMT");
         manifest.addProperty("fatalSite", fatalSite);
-        manifest.addProperty("fatalConstraintAuthority",
-                "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1");
         manifest.addProperty("compositionMode",
                 arguments.compositionMode);
         manifest.addProperty("pathSetComplete",
                 !observedUnderapproximation);
         manifest.add("resolvedEdgeBindings",
                 GSON.toJsonTree(resolved.staticEdgeIds()));
+        manifest.add("fatalAbsenceMutationWitness",
+                failureWitness.manifest());
         manifest.add("suppliedInputs",
                 GSON.toJsonTree(emitter.suppliedInputs));
-        manifest.add("suppliedInputOccurrences",
-                emitter.suppliedInputOccurrences());
         manifest.add("canonicalPortOccurrences",
                 emitter.canonicalPortOccurrences());
         manifest.addProperty("droppedEdgeEvidenceAudit",
@@ -238,9 +238,6 @@ public final class ConcolicSmtComposer {
         manifest.add("composedSmtArtifact", artifact(arguments.output,
                 composedSmt.getBytes(StandardCharsets.UTF_8)));
         manifest.add("staticRegionsArtifact", artifact(arguments.regions));
-        manifest.add("fatalQueriesArtifact",
-                artifact(arguments.fatalQueries));
-        manifest.add("summaryInputArtifacts", summaryInputArtifacts);
         return new Result(composedSmt, manifest);
     }
 
@@ -1254,6 +1251,288 @@ public final class ConcolicSmtComposer {
 
     }
 
+    /**
+     * A failure-directed witness derived only from the selected fatal path,
+     * its exact runtime state edge, and real VM output relations.  It is used
+     * when a fatal associative lookup returns null and the supplying region
+     * has a path that actually removes a member from that same state.
+     */
+    private static final class FatalAbsenceMutationWitness {
+        private final List<Demand> demands;
+        private final Map<PortOccurrence, List<RemovalCaseEffect>> effects =
+                new LinkedHashMap<>();
+        private final List<String> clauses = new ArrayList<>();
+
+        private FatalAbsenceMutationWitness(List<Demand> demands) {
+            this.demands = demands;
+        }
+
+        private static FatalAbsenceMutationWitness resolve(
+                JsonObject fatal, ResolvedSummaryGraph graph,
+                PortIndex ports) {
+            List<AbsenceRead> reads = new ArrayList<>();
+            int pathOrdinal = 0;
+            for (JsonElement pathElement : array(fatal, "paths")) {
+                if (!pathElement.isJsonObject()) {
+                    pathOrdinal++;
+                    continue;
+                }
+                for (JsonElement constraint : array(
+                        pathElement.getAsJsonObject(), "constraints")) {
+                    collectAbsenceReads(constraint, pathOrdinal, ports,
+                            reads);
+                }
+                pathOrdinal++;
+            }
+            String fatalInstance = firstNonBlank(
+                    string(fatal, "regionInstanceId"),
+                    string(object(fatal, "symbolicContext"),
+                            "regionInstanceId"));
+            Map<String, Demand> selected = new LinkedHashMap<>();
+            for (AbsenceRead read : reads) {
+                PortOccurrence target = new PortOccurrence(
+                        new InvocationKey(regionOf(read.inputPort),
+                                fatalInstance), read.inputPort);
+                for (ResolvedEdge edge : graph.selectedEdges.values()) {
+                    JsonObject binding = edge.binding;
+                    if (!target.equals(new PortOccurrence(
+                            new InvocationKey(string(binding, "toRegion"),
+                                    bindingTargetInstance(binding)),
+                            bindingTargetInput(binding)))) {
+                        continue;
+                    }
+                    String output = bindingSourceOutput(binding);
+                    if (ports.sort(read.inputPort) != Sort.MAP
+                            || ports.sort(output) != Sort.MAP
+                            || !hasAssociativeRemovalOnSpine(
+                            edge.summary.toJson(), output)) {
+                        continue;
+                    }
+                    PortOccurrence source = new PortOccurrence(
+                            new InvocationKey(bindingSourceRegion(binding),
+                                    bindingSourceInstance(binding)), output);
+                    Demand demand = new Demand(read.pathOrdinal, target,
+                            source, new ResolvedBindingKey(binding),
+                            read.keyExpression);
+                    selected.putIfAbsent(demand.identity(), demand);
+                }
+            }
+            return new FatalAbsenceMutationWitness(
+                    new ArrayList<>(selected.values()));
+        }
+
+        private static void collectAbsenceReads(
+                JsonElement expression, int pathOrdinal, PortIndex ports,
+                List<AbsenceRead> result) {
+            if (expression == null || !expression.isJsonObject()) return;
+            JsonObject object = expression.getAsJsonObject();
+            if ("BinaryExpression".equals(string(object, "_type"))
+                    && "==".equals(string(object, "_op"))) {
+                JsonElement left = object.get("_left");
+                JsonElement right = object.get("_right");
+                JsonObject read = associativeReadComparedWithNull(left,
+                        right);
+                if (read == null) {
+                    read = associativeReadComparedWithNull(right, left);
+                }
+                if (read != null) {
+                    String input = portInReceiver(read.get("receiver"),
+                            ports);
+                    JsonArray arguments = array(read, "arguments");
+                    if (!input.isEmpty() && ports.isInput(input)
+                            && arguments.size() == 1) {
+                        result.add(new AbsenceRead(pathOrdinal, input,
+                                arguments.get(0)));
+                        return;
+                    }
+                }
+            }
+            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+                collectAbsenceReads(entry.getValue(), pathOrdinal, ports,
+                        result);
+            }
+        }
+
+        private static JsonObject associativeReadComparedWithNull(
+                JsonElement candidate, JsonElement other) {
+            if (!recordedNull(other) || candidate == null
+                    || !candidate.isJsonObject()) return null;
+            JsonObject read = candidate.getAsJsonObject();
+            return ContainerSmtCodec.EXPRESSION_TYPE.equals(
+                    string(read, "_type"))
+                    && "ASSOCIATIVE".equals(string(read, "shape"))
+                    && "READ".equals(string(read, "operation"))
+                    ? read : null;
+        }
+
+        private static boolean recordedNull(JsonElement expression) {
+            if (expression == null || !expression.isJsonObject()) {
+                return false;
+            }
+            JsonObject object = expression.getAsJsonObject();
+            return "SymbolExpression".equals(string(object, "_type"))
+                    && "N".equals(string(object, "_exp"));
+        }
+
+        private static String portInReceiver(JsonElement expression,
+                                             PortIndex ports) {
+            if (expression == null) return "";
+            if (expression.isJsonArray()) {
+                for (JsonElement item : expression.getAsJsonArray()) {
+                    String found = portInReceiver(item, ports);
+                    if (!found.isEmpty()) return found;
+                }
+                return "";
+            }
+            if (!expression.isJsonObject()) return "";
+            JsonObject object = expression.getAsJsonObject();
+            if ("SymbolExpression".equals(string(object, "_type"))) {
+                return findPort(string(object, "_exp"), ports);
+            }
+            JsonElement receiver = object.get("receiver");
+            return receiver == null ? ""
+                    : portInReceiver(receiver, ports);
+        }
+
+        private static boolean hasAssociativeRemovalOnSpine(
+                JsonObject summary, String output) {
+            for (JsonElement caseElement : array(
+                    object(summary, "regionRelation"), "cases")) {
+                if (!caseElement.isJsonObject()) continue;
+                JsonElement cursor = object(caseElement.getAsJsonObject(),
+                        "outputExpressions").get(output);
+                while (cursor != null && cursor.isJsonObject()) {
+                    JsonObject relation = cursor.getAsJsonObject();
+                    if (!ContainerSmtCodec.EXPRESSION_TYPE.equals(
+                            string(relation, "_type"))
+                            || !"ASSOCIATIVE".equals(
+                            string(relation, "shape"))) {
+                        break;
+                    }
+                    String operation = string(relation, "operation");
+                    if ("REMOVE".equals(operation)
+                            || "REMOVE_AT".equals(operation)) {
+                        return true;
+                    }
+                    if (!"PUT".equals(operation)) break;
+                    cursor = relation.get("receiver");
+                }
+            }
+            return false;
+        }
+
+        private Set<String> outputsFor(InvocationKey invocation) {
+            Set<String> result = new LinkedHashSet<>();
+            for (Demand demand : demands) {
+                if (demand.matchesInvocation(invocation)) {
+                    result.add(demand.source.portId);
+                }
+            }
+            return result;
+        }
+
+        private void addEffect(PortOccurrence source,
+                               RemovalCaseEffect effect) {
+            effects.computeIfAbsent(source,
+                    ignored -> new ArrayList<>()).add(effect);
+        }
+
+        private void connect(Emitter.VersionedWriter writer,
+                             PortOccurrence target, String writerGuard) {
+            List<RemovalCaseEffect> candidates = effects.get(writer.source);
+            if (candidates == null) return;
+            for (Demand demand : demands) {
+                if (!demand.target.equals(target)
+                        || !demand.binding.equals(
+                        new ResolvedBindingKey(writer.binding))
+                        || demand.pathTerm.isEmpty()
+                        || demand.keyTerm.isEmpty()) {
+                    continue;
+                }
+                for (RemovalCaseEffect effect : candidates) {
+                    clauses.add(and(Arrays.asList(demand.pathTerm,
+                            writerGuard, effect.selector,
+                            demand.keyPrecondition, effect.precondition,
+                            "(= " + effect.removedKey + " "
+                                    + demand.keyTerm + ")")));
+                }
+            }
+        }
+
+        private JsonObject manifest() {
+            JsonObject result = new JsonObject();
+            result.addProperty("authority",
+                    "EXACT_FATAL_ABSENCE_MUTATION_WITNESS_V1");
+            result.addProperty("state", demands.isEmpty()
+                    ? "NOT_APPLICABLE" : clauses.isEmpty()
+                    ? "GAP" : "PINNED");
+            result.addProperty("clauseCount", clauses.size());
+            return result;
+        }
+
+        private static final class AbsenceRead {
+            private final int pathOrdinal;
+            private final String inputPort;
+            private final JsonElement keyExpression;
+
+            private AbsenceRead(int pathOrdinal, String inputPort,
+                                JsonElement keyExpression) {
+                this.pathOrdinal = pathOrdinal;
+                this.inputPort = inputPort;
+                this.keyExpression = keyExpression.deepCopy();
+            }
+        }
+
+        private static final class Demand {
+            private final int pathOrdinal;
+            private final PortOccurrence target;
+            private final PortOccurrence source;
+            private final ResolvedBindingKey binding;
+            private final JsonElement keyExpression;
+            private String pathTerm = "";
+            private String keyTerm = "";
+            private String keyPrecondition = "true";
+
+            private Demand(int pathOrdinal, PortOccurrence target,
+                           PortOccurrence source,
+                           ResolvedBindingKey binding,
+                           JsonElement keyExpression) {
+                this.pathOrdinal = pathOrdinal;
+                this.target = target;
+                this.source = source;
+                this.binding = binding;
+                this.keyExpression = keyExpression.deepCopy();
+            }
+
+            private boolean matchesInvocation(InvocationKey invocation) {
+                return source.invocation.regionId.equals(invocation.regionId)
+                        && (source.invocation.instanceId.equals(
+                        invocation.instanceId)
+                        || invocation.instanceId.startsWith(
+                        source.invocation.instanceId + "#boundedStep"));
+            }
+
+            private String identity() {
+                return pathOrdinal + "\n" + target + "\n" + source
+                        + "\n" + binding.hashCode();
+            }
+        }
+
+        private static final class RemovalCaseEffect {
+            private final String selector;
+            private final String removedKey;
+            private final String precondition;
+
+            private RemovalCaseEffect(String selector,
+                                      String removedKey,
+                                      String precondition) {
+                this.selector = selector;
+                this.removedKey = removedKey;
+                this.precondition = precondition;
+            }
+        }
+    }
+
     private static final class ResolvedBindingKey {
         private final String edgeId;
         private final String evidenceKind;
@@ -1484,6 +1763,22 @@ public final class ConcolicSmtComposer {
         return marker > 0 ? endpoint.substring(0, marker) : "";
     }
 
+    private static String findPort(String rawSymbol, PortIndex ports) {
+        for (String port : ports.longestFirst) {
+            int index = rawSymbol.indexOf(port);
+            while (index >= 0) {
+                int end = index + port.length();
+                boolean leftBoundary = index == 0
+                        || rawSymbol.charAt(index - 1) == '_';
+                boolean rightBoundary = end == rawSymbol.length()
+                        || rawSymbol.charAt(end) == '_';
+                if (leftBoundary && rightBoundary) return port;
+                index = rawSymbol.indexOf(port, index + 1);
+            }
+        }
+        return "";
+    }
+
     private static String and(List<String> terms) {
         return booleanNary(terms, true);
     }
@@ -1672,6 +1967,7 @@ public final class ConcolicSmtComposer {
 
     private static final class Emitter {
         private final PortIndex ports;
+        private final FatalAbsenceMutationWitness failureWitness;
         private final List<String> preamble = new ArrayList<>();
         private final List<String> declarations = new ArrayList<>();
         private final List<String> assertions = new ArrayList<>();
@@ -1727,13 +2023,17 @@ public final class ConcolicSmtComposer {
                 new LinkedHashSet<>();
         private final Map<String, JsonObject> canonicalPortOccurrences =
                 new LinkedHashMap<>();
+        /** Definedness facts collected while lowering one container term. */
+        private Set<String> currentContainerRequirements;
         private String currentGuard = "";
         private String currentSymbolScope = "global";
         private InvocationKey currentInvocation;
 
-        private Emitter(PortIndex ports, InvocationKey fatalInvocation) {
+        private Emitter(PortIndex ports, InvocationKey fatalInvocation,
+                        FatalAbsenceMutationWitness failureWitness) {
             this.ports = ports;
             this.currentInvocation = fatalInvocation;
+            this.failureWitness = failureWitness;
         }
 
         private InvocationKey enterInvocation(InvocationKey invocation) {
@@ -1789,6 +2089,24 @@ public final class ConcolicSmtComposer {
             // otherwise silently use unbounded mathematical integers.
             preamble.add(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION);
             preamble.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);
+        }
+
+        private void bindFatalPath(int pathOrdinal, String pathTerm) {
+            for (FatalAbsenceMutationWitness.Demand demand
+                    : failureWitness.demands) {
+                if (demand.pathOrdinal != pathOrdinal) continue;
+                Term nativeKey = term(demand.keyExpression, null);
+                Term key = asValue(nativeKey,
+                        expressionJavaType(demand.keyExpression));
+                if (key.sort != Sort.VALUE) {
+                    unsupported.add("FatalAbsenceKeySortGap:"
+                            + demand.target);
+                    continue;
+                }
+                demand.pathTerm = pathTerm;
+                demand.keyTerm = key.text;
+                demand.keyPrecondition = key.precondition;
+            }
         }
 
         /**
@@ -2068,13 +2386,28 @@ public final class ConcolicSmtComposer {
         }
 
         private Term containerTerm(JsonObject expression) {
-            return fromContainerTerm(ContainerSmtCodec.term(
-                    expression, containerHost()));
+            return lowerContainerTerm(expression, false);
         }
 
         private Term containerFieldTerm(JsonObject expression) {
-            return fromContainerTerm(ContainerSmtCodec.field(
-                    expression, containerHost()));
+            return lowerContainerTerm(expression, true);
+        }
+
+        private Term lowerContainerTerm(JsonObject expression,
+                                        boolean field) {
+            boolean owner = currentContainerRequirements == null;
+            if (owner) currentContainerRequirements = new LinkedHashSet<>();
+            try {
+                Term result = fromContainerTerm(field
+                        ? ContainerSmtCodec.field(expression, containerHost())
+                        : ContainerSmtCodec.term(expression, containerHost()));
+                if (!owner || result == null) return result;
+                return result.withPrecondition(and(Arrays.asList(
+                        result.precondition,
+                        and(new ArrayList<>(currentContainerRequirements)))));
+            } finally {
+                if (owner) currentContainerRequirements = null;
+            }
         }
 
         private ContainerSmtCodec.Host containerHost() {
@@ -2199,9 +2532,13 @@ public final class ConcolicSmtComposer {
 
                 @Override
                 public void require(String predicate) {
-                    assertNamed("container_value_kind_"
-                            + CanonicalJson.sha256(predicate)
-                            .substring(0, 16), predicate);
+                    if (currentContainerRequirements != null) {
+                        currentContainerRequirements.add(predicate);
+                    } else {
+                        assertNamed("container_value_kind_"
+                                + CanonicalJson.sha256(predicate)
+                                .substring(0, 16), predicate);
+                    }
                 }
 
                 @Override
@@ -3928,6 +4265,8 @@ public final class ConcolicSmtComposer {
                                     + index,
                             "(= " + selector + " " + guard + ")");
                     currentGuard = selector;
+                    recordFatalAbsenceRemovalEffects(invocation, item,
+                            selector);
                     bindOutputExpressions(region, item, outputClosure);
                 } finally {
                     currentGuard = previousGuard;
@@ -3945,6 +4284,39 @@ public final class ConcolicSmtComposer {
                         partition.append(") 1)").toString());
             } else {
                 heapGap("CaseSelectorPartitionGap@" + region);
+            }
+        }
+
+        private void recordFatalAbsenceRemovalEffects(
+                InvocationKey invocation, JsonObject pathCase,
+                String selector) {
+            for (String output : failureWitness.outputsFor(invocation)) {
+                JsonElement expression = object(pathCase,
+                        "outputExpressions").get(output);
+                if (expression == null) continue;
+                Set<String> previousRequirements =
+                        currentContainerRequirements;
+                Set<String> requirements = new LinkedHashSet<>();
+                currentContainerRequirements = requirements;
+                List<ContainerSmtCodec.AssociativeRemovalEffect> effects;
+                try {
+                    effects = ContainerSmtCodec
+                            .associativeRemovalEffects(expression,
+                                    containerHost());
+                } finally {
+                    currentContainerRequirements = previousRequirements;
+                }
+                PortOccurrence source = new PortOccurrence(invocation,
+                        output);
+                for (ContainerSmtCodec.AssociativeRemovalEffect effect
+                        : effects) {
+                    List<String> preconditions = new ArrayList<>(requirements);
+                    preconditions.add(effect.precondition);
+                    failureWitness.addEffect(source,
+                            new FatalAbsenceMutationWitness.RemovalCaseEffect(
+                                    selector, effect.removedKey.text,
+                                    and(preconditions)));
+                }
             }
         }
 
@@ -4420,6 +4792,7 @@ public final class ConcolicSmtComposer {
                     guards.add(guard);
                     emittedVersionedBindings.add(
                             versionedBindingKey(writer.binding));
+                    failureWitness.connect(writer, target, guard);
                 }
             }
 
@@ -4502,6 +4875,9 @@ public final class ConcolicSmtComposer {
                     if (equalityEmitted) {
                         emitProtocolCausalOrder(binding, label);
                         validateIncomingEdgeInput(inputOccurrence, input);
+                        failureWitness.connect(new VersionedWriter(binding,
+                                        outputOccurrence, ""),
+                                inputOccurrence, "true");
                     } else {
                         heapGap("EdgeBindingEqualityGap@" + region
                                 + ":" + output + "->" + input);
@@ -5016,23 +5392,6 @@ public final class ConcolicSmtComposer {
             suppliedInputs.add(occurrence.portId);
         }
 
-        private JsonArray suppliedInputOccurrences() {
-            List<PortOccurrence> ordered = new ArrayList<>(
-                    suppliedInputOccurrences);
-            ordered.sort(Comparator.comparing(PortOccurrence::toString));
-            JsonArray result = new JsonArray();
-            for (PortOccurrence occurrence : ordered) {
-                JsonObject row = new JsonObject();
-                row.addProperty("regionId",
-                        occurrence.invocation.regionId);
-                row.addProperty("regionInstanceId",
-                        occurrence.invocation.instanceId);
-                row.addProperty("portId", occurrence.portId);
-                result.add(row);
-            }
-            return result;
-        }
-
         private void recordSuppliedInput(String left, String right) {
             recordSuppliedInput(currentOccurrence(left),
                     currentOccurrence(right));
@@ -5318,6 +5677,16 @@ public final class ConcolicSmtComposer {
                 assertions.add("(assert false) ; fail closed: unsupported");
             }
             assertions.add("(check-sat)");
+        }
+
+        private void finishFatalAbsenceMutationWitness() {
+            if (failureWitness.demands.isEmpty()) return;
+            if (failureWitness.clauses.isEmpty()) {
+                unsupported.add("FatalAbsenceMutationWitnessGap");
+                return;
+            }
+            assertNamed("fatal_absence_mutation_witness",
+                    or(failureWitness.clauses));
         }
 
         private String render() {

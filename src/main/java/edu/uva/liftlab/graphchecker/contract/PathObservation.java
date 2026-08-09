@@ -60,7 +60,7 @@ public final class PathObservation {
         this.pathKey = stablePathKey(raw, scope,
                 raw.get("pathCondition"), alpha);
         this.relationPathCondition = projectRelationPathCondition(
-                raw, scope, branchMappings);
+                raw, scope, branchMappings, alpha);
         String containerCapacityIssue = InitialContainerObservation
                 .failureRelevantCapacityIssue(relationPathCondition,
                         raw.get("outputExpressions"));
@@ -265,7 +265,7 @@ public final class PathObservation {
 
     private static JsonArray projectRelationPathCondition(
             JsonObject summary, Scope scope,
-            List<SummaryBranchMapping> mappings) {
+            List<SummaryBranchMapping> mappings, AlphaNormalizer alpha) {
         JsonArray full = array(summary, "pathCondition");
         if (!scope.goalKind.capturesOutputRelation()) {
             return full.deepCopy();
@@ -300,6 +300,7 @@ public final class PathObservation {
             addNonBoundaryTokens(demanded, tokens);
         }
         Set<Integer> dependencies = new LinkedHashSet<>();
+        Set<String> exactFieldDefinitions = new LinkedHashSet<>();
         boolean changed;
         do {
             changed = false;
@@ -312,7 +313,12 @@ public final class PathObservation {
                 boolean exactSelectedFieldDefinition =
                         exactFieldBindingDefinesAny(full.get(index),
                                 selectedTokens);
+                String exactField = exactFieldBindingIdentity(
+                        full.get(index), alpha);
+                boolean exactFieldCoDefinition = !exactField.isEmpty()
+                        && exactFieldDefinitions.contains(exactField);
                 if (!exactSelectedFieldDefinition
+                        && !exactFieldCoDefinition
                         && !overlaps(tokens, demanded)) {
                     continue;
                 }
@@ -320,6 +326,9 @@ public final class PathObservation {
                 int before = demanded.size();
                 addNonBoundaryTokens(demanded, tokens);
                 changed |= demanded.size() != before;
+                if (!exactField.isEmpty()) {
+                    changed |= exactFieldDefinitions.add(exactField);
+                }
             }
         } while (changed);
 
@@ -354,6 +363,26 @@ public final class PathObservation {
                 ? right : left;
         Set<String> defined = dependencyTokens(symbol);
         return overlaps(defined, demandedTokens);
+    }
+
+    /**
+     * Canonical identity of the field term one exact materialization defines.
+     *
+     * <p>Two boundary symbols materialized from the same exact field are equal
+     * through that shared field term.  Once either definition is relevant to a
+     * selected branch or output, retaining every co-definition preserves that
+     * equality without recursively admitting unrelated boundary inputs or
+     * different fields of the same owner.</p>
+     */
+    private static String exactFieldBindingIdentity(
+            JsonElement expression, AlphaNormalizer alpha) {
+        if (!ContainerSmtCodec.handlesFieldBinding(expression)) return "";
+        JsonObject binary = expression.getAsJsonObject();
+        JsonElement left = binary.get("_left");
+        JsonElement right = binary.get("_right");
+        JsonElement field = ContainerSmtCodec.handlesField(left)
+                ? left : right;
+        return alphaCanonical(field, alpha);
     }
 
     private static void addNonBoundaryTokens(Set<String> target,

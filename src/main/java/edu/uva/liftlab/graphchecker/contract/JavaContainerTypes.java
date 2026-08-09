@@ -133,12 +133,6 @@ public final class JavaContainerTypes {
                 && ENTRY_RESULTS.contains(method.subsignature);
     }
 
-    /** Exact Map/List/Set operation already modeled by the container algebra. */
-    public static boolean modeledContainerOperation(String signature) {
-        MethodSignature method = MethodSignature.parse(signature);
-        return method != null && modeledContainerOperation(method);
-    }
-
     private static boolean modeledContainerOperation(MethodSignature method) {
         if (INDEXED.contains(method.owner)) {
             return INDEXED_RESULTS.contains(method.subsignature);

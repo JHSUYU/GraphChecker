@@ -1178,12 +1178,12 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void terminalSelectedSkipHaltsNonzeroOnlyAfterDurableEvidence() {
-        assertEquals(3, ConcolicRegionRuntime
+    public void onlyGloballyTerminalSelectedSkipHaltsNonzero() {
+        assertEquals(-1, ConcolicRegionRuntime
                 .terminalSelectedSkipHaltStatus(
                         ConcolicRegionRuntime.SKIP_ENGINE_UNAVAILABLE,
                         ConcolicRegionRuntime.ENGINE_BUSY_TIMEOUT, true));
-        assertEquals(2, ConcolicRegionRuntime
+        assertEquals(-1, ConcolicRegionRuntime
                 .terminalSelectedSkipHaltStatus(
                         ConcolicRegionRuntime.SKIP_ENGINE_UNAVAILABLE,
                         ConcolicRegionRuntime.ENGINE_BUSY_TIMEOUT, false));

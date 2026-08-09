@@ -12,7 +12,6 @@ import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
-import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
@@ -1635,8 +1634,7 @@ public final class ConcolicScheduler {
                                               scope) {
             return filteredSites(byCallReturn.get(callReturnCell),
                     allowedMethods, scope,
-                    MaterializationSpec.repeatedPrimitiveAccessorReturn(
-                            callReturnCell));
+                    JavaPrimitiveBoxing.unboxReturn(callReturnCell));
         }
 
         private JsonArray filteredSites(

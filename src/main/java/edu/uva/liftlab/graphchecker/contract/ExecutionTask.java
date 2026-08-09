@@ -155,6 +155,10 @@ public final class ExecutionTask {
         return string(object(encoded, "rootSelector"), "method");
     }
 
+    public String targetMethod() {
+        return string(encoded, "targetMethod");
+    }
+
     public JsonObject rootSelector() {
         return object(encoded, "rootSelector").deepCopy();
     }

@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -534,8 +535,8 @@ public class RuntimeSelectedRegionFinalizerTest {
                                 activation("REGION.target", 3,
                                         "EXCEPTION_CONTEXT", target)));
 
-        assertEquals(2, result.retainedRegionCount);
-        assertEquals(1, result.retainedEdgeCount);
+        assertEquals(2, result.regions.size());
+        assertEquals(1, result.regionEdges.size());
         String retained = Files.readAllLines(edges.toPath(),
                 StandardCharsets.UTF_8).toString();
         assertTrue(retained.contains("REGION.mutationWriter"));
@@ -771,8 +772,9 @@ public class RuntimeSelectedRegionFinalizerTest {
                 .get(1).getAsJsonObject();
         assertEquals("ACCESSOR_RETURN",
                 firstPort.get("sourceKind").getAsString());
-        assertEquals("ACCESSOR_RETURN", firstPort
-                .getAsJsonObject("materialization").get("kind").getAsString());
+        assertFalse(firstPort.has("materialization"));
+        assertEquals(MaterializationSpec.Kind.ACCESSOR_RETURN,
+                MaterializationSpec.decode(firstPort).kind());
         assertEquals(1, firstPort.get("replayOccurrence").getAsInt());
         assertEquals(2, secondPort.get("replayOccurrence").getAsInt());
         assertFalse(firstPort.get("portId").getAsString().equals(
@@ -1088,7 +1090,7 @@ public class RuntimeSelectedRegionFinalizerTest {
                                 activation("REGION.target", 3,
                                         "EXCEPTION_CONTEXT", target)));
 
-        assertEquals(3, result.retainedRegionCount);
+        assertEquals(3, result.regions.size());
         String regionRows = Files.readAllLines(regions.toPath(),
                 StandardCharsets.UTF_8).toString();
         assertTrue(regionRows.contains("REGION.server"));
@@ -1202,8 +1204,8 @@ public class RuntimeSelectedRegionFinalizerTest {
                                 activation("REGION.target", 3,
                                         "EXCEPTION_CONTEXT", target)));
 
-        assertEquals(3, result.retainedRegionCount);
-        assertEquals(2, result.retainedEdgeCount);
+        assertEquals(3, result.regions.size());
+        assertEquals(2, result.regionEdges.size());
         java.util.List<String> edgeRows = Files.readAllLines(edges.toPath(),
                 StandardCharsets.UTF_8);
         assertTrue(edgeRows.toString().contains("RUNTIME_FIELD_FLOW"));
@@ -1213,7 +1215,7 @@ public class RuntimeSelectedRegionFinalizerTest {
     }
 
     @Test
-    public void multipleTargetsProducePerTargetClosuresAndUnionCatalog()
+    public void multipleTargetsRetainTheirUnionClosure()
             throws Exception {
         String producer = "<example.Producer: void run()>";
         String target = "<example.Target: void run()>";
@@ -1278,18 +1280,8 @@ public class RuntimeSelectedRegionFinalizerTest {
                                 activation("REGION.target", 3,
                                         "EXCEPTION_CONTEXT", target)));
 
-        assertEquals("MULTI_TARGET_UNION_CATALOG",
-                result.regionCatalogScope);
-        assertFalse(result.directlySchedulable);
-        assertEquals(2, result.targetClosures.size());
-        for (Map<String, Object> closure : result.targetClosures) {
-            assertEquals("SINGLE_TARGET_CLOSURE", closure.get("scope"));
-            assertEquals(2, closure.get("retainedRegionInstanceCount"));
-            assertEquals(2, closure.get("retainedRegionDefinitionCount"));
-            assertEquals(1, closure.get("retainedCausalEdgeCount"));
-        }
-        assertEquals(3, result.retainedInstanceCount);
-        assertEquals(2, result.retainedEdgeCount);
+        assertEquals(3, retainedInstanceCount(result));
+        assertEquals(2, result.regionEdges.size());
     }
 
     @Test
@@ -1495,10 +1487,9 @@ public class RuntimeSelectedRegionFinalizerTest {
                                 activation("REGION.target", 4,
                                         "EXCEPTION_CONTEXT", target)));
 
-        assertEquals(4, result.candidateInstanceCount);
-        assertEquals(3, result.retainedInstanceCount);
-        assertEquals(3, result.retainedRegionCount);
-        assertEquals(3, result.retainedEdgeCount);
+        assertEquals(3, retainedInstanceCount(result));
+        assertEquals(3, result.regions.size());
+        assertEquals(3, result.regionEdges.size());
         String retainedEdges = Files.readAllLines(edges.toPath(),
                 StandardCharsets.UTF_8).toString();
         assertTrue(retainedEdges.contains("example.needed"));
@@ -1621,9 +1612,8 @@ public class RuntimeSelectedRegionFinalizerTest {
                                 activation("REGION.unrelated", 4,
                                         "STATE_CONTEXT", METHOD)));
 
-        assertEquals(5, result.candidateInstanceCount);
-        assertEquals(3, result.retainedInstanceCount);
-        assertEquals(2, result.retainedRegionCount);
+        assertEquals(3, retainedInstanceCount(result));
+        assertEquals(2, result.regions.size());
         java.util.List<String> rows = Files.readAllLines(edges.toPath(),
                 StandardCharsets.UTF_8);
         assertEquals(10, rows.size());
@@ -1729,9 +1719,9 @@ public class RuntimeSelectedRegionFinalizerTest {
                                 activation("REGION.target", 2,
                                         "EXCEPTION_CONTEXT", TARGET, 7)));
 
-        assertEquals(1, result.retainedRegionCount);
-        assertEquals(1, result.retainedInstanceCount);
-        assertEquals(0, result.retainedEdgeCount);
+        assertEquals(1, result.regions.size());
+        assertEquals(1, retainedInstanceCount(result));
+        assertEquals(0, result.regionEdges.size());
         assertTrue(Files.readAllLines(edges.toPath(),
                 StandardCharsets.UTF_8).isEmpty());
         JsonObject retained = GSON.fromJson(Files.readAllLines(
@@ -1802,8 +1792,8 @@ public class RuntimeSelectedRegionFinalizerTest {
                                 activation("REGION.target", 2,
                                         "EXCEPTION_CONTEXT", TARGET)));
 
-        assertEquals(1, result.retainedRegionCount);
-        assertEquals(0, result.retainedEdgeCount);
+        assertEquals(1, result.regions.size());
+        assertEquals(0, result.regionEdges.size());
     }
 
     @Test
@@ -1871,9 +1861,9 @@ public class RuntimeSelectedRegionFinalizerTest {
                                         "EXCEPTION_CONTEXT", root, 7,
                                         root + "#u9")));
 
-        assertEquals(1, result.retainedRegionCount);
-        assertEquals(2, result.retainedInstanceCount);
-        assertEquals(1, result.retainedEdgeCount);
+        assertEquals(1, result.regions.size());
+        assertEquals(2, retainedInstanceCount(result));
+        assertEquals(1, result.regionEdges.size());
         JsonObject flow = GSON.fromJson(Files.readAllLines(edges.toPath(),
                 StandardCharsets.UTF_8).get(0), JsonObject.class);
         assertEquals("RUNTIME_FIELD_FLOW", flow.get("kind").getAsString());
@@ -1980,9 +1970,9 @@ public class RuntimeSelectedRegionFinalizerTest {
                                         "EXCEPTION_CONTEXT", target, 2,
                                         target + "#u9")));
 
-        assertEquals(2, result.retainedRegionCount);
-        assertEquals(2, result.retainedInstanceCount);
-        assertEquals(1, result.retainedEdgeCount);
+        assertEquals(2, result.regions.size());
+        assertEquals(2, retainedInstanceCount(result));
+        assertEquals(1, result.regionEdges.size());
         JsonObject targetRegion = null;
         for (String row : Files.readAllLines(regions.toPath(),
                 StandardCharsets.UTF_8)) {
@@ -2007,9 +1997,9 @@ public class RuntimeSelectedRegionFinalizerTest {
         ProjectionFixture fixture = rpcContainerProjectionFixture(
                 "rpc-container", 6);
 
-        assertEquals(2, fixture.result.retainedRegionCount);
-        assertEquals(2, fixture.result.retainedInstanceCount);
-        assertEquals(1, fixture.result.retainedEdgeCount);
+        assertEquals(2, fixture.result.regions.size());
+        assertEquals(2, retainedInstanceCount(fixture.result));
+        assertEquals(1, fixture.result.regionEdges.size());
         JsonObject projection = GSON.fromJson(Files.readAllLines(
                 fixture.edges.toPath(), StandardCharsets.UTF_8).get(0),
                 JsonObject.class);
@@ -2058,9 +2048,9 @@ public class RuntimeSelectedRegionFinalizerTest {
         ProjectionFixture fixture = rpcContainerProjectionFixture(
                 "rpc-container-consecutive", 6, 1, 2);
 
-        assertEquals(2, fixture.result.retainedRegionCount);
-        assertEquals(3, fixture.result.retainedInstanceCount);
-        assertEquals(2, fixture.result.retainedEdgeCount);
+        assertEquals(2, fixture.result.regions.size());
+        assertEquals(3, retainedInstanceCount(fixture.result));
+        assertEquals(2, fixture.result.regionEdges.size());
         Set<Long> producerRoots = new LinkedHashSet<>();
         for (String row : Files.readAllLines(fixture.edges.toPath(),
                 StandardCharsets.UTF_8)) {
@@ -2094,8 +2084,8 @@ public class RuntimeSelectedRegionFinalizerTest {
                 "rpc-container-overflow",
                 LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY + 1);
 
-        assertEquals(1, fixture.result.retainedRegionCount);
-        assertEquals(0, fixture.result.retainedEdgeCount);
+        assertEquals(1, fixture.result.regions.size());
+        assertEquals(0, fixture.result.regionEdges.size());
         JsonObject consumer = fixture.region("REGION.consumer");
         JsonObject decoded = inputForField(consumer,
                 "<example.WireResponse: example.Key[] keys>");
@@ -2115,7 +2105,7 @@ public class RuntimeSelectedRegionFinalizerTest {
         ProjectionFixture fixture = rpcContainerProjectionFixture(
                 "rpc-container-missing-producer", 6, 0);
 
-        assertEquals(0, fixture.result.retainedEdgeCount);
+        assertEquals(0, fixture.result.regionEdges.size());
         JsonObject decoded = inputForField(
                 fixture.region("REGION.consumer"),
                 "<example.WireResponse: example.Key[] keys>");
@@ -2134,7 +2124,7 @@ public class RuntimeSelectedRegionFinalizerTest {
         ProjectionFixture fixture = rpcContainerProjectionFixture(
                 "rpc-container-ambiguous-producer", 6, 2);
 
-        assertEquals(0, fixture.result.retainedEdgeCount);
+        assertEquals(0, fixture.result.regionEdges.size());
         JsonObject decoded = inputForField(
                 fixture.region("REGION.consumer"),
                 "<example.WireResponse: example.Key[] keys>");
@@ -2153,7 +2143,7 @@ public class RuntimeSelectedRegionFinalizerTest {
         ProjectionFixture fixture = rpcScalarLeafProjectionFixture(
                 "rpc-scalar");
 
-        assertEquals(2, fixture.result.retainedRegionCount);
+        assertEquals(2, fixture.result.regions.size());
         List<JsonObject> edges = readJsonLines(fixture.edges);
         assertEquals(1, edges.size());
         JsonObject projection = edges.get(0);
@@ -2212,8 +2202,8 @@ public class RuntimeSelectedRegionFinalizerTest {
             ProjectionFixture fixture = rpcDecodeWriteProjectionFixture(
                     "rpc-decode-write");
 
-            assertEquals(4, fixture.result.retainedRegionCount);
-            assertEquals(3, fixture.result.retainedEdgeCount);
+            assertEquals(4, fixture.result.regions.size());
+            assertEquals(3, fixture.result.regionEdges.size());
             JsonObject decoder = fixture.region("REGION.decoder");
             assertEquals(2,
                     decoder.getAsJsonArray("symbolicInputs").size());
@@ -3697,6 +3687,15 @@ public class RuntimeSelectedRegionFinalizerTest {
             }
         }
         return result;
+    }
+
+    private static int retainedInstanceCount(
+            RuntimeSelectedRegionFinalizer.Result result) {
+        int count = 0;
+        for (Map<String, Object> region : result.regions) {
+            count += ((Number) region.get("runtimeInstanceCount")).intValue();
+        }
+        return count;
     }
 
     private static Map<String, Object> fieldBinding(

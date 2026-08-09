@@ -159,7 +159,11 @@ final class ArtifactIO {
         if (path == null || !Files.isRegularFile(path)) {
             throw new IOException("Artifact input not found: " + path);
         }
-        return artifact(path, Files.readAllBytes(path));
+        JsonObject result = new JsonObject();
+        result.addProperty("path", path.toAbsolutePath().normalize()
+                .toString());
+        result.addProperty("sha256", sha256(path));
+        return result;
     }
 
     static JsonObject artifact(Path path, byte[] bytes) {

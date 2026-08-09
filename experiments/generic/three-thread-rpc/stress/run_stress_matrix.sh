@@ -39,6 +39,25 @@ while IFS=$'\t' read -r case_number class_name target_id expectation \
 done < "${manifest}"
 [[ ${#cases[@]} -eq 20 ]] || die "manifest must contain 20 cases"
 
+stress_generated_missing=0
+for index in "${!cases[@]}"; do
+  case_number=${cases[${index}]}
+  class_name=${classes[${index}]}
+  case_dir="${stress_dir}/generated/case-${case_number}"
+  java_file="${graphchecker_dir}/src/test/java/edu/uva/liftlab/graphchecker/fixtures/stress/${class_name}.java"
+  if [[ ! -f "${java_file}" \
+      || ! -f "${case_dir}/workflow.properties" \
+      || ! -f "${case_dir}/target.yaml" ]]; then
+    stress_generated_missing=1
+    break
+  fi
+done
+if (( stress_generated_missing )); then
+  echo "[stress-matrix] regenerating deterministic round=${round} assets"
+  "${stress_dir}/generate_round.py" "${round}" \
+    || die "failed to generate round ${round} assets"
+fi
+
 echo "[stress-matrix] round=${round}: building once"
 (cd "${graphchecker_dir}" && \
   MAVEN_OPTS="-Dmaven.repo.local=${maven_repo} ${MAVEN_OPTS:-}" \

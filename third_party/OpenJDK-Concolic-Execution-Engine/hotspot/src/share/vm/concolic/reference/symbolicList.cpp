@@ -259,8 +259,8 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     return NULL;
   }
   if (method == "remove" && !root_container && arguments.empty()) {
-    int position =
-        ConcolicMngr::ctx->current_container_position(receiver_object) - 1;
+    int position = ConcolicMngr::ctx->next_container_removal_position(
+        receiver_object);
     Expression *root = ConcolicMngr::ctx->container_state(
         receiver_object, "INDEXED");
     if (root == NULL || position < 0) {
@@ -273,7 +273,6 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *next = new ContainerExpression(
         "INDEXED", "REMOVE", root, remove_arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
-    ConcolicMngr::ctx->rewind_container_position(receiver_object);
     return NULL;
   }
 

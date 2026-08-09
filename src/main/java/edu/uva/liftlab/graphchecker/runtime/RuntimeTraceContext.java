@@ -20,11 +20,11 @@ import java.util.concurrent.atomic.AtomicLong;
 final class RuntimeTraceContext {
     private static final Object LOCK = new Object();
     private static final AtomicLong IDS = new AtomicLong(1L);
-    private static final IdentityHashMap<Object, Owner> OWNERS =
+    private static final IdentityHashMap<Object, Long> OWNERS =
             new IdentityHashMap<>();
     private static final IdentityHashMap<Object, Seed> ASYNC_SEEDS =
             new IdentityHashMap<>();
-    private static final Map<String, Deque<RpcParent>> RPC_SENDS =
+    private static final Map<String, Deque<Long>> RPC_SENDS =
             new LinkedHashMap<>();
     private static final ThreadLocal<State> CURRENT =
             ThreadLocal.withInitial(RuntimeTraceContext::initialState);
@@ -35,11 +35,11 @@ final class RuntimeTraceContext {
     static long registerOwner(Object owner, String label) {
         if (owner == null) return 0L;
         synchronized (LOCK) {
-            Owner existing = OWNERS.get(owner);
-            if (existing != null) return existing.id;
-            Owner created = new Owner(nextId(), safe(label));
-            OWNERS.put(owner, created);
-            return created.id;
+            Long existing = OWNERS.get(owner);
+            if (existing != null) return existing;
+            long id = nextId();
+            OWNERS.put(owner, id);
+            return id;
         }
     }
 
@@ -49,8 +49,7 @@ final class RuntimeTraceContext {
         State state = CURRENT.get();
         View view = state.view();
         synchronized (LOCK) {
-            ASYNC_SEEDS.put(carrier, new Seed(view.ownerId,
-                    view.spanId, view.laneId));
+            ASYNC_SEEDS.put(carrier, new Seed(view.ownerId, view.spanId));
         }
     }
 
@@ -114,25 +113,24 @@ final class RuntimeTraceContext {
             View view = state.view();
             synchronized (LOCK) {
                 RPC_SENDS.computeIfAbsent(key, ignored -> new ArrayDeque<>())
-                        .addLast(new RpcParent(view.ownerId, view.laneId,
-                                view.spanId));
+                        .addLast(view.spanId);
             }
             return view;
         }
         if ("RECEIVE".equalsIgnoreCase(safe(direction))) {
-            RpcParent parent = null;
+            Long parentSpanId = null;
             synchronized (LOCK) {
-                Deque<RpcParent> parents = RPC_SENDS.get(key);
+                Deque<Long> parents = RPC_SENDS.get(key);
                 if (parents != null) {
-                    parent = parents.pollFirst();
+                    parentSpanId = parents.pollFirst();
                     if (parents.isEmpty()) RPC_SENDS.remove(key);
                 }
             }
-            if (parent != null) {
-                state.pendingRemoteParentSpanId = parent.spanId;
+            if (parentSpanId != null) {
+                state.pendingRemoteParentSpanId = parentSpanId;
                 Frame frame = state.frames.peek();
                 if (frame != null) {
-                    frame.remoteParentSpanId = parent.spanId;
+                    frame.remoteParentSpanId = parentSpanId;
                 }
             }
         }
@@ -232,41 +230,13 @@ final class RuntimeTraceContext {
         }
     }
 
-    private static final class Owner {
-        private final long id;
-        @SuppressWarnings("unused")
-        private final String label;
-
-        private Owner(long id, String label) {
-            this.id = id;
-            this.label = label;
-        }
-    }
-
     private static final class Seed {
         private final long ownerId;
         private final long parentSpanId;
-        @SuppressWarnings("unused")
-        private final long parentLaneId;
 
-        private Seed(long ownerId, long parentSpanId, long parentLaneId) {
+        private Seed(long ownerId, long parentSpanId) {
             this.ownerId = ownerId;
             this.parentSpanId = parentSpanId;
-            this.parentLaneId = parentLaneId;
-        }
-    }
-
-    private static final class RpcParent {
-        @SuppressWarnings("unused")
-        private final long ownerId;
-        @SuppressWarnings("unused")
-        private final long laneId;
-        private final long spanId;
-
-        private RpcParent(long ownerId, long laneId, long spanId) {
-            this.ownerId = ownerId;
-            this.laneId = laneId;
-            this.spanId = spanId;
         }
     }
 }

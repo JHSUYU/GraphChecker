@@ -38,18 +38,6 @@ public final class DependencyRole {
         return VALUE_FRONTIER.equals(normalize(value));
     }
 
-    /**
-     * Only semantic values extend the cross-region symbolic frontier.
-     *
-     * <p>Concrete structure carriers remain declared inputs of the region so
-     * the VM can replay the same receiver/alias topology.  Following them as
-     * producers, however, turns every ordinary object owner into a symbolic
-     * dependency and recreates a whole-object causal graph.</p>
-     */
-    public static boolean causalFollow(Object value) {
-        return valueFrontier(value);
-    }
-
     /** VALUE dominates when several static uses share one runtime port. */
     public static String merge(Object left, Object right) {
         String normalizedLeft = normalize(left);

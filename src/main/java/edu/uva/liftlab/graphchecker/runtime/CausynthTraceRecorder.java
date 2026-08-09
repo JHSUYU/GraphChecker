@@ -883,29 +883,7 @@ public final class CausynthTraceRecorder {
                             "traceLoadMillis", traceLoadMillis,
                             "refinementMillis", refinementMillis,
                             "regionPlanningMillis", candidatePlanningMillis,
-                            "regionPlanBindingMillis", planBindingMillis,
-                            "selectedMethodCount",
-                            refinement.selectedMethodCount,
-                            "activationCount", refinement.activationCount,
-                            "edgeCount", refinement.edgeCount,
-                            "runtimeBoundEdgeCount",
-                            refinement.runtimeBoundEdgeCount,
-                            "candidateRegionInstanceCount",
-                            closure.candidateInstanceCount,
-                            "targetRegionInstanceCount",
-                            closure.targetInstanceCount,
-                            "retainedRegionInstanceCount",
-                            closure.retainedInstanceCount,
-                            "retainedRegionDefinitionCount",
-                            closure.retainedRegionCount,
-                            "retainedCausalEdgeCount",
-                            closure.retainedEdgeCount,
-                            "regionCatalogScope",
-                            closure.regionCatalogScope,
-                            "directlySchedulable",
-                            closure.directlySchedulable,
-                            "perTargetClosures",
-                            closure.targetClosures));
+                            "regionPlanBindingMillis", planBindingMillis));
         }
     }
 

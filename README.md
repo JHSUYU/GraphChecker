@@ -92,143 +92,46 @@ Everything below is measured, not estimated.
 
 | | |
 |---|---|
-| Seed campaigns | **7 / 10** (was 4/10) |
-| Witnesses in accepted summaries | **16** (was 8) |
+| Target-first campaigns | **7 / 7** — one fatal target and six exact producers |
+| Core regions | **7** — NameNode, Balancer, and DataNode |
+| Closed path sets | **7 / 7** |
 | Oracle rank | **1** — passing |
 | Encoding faithfulness | proven: forcing the removal branch, the control `expiryDate > now` is **UNSAT** |
 | `keyId` binding | proven load-bearing by Z3 ablation — delete the one line carrying the shared-state edge and the query flips to `sat` |
-| NN in the plan | yes — 5 of 10 rows are NameNode |
-| **NN in a `.smt`** | **no — the pipeline has never reached compose since NN entered** |
+| Fatal absence witness | **PINNED** — one exact fatal absence/removal clause |
+| NN in the `.smt` | **yes** — `updateKeys`, `getBlockKeys`, and `sendHeartbeat` relations are composed |
+| Composition gaps | **0** |
+| Standard Z3 result | **SAT / REACHABLE** from `run.sh candidates` |
 
-The last row is the important one. A run dies if *any* seed campaign fails, so
-flip closure, compose and Z3 have not been exercised against the NN-bearing
-model even once. Undoing that is queued first (#29) because untested stages hide
-defects — this project has already paid for that lesson three times over.
-
-`expiryDate` remains 7 free existential roots on the DN side: A2's projection
-reaches the singleton spine `currentKey`, not the `allKeys[]` elements the fatal
-read walks. That is the same gap Ruling L named, one hop further along.
+The standard automatic entry point now completes discovery, bounded two-level
+replay, path merge, closed-path composition, SMT emission, and Z3.  The SAT
+query includes the exact fatal lookup and a VM-derived removal case whose
+removed member key is constrained to that lookup key.  The general
+root-enumeration degeneracy probe does not enumerate all 54 existential roots;
+the semantic acceptance gate is instead the pinned mutation witness above.
 
 ---
 
-## Queue
+## Remaining engineering queue
 
-Ordered by what falsifies the report first, then by what binds the query.
+The semantic HDFS-11741 path is complete. Remaining work is simplification and
+cost reduction, not a prerequisite for the current SAT result:
 
-**#29 — Seeding failure should be a named gap, not the end of the run.** One
-unseeded producer kills everything downstream. The project's own rule already
-says otherwise for flips: *a gap is charged to itself; it does not fail the
-run*. A producer that cannot be seeded leaves its output port unconstrained —
-which is exactly the freedom the acceptance criteria demand be named. Target
-failure must still be fatal; there is no query without a target.
+- Project demanded scalar RPC leaves directly at the configured trace boundary,
+  then retire `ARRAY_SNAPSHOT` and protobuf/container reconstruction paths.
+- Pre-project the few scheduler indices now obtained by repeatedly parsing the
+  large runtime region artifact, while retaining the evidence needed by audits.
+- Replace remaining non-semantic artifact/closure fingerprints with canonical
+  identities where the hash adds no correctness property. RPC value, argument,
+  and payload fingerprints are already absent.
+- Continue the lean-code audit after each rebuild. Generated stress fixtures and
+  case configs are now rebuilt on demand rather than tracked; semantic binding,
+  iterator-removal, false-SAT, and process-exit regressions remain as tests.
 
-**#24 — A bound must not become an event in the workload.** `LoopBoundCut` is
-thrown, escapes the region, arrives at the DataNode as a `RemoteException` and
-fails a live heartbeat. Escape measured 1:1 across three runs (263/263,
-511/511, 277/277). The fix is global and needs no notion of a re-entrant
-service root: drop the `throw`, keep the `finish` — the cut is the analysis's
-own object, nothing in the program throws it and nothing must survive it, and
-`finish` already disables every hook. The bound still bites; the program stops
-noticing. Cover `ReplayLoopResourceCut` and the three failure-state cuts in the
-same change, and name the abandonment.
-
-**#28 — Two different judgements, currently conflated.** A guard that does not
-dominate the demanded output should be demoted but **stay in the identity** (the
-path really is different); a guard whose predicate no region input can reach
-should **leave the identity** and become an entry assumption (pinning it makes
-admission a lottery). Measured: the dataflow-reachability criterion alone does
-*not* separate them here — 18 of 20 branches are reachable, and all three
-rejecting sites are among them, because the environment enters *through* the
-input ports. `60b9f179` addressed the first half at the port instead: a trusted
-RPC's whole-reply port is a carrier, not a demanded value, when the same goal
-demands a declared projection of that flow. Effect not yet measured end to end.
-
-**#19 + #17 — One recorder package and the timeline it feeds.** The recorder
-must state the object identity of a container's members. Then A2's
-identity-based pairing extends element-wise with no positional assumption, and
-three named gaps close at once (`ABSENT_EXPRESSION`, the two codec gaps). The
-counts that look like a pairing puzzle (8 rebuilt against 9 defined; 6 against
-3) are almost certainly the wrong denominator — the elements' real producer is
-the roll thread, not the RPC handler's activation — which is why #17's timeline
-and this belong to one design. #17 itself is composition-layer only: writers on
-one lane become a chain of the already-proven summary, alpha-renamed per step,
-under a **third ledger** (state-chain bound) distinct from the unroll bound and
-the replay cap, and visible in the SMT so a witness can say "within N rolls".
-
-**#21 — Rank targets by residual freedom.** `TargetRank` prefers producer
-count, which chose the write-phase handshake over the balancer one and dropped
-the presenting chain entirely. Rank by how few unconstrained operands the
-closure leaves on the fatal condition — the acceptance criterion itself, so
-ranking and witness strength cannot disagree. Pre-verified: the balancer
-activation is intact at the instance and plan layers, and DN2's protocol
-exchange windows are already marked, so the closure walk should reach the NN
-handlers on re-ranking; if it does not, that is a new defect, not a reason to
-hand-pick a target.
-
-**#27 — Make declared transports opaque to the VM.** The cross-process relation
-is already supplied by declaration and the codec is never analysed, yet the VM
-still symbolically executes protobuf encode/decode inside the region. Those
-expressions are then replaced wholesale by the declared edge. This is where the
-138 MB expression tree comes from, and why `keyId` and a field riding in the
-same encoded string have byte-identical reachable sets — the blocker under R1.
-The VM must not read protocol config: the planner publishes generic
-`opaqueExtents` (method ranges to run concretely, publishing no expressions and
-recording no symbolic guards). Fail closed if a demanded endpoint or an
-`EXPLORE` guard falls inside one.
-
-**#5 — The 25-minute discovery tax.** Every `RuntimeWorkflowDiscovery` JVM
-re-parses the 150 MB region plan, and the cache is keyed on the jar's identity,
-so every rebuild costs it again. The 150 MB is honest — 27 rows, 124
-activations, 181 goals, no duplication, dominated by inlined evidence — and the
-replay JVMs never read it (they get 31 KB–932 KB task plans). The fix is an
-index written alongside the plan, not a smaller plan. Evidence has machine
-consumers (the dropped-edge audit, the degeneracy gate); moving it behind an
-index is right, deleting it is not.
-
-**#26 — Planning-time port capability check, and a per-operand pin probe.**
-Both are instances of a doctrine the bug pattern kept rediscovering: what needs
-no runtime evidence should be decided at planning time.
-
-**#12 — R1b, after paths close.** Post-closure the predicate set is complete for
-the closed path set, so a leaf no recorded predicate reads may demote to
-concrete *for composition only*.
-
-**Later — remove non-semantic fingerprints.** RPC occurrence and payload
-binding already use no value, argument, or payload fingerprint.  The remaining
-fingerprints identify/check generated artifacts and equivalent closure
-contracts; simplify those to direct canonical identities where possible and
-remove redundant hash-equality gates.  This is cleanup, not part of the
-HDFS-11741 semantic-SAT critical path.
-
-**Later — project demanded RPC leaves directly at the trace boundary.** The
-configured RPC trace already identifies the logical call, direction, and
-result contract.  Extend that contract with demanded field paths and record
-those scalar leaves at the RPC boundary; then retire `ARRAY_SNAPSHOT` and its
-container-member reconstruction compatibility path.  Do not inspect protobuf
-serialization and do not add value or payload fingerprints.  This is a
-simplification after the current semantic-SAT path is established.
-
-**#14** — condense the test suite to roughly 40. **#9 (T5)** — the realizability
-loop exists as a tool (`experiments/hdfs/hdfs-11741/smt_realizability_refine.py`
-plus `environment-axioms.smt2`); re-run its axioms once `expiryDate` has a real
-producer, at which point clock monotonicity becomes instantiable for the first
-time.
-
-### Open, not attributed
-
-- `5a5e3738` aborts in glibc with `free(): invalid next size (fast)` and no
-  `hs_err`. The shadow-slot use-after-free above it is fixed and its SIGSEGV is
-  gone; whether this is an older defect that was masked or something newly
-  exposed is **not proven**. Strongest unverified lead: `detach_tmp_exp` indexes
-  the temporary-expression store with a slot's stale `index`, and a reset entry
-  carries `-1`. Turn it into a named failure before chasing it.
-- `b43888a9` publishes an empty summary with 2973 path-condition entries and
-  `pathConditionPauseDepth: 1`. It is **not** an instance of #24 — it produced a
-  complete result, its log has no resource-cut hits, and a sibling campaign
-  walks the same loop in four bodies.
-- A DataNode flip replay ends under SIGKILL before publishing, with peak RSS
-  961 MB against 182 GB. Skips now carry their kind, so the next occurrence is
-  attributable.
+Concolic seed replay keeps the broad 2400-second emergency budget. Path flips
+have a separate 180-second default because a flip that never publishes a
+selected result contributes no relation; it is recorded as
+`REPLAY_PRODUCED_NO_RESULT` without changing the workload or HDFS semantics.
 
 ---
 

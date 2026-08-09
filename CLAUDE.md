@@ -224,101 +224,29 @@ model without it and ask whether the model admits such a solution at all.
 UNSAT is data, not failure, and a different story than this one is a result
 to report rather than a deviation to correct.
 
-## TODO (ordered: first what falsifies the report, then what binds the query)
+## TODO (remaining simplification)
 
-**1 — The silent drop: measured, and it is not one.** *(closed; kept
-because the misreading is easy to repeat.)* The KeyManager→Dispatcher
-edges are in the query and are load-bearing. Two of the four are in
-`resolvedEdgeBindings` and become channels; the other two are consumed by
-a site outside this target's demanded closure, which is the design. The
-presented keyId is bound: forcing it to an unrecorded value is UNSAT,
-forcing it to a recorded one is SAT, and deleting the single
-`state_writer_value__…` assertion carrying that edge makes the unrecorded
-value SAT again.
+**Current executable baseline.** The standard HDFS-11741 `run.sh candidates`
+entry point completes the seven-region target-first workflow: every bounded
+path set closes, composition has no named gaps, the fatal absence-mutation
+witness is `PINNED`, and Z3 reports `SAT / REACHABLE`. Concolic seed replay
+retains its 2400-second emergency budget; path flips use a separate 180-second
+default and record a flip that publishes no selected result as
+`REPLAY_PRODUCED_NO_RESULT`. Remaining work is simplification and cost
+reduction, not a prerequisite for this result.
 
-Two artifacts produced the false reading, and both will produce it again.
-A channel is named `resolved_state_channel__<target>__<target>` — the
-suffix is the *reader* port twice, never the writer, so every channel
-looks like a self-loop and grepping names finds no producer region. And
-the equality that binds a fatal operand can sit as a conjunct inside the
-one giant `fatal_path` assertion rather than in its own named assert, so
-"the only assertion naming this symbol is its type range" is true of a
-symbol that is nonetheless bound. **Decide boundness with the solver, not
-with grep**: assert the symbol equal to a value the trace never recorded
-and check.
-
-The Acceptance audit this item asked for is wired in anyway
-(`droppedEdgeEvidenceAudit` in the composition manifest): every input the
-query presents without a producer is looked up in the validated runtime
-edges through the shared `AutomaticRegionEdge` gate, and a hit becomes
-`DROPPED_CONFIRMED_EDGE_EVIDENCE:<occurrence>:<edgeId>`. On this candidate
-it reports zero, which is what the ablation independently says.
-
-**2 — Rank targets by residual freedom, not producer count.** `TargetRank`
-prefers `producerGoals` count, which chose the write-phase handshake (9)
-over the balancer one (6) and dropped the presenting chain from the task
-plan entirely. Rank by how few unconstrained operands the closure leaves on
-the fatal condition — that is the acceptance criterion itself, so ranking
-and witness strength cannot disagree. Producer count breaks ties.
-
-**3 — Recorder: container member identity.** One recorder package closes
-three named gaps: element-level carrier projection (measured: 8 rebuilt
-keys against 9 producer definitions, 6 against 3 — order pairing has no
-recorded positions to attach to; `observedContainerWidth` is always −1),
-the map whose String keys are one nameless symbol (source of
-`ABSENT_EXPRESSION`, `JAVA_STRING_REFERENCE_IDENTITY:==`, and
-`splitElement:CONCAT_RECEIVER_REQUIRED`), and array-element demand below a
-spine object (the fatal read sits on `allKeys[]` elements; the landed
-projection reaches the singleton spine `currentKey` only). Invalidates the
-recording and everything below it; both passes measured ≈3.5 min.
-
-**4 — Shared state as bounded timelines.** Writers on one lane become a
-chain S₀→…→S_N of the already-proven summary, alpha-renamed per step — a
-**third ledger** (state-chain bound), distinct from the unroll bound
-(paths) and the replay cap (runtime), and visible in the SMT so a witness
-says "within N rolls". Readers select cut points, monotone along each
-reader's program order, free across unordered readers — that freedom is the
-fault. Only activation-boundary states are published, which is region
-atomicity by construction. Multi-lane **mutation** writers fail closed
-(captured snapshots bake in the recorded interleaving; reordering them is
-unsound); multi-lane assignment writers keep the existing selection.
-Zero campaign cost — the chain is composition-layer instantiation. It also
-gives clock monotonicity its footing (`t_i ≤ t_{i+1}` along the chain),
-which T5 measured as uninstantiable today (all clock reads are case-split
-alternatives, not a sequence).
-
-**5 — R1b, after paths close.** Post-closure the predicate set is complete
-for the closed path set, so a leaf never read by any recorded predicate may
-demote to concrete *for composition only* (exploration keeps it symbolic).
-This is the missing tier between `value_flow` (cannot cross a codec) and
-full taint (keyId and its co-carried neighbour have byte-identical
-reachable sets — measured, symmetric difference zero); statically the tier
-does not exist.
-
-**In flight** — the contract-vs-seed conflict (`replay event conflicts with
-task seed`) is a static check that today runs at import time, *after* the
-replay it condemns (measured: 26 minutes of engine work discarded by it).
-Being front-moved to planning with the import check kept; the same round
-measures the true flip count (75 EXPLORE guards is policy, not candidates)
-and the oracle rank.
-
-**Open** — a DN flip replay reproducibly ends under SIGKILL before
-publishing; peak RSS 961MB against 182GB available, so not memory. Skips
-now carry their kind, so the next occurrence is attributable.
-
-**Landed this round** — demand crosses RPC response edges
-(`ProtocolCarrierReconstruction`; NN handler regions and the roll monitor
-enter the task plan). Spine-object field projection under its own authority
-(`TRUSTED_DECLARED_CARRIER_PROJECTION_V1`), value-checked against evidence
-the rule never reads. Engine released on prefix contradiction; the
-entry-state gate demoted from veto to ordering; skip records distinguish
-losing the engine from an unwalkable path. Fan-out defaults to the host and
-announces its width; long stages log beside their artifacts (the serial
-campaign was launched with JOBS=1 — the posture CLAUDE.md warns about, and
-nothing recorded it). T5 exists as a tool (`smt_realizability_refine.py` +
-`environment-axioms.smt2`): point-blocking measured non-convergent; the
-expired-case control (force `expiryDate > now` on the removal branch) is
-UNSAT, which is the encoding-faithfulness check passing.
+1. Project demanded scalar RPC leaves directly at the configured trace
+   boundary, then retire `ARRAY_SNAPSHOT` and protobuf/container reconstruction
+   paths.
+2. Pre-project the few scheduler indices now obtained by repeatedly parsing the
+   large runtime-region artifact, while retaining the evidence required by
+   audits.
+3. Replace remaining non-semantic artifact and closure fingerprints with
+   canonical identities wherever a hash adds no correctness property. RPC
+   value, argument, and payload fingerprints are already absent.
+4. Continue the lean-code audit after every rebuild. Generated stress fixtures
+   and case configs are rebuilt on demand rather than tracked; retain semantic
+   binding, iterator-removal, false-SAT, and process-exit regression tests.
 
 ## Constraints
 

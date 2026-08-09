@@ -3190,15 +3190,12 @@ public class RuntimeRegionPlannerTest {
         return object("portId", port, "cell", field,
                 "rootCallId", rootCallId, "eventSeq", eventSeq,
                 "sourceKind", "ACCESSOR_RETURN",
-                "materialization", object("kind", "ACCESSOR_RETURN",
-                        "javaType", "int", "rootField", field,
-                        "leafField", field,
-                        "path", Collections.singletonList("value"),
-                        "method", method, "unitIndex", unit,
-                        "declaredCallee",
-                        "<example.Payload: int getValue()>",
-                        "implementationMethod",
-                        "<example.Payload: int getValue()>"));
+                "javaType", "int", "declaredFieldSignature", field,
+                "fieldPath", Collections.singletonList("value"),
+                "callerMethod", method, "unitIndex", unit,
+                "declaredCallee", "<example.Payload: int getValue()>",
+                "accessorImplementationMethod",
+                "<example.Payload: int getValue()>");
     }
 
     private static Map<String, Object> refinedEdge(

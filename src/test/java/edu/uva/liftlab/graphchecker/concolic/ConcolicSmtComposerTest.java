@@ -560,7 +560,73 @@ public class ConcolicSmtComposerTest {
                 > LoopBoundPolicy.MAX_STATE_TIMELINE_TRANSITIONS);
         assertTrue(result.smtLib, result.smtLib.contains(
                 "REGION_1_in_1__instance__REGION_1_Test_call20"));
+        assertTrue(result.smtLib, result.smtLib.contains("(assoc_has "));
+        assertTrue(result.smtLib, result.smtLib.contains("(assoc_size "));
+        assertTrue(result.smtLib, Arrays.stream(result.smtLib.split("\\n"))
+                .anyMatch(line -> line.contains(
+                        "case_selector_definition_REGION_1_0")
+                        && line.contains("(assoc_has ")));
         assertTrue(result.smtLib, result.smtLib.contains("boundedStep7"));
+    }
+
+    @Test
+    public void fatalMissingMapKeySelectsExactRemovalWitness()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.ABSENCE", producerInstance,
+                "REGION.1.out.0", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+        RelationSummary base = summary("ABSENCE", producerInstance, 20,
+                associativeState("REGION.1.in.0"),
+                Arrays.asList("REGION.1.in.0", "REGION.1.in.1"),
+                Collections.singletonList(edge), "java.util.Map");
+        JsonObject row = base.toJson();
+        JsonObject keep = row.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").get(0).getAsJsonObject();
+        keep.addProperty("caseId", "CASE.KEEP");
+        keep.getAsJsonObject("guard").getAsJsonArray("conditions").add(
+                binary(reference("REGION.1.in.1", "I"), "==",
+                        integer(0)));
+        JsonObject remove = keep.deepCopy();
+        remove.addProperty("caseId", "CASE.REMOVE");
+        JsonArray removeConditions = new JsonArray();
+        removeConditions.add(binary(reference("REGION.1.in.1", "I"),
+                "!=", integer(0)));
+        remove.getAsJsonObject("guard").add("conditions",
+                removeConditions);
+        remove.getAsJsonObject("outputExpressions").add(
+                "REGION.1.out.0", associativeOperation("REMOVE_AT",
+                        associativeState("REGION.1.in.0"), integer(0)));
+        JsonArray cases = new JsonArray();
+        cases.add(keep);
+        cases.add(remove);
+        row.getAsJsonObject("regionRelation").add("cases", cases);
+
+        JsonObject fatalRegion = region("REGION.0", "java.util.Map", "");
+        fatalRegion.getAsJsonArray("symbolicInputs").add(
+                port("REGION.0.in.1", true, "int"));
+        JsonObject producer = region("REGION.1", "java.util.Map",
+                "java.util.Map");
+        producer.getAsJsonArray("symbolicInputs").add(
+                port("REGION.1.in.1", true, "int"));
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(associativeRead(
+                        associativeState("REGION.0.in.0"),
+                        reference("REGION.0.in.1", "I"), "L"),
+                "==", recordedNull()));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(RelationSummary.decode(row)),
+                Arrays.asList(fatalRegion, producer), constraints, edge);
+
+        assertEquals("PINNED", result.manifest
+                .getAsJsonObject("fatalAbsenceMutationWitness")
+                .get("state").getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                ":named fatal_absence_mutation_witness"));
+        assertTrue(result.smtLib, result.smtLib.contains("assoc_key_at"));
+        if (z3Available()) assertSat(result.smtLib, "");
     }
 
     @Test
@@ -1218,20 +1284,6 @@ public class ConcolicSmtComposerTest {
                 .contains("DROPPED_CONFIRMED_EDGE_EVIDENCE:"
                         + unboundInstance + ":REGION.1.in.0"
                         + ":EDGE.DROPPED.UNBOUND"));
-        JsonArray supplied = result.manifest.getAsJsonArray(
-                "suppliedInputOccurrences");
-        int suppliedProducerInputs = 0;
-        for (JsonElement element : supplied) {
-            JsonObject occurrence = element.getAsJsonObject();
-            if (!"REGION.1.in.0".equals(
-                    occurrence.get("portId").getAsString())) {
-                continue;
-            }
-            suppliedProducerInputs++;
-            assertEquals(suppliedInstance,
-                    occurrence.get("regionInstanceId").getAsString());
-        }
-        assertEquals(1, suppliedProducerInputs);
     }
 
     /**

@@ -65,16 +65,14 @@ final class CausynthStaticFacts {
         final Fact fact;
         final String kind;
         final List<String> sources;
-        final String evidence;
 
         FieldWrite(String method, String field, Fact fact, String kind,
-                   List<String> sources, String evidence) {
+                   List<String> sources) {
             this.method = method;
             this.field = field;
             this.fact = fact;
             this.kind = kind;
             this.sources = sources;
-            this.evidence = evidence;
         }
     }
 

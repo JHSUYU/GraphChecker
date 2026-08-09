@@ -422,12 +422,16 @@ int ThreadContext::current_container_position(oop cursor) {
   return _container_positions[instance->get_sym_rid()];
 }
 
-void ThreadContext::rewind_container_position(oop cursor) {
-  if (cursor == NULL || cursor->is_array()) return;
+int ThreadContext::next_container_removal_position(oop cursor) {
+  if (cursor == NULL || cursor->is_array()) return -1;
   SymInstance *instance = get_or_alloc_sym_inst(cursor);
-  if (instance == NULL) return;
-  int &position = _container_positions[instance->get_sym_rid()];
-  if (position > 0) --position;
+  if (instance == NULL) return -1;
+  sym_rid_t id = instance->get_sym_rid();
+  int traversal_position = _container_positions[id];
+  int removed = _container_removals[id];
+  if (traversal_position <= 0) return -1;
+  _container_removals[id] = removed + 1;
+  return traversal_position - 1 - removed;
 }
 
 SymInstance *ThreadContext::get_or_alloc_sym_inst(oop obj) {
