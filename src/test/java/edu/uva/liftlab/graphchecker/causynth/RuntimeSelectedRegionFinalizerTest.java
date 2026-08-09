@@ -36,6 +36,71 @@ public class RuntimeSelectedRegionFinalizerTest {
     public final TemporaryFolder folder = new TemporaryFolder();
 
     @Test
+    public void explicitFaultReturnBecomesActivationLocalBooleanPort()
+            throws Exception {
+        File skeleton = skeleton("fault-port-skeleton.jsonl");
+        String marker = "<edu.uva.liftlab.graphchecker.annotation."
+                + "CausynthFault: boolean makeSymbolicBoolean("
+                + "java.lang.String)>";
+        String local = METHOD + "::rpcFails";
+        Map<String, Object> binding = object(
+                "regionId", "REGION.1", "rootCallId", 11,
+                "callId", 101, "invocationId", 70,
+                "callerMethod", METHOD, "unitIndex", 4,
+                "siteId", METHOD + "#u4", "eventSeq", 7,
+                "primitiveValue", "false", "accessorOccurrence", 1,
+                "declaredCallee", marker, "process", "p",
+                "authority", "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1");
+        Map<String, Object> markerEdge = object(
+                "schemaVersion", 3, "refinementSchemaVersion", 1,
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "id", "DF.fault", "kind", "explicit_symbolic_fault",
+                "transferKind", "LOCAL", "method", METHOD,
+                "regionIds", Collections.singletonList("REGION.1"),
+                "fromCell", marker + ".return", "toCell", local,
+                "siteId", METHOD + "#u4", "unitIndex", 4,
+                "unit", "rpcFails = staticinvoke " + marker,
+                "invoke", marker, "explicitSymbolicFault", true,
+                "explicitSymbolicFaultKind", "BOOLEAN",
+                "symbolicName", "rpcFails", "runtimeObserved", true,
+                "runtimeExplicitFaultBindings",
+                Collections.singletonList(binding));
+        Map<String, Object> guard = refinedEdge(
+                "DF.fault.guard", "exception_guard", "GUARD",
+                local, METHOD + "#u20#exception:example.Failure",
+                METHOD + "#u9", 9,
+                "if rpcFails == 0 goto return", null,
+                METHOD + "#u9", true, false);
+        File refined = writeRows("fault-port-refined.jsonl",
+                markerEdge, guard);
+        File regions = new File(folder.getRoot(), "fault-port-regions.jsonl");
+        File edges = new File(folder.getRoot(), "fault-port-edges.jsonl");
+        Map<String, Object> target = object("schemaVersion", 3,
+                "kind", "RUNTIME_REGION_ACTIVATION",
+                "regionId", "REGION.1", "rootCallId", 11,
+                "selection", "EXCEPTION_CONTEXT",
+                "callIds", Collections.singletonList(101L),
+                "observedMethods", Collections.singletonList(METHOD),
+                "observedFatalTargets", Collections.singletonList(
+                        observedFatalTarget(METHOD + "#u9", METHOD,
+                                9, 101, true)));
+
+        RuntimeSelectedRegionFinalizer.finalizeRegions(refined, skeleton,
+                regions, edges, Collections.singleton(METHOD),
+                Collections.singletonList(target));
+
+        JsonObject region = GSON.fromJson(Files.readAllLines(regions.toPath(),
+                StandardCharsets.UTF_8).get(0), JsonObject.class);
+        JsonObject input = region.getAsJsonArray("symbolicInputs")
+                .get(0).getAsJsonObject();
+        assertEquals("EXPLICIT_SYMBOLIC_FAULT",
+                input.get("sourceKind").getAsString());
+        assertEquals("boolean", input.get("javaType").getAsString());
+        assertEquals(marker + ".return", input.get("cell").getAsString());
+        assertEquals(1, input.get("replayOccurrence").getAsInt());
+    }
+
+    @Test
     public void refinedGraphBecomesFullRegionState() throws Exception {
         File skeleton = write("skeleton.jsonl", object(
                 "schemaVersion", 3, "kind", "REGION_SKELETON",

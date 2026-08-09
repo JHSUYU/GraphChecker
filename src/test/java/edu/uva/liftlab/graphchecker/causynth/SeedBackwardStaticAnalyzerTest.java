@@ -20,6 +20,7 @@ import soot.VoidType;
 import soot.jimple.IntConstant;
 import soot.jimple.Jimple;
 import soot.jimple.NullConstant;
+import soot.jimple.StringConstant;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -46,6 +47,80 @@ public class SeedBackwardStaticAnalyzerTest {
     public void resetAfter() {
         System.clearProperty("causynth.protocol.stubs");
         soot.G.reset();
+    }
+
+    @Test
+    public void explicitFaultMarkerIsSymbolicLeafNotConcreteMethodBody()
+            throws Exception {
+        SootClass object = libraryClass("java.lang.Object");
+        SootClass string = libraryClass("java.lang.String");
+        string.setSuperclass(object);
+        SootClass runtimeException = libraryClass(
+                "java.lang.RuntimeException");
+        runtimeException.setSuperclass(object);
+        SootMethod runtimeConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        runtimeException.addMethod(runtimeConstructor);
+
+        SootClass marker = applicationClass(
+                "edu.uva.liftlab.graphchecker.annotation.CausynthFault",
+                object);
+        SootMethod makeSymbolic = new SootMethod("makeSymbolicBoolean",
+                Collections.singletonList(RefType.v(string.getName())),
+                BooleanType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        marker.addMethod(makeSymbolic);
+        Body markerBody = Jimple.v().newBody(makeSymbolic);
+        makeSymbolic.setActiveBody(markerBody);
+        Local name = local(markerBody, "name", RefType.v(string.getName()));
+        markerBody.getUnits().add(Jimple.v().newIdentityStmt(name,
+                Jimple.v().newParameterRef(name.getType(), 0)));
+        markerBody.getUnits().add(Jimple.v().newReturnStmt(
+                IntConstant.v(0)));
+
+        SootClass failure = applicationClass(
+                "example.SymbolicFaultFailure", runtimeException);
+        SootMethod failureConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        failure.addMethod(failureConstructor);
+        constructorBody(failureConstructor, runtimeConstructor);
+
+        SootClass owner = applicationClass("example.FaultCaller", object);
+        SootMethod run = new SootMethod("run", Collections.emptyList(),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(run);
+        Body body = Jimple.v().newBody(run);
+        run.setActiveBody(body);
+        Local fault = local(body, "rpcFails", BooleanType.v());
+        Local exception = local(body, "failure", RefType.v(failure.getName()));
+        body.getUnits().add(Jimple.v().newAssignStmt(fault,
+                Jimple.v().newStaticInvokeExpr(makeSymbolic.makeRef(),
+                        StringConstant.v("rpcFails"))));
+        Unit normal = Jimple.v().newReturnVoidStmt();
+        body.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newEqExpr(fault, IntConstant.v(0)), normal));
+        body.getUnits().add(Jimple.v().newAssignStmt(exception,
+                Jimple.v().newNewExpr(RefType.v(failure.getName()))));
+        body.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newSpecialInvokeExpr(exception,
+                        failureConstructor.makeRef())));
+        body.getUnits().add(Jimple.v().newThrowStmt(exception));
+        body.getUnits().add(normal);
+
+        ExceptionTargetSite site = new ExceptionTargetSite(
+                "explicit-fault", owner.getName(), run.getName(), "()V",
+                run.getSignature(), failure.getName(), 0, -1);
+        StaticProgram program = new SeedBackwardStaticAnalyzer(
+                new CausynthTargetContext(null, null, site.id, site,
+                        "TEST")).analyze();
+
+        Map<String, Object> edge = edge(program.edges,
+                "explicit_symbolic_fault");
+        assertNotNull(String.valueOf(program.edges), edge);
+        assertEquals(Boolean.TRUE, edge.get("explicitSymbolicFault"));
+        assertEquals("BOOLEAN", edge.get("explicitSymbolicFaultKind"));
+        assertEquals("rpcFails", edge.get("symbolicName"));
+        assertEquals(makeSymbolic.getSignature() + ".return",
+                edge.get("fromCell"));
     }
 
     @Test

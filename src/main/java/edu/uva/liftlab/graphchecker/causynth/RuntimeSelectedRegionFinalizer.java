@@ -60,6 +60,10 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /** A value received at an RPC boundary and installed by decode code. */
     public static final String RPC_DECODE_VALUE = "RPC_DECODE_VALUE";
+
+    /** A boolean returned by the explicit application-side fault marker. */
+    public static final String EXPLICIT_SYMBOLIC_FAULT =
+            "EXPLICIT_SYMBOLIC_FAULT";
     /**
      * Skeleton field naming the methods reached from the anchors that admitted
      * the region.  Absent or empty means "not decided": every guard in the
@@ -167,6 +171,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     regionGraph, "HEAP_READ", "IN");
             inputs.addAll(accessorPorts(regionId, regionGraph,
                     branchPolicies));
+            inputs.addAll(explicitFaultPorts(regionId, regionGraph));
             inputs.addAll(protocolPorts(regionId, regionGraph, "IN"));
             markLoopControlOnlyInputs(inputs, regionGraph, branchPolicies);
             region.put("symbolicInputs", inputs);
@@ -3191,6 +3196,59 @@ public final class RuntimeSelectedRegionFinalizer {
         return new ArrayList<>(unique.values());
     }
 
+    private static List<Map<String, Object>> explicitFaultPorts(
+            String regionId, List<Map<String, Object>> edges) {
+        Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
+        for (Map<String, Object> edge : edges) {
+            if (!Boolean.TRUE.equals(booleanValue(
+                    edge.get("explicitSymbolicFault")))) {
+                continue;
+            }
+            String returnCell = text(edge.get("fromCell"));
+            String caller = text(edge.get("method"));
+            int unitIndex = number(edge.get("unitIndex"), -1);
+            if (returnCell.isEmpty() || caller.isEmpty() || unitIndex < 0) {
+                continue;
+            }
+            for (Map<String, Object> binding
+                    : rows(edge.get("runtimeExplicitFaultBindings"))) {
+                if (!regionId.equals(text(binding.get("regionId")))
+                        || !"EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1".equals(
+                        text(binding.get("authority")))) {
+                    continue;
+                }
+                long rootCallId = longNumber(binding.get("rootCallId"), -1L);
+                long eventSeq = longNumber(binding.get("eventSeq"), -1L);
+                int occurrence = number(binding.get("accessorOccurrence"), -1);
+                if (rootCallId < 0L || eventSeq < 0L || occurrence < 1) {
+                    continue;
+                }
+                String key = rootCallId + "\n" + caller + "#u"
+                        + unitIndex + "\n" + occurrence;
+                Map<String, Object> port = new LinkedHashMap<>(binding);
+                port.put("portId", regionId + ".in."
+                        + UUID.nameUUIDFromBytes((regionId + "\n" + key)
+                        .getBytes(StandardCharsets.UTF_8)));
+                port.put("cell", returnCell);
+                port.put("sourceKind", EXPLICIT_SYMBOLIC_FAULT);
+                port.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
+                port.put("transportKind", "ACTIVATION_LOCAL");
+                port.put("rootKind", "ACTIVATION_LOCAL");
+                port.put("javaType", "boolean");
+                port.put("callerMethod", caller);
+                port.put("unitIndex", unitIndex);
+                port.put("siteId", caller + "#u" + unitIndex);
+                port.put("declaredCallee", edge.get("invoke"));
+                port.put("symbolicName", edge.get("symbolicName"));
+                port.put("dependencyCells",
+                        Collections.singletonList(returnCell));
+                port.put("replayOccurrence", occurrence);
+                unique.put(key, port);
+            }
+        }
+        return new ArrayList<>(unique.values());
+    }
+
     private static Set<String> semanticAccessorEdges(
             List<Map<String, Object>> edges,
             List<Map<String, Object>> branchPolicies) {
@@ -4670,6 +4728,14 @@ public final class RuntimeSelectedRegionFinalizer {
             // Accessor-return ports are emitted only from an exact runtime
             // binding and carry that occurrence directly on the port.
             if ("ACCESSOR_RETURN".equals(text(port.get("sourceKind")))) {
+                long event = longNumber(port.get("eventSeq"), -1L);
+                if (event < 0L) return FatalPrefixEvidence.missing();
+                return event <= fatalEventSeq
+                        ? FatalPrefixEvidence.before()
+                        : FatalPrefixEvidence.after();
+            }
+            if (EXPLICIT_SYMBOLIC_FAULT.equals(
+                    text(port.get("sourceKind")))) {
                 long event = longNumber(port.get("eventSeq"), -1L);
                 if (event < 0L) return FatalPrefixEvidence.missing();
                 return event <= fatalEventSeq

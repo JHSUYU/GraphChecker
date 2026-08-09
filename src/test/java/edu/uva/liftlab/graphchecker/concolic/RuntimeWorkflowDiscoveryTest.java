@@ -517,6 +517,33 @@ public class RuntimeWorkflowDiscoveryTest {
     }
 
     @Test
+    public void targetBindingsPreferObservedSemanticGuardsInSelectedSlice()
+            throws Exception {
+        String noisy = "REGION.T@test#call1";
+        String semantic = "REGION.T@test#call9";
+        Map<String, Object> noisyProducer = leafProducerPlan(
+                "REGION.NOISY", 2, noisy, "REGION.T.in.value");
+        markSelectedSemanticGuardEvidence(noisyProducer, false);
+        Map<String, Object> semanticProducer = leafProducerPlan(
+                "REGION.SEMANTIC", 10, semantic, "REGION.T.in.value");
+        markSelectedSemanticGuardEvidence(semanticProducer, true);
+        List<Map<String, Object>> rows = Arrays.asList(
+                targetPlanWithInput(noisy), noisyProducer,
+                targetPlanWithInput(semantic), semanticProducer);
+        File forward = writeRows("rank-semantic-forward.jsonl", rows);
+        List<Map<String, Object>> reversed = new ArrayList<>(rows);
+        Collections.reverse(reversed);
+        File backward = writeRows("rank-semantic-backward.jsonl", reversed);
+
+        String forwardBindings = run(forward, "target-bindings");
+        String backwardBindings = run(backward, "target-bindings");
+
+        assertEquals(forwardBindings, backwardBindings);
+        assertTrue(forwardBindings.split("\\R")[0].contains(
+                semantic + "\tGOAL.TARGET"));
+    }
+
+    @Test
     public void equalResidualTargetsPreferLowerReplayCostDeterministically()
             throws Exception {
         String small = "REGION.T@test#call9";
@@ -1310,6 +1337,61 @@ public class RuntimeWorkflowDiscoveryTest {
         slice.put("containerPreStateAuthority",
                 "EARLIEST_READ_IN_EXACT_DEFINITION_INVOCATION_V1");
         slice.put("foldedMutationCount", 1);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void markSelectedSemanticGuardEvidence(
+            Map<String, Object> plan, boolean includeSemanticGuard) {
+        Map<String, Object> goal = ((List<Map<String, Object>>)
+                plan.get("closureGoals")).get(0);
+        Map<String, Object> closure = (Map<String, Object>)
+                goal.get("outputClosure");
+        Map<String, Object> member = ((List<Map<String, Object>>)
+                closure.get("members")).get(0);
+        Map<String, Object> slice = (Map<String, Object>)
+                member.get("slice");
+        if (includeSemanticGuard) {
+            String site = "<P: void run()>#u1";
+            slice.put("sites", Collections.singletonList(site));
+            goal.put("branches", Collections.singletonList(object(
+                    "siteId", site,
+                    "policy", "EXPLORE",
+                    "observed", true,
+                    "failureTarget", false,
+                    "loopControlGuard", false,
+                    "loopControlOnly", false)));
+            return;
+        }
+
+        String unobserved = "<P: void run()>#u2";
+        String loop = "<P: void run()>#u3";
+        String failure = "<P: void run()>#u4";
+        String replay = "<P: void run()>#u5";
+        String outsideSelectedSlice = "<P: void run()>#u6";
+        slice.put("sites", Arrays.asList(unobserved, loop, failure,
+                replay));
+        goal.put("branches", Arrays.asList(
+                object("siteId", unobserved, "policy", "EXPLORE",
+                        "observed", false, "failureTarget", false,
+                        "loopControlGuard", false,
+                        "loopControlOnly", false),
+                object("siteId", loop, "policy", "EXPLORE",
+                        "observed", true, "failureTarget", false,
+                        "loopControlGuard", true,
+                        "loopControlOnly", false),
+                object("siteId", failure, "policy", "EXPLORE",
+                        "observed", true, "failureTarget", true,
+                        "loopControlGuard", false,
+                        "loopControlOnly", false),
+                object("siteId", replay, "policy", "PATH_ASSUMPTION",
+                        "observed", true, "failureTarget", false,
+                        "loopControlGuard", false,
+                        "loopControlOnly", false),
+                object("siteId", outsideSelectedSlice,
+                        "policy", "EXPLORE", "observed", true,
+                        "failureTarget", false,
+                        "loopControlGuard", false,
+                        "loopControlOnly", false)));
     }
 
     @SuppressWarnings("unchecked")

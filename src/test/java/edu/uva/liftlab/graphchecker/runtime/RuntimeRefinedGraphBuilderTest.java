@@ -27,6 +27,62 @@ public class RuntimeRefinedGraphBuilderTest {
     public final TemporaryFolder folder = new TemporaryFolder();
 
     @Test
+    public void explicitStaticFaultReturnBindsExactActivationOccurrence()
+            throws Exception {
+        String marker = "<edu.uva.liftlab.graphchecker.annotation."
+                + "CausynthFault: boolean makeSymbolicBoolean("
+                + "java.lang.String)>";
+        File candidate = write("fault-candidate.jsonl", object(
+                "schemaVersion", 3, "id", "DF.fault",
+                "kind", "explicit_symbolic_fault",
+                "transferKind", "LOCAL",
+                "method", METHOD, "unitIndex", 4,
+                "siteId", METHOD + "#u4", "invoke", marker,
+                "fromCell", marker + ".return",
+                "toCell", METHOD + "::rpcFails",
+                "explicitSymbolicFault", true,
+                "explicitSymbolicFaultKind", "BOOLEAN",
+                "symbolicName", "rpcFails"));
+        File skeleton = write("fault-skeleton.jsonl", object(
+                "schemaVersion", 3, "kind", "REGION_SKELETON",
+                "regionId", "REGION.1", "rootMethod", METHOD,
+                "anchorMethod", METHOD,
+                "methods", Collections.singletonList(METHOD)));
+        RuntimeRegionPlanner.MethodEvent root =
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "p", "t",
+                        1, METHOD, 0, "", 11, 0, 0);
+        RuntimeRegionPlanner.RuntimeEvent enter =
+                new RuntimeRegionPlanner.RuntimeEvent(2, "CALL_SITE_ENTER",
+                        METHOD, 11, 70, 0, METHOD + "#u4", marker,
+                        -1, "", 0, "", false, false);
+        RuntimeRegionPlanner.RuntimeEvent returned =
+                new RuntimeRegionPlanner.RuntimeEvent(3, "CALL_SITE_RETURN",
+                        METHOD, 11, 70, 0, METHOD + "#u4", marker,
+                        -1, "java.lang.Boolean", 0, "false", false, false);
+        File output = new File(folder.getRoot(), "fault-refined.jsonl");
+
+        RuntimeRefinedGraphBuilder.Result result =
+                RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                        Collections.singletonList(activation("REGION.1", 11,
+                                "STATE_CONTEXT", METHOD)),
+                        Collections.singletonList(root),
+                        Arrays.asList(enter, returned),
+                        Collections.emptyList(), Collections.emptyList(),
+                        output.toPath());
+
+        assertEquals(1, result.runtimeBoundEdgeCount);
+        JsonObject edge = GSON.fromJson(Files.readAllLines(output.toPath(),
+                StandardCharsets.UTF_8).get(0), JsonObject.class);
+        JsonObject binding = edge.getAsJsonArray(
+                "runtimeExplicitFaultBindings").get(0).getAsJsonObject();
+        assertEquals(11, binding.get("rootCallId").getAsLong());
+        assertEquals(1, binding.get("accessorOccurrence").getAsInt());
+        assertEquals("false", binding.get("primitiveValue").getAsString());
+        assertEquals("EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1",
+                binding.get("authority").getAsString());
+    }
+
+    @Test
     public void objectIdentityBuildsUnboundedStructuredFieldChain()
             throws Exception {
         File candidate = write("candidate.jsonl", object(

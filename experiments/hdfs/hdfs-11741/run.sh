@@ -8,7 +8,17 @@ hadoop_dir=${HADOOP_REPO:-/opt/hadoop}
 hdfs_pom="${hadoop_dir}/hadoop-hdfs-project/hadoop-hdfs/pom.xml"
 runtime_patch_file="${experiment_dir}/patches/runtime-trace-workload.patch"
 fatal_patch_file="${experiment_dir}/patches/mark-fatal-target.patch"
+expiry_guard_patch_file="${experiment_dir}/patches/expiry-guard.patch"
+symbolic_rpc_fault_patch_file="${experiment_dir}/patches/symbolic-rpc-fault.patch"
 workflow="${experiment_dir}/workflow.properties"
+variant=${HDFS11741_VARIANT:-vulnerable}
+case "${variant}" in
+  vulnerable|patched|patched-fault) ;;
+  *)
+    echo "[hdfs-11741] HDFS11741_VARIANT must be vulnerable, patched, or patched-fault" >&2
+    exit 1
+    ;;
+esac
 # Experiment artifacts live outside target/ so `mvn clean` can never erase
 # a multi-hour trace/schedule campaign.  Override with HDFS11741_WORK_ROOT.
 # A pre-migration tree under target/hdfs-11741 is still honored (with a
@@ -16,9 +26,13 @@ workflow="${experiment_dir}/workflow.properties"
 #   mv target/hdfs-11741 experiments-output/hdfs-11741
 legacy_work_root="${graphchecker_dir}/target/hdfs-11741"
 default_work_root="${graphchecker_dir}/experiments-output/hdfs-11741"
+if [[ "${variant}" != vulnerable ]]; then
+  default_work_root="${default_work_root}-${variant}"
+fi
 if [[ -n "${HDFS11741_WORK_ROOT:-}" ]]; then
   work_root="${HDFS11741_WORK_ROOT}"
-elif [[ ! -d "${default_work_root}" && -d "${legacy_work_root}" ]]; then
+elif [[ "${variant}" == vulnerable \
+    && ! -d "${default_work_root}" && -d "${legacy_work_root}" ]]; then
   echo "[hdfs-11741] WARNING: using legacy work root ${legacy_work_root};" >&2
   echo "[hdfs-11741] migrate once with: mv ${legacy_work_root} ${default_work_root}" >&2
   work_root="${legacy_work_root}"
@@ -34,6 +48,8 @@ cached_protoc="${work_root}/tools/protoc-2.5.0"
 base_commit=ece33208b89a6a06c1b362d10fab31343fe5df13
 key_manager_rel=hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java
 key_manager_source="${hadoop_dir}/${key_manager_rel}"
+hdfs_main_classes="${hadoop_dir}/hadoop-hdfs-project/hadoop-hdfs/target/classes"
+hdfs_test_classes="${hadoop_dir}/hadoop-hdfs-project/hadoop-hdfs/target/test-classes"
 protoc_sha256=8b62bcf4d564e08c5bdd5d409c5e8462b07abadba10904946f63870dc9735f45
 test_class=org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer
 test_method=testEncryptedBalancer1
@@ -300,7 +316,7 @@ reject_coordination_candidates() {
   fi
 }
 
-verify_checkout() {
+verify_checkout_lineage() {
   [[ -e "${hadoop_dir}/.git" ]] \
     || die "Hadoop checkout not found: ${hadoop_dir}"
   local head
@@ -312,30 +328,60 @@ verify_checkout() {
     "${base_commit}" "${head}" \
     || die "Hadoop HEAD ${head} is not based on pre-fix ${base_commit}"
 
-  # Descendants used for tracing are allowed, but the committed experiment
-  # semantics must retain the pre-fix KeyManager.  This admits the local
-  # Causynth RPC trace commit without hard-coding its commit id, while
-  # rejecting the upstream HDFS-11741 fix and any other KeyManager rewrite.
+  # Variants are controlled working-tree overlays on the audited pre-fix
+  # lineage.  A descendant may add tracing support, but it must not commit a
+  # different KeyManager implementation behind the variant selector.
   git -C "${hadoop_dir}" diff --quiet \
     "${base_commit}..${head}" -- "${key_manager_rel}" \
-    || die "Hadoop descendant modifies ${key_manager_rel}; HDFS-11741 requires the pre-fix KeyManager"
+    || die "Hadoop descendant commits changes to ${key_manager_rel}; variants require the audited pre-fix lineage"
+}
 
+key_manager_method() {
   require_file "KeyManager source" "${key_manager_source}"
-  local key_method
-  key_method=$(sed -n \
+  sed -n \
     '/public DataEncryptionKey newDataEncryptionKey()/,/^  }/p' \
-    "${key_manager_source}")
+    "${key_manager_source}"
+}
+
+verify_variant_semantics() {
+  local key_method normalized_method
+  key_method=$(key_manager_method)
   [[ -n "${key_method}" ]] \
     || die "cannot attest KeyManager.newDataEncryptionKey()"
-  case "${key_method}" in
-    *expiryDate*|*isExpired*|*timer.now*|*Time.now*)
-      die "refusing fixed KeyManager: newDataEncryptionKey() checks key expiry"
+  normalized_method=$(tr '\n\t' '  ' <<<"${key_method}" \
+    | sed -E 's/[[:space:]]+/ /g')
+  case "${variant}" in
+    vulnerable)
+      case "${key_method}" in
+        *expiryDate*|*isExpired*|*timer.now*|*Time.now*)
+          die "variant vulnerable requires the pre-fix null-only key guard"
+          ;;
+      esac
+      case "${normalized_method}" in
+        *'if (encryptionKey == null) {'*) ;;
+        *) die "variant vulnerable has no pre-fix null-only key guard" ;;
+      esac
+      ;;
+    patched|patched-fault)
+      rg -Fq 'import org.apache.hadoop.util.Time;' "${key_manager_source}" \
+        || die "variant ${variant} requires the Time import"
+      case "${normalized_method}" in
+        *'if (encryptionKey == null || encryptionKey.expiryDate < Time.now()) {'*) ;;
+        *) die "variant ${variant} requires the expiryDate < Time.now() key guard" ;;
+      esac
       ;;
   esac
-  case "${key_method}" in
-    *'if (encryptionKey == null) {'*) ;;
-    *) die "KeyManager.newDataEncryptionKey() no longer has the pre-fix null-only guard" ;;
-  esac
+  if [[ "${variant}" == patched-fault ]]; then
+    [[ -s "${symbolic_rpc_fault_patch_file}" ]] \
+      || die "variant patched-fault is unavailable: missing nonempty ${symbolic_rpc_fault_patch_file}"
+    patch_is_applied "${symbolic_rpc_fault_patch_file}" \
+      || die "variant patched-fault requires its symbolic RPC fault patch"
+  fi
+}
+
+verify_checkout() {
+  verify_checkout_lineage
+  verify_variant_semantics
 }
 
 patch_is_applied() {
@@ -399,9 +445,23 @@ verify_runtime_patch_content() {
 }
 
 do_patch() {
-  verify_checkout
+  verify_checkout_lineage
+  if [[ "${variant}" == patched-fault \
+      && ! -s "${symbolic_rpc_fault_patch_file}" ]]; then
+    die "variant patched-fault is unavailable: missing nonempty ${symbolic_rpc_fault_patch_file}"
+  fi
   apply_runtime_patch
   apply_patch_once "fatal target" "${fatal_patch_file}"
+  case "${variant}" in
+    vulnerable) ;;
+    patched|patched-fault)
+      apply_patch_once "HDFS-11741 expiry guard" "${expiry_guard_patch_file}"
+      ;;
+  esac
+  if [[ "${variant}" == patched-fault ]]; then
+    apply_patch_once "symbolic RPC fault" "${symbolic_rpc_fault_patch_file}"
+  fi
+  verify_variant_semantics
   verify_runtime_patch_content
 }
 
@@ -476,10 +536,8 @@ do_classpath() {
   verify_marker
   require_command mvn
   [[ -f "${hdfs_pom}" ]] || die "HDFS POM not found: ${hdfs_pom}"
-  local main_classes="${hadoop_dir}/hadoop-hdfs-project/hadoop-hdfs/target/classes"
-  local test_classes="${hadoop_dir}/hadoop-hdfs-project/hadoop-hdfs/target/test-classes"
-  [[ -d "${main_classes}" ]] || die "main classes not built; run: $0 prepare"
-  [[ -d "${test_classes}" ]] || die "test classes not built; run: $0 prepare"
+  [[ -d "${hdfs_main_classes}" ]] || die "main classes not built; run: $0 prepare"
+  [[ -d "${hdfs_test_classes}" ]] || die "test classes not built; run: $0 prepare"
   mkdir -p "${work_root}"
   mvn -q -f "${hdfs_pom}" \
     -DincludeScope=test \
@@ -490,7 +548,7 @@ do_classpath() {
   dependencies=$(tr -d '\r\n' < "${dependency_classpath}")
   [[ -n "${dependencies}" ]] || die "Maven produced an empty classpath"
   printf '%s:%s:%s\n' \
-    "${main_classes}" "${test_classes}" "${dependencies}" \
+    "${hdfs_main_classes}" "${hdfs_test_classes}" "${dependencies}" \
     >"${project_classpath}"
   local entry
   local entries=0
@@ -716,8 +774,26 @@ configured_value() {
 # its summary.  Keep that second identity beside every reusable campaign so a
 # rebuilt concolic VM or GraphChecker runtime cannot silently reuse relations
 # emitted by older code.
+class_tree_digest() {
+  local label=$1
+  local root=$2
+  require_directory "${label}" "${root}"
+  [[ -n "$(find "${root}" -type f -name '*.class' -print -quit)" ]] \
+    || die "${label} contains no class files: ${root}"
+  (
+    cd "${root}"
+    find . -type f -name '*.class' -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 -r sha256sum -z -- \
+      | LC_ALL=C sed -zE 's/^([0-9a-f]{64})  (.*)$/\2\t\1/' \
+      | tr '\0' '\n' \
+      | head -c -1
+  ) | sha256sum | cut -d' ' -f1
+}
+
 initialize_replay_engine_fingerprint() {
-  local tools_jar runtime_jar jdk libjvm
+  local tools_jar runtime_jar jdk libjvm main_classes_digest
+  local test_classes_digest instrumented_classes_digest
   local -a libjvms=()
   tools_jar=$(configured_value graphchecker_jar)
   runtime_jar="${graphchecker_dir}/target/GraphChecker-1.0-SNAPSHOT.jar"
@@ -732,10 +808,20 @@ initialize_replay_engine_fingerprint() {
     -print | sort)
   (( ${#libjvms[@]} == 1 )) \
     || die "expected one custom VM library under ${jdk}; found ${#libjvms[@]}"
+  main_classes_digest=$(class_tree_digest "HDFS main classes" \
+    "${hdfs_main_classes}")
+  test_classes_digest=$(class_tree_digest "HDFS test classes" \
+    "${hdfs_test_classes}")
+  instrumented_classes_digest=$(class_tree_digest "instrumented HDFS classes" \
+    "${work_root}/instrumented-classes")
   replay_engine_fingerprint=$({
     printf '%s\n' 'HDFS11741_REPLAY_ENGINE_V1'
     sha256sum "${tools_jar}" "${runtime_jar}" "${libjvms[0]}"
     printf '%s\n' \
+      "variant=${variant}" \
+      "hdfsMainClasses=${main_classes_digest}" \
+      "hdfsTestClasses=${test_classes_digest}" \
+      "instrumentedHdfsClasses=${instrumented_classes_digest}" \
       "blockKeySerialSeed=${HDFS11741_BLOCK_KEY_SERIAL_SEED:-11741}" \
       "testCapacity=${HDFS11741_TEST_CAPACITY:-1000}" \
       "heartbeatRecheckMs=${HDFS11741_HEARTBEAT_RECHECK_MS:-300000}" \

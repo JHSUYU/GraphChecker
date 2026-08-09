@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
+import edu.uva.liftlab.graphchecker.annotation.CausynthFault;
 import edu.uva.liftlab.graphchecker.causynth.CausynthJson;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 
@@ -244,7 +245,18 @@ final class RuntimeRefinedGraphBuilder {
                         string(edge.get("protocolServerStub"))));
             }
             edge.put("regionIds", regionIds);
-            if ("accessor_field_return".equals(
+            if (Boolean.TRUE.equals(edge.get("explicitSymbolicFault"))) {
+                List<RuntimeAccessorBinding> bindings = values(
+                        accessorBindingsBySite.get(AccessorSite.from(edge)));
+                if (bindings.isEmpty()) {
+                    edge.put("runtimeObserved", false);
+                } else {
+                    edge.put("runtimeExplicitFaultBindings",
+                            encodeExplicitFaultBindings(bindings));
+                    edge.put("runtimeObserved", true);
+                    runtimeBoundCounter[0]++;
+                }
+            } else if ("accessor_field_return".equals(
                     string(edge.get("kind")))) {
                 List<RuntimeAccessorBinding> bindings = values(
                         accessorBindingsBySite.get(AccessorSite.from(edge)));
@@ -500,7 +512,10 @@ final class RuntimeRefinedGraphBuilder {
             AccessorSite site = AccessorSite.from(event);
             if (site == null) continue;
             if ("CALL_SITE_ENTER".equals(event.kind)
-                    && event.invocationId > 0L && event.objectId != 0) {
+                    && event.invocationId > 0L
+                    && (event.objectId != 0
+                    || CausynthFault.isBooleanMarkerSignature(
+                    event.declaredCallee))) {
                 int occurrence = occurrences.getOrDefault(site, 0) + 1;
                 occurrences.put(site, occurrence);
                 entered.put(event.invocationId,
@@ -798,6 +813,23 @@ final class RuntimeRefinedGraphBuilder {
             attachArrayElementBindings(encoded,
                     binding.activation.root.process,
                     binding.returned.objectId, arraysByObject);
+            unique.put(CausynthJson.write(encoded), encoded);
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    private static List<Map<String, Object>> encodeExplicitFaultBindings(
+            Collection<RuntimeAccessorBinding> bindings) {
+        Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
+        for (RuntimeAccessorBinding binding : bindings) {
+            Map<String, Object> encoded = binding.toMap(
+                    Collections.<String, Object>emptyMap());
+            encoded.remove("receiverObjectId");
+            encoded.remove("receiverRuntimeType");
+            encoded.remove("declaredFieldSignature");
+            encoded.remove("accessorImplementationMethod");
+            encoded.put("authority",
+                    "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1");
             unique.put(CausynthJson.write(encoded), encoded);
         }
         return new ArrayList<>(unique.values());

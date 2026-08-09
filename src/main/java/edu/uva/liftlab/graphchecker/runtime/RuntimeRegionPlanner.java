@@ -3119,7 +3119,11 @@ final class RuntimeRegionPlanner {
             action.put("objectId", port.get("rootObjectId"));
             String javaType = leafType(
                     strings(port.get("fieldPathDeclarations")));
-            if ("PROTOCOL_INPUT".equals(text(port.get("sourceKind")))) {
+            if (RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
+                    text(port.get("sourceKind")))) {
+                javaType = "boolean";
+            } else if ("PROTOCOL_INPUT".equals(
+                    text(port.get("sourceKind")))) {
                 Matcher parameter = METHOD_PARAMETER_CELL.matcher(
                         text(port.get("cell")));
                 if (parameter.matches()) {
@@ -3136,7 +3140,11 @@ final class RuntimeRegionPlanner {
                 javaType = text(port.get("javaType"));
             }
             action.put("javaType", javaType);
-            if ("PROTOCOL_INPUT".equals(text(port.get("sourceKind")))) {
+            if (RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
+                    text(port.get("sourceKind")))) {
+                action.put("location", "CALL_RETURN");
+            } else if ("PROTOCOL_INPUT".equals(
+                    text(port.get("sourceKind")))) {
                 if (port.containsKey("argumentIndex")) {
                     action.put("argumentIndex", port.get("argumentIndex"));
                 }
@@ -4645,6 +4653,24 @@ final class RuntimeRegionPlanner {
             return result;
         }
 
+        /** Calls in one subtree that had begun by the selected output. */
+        private Set<Long> subtreeThrough(long root, long boundarySeq) {
+            Set<Long> result = new LinkedHashSet<>();
+            Deque<Long> work = new ArrayDeque<>();
+            work.add(root);
+            while (!work.isEmpty()) {
+                long call = work.removeFirst();
+                MethodEvent method = methodByCall.get(call);
+                if (method == null || method.seq > boundarySeq
+                        || !result.add(call)) {
+                    continue;
+                }
+                work.addAll(children.getOrDefault(call,
+                        Collections.emptyList()));
+            }
+            return result;
+        }
+
         private Set<String> methodNames(Set<Long> calls) {
             Set<String> result = new LinkedHashSet<>();
             for (Long call : calls) {
@@ -4696,8 +4722,11 @@ final class RuntimeRegionPlanner {
         /**
          * Narrows a long-lived root to the invocation that produced one
          * exact runtime output.  The root-to-caller chain preserves the
-         * execution context, while the caller subtree preserves helpers that
-         * participate in the selected transition.  Earlier sibling
+         * execution context, while the caller subtree up to the output event
+         * preserves helpers that computed the selected value.  Calls begun
+         * after publication are consumers of that value, not part of its
+         * producer relation; admitting them can pull an entire RPC/server
+         * execution into a small call-argument summary.  Earlier sibling
          * invocations under the same service loop are deliberately absent.
          * A missing or ambiguous event mapping returns {@code null}, leaving
          * legacy fixtures on the conservative static method universe.
@@ -4715,7 +4744,7 @@ final class RuntimeRegionPlanner {
             } catch (IllegalArgumentException ignored) {
                 return null;
             }
-            corridor.addAll(subtree(caller));
+            corridor.addAll(subtreeThrough(caller, outputEventSeq));
             return corridor;
         }
 

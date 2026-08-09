@@ -85,6 +85,8 @@ public final class ConcolicRegionRuntime {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     private static final Object CONFIG_LOCK = new Object();
     private static final Object WRITE_LOCK = new Object();
+    /** Guarded by {@link #ENGINE_LOCK}. */
+    private static int resultPublicationsInFlight;
     private static final AtomicLong TOKEN_COUNTER = new AtomicLong();
     private static final AtomicLong ACCESSOR_CONTEXT_TOKEN_COUNTER =
             new AtomicLong();
@@ -536,7 +538,54 @@ public final class ConcolicRegionRuntime {
         CURRENT_TOKEN.remove();
         ROOT_INVOCATION_FRAMES.remove();
         CURRENT_ACCESSOR_CALL_CONTEXT.remove();
+        synchronized (ENGINE_LOCK) {
+            resultPublicationsInFlight = 0;
+            ENGINE_LOCK.notifyAll();
+        }
         releaseSymbolicEngine();
+    }
+
+    /**
+     * Waits until every selected activation already publishing a result has
+     * either durably closed its JSONL record or reported a write failure.
+     * Process launchers call this before forcibly terminating leaked system
+     * threads; otherwise a concurrent {@link #finish} can be killed between
+     * writing a large JSON object and its closing brace/newline.
+     */
+    public static void awaitSelectedResultPublications() {
+        boolean interrupted = false;
+        synchronized (ENGINE_LOCK) {
+            // ENGINE_BUSY covers the narrow interval after a selected
+            // activation is ACTIVE but before finish registers publication.
+            // Once finish releases the engine, the publication counter keeps
+            // the barrier closed through the durable append.
+            while (ENGINE_BUSY.get() || resultPublicationsInFlight > 0) {
+                try {
+                    ENGINE_LOCK.wait();
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+    }
+
+    static void beginSelectedResultPublication() {
+        synchronized (ENGINE_LOCK) {
+            resultPublicationsInFlight++;
+            ENGINE_LOCK.notifyAll();
+        }
+    }
+
+    static void endSelectedResultPublication() {
+        synchronized (ENGINE_LOCK) {
+            if (resultPublicationsInFlight <= 0) {
+                throw new IllegalStateException(
+                        "selected result publication underflow");
+            }
+            resultPublicationsInFlight--;
+            ENGINE_LOCK.notifyAll();
+        }
     }
 
     /** Test seam for the bounded symbolic-engine reservation. */
@@ -2671,6 +2720,8 @@ public final class ConcolicRegionRuntime {
                 || !ACTIVE.remove(token, active)) {
             return;
         }
+        beginSelectedResultPublication();
+        try {
         // Exact call-site traps normally close every accessor scope first.
         // Region cleanup is the final fail-closed boundary for malformed or
         // externally interrupted control flow.
@@ -2785,6 +2836,9 @@ public final class ConcolicRegionRuntime {
             // tests need not finish after the selected bounded activation has
             // durably emitted its VM summary.
             Runtime.getRuntime().halt(written ? 0 : 2);
+        }
+        } finally {
+            endSelectedResultPublication();
         }
     }
 

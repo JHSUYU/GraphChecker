@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.annotation.CausynthFault;
+
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import soot.RefLikeType;
@@ -30,6 +32,7 @@ import soot.jimple.NullConstant;
 import soot.jimple.ParameterRef;
 import soot.jimple.ReturnStmt;
 import soot.jimple.Stmt;
+import soot.jimple.StringConstant;
 import soot.jimple.ThisRef;
 import soot.jimple.ThrowStmt;
 import soot.toolkits.graph.BriefUnitGraph;
@@ -1712,6 +1715,15 @@ final class SeedBackwardStaticAnalyzer {
         if (callee == null) {
             return;
         }
+        if (CausynthFault.isBooleanMarkerSignature(callee.raw)) {
+            propagateCallReturns("explicit_symbolic_fault",
+                    callerMethod, fact, callee.raw, defs,
+                    callerRelevant, Collections.<String>emptySet(),
+                    false, false);
+            annotateExplicitSymbolicFault(callerMethod, fact, callee, defs,
+                    callerRelevant);
+            return;
+        }
         processSemanticContainerOperation(callerMethod, fact,
                 callee, defs, callerRelevant);
         processSemanticContainerMutation(callerMethod, fact,
@@ -1752,6 +1764,34 @@ final class SeedBackwardStaticAnalyzer {
                 callerRelevant);
         processDispatchInvoke(callerMethod, fact, callee, defs, actuals,
                 callerRelevant);
+    }
+
+    private void annotateExplicitSymbolicFault(
+            String callerMethod, Fact fact, MethodSig callee,
+            List<String> defs, Set<String> callerRelevant) {
+        String source = callee.raw + ".return";
+        String name = explicitFaultName(fact);
+        for (String def : defs) {
+            if (!callerRelevant.contains(def)) continue;
+            StaticEdge edge = emittedEdgeRows.get(edgeKey(
+                    "explicit_symbolic_fault", source, def,
+                    callerMethod, fact));
+            if (edge == null) continue;
+            edge.put("explicitSymbolicFault", true);
+            edge.put("explicitSymbolicFaultKind", "BOOLEAN");
+            edge.put("symbolicName", name.isEmpty()
+                    ? callerMethod + "#u" + fact.unitIndex : name);
+        }
+    }
+
+    private static String explicitFaultName(Fact fact) {
+        if (!(fact.unit instanceof Stmt)) return "";
+        InvokeExpr invoke = ((Stmt) fact.unit).getInvokeExpr();
+        if (invoke.getArgCount() != 1
+                || !(invoke.getArg(0) instanceof StringConstant)) {
+            return "";
+        }
+        return ((StringConstant) invoke.getArg(0)).value;
     }
 
     private boolean propagateCallArguments(

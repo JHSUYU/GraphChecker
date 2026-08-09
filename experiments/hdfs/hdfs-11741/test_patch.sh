@@ -48,6 +48,45 @@ git -C "${checkout}" apply --reverse --check \
 git -C "${checkout}" apply --reverse --check \
   "${experiment_dir}/patches/mark-fatal-target.patch"
 
+# The patched variant layers only the production expiry guard over the same
+# tracing workload.  Applying it twice must be idempotent, and the vulnerable
+# variant must not silently accept the now-fixed source tree.
+HDFS11741_VARIANT=patched \
+  HADOOP_REPO="${checkout}" "${experiment_dir}/run.sh" __patch
+HDFS11741_VARIANT=patched \
+  HADOOP_REPO="${checkout}" "${experiment_dir}/run.sh" __patch
+git -C "${checkout}" apply --reverse --check \
+  "${experiment_dir}/patches/expiry-guard.patch"
+rg -Fq 'import org.apache.hadoop.util.Time;' \
+  "${checkout}/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java"
+rg -Fq 'encryptionKey.expiryDate < Time.now()' \
+  "${checkout}/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java"
+if HADOOP_REPO="${checkout}" "${experiment_dir}/run.sh" __patch \
+    >/dev/null 2>&1; then
+  echo "[hdfs-11741] vulnerable variant accepted the expiry fix" >&2
+  exit 1
+fi
+
+# Until the explicit fault-injection patch is supplied, patched-fault is a
+# named but unavailable variant and must fail before mutating the checkout.
+fault_patch="${experiment_dir}/patches/symbolic-rpc-fault.patch"
+if [[ -s "${fault_patch}" ]]; then
+  HDFS11741_VARIANT=patched-fault \
+    HADOOP_REPO="${checkout}" "${experiment_dir}/run.sh" __patch
+  HDFS11741_VARIANT=patched-fault \
+    HADOOP_REPO="${checkout}" "${experiment_dir}/run.sh" __patch
+  git -C "${checkout}" apply --reverse --check "${fault_patch}"
+else
+  fault_error=""
+  if fault_error=$(HDFS11741_VARIANT=patched-fault \
+      HADOOP_REPO="${checkout}" "${experiment_dir}/run.sh" __patch 2>&1); then
+    echo "[hdfs-11741] unavailable patched-fault variant unexpectedly succeeded" >&2
+    exit 1
+  fi
+  [[ "${fault_error}" == *'variant patched-fault is unavailable'* ]] \
+    || { echo "${fault_error}" >&2; exit 1; }
+fi
+
 bridge="${checkout}/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthRpcTrace.java"
 rg -Fq 'recorderWithOwner.invoke(null, direction, transport, wireId, localOwner)' \
   "${bridge}"

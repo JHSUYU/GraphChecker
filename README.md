@@ -12,9 +12,8 @@
 Automatic bounded concolic pipeline that synthesises an SMT witness for a
 distributed-systems fault from a **passing** workload, and checks it with Z3.
 HDFS-11741 is the case it is developed against; the engine carries no knowledge
-of it. Engineering doctrine, build/run recipes and the acceptance criteria live
-in [CLAUDE.md](CLAUDE.md) — read that first. This file is the handoff: what the
-witness has to look like, where the work stands, and what is queued.
+of it. This README is the project handoff: it records the engineering doctrine,
+build/run entry points, witness acceptance criteria, current state, and queue.
 
 ---
 
@@ -88,7 +87,8 @@ carries its own constant rather than reusing the transport's.
 
 ## Where the work stands
 
-Everything below is measured, not estimated.
+The vulnerable baseline is complete. Everything in this first table is
+measured from the standard automatic pipeline, not estimated.
 
 | | |
 |---|---|
@@ -110,23 +110,145 @@ removed member key is constrained to that lookup key.  The general
 root-enumeration degeneracy probe does not enumerate all 54 existential roots;
 the semantic acceptance gate is instead the pinned mutation witness above.
 
----
+### Active handoff: patched HDFS-11741
 
-## Remaining engineering queue
+The current task is narrower: apply the real `expiryDate < Time.now()` repair,
+run the same automatic pipeline through Z3, and report what the patched bounded
+model says. `SAT` is not to be hidden or forced to `UNSAT`; it may expose a
+different feasible execution or a missing real-world assumption. The required
+deliverable is the solver result plus an auditable explanation of the model.
 
-The semantic HDFS-11741 path is complete. Remaining work is simplification and
-cost reduction, not a prerequisite for the current SAT result:
+The patched checkout and reusable evidence are:
 
-- Project demanded scalar RPC leaves directly at the configured trace boundary,
-  then retire `ARRAY_SNAPSHOT` and protobuf/container reconstruction paths.
-- Pre-project the few scheduler indices now obtained by repeatedly parsing the
-  large runtime region artifact, while retaining the evidence needed by audits.
-- Replace remaining non-semantic artifact/closure fingerprints with canonical
-  identities where the hash adds no correctness property. RPC value, argument,
-  and payload fingerprints are already absent.
-- Continue the lean-code audit after each rebuild. Generated stress fixtures and
-  case configs are now rebuilt on demand rather than tracked; semantic binding,
-  iterator-removal, false-SAT, and process-exit regressions remain as tests.
+```text
+Hadoop checkout: /tmp/hdfs-11741-patched-worktree
+work root:       /opt/GraphChecker/experiments-output/hdfs-11741-patched
+runtime trace:   runtime/runtime_trace.jsonl             (closed, 2.6 GB)
+static graph:    analysis/candidate_dataflow_edges.jsonl (2.0 GB)
+```
+
+The trace contains two distinct paths through the same Balancer Dispatcher
+region. The first activation (`rootCallId=3388118`) creates the cached key and
+does not execute the repair guard. The second (`rootCallId=3394679`) reads that
+cached key, executes the expiry guard, and sends to the fatal DataNode
+activation (`rootCallId=3398578`). They are path alternatives/state steps of
+one logical region, not two stable replay identities. The exact cached
+`expiryDate` flow between them is already recorded; do not replace it with a
+fresh free variable.
+
+Completed source fixes that still need one frozen end-to-end run:
+
+- Producer selection is occurrence-local, so one path seed cannot claim an
+  RPC/state edge observed in another occurrence.
+- Target ranking prefers exact selected slices with observed semantic guards;
+  it now chooses fatal call `3398578` and Dispatcher call `3394679`, without an
+  HDFS-specific name or line rule.
+- Symbolization is positive-demand: exact incoming leaves, selected semantic
+  guard operands, bounded state, explicit fault markers, and true root/protocol
+  inputs. On the old first Dispatcher task this reduced eight symbolic values
+  to two; URI ports, serialization lengths, token settings, and unrelated
+  payload fields stay concrete.
+- An output relation stops at its publication event. Calls begun after the
+  authentication value was published are consumers, so the planner no longer
+  pulls the whole handshake/RPC/server execution into that producer summary.
+- Selected VM results now have a continuous finish-to-durable-append barrier;
+  the JUnit runner cannot call `System.exit` while a large summary is still
+  being published.
+- Class-tree cache hashing is batched and preserves the old digest exactly;
+  hashing roughly 11,000 classes now takes about one second rather than forking
+  tens of thousands of shell processes.
+
+## Next tasks, in order
+
+1. **Freeze and verify the current source.** Do not run Maven while a discovery
+   or replay JVM is reading the GraphChecker jar. Run:
+
+   ```bash
+   mvn -q -Dtest=RuntimeRegionPlannerTest,RuntimeWorkflowDiscoveryTest,ConcolicSchedulerTest,ConcolicRegionRuntimeTest,JUnitMethodRunnerTest test
+   mvn -q -DskipTests package
+   git diff --check
+   ```
+
+2. **Rebuild refinement and the region plan from the existing closed trace.**
+   This does not rerun Hadoop. It should print that both pass-1 and pass-2
+   traces are reused:
+
+   ```bash
+   HDFS_CP=$(tr -d '\r\n' < experiments-output/hdfs-11741-patched/project-classpath.txt)
+   CAUSYNTH_REUSE_RUNTIME_TRACES=true \
+   CAUSYNTH_REPO=/tmp/hdfs-11741-patched-worktree \
+   CAUSYNTH_CLASSPATH="$HDFS_CP" \
+   CAUSYNTH_OUTPUT_DIR=/opt/GraphChecker/experiments-output/hdfs-11741-patched/analysis \
+   CAUSYNTH_INSTRUMENTED_CLASSES_DIR=/opt/GraphChecker/experiments-output/hdfs-11741-patched/instrumented-classes \
+   CAUSYNTH_REGION_PLAN=/opt/GraphChecker/experiments-output/hdfs-11741-patched/runtime/concolic_region_plan.jsonl \
+   CAUSYNTH_EDGE_VALIDATIONS=/opt/GraphChecker/experiments-output/hdfs-11741-patched/runtime/runtime_region_edge_validation.jsonl \
+   CAUSYNTH_SCHEDULE_OUTPUT_DIR=/opt/GraphChecker/experiments-output/hdfs-11741-patched/schedule \
+   ./run_engine.sh --config experiments/hdfs/hdfs-11741/workflow.properties workload
+   ```
+
+3. **Rebuild the exact target-first schedule and inspect it before replay.**
+
+   ```bash
+   HDFS11741_VARIANT=patched \
+   HADOOP_REPO=/tmp/hdfs-11741-patched-worktree \
+   experiments/hdfs/hdfs-11741/run.sh schedule
+   ```
+
+   Required checks: selected fatal call is `3398578`; the closure contains the
+   cached-key Dispatcher path and its prior producer; all seven NN/Balancer/DN
+   region templates remain represented; only demanded scalar/guard leaves are
+   symbolic. In particular, the second Dispatcher summary must include cached
+   `expiryDate`, `keyId`, and the VM clock expression, while endpoint, protobuf,
+   buffer-length, loop-control, and container-size values remain concrete.
+
+4. **Run bounded two-level VM replay, merge, compose, and Z3.** Keep the product
+   of the two job counts within available memory (each replay JVM is roughly
+   1 GB); four region jobs by two path jobs is a safe starting point here:
+
+   ```bash
+   HDFS11741_VARIANT=patched \
+   HADOOP_REPO=/tmp/hdfs-11741-patched-worktree \
+   HDFS11741_REGION_JOBS=4 \
+   HDFS11741_PATH_JOBS=2 \
+   experiments/hdfs/hdfs-11741/run.sh candidates
+   ```
+
+   Accept only the canonical artifacts under
+   `experiments-output/hdfs-11741-patched/schedule/`, including
+   `merged_region_summaries.jsonl`, `composed_fatal.smt2`, the composition
+   manifest, reachability report, and Z3 output. A summary that was truncated
+   before its terminating newline is invalid, not a partial success.
+
+5. **Audit the result semantically.** The SMT must contain both NN reader
+   chains (`updateKeys -> getBlockKeys -> Balancer` and
+   `updateKeys -> sendHeartbeat -> DataNode`), the first-to-second Dispatcher
+   cached-state edge, the repair guard from a real VM summary, and the fatal DN
+   lookup. RPC transport may use the configured logical mapping directly; do
+   not add value fingerprints or descend into protobuf. Do not handwrite key
+   lifetime, rolling-key, or HDFS-specific SMT formulas. Run the existing
+   solver pin/ablation checks and explain either `SAT` or `UNSAT`.
+
+6. **Only after the patched solver result, continue cleanup.** Project demanded
+   scalar RPC leaves directly at the configured trace boundary, then retire
+   `ARRAY_SNAPSHOT` and carrier reconstruction together. Until that replacement
+   exists, `ARRAY_SNAPSHOT` is live evidence for `BlockKey[]`, not dead code.
+   Pre-project the few scheduler indices currently recovered by repeatedly
+   parsing the large plan, and remove only fingerprints that add no cache or
+   composition correctness property. RPC value/argument/payload fingerprints
+   are already absent.
+
+The current generated plan is known to be noisy until step 2 is rerun: the old
+30-line plan is about 122 MB because whole closures are repeated. Do not treat
+its roughly 500,000 expressions as inherent symbolic complexity. The measured
+root cause was a post-publication call corridor plus fail-open symbolic input
+selection, both fixed above.
+
+The most recent offline rebuild was intentionally not accepted: a concurrent
+`mvn package` replaced the dependency jar while the aggregation JVM was still
+running, and it terminated in `NoClassDefFoundError` before publishing a new
+region plan. The closed traces remain reusable and the old plan remains in
+place. Start step 2 again only after the source and jar are frozen; do not
+resume from or bless that interrupted attempt.
 
 Concolic seed replay keeps the broad 2400-second emergency budget. Path flips
 have a separate 180-second default because a flip that never publishes a

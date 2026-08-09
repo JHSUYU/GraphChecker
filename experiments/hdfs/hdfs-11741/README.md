@@ -7,11 +7,18 @@ Hadoop revision immediately before the HDFS-11741 fix:
 ece33208b89a6a06c1b362d10fab31343fe5df13
 ```
 
-Start from that clean revision. The experiment applies one canonical runtime
-patch (trace context, bounded workload knobs, and deterministic block-key
-serials) plus the fatal-target marker. It rejects a checkout containing the
-upstream expiry fix. The RPC hooks carry trace lineage only; endpoint, payload,
-and value fingerprints are not part of the binding protocol.
+Start from that revision or an audited descendant which does not commit a
+`KeyManager` rewrite. The experiment applies one canonical runtime patch
+(trace context, bounded workload knobs, and deterministic block-key serials)
+plus the fatal-target marker. `HDFS11741_VARIANT` selects the program semantics:
+
+- `vulnerable` (default) requires the original null-only encryption-key guard.
+- `patched` adds only `encryptionKey.expiryDate < Time.now()` to that guard.
+- `patched-fault` adds the same guard and an explicit symbolic-RPC-fault patch.
+  It fails before changing Hadoop while that second patch is unavailable.
+
+The RPC hooks carry trace lineage only; endpoint, payload, and value
+fingerprints are not part of the binding protocol.
 
 The supported commands are:
 
@@ -27,13 +34,20 @@ HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh candidates
 
 # Complete pipeline: prepare, task discovery, VM summaries, SMT, and Z3.
 HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh full
+
+# Run the fixed-code experiment in its own artifact tree.
+HDFS11741_VARIANT=patched HADOOP_REPO=/opt/hadoop \
+  experiments/hdfs/hdfs-11741/run.sh full
 ```
 
 All experiment artifacts are rooted at `experiments-output/hdfs-11741`
-(override with `HDFS11741_WORK_ROOT`), deliberately outside `target/` so
-`mvn clean` cannot erase a recorded campaign. A tree recorded before this
-change under `target/hdfs-11741` is still honored with a warning; migrate it
-once with:
+(override with `HDFS11741_WORK_ROOT`). Non-default variants use
+`experiments-output/hdfs-11741-patched` and
+`experiments-output/hdfs-11741-patched-fault`, so their analysis, replay, and
+SMT artifacts cannot be mistaken for the vulnerable run. These roots remain
+outside `target/` so `mvn clean` cannot erase a recorded campaign. A vulnerable
+tree recorded before this change under `target/hdfs-11741` is still honored
+with a warning; migrate it once with:
 
 ```bash
 mv target/hdfs-11741 experiments-output/hdfs-11741
@@ -89,6 +103,10 @@ Frontier
 results are merged serially by canonical query key, and only the coordinator
 performs partial-SAT probes, so concurrency does not change the composed
 relation order.
+
+Replay-cache identity includes the selected variant and deterministic digests
+of the compiled HDFS main, test, and instrumented class trees. Rebuilding or
+changing the patched program therefore cannot reuse a vulnerable VM summary.
 
 All loops in a concolic task use the generic CFG-backedge limit of eight body
 iterations; this applies to service loops without recognizing Hadoop method

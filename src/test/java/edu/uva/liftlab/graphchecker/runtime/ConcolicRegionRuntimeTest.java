@@ -1123,6 +1123,59 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void processExitBarrierCoversActiveRegionAndDurablePublication()
+            throws Exception {
+        ConcolicRegionRuntime.resetForTests();
+        Thread waiter = null;
+        boolean engineHeld = false;
+        boolean publicationHeld = false;
+        try {
+            assertEquals("",
+                    ConcolicRegionRuntime.reserveSymbolicEngineForTests());
+            engineHeld = true;
+            final CountDownLatch waiting = new CountDownLatch(1);
+            waiter = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    waiting.countDown();
+                    ConcolicRegionRuntime
+                            .awaitSelectedResultPublications();
+                }
+            }, "selected-result-publication-waiter");
+            waiter.start();
+            assertTrue(waiting.await(30, TimeUnit.SECONDS));
+            waiter.join(200L);
+            assertTrue("an ACTIVE selected region must block process exit",
+                    waiter.isAlive());
+
+            // finish registers publication before releasing the engine.  The
+            // barrier must stay closed while the large JSON record is being
+            // appended, even though another activation could now run.
+            ConcolicRegionRuntime.beginSelectedResultPublication();
+            publicationHeld = true;
+            ConcolicRegionRuntime.releaseSymbolicEngineForTests();
+            engineHeld = false;
+            waiter.join(200L);
+            assertTrue("durable append must block process exit",
+                    waiter.isAlive());
+
+            ConcolicRegionRuntime.endSelectedResultPublication();
+            publicationHeld = false;
+            waiter.join(30_000L);
+            assertFalse(waiter.isAlive());
+        } finally {
+            if (publicationHeld) {
+                ConcolicRegionRuntime.endSelectedResultPublication();
+            }
+            if (engineHeld) {
+                ConcolicRegionRuntime.releaseSymbolicEngineForTests();
+            }
+            if (waiter != null) waiter.join(30_000L);
+            ConcolicRegionRuntime.resetForTests();
+        }
+    }
+
+    @Test
     public void engineReservationWaitsForTheHolderToRelease()
             throws Exception {
         ConcolicRegionRuntime.resetForTests();

@@ -866,6 +866,37 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
+    public void outputClosureRequiresPositiveSymbolicDemand() throws Exception {
+        String method = "<T: void publish()>";
+        File regions = write("positive-demand-regions.jsonl",
+                positiveDemandOutputRegion());
+        File plans = write("positive-demand-plans.jsonl",
+                positiveDemandOutputPlan(method));
+        File edges = writeEmpty("positive-demand-edges.jsonl");
+        File refined = writeRows("positive-demand-refined.jsonl",
+                refinedEdge(), transferEdgeInMethod("DF.enabled", method,
+                        "<example.Owner: boolean enabled>",
+                        method + "::$z0"));
+        File output = folder.newFolder("positive-demand-schedule");
+
+        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                arguments(regions, plans, edges, refined, output));
+
+        JsonArray actions = result.executionTasks.get(0)
+                .getAsJsonArray("inputActions");
+        assertEquals("SYMBOLIC", mode(actions, "REGION.1.in.enabled"));
+        assertEquals("SYMBOLIC", mode(actions, "REGION.1.in.keyId"));
+        assertEquals("CONCRETE", mode(actions, "REGION.1.in.count"));
+        assertEquals("CONCRETE", mode(actions, "REGION.1.in.algorithm"));
+        assertEquals("EXACT_EXPLORED_GUARD_DEPENDENCE", inputAction(
+                actions, "REGION.1.in.enabled").get("symbolicDemand")
+                .getAsString());
+        assertEquals("EXACT_INCOMING_COMPOSITION", inputAction(
+                actions, "REGION.1.in.keyId").get("symbolicDemand")
+                .getAsString());
+    }
+
+    @Test
     public void producerProjectionShrinksEveryTaskLedgerTogether()
             throws Exception {
         File regions = write("projected-regions.jsonl",
@@ -1097,6 +1128,31 @@ public class ConcolicSchedulerTest {
                 .getAsJsonArray("inputActions");
         assertEquals("SYMBOLIC", mode(actions, "REGION.1.in.demanded"));
         assertEquals("CONCRETE", mode(actions, "CAPTURE_ROOT.1"));
+    }
+
+    @Test
+    public void explicitFaultReturnKeepsItsExactStaticCallsite() {
+        JsonObject action = new JsonObject();
+        action.addProperty("sourceKind", "EXPLICIT_SYMBOLIC_FAULT");
+        action.addProperty("callerMethod", "<example.Root: void run()>");
+        action.addProperty("unitIndex", 8);
+        JsonArray sites = new JsonArray();
+        for (int unit : new int[]{3, 8}) {
+            JsonObject site = new JsonObject();
+            site.addProperty("method", "<example.Root: void run()>");
+            site.addProperty("unitIndex", unit);
+            site.addProperty("local", unit == 3 ? "first" : "second");
+            sites.add(site);
+        }
+
+        JsonArray exact = ConcolicScheduler.exactExplicitFaultReturnSite(
+                action, sites);
+
+        assertEquals(1, exact.size());
+        assertEquals(8, exact.get(0).getAsJsonObject()
+                .get("unitIndex").getAsInt());
+        assertEquals("second", exact.get(0).getAsJsonObject()
+                .get("local").getAsString());
     }
 
     @Test
@@ -1394,6 +1450,71 @@ public class ConcolicSchedulerTest {
                         port("REGION.1.in.unrelated", "param1")),
                 "outputs", Collections.singletonList(
                         port("REGION.1.out.value", "result")));
+    }
+
+    private static Map<String, Object> positiveDemandOutputRegion() {
+        return object("schemaVersion", 3, "kind", "SYMBOLIC_REGION",
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "regionId", "REGION.1",
+                "symbolicInputs", java.util.Arrays.asList(
+                        port("REGION.1.in.enabled", "enabled"),
+                        port("REGION.1.in.keyId", "keyId"),
+                        port("REGION.1.in.count", "count"),
+                        port("REGION.1.in.algorithm", "algorithm")),
+                "outputs", Collections.singletonList(
+                        port("REGION.1.out.value", "result")));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> positiveDemandOutputPlan(
+            String method) {
+        Map<String, Object> result = outputPlan();
+        Map<String, Object> goal = ((java.util.List<Map<String, Object>>)
+                result.get("closureGoals")).get(0);
+        goal.put("runtimeDefinitionMethods",
+                Collections.singletonList(method));
+        goal.put("symbolize", java.util.Arrays.asList(
+                heapLeaf("REGION.1.in.enabled", "example.Owner",
+                        "boolean", "enabled"),
+                heapLeaf("REGION.1.in.keyId", "example.Key", "int",
+                        "keyId"),
+                heapLeaf("REGION.1.in.count",
+                        "java.io.ByteArrayOutputStream", "int", "count"),
+                heapLeaf("REGION.1.in.algorithm", "example.Config",
+                        "java.lang.String", "algorithm")));
+        goal.put("branches", Collections.singletonList(object(
+                "siteId", method + "#u2", "policy", "EXPLORE",
+                "operandCells", Collections.singletonList(
+                        method + "::$z0"))));
+        goal.put("edgeBindings", Collections.singletonList(object(
+                "schemaVersion", 3,
+                "edgeId", "EDGE.KEY",
+                "evidenceKind", "FIELD_ASSIGNMENT_READ_FROM_V1",
+                "correlationAuthority",
+                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1",
+                "fromRegionInstance", "REGION.2@test#call2",
+                "toRegionInstance", "REGION.1@test#call1",
+                "fromOutputPort", "REGION.2.out.keyId",
+                "toInputPort", "REGION.1.in.keyId",
+                "receiverObjectId", 77,
+                "writerLaneId", "lane.writer",
+                "readerLaneId", "lane.reader",
+                "programOrderRequired", false,
+                "writerEventSeq", 5,
+                "readerEventSeq", 6)));
+        Map<String, Object> closure = (Map<String, Object>) goal.get(
+                "outputClosure");
+        Map<String, Object> member = ((java.util.List<Map<String, Object>>)
+                closure.get("members")).get(0);
+        Map<String, Object> slice = (Map<String, Object>) member.get("slice");
+        slice.put("inputPorts", java.util.Arrays.asList(
+                "REGION.1.in.enabled", "REGION.1.in.keyId",
+                "REGION.1.in.count", "REGION.1.in.algorithm"));
+        slice.put("methods", Collections.singletonList(method));
+        result.put("rootSelector", object("kind", "GLOBAL_INVOCATION",
+                "method", method, "ordinal", 1));
+        result.put("targetMethod", method);
+        return result;
     }
 
     private static Map<String, Object> projectableOutputRegion() {
@@ -2020,10 +2141,16 @@ public class ConcolicSchedulerTest {
 
     private static Map<String, Object> transferEdge(
             String id, String fromCell, String toCell) {
+        return transferEdgeInMethod(id, "<T: void f()>", fromCell,
+                toCell);
+    }
+
+    private static Map<String, Object> transferEdgeInMethod(
+            String id, String method, String fromCell, String toCell) {
         return object("schemaVersion", 3, "refinementSchemaVersion", 1,
                 "graphKind", "RUNTIME_REFINED_DATAFLOW",
                 "id", id, "kind", "field_read",
-                "transferKind", "HEAP_READ", "method", "<T: void f()>",
+                "transferKind", "HEAP_READ", "method", method,
                 "fromCell", fromCell, "toCell", toCell);
     }
 

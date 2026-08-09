@@ -200,8 +200,12 @@ public final class RuntimeWorkflowDiscovery {
                 Demand demand = selected.get(candidate);
                 try {
                     if (demand == null) demand = candidate.materialize();
-                    choices.add(new ProducerChoice(candidate, demand,
-                            unresolved, selected.containsKey(candidate)));
+                    ProducerChoice choice = new ProducerChoice(candidate,
+                            demand, unresolved,
+                            selected.containsKey(candidate));
+                    if (!choice.coveredEndpoints.isEmpty()) {
+                        choices.add(choice);
+                    }
                 } catch (IllegalArgumentException malformed) {
                     throw new IOException("invalid logical producer "
                             + "occurrence catalog; "
@@ -319,6 +323,11 @@ public final class RuntimeWorkflowDiscovery {
         int stateBackedFatalInputs = stateBackedFatalInputs(fatalInputs,
                 selectedEdgeByEndpoint, result,
                 selectedTarget.regionInstanceId);
+        Set<String> observedSemanticGuards = new LinkedHashSet<>();
+        for (Demand demand : result) {
+            demand.addObservedSelectedSemanticGuards(
+                    observedSemanticGuards);
+        }
         int residualFatalInputs = 0;
         for (Endpoint input : fatalInputs) {
             if (!discharged.contains(input)) residualFatalInputs++;
@@ -326,7 +335,7 @@ public final class RuntimeWorkflowDiscovery {
         return new DemandClosure(result, exactBindings, causalRegions,
                 fatalInputs.size(), residualFatalInputs,
                 exactDirectPresentation, propagatedBoundedStateTransition,
-                stateBackedFatalInputs);
+                stateBackedFatalInputs, observedSemanticGuards.size());
     }
 
     /**
@@ -909,7 +918,7 @@ public final class RuntimeWorkflowDiscovery {
                 throws IOException {
             if (goal.outputClosure() == null) return;
             for (Endpoint target : endpoints) {
-                JsonObject edge = candidate.edgeFor(target);
+                JsonObject edge = candidate.edgeFor(target, occurrences);
                 JsonObject prior = selectedEdges.putIfAbsent(target, edge);
                 if (prior != null && !required(prior, "edgeId").equals(
                         required(edge, "edgeId"))) {
@@ -986,7 +995,7 @@ public final class RuntimeWorkflowDiscovery {
                 throws IOException {
             Set<String> result = new LinkedHashSet<>();
             for (Endpoint endpoint : endpoints) {
-                JsonObject edge = candidate.edgeFor(endpoint);
+                JsonObject edge = candidate.edgeFor(endpoint, occurrences);
                 Occurrence occurrence = occurrences.require(
                         required(edge, "fromRegionInstance"));
                 result.add(member(edge, occurrence).portId());
@@ -999,7 +1008,7 @@ public final class RuntimeWorkflowDiscovery {
                 throws IOException {
             Set<String> result = new LinkedHashSet<>();
             for (Endpoint endpoint : endpoints) {
-                JsonObject edge = candidate.edgeFor(endpoint);
+                JsonObject edge = candidate.edgeFor(endpoint, occurrences);
                 Occurrence occurrence = occurrences.require(
                         required(edge, "fromRegionInstance"));
                 for (JsonElement input : member(edge, occurrence).slice()
@@ -1019,6 +1028,45 @@ public final class RuntimeWorkflowDiscovery {
                 bindings.add(required(edge, "fromRegionInstance") + "\n"
                         + required(edge, "fromOutputPort") + "\n"
                         + target.instance + "\n" + target.input);
+            }
+        }
+
+        /**
+         * Counts only guards exercised by the exact output members selected
+         * for this target.  The logical goal can contain the union of several
+         * occurrences, so a globally observed branch is not enough: its site
+         * must also belong to the selected member slice.
+         */
+        private void addObservedSelectedSemanticGuards(Set<String> result)
+                throws IOException {
+            for (JsonObject edge : selectedEdges.values()) {
+                Occurrence occurrence = occurrences.require(
+                        required(edge, "fromRegionInstance"));
+                JsonObject slice = member(edge, occurrence).slice();
+                Set<String> selectedSites = new LinkedHashSet<>();
+                for (String field : new String[]{"sites", "staticSites"}) {
+                    for (JsonElement site : array(slice, field)) {
+                        if (site.isJsonPrimitive()) {
+                            selectedSites.add(site.getAsString().trim());
+                        }
+                    }
+                }
+                for (JsonElement element : goal.branches()) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject branch = element.getAsJsonObject();
+                    String site = string(branch, "siteId");
+                    if (!selectedSites.contains(site)
+                            || !"EXPLORE".equals(string(branch, "policy"))
+                            || !bool(branch, "observed", false)
+                            || bool(branch, "failureTarget", false)
+                            || bool(branch, "loopControlGuard", false)
+                            || bool(branch, "loopControlOnly", false)) {
+                        continue;
+                    }
+                    result.add(logicalRegionId + "\n"
+                            + firstNonBlank(goal.pathSeedKey(), goalId)
+                            + "\n" + site);
+                }
             }
         }
 
@@ -1139,13 +1187,34 @@ public final class RuntimeWorkflowDiscovery {
             return new Demand(plan, goal);
         }
 
-        private JsonObject edgeFor(Endpoint endpoint) throws IOException {
+        private JsonObject edgeFor(Endpoint endpoint,
+                                   OccurrenceCatalog occurrences)
+                throws IOException {
             List<JsonObject> edges = edgesByDownstream.get(endpoint);
             if (edges == null || edges.isEmpty()) {
                 throw new IOException("producer candidate has no edge for "
                         + endpoint.binding());
             }
-            return edges.get(0);
+            for (JsonObject edge : edges) {
+                if (occurrences.contains(string(edge,
+                        "fromRegionInstance"))) {
+                    return edge;
+                }
+            }
+            throw new IOException("producer path seed has no exact "
+                    + "occurrence for " + endpoint.binding());
+        }
+
+        private boolean covers(Endpoint endpoint,
+                               OccurrenceCatalog occurrences) {
+            for (JsonObject edge : edgesByDownstream.getOrDefault(endpoint,
+                    java.util.Collections.emptyList())) {
+                if (occurrences.contains(string(edge,
+                        "fromRegionInstance"))) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private List<JsonObject> edgesFor(Endpoint endpoint) {
@@ -1197,7 +1266,9 @@ public final class RuntimeWorkflowDiscovery {
             this.demand = demand;
             this.alreadySelected = alreadySelected;
             for (Endpoint endpoint : candidate.downstreamEndpoints) {
-                if (unresolved.contains(endpoint)) {
+                if (unresolved.contains(endpoint)
+                        && candidate.covers(endpoint,
+                        demand.occurrences)) {
                     coveredEndpoints.add(endpoint);
                 }
             }
@@ -1225,6 +1296,7 @@ public final class RuntimeWorkflowDiscovery {
         private final boolean exactDirectPresentation;
         private final boolean propagatedBoundedStateTransition;
         private final int stateBackedFatalInputs;
+        private final int observedSelectedSemanticGuards;
 
         private DemandClosure(List<Demand> demands,
                               Set<String> exactBindings,
@@ -1232,7 +1304,8 @@ public final class RuntimeWorkflowDiscovery {
                               int residualFatalInputs,
                               boolean exactDirectPresentation,
                               boolean propagatedBoundedStateTransition,
-                              int stateBackedFatalInputs) {
+                              int stateBackedFatalInputs,
+                              int observedSelectedSemanticGuards) {
             this.demands = demands;
             this.exactBindings = exactBindings;
             this.causalRegions = causalRegions;
@@ -1242,6 +1315,8 @@ public final class RuntimeWorkflowDiscovery {
             this.propagatedBoundedStateTransition =
                     propagatedBoundedStateTransition;
             this.stateBackedFatalInputs = stateBackedFatalInputs;
+            this.observedSelectedSemanticGuards =
+                    observedSelectedSemanticGuards;
         }
     }
 
@@ -1330,6 +1405,7 @@ public final class RuntimeWorkflowDiscovery {
         private final boolean exactDirectPresentation;
         private final boolean propagatedBoundedStateTransition;
         private final int stateBackedFatalInputs;
+        private final int observedSelectedSemanticGuards;
         private final int residualFatalInputs;
         private final int fatalInputs;
         private final int producerGoals;
@@ -1339,6 +1415,7 @@ public final class RuntimeWorkflowDiscovery {
         private TargetRank(boolean valid, boolean exactDirectPresentation,
                            boolean propagatedBoundedStateTransition,
                            int stateBackedFatalInputs,
+                           int observedSelectedSemanticGuards,
                            int residualFatalInputs,
                            int fatalInputs, int producerGoals,
                            int exactBindings, int causalRegions) {
@@ -1347,6 +1424,8 @@ public final class RuntimeWorkflowDiscovery {
             this.propagatedBoundedStateTransition =
                     propagatedBoundedStateTransition;
             this.stateBackedFatalInputs = stateBackedFatalInputs;
+            this.observedSelectedSemanticGuards =
+                    observedSelectedSemanticGuards;
             this.residualFatalInputs = residualFatalInputs;
             this.fatalInputs = fatalInputs;
             this.producerGoals = producerGoals;
@@ -1364,6 +1443,7 @@ public final class RuntimeWorkflowDiscovery {
             return new TargetRank(true, closure.exactDirectPresentation,
                     closure.propagatedBoundedStateTransition,
                     closure.stateBackedFatalInputs,
+                    closure.observedSelectedSemanticGuards,
                     closure.residualFatalInputs,
                     closure.fatalInputs, closure.demands.size(),
                     closure.exactBindings.size(),
@@ -1371,7 +1451,8 @@ public final class RuntimeWorkflowDiscovery {
         }
 
         private static TargetRank invalid() {
-            return new TargetRank(false, false, false, 0, Integer.MAX_VALUE,
+            return new TargetRank(false, false, false, 0, 0,
+                    Integer.MAX_VALUE,
                     Integer.MAX_VALUE, Integer.MAX_VALUE,
                     Integer.MAX_VALUE, Integer.MAX_VALUE);
         }
@@ -1411,6 +1492,14 @@ public final class RuntimeWorkflowDiscovery {
             compared = Boolean.compare(
                     right.propagatedBoundedStateTransition,
                     left.propagatedBoundedStateTransition);
+            if (compared != 0) return compared;
+            // Among equally closed/stateful targets, prefer the exact
+            // occurrence that actually exercised more semantic decisions in
+            // the selected producer members.  Loop controls, failure guards,
+            // unobserved sites and replay-only assumptions do not contribute.
+            compared = Integer.compare(
+                    right.observedSelectedSemanticGuards,
+                    left.observedSelectedSemanticGuards);
             if (compared != 0) return compared;
             compared = Integer.compare(left.fatalInputs,
                     right.fatalInputs);
@@ -1466,6 +1555,10 @@ public final class RuntimeWorkflowDiscovery {
                         + "occurrence " + instance);
             }
             return result;
+        }
+
+        private boolean contains(String instance) {
+            return occurrences.containsKey(instance);
         }
     }
 

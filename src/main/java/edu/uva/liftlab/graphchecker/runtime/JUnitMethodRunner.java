@@ -20,13 +20,15 @@ public final class JUnitMethodRunner {
             run(args);
             return;
         }
+        int status = 0;
         try {
             run(args);
-            System.exit(0);
         } catch (Throwable failure) {
             failure.printStackTrace(System.err);
-            System.exit(1);
+            status = 1;
         }
+        ConcolicRegionRuntime.awaitSelectedResultPublications();
+        System.exit(status);
     }
 
     private static void run(String[] args) throws Exception {

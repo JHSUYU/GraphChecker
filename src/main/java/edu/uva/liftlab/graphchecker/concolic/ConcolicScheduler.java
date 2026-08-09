@@ -632,6 +632,10 @@ public final class ConcolicScheduler {
                 ? null : outputClosure.executionScope();
         Set<String> guardDependent = definitions.guardDependentCells(
                 exploredGuardOperands(demandedBranches));
+        Set<String> exactOutputGuardDependent = scope == null
+                ? Collections.<String>emptySet()
+                : definitions.methodLocalGuardDependentCells(
+                        demandedBranches);
         for (JsonElement element : sourceActions) {
             if (!element.isJsonObject()) {
                 continue;
@@ -672,7 +676,27 @@ public final class ConcolicScheduler {
                         InputActionCatalog.Mode.CONCRETE);
                 continue;
             }
-            if (unguardedPayloadLeaf(action, definitions, guardDependent)) {
+            String outputDemand = scope == null ? ""
+                    : outputSymbolicDemand(goal, action, definitions,
+                    exactOutputGuardDependent, bindingInstance);
+            if (scope != null && outputDemand.isEmpty()) {
+                // Output capture is demand-first.  A broad static slice may
+                // still contain replay-local payload and library state, but
+                // absence of an exact incoming binding, explored guard use,
+                // or authored state demand is not authority to turn that
+                // value into a new solver dimension.
+                binding.addProperty("symbolicDemand",
+                        "CONCRETE_UNDEMANDED_OUTPUT_PAYLOAD");
+                addInputAction(result, represented, binding,
+                        InputActionCatalog.Mode.CONCRETE);
+                continue;
+            }
+            if (scope != null
+                    && string(binding, "symbolicDemand").isEmpty()) {
+                binding.addProperty("symbolicDemand", outputDemand);
+            }
+            if (scope == null && unguardedPayloadLeaf(action, definitions,
+                    guardDependent)) {
                 // Symbolic freedom is only worth its cost when some explored
                 // decision can read the value.  A leaf that is merely carried
                 // into an encoding or a payload opens no new outcome, while
@@ -749,6 +773,7 @@ public final class ConcolicScheduler {
                 JsonArray sites = definitions.returnSites(cell,
                         scope == null ? regionMethods : scope.methods(),
                         scope);
+                sites = exactExplicitFaultReturnSite(action, sites);
                 if (sites.size() == 0) {
                     addInputAction(result, represented, binding,
                             InputActionCatalog.Mode.CONCRETE);
@@ -868,6 +893,57 @@ public final class ConcolicScheduler {
                     InputActionCatalog.Mode.DECLARATION_ONLY);
         }
         return result;
+    }
+
+    /** Positive authority for one producer-side symbolic leaf. */
+    private static String outputSymbolicDemand(
+            Goal goal, JsonObject action, DefinitionIndex definitions,
+            Set<String> guardDependent, String bindingInstance) {
+        String authored = string(action, "symbolicDemand");
+        if ("BOUNDED_CONTAINER_STATE".equals(authored)
+                || "BOUNDED_STATE_FRONTIER".equals(authored)) {
+            return authored;
+        }
+        if (RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
+                string(action, "sourceKind"))) {
+            return "EXPLICIT_SYMBOLIC_FAULT";
+        }
+        if (trustedIncomingBinding(goal, string(action, "symbol"),
+                bindingInstance)) {
+            return "EXACT_INCOMING_COMPOSITION";
+        }
+        if (definitions.exactlyFeedsAny(action, guardDependent)) {
+            return "EXACT_EXPLORED_GUARD_DEPENDENCE";
+        }
+        String location = string(action, "location");
+        if ("ARGUMENT".equals(location)
+                || "ARGUMENT_FIELD".equals(location)
+                || "ARGUMENT_FIELD_PATH".equals(location)
+                || "PROTOCOL_RETURN".equals(location)) {
+            return "EXACT_ROOT_INPUT_TO_OUTPUT";
+        }
+        return "";
+    }
+
+    static JsonArray exactExplicitFaultReturnSite(
+            JsonObject action, JsonArray sites) {
+        if (!RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
+                string(action, "sourceKind"))) {
+            return sites;
+        }
+        String caller = string(action, "callerMethod");
+        int unitIndex = integer(action, "unitIndex", -1);
+        JsonArray exact = new JsonArray();
+        if (caller.isEmpty() || unitIndex < 0) return exact;
+        for (JsonElement element : sites) {
+            if (!element.isJsonObject()) continue;
+            JsonObject site = element.getAsJsonObject();
+            if (caller.equals(string(site, "method"))
+                    && unitIndex == integer(site, "unitIndex", -1)) {
+                exact.add(site.deepCopy());
+            }
+        }
+        return exact;
     }
 
     /**
@@ -1527,6 +1603,8 @@ public final class ConcolicScheduler {
                 new LinkedHashMap<>();
         private final Map<String, List<String>> transferSources =
                 new LinkedHashMap<>();
+        private final Map<String, Map<String, List<String>>>
+                transferSourcesByMethod = new LinkedHashMap<>();
         private final Set<String> transferCells = new LinkedHashSet<>();
         private static DefinitionIndex from(List<JsonObject> edges) {
             DefinitionIndex result = new DefinitionIndex();
@@ -1547,6 +1625,14 @@ public final class ConcolicScheduler {
                     if (!source.isEmpty() && !target.isEmpty()) {
                         result.transferSources.computeIfAbsent(target,
                                 ignored -> new ArrayList<>()).add(source);
+                        String method = string(edge, "method");
+                        if (!method.isEmpty()) {
+                            result.transferSourcesByMethod.computeIfAbsent(
+                                    method, ignored -> new LinkedHashMap<>())
+                                    .computeIfAbsent(target,
+                                            ignored -> new ArrayList<>())
+                                    .add(source);
+                        }
                         result.transferCells.add(source);
                         result.transferCells.add(target);
                     }
@@ -1604,6 +1690,15 @@ public final class ConcolicScheduler {
             return transferCells.contains(cell);
         }
 
+        private boolean exactlyFeedsAny(JsonObject action,
+                                        Set<String> demanded) {
+            if (demanded.isEmpty()) return false;
+            for (String cell : dependenceOrigins(action)) {
+                if (demanded.contains(cell)) return true;
+            }
+            return false;
+        }
+
         /**
          * Cells from which one of the given guard operands is still
          * reachable.  Resolving it once by reverse reachability costs one
@@ -1617,6 +1712,43 @@ public final class ConcolicScheduler {
                 if (!result.add(cell)) continue;
                 work.addAll(transferSources.getOrDefault(cell,
                         Collections.<String>emptyList()));
+            }
+            return result;
+        }
+
+        /**
+         * Exact producer guard demand never crosses a method boundary.  A
+         * whole-program reverse walk can re-enter unrelated heap/library
+         * paths through aliases and make every payload appear guard-relevant.
+         * Inter-region values already have an explicit composition binding;
+         * this walk is solely for the local branch the VM is asked to reopen.
+         */
+        private Set<String> methodLocalGuardDependentCells(
+                JsonArray branches) {
+            Set<String> result = new LinkedHashSet<>();
+            for (JsonElement element : branches) {
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (!"EXPLORE".equals(string(branch, "policy"))) continue;
+                String site = string(branch, "siteId");
+                int marker = site.lastIndexOf("#u");
+                if (marker <= 0) continue;
+                Map<String, List<String>> incoming =
+                        transferSourcesByMethod.get(site.substring(0,
+                                marker));
+                if (incoming == null) continue;
+                Deque<String> work = new ArrayDeque<>();
+                for (JsonElement operand : array(branch, "operandCells")) {
+                    if (operand.isJsonPrimitive()) {
+                        work.add(operand.getAsString().trim());
+                    }
+                }
+                while (!work.isEmpty()) {
+                    String cell = work.removeFirst();
+                    if (cell.isEmpty() || !result.add(cell)) continue;
+                    work.addAll(incoming.getOrDefault(cell,
+                            Collections.<String>emptyList()));
+                }
             }
             return result;
         }

@@ -128,8 +128,8 @@
 
 
 ; --- Measured non-axiom: clock monotonicity is not instantiable here -------
-; CLAUDE.md lists clock monotonicity as a legitimate environment axiom, and
-; it is.  It is not stated above because this candidate offers no pair of
+; Clock monotonicity is a legitimate environment axiom. It is not stated above
+; because this candidate offers no pair of
 ; clock reads whose order is known.  The composer names a clock read
 ; environment__<scope>__currentTimeMills_<ordinal>__<hash> and notes that the
 ; VM restarts placeholder ordinals per replay task, so an ordinal orders
