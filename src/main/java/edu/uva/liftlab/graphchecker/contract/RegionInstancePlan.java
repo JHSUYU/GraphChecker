@@ -257,7 +257,8 @@ public final class RegionInstancePlan {
                         executionRootCallId());
             }
 
-            String semanticKey = semanticGoalKey(encoded);
+            String semanticKey = semanticGoalKey(encoded,
+                    plan.regionId());
             List<JsonObject> sourceOccurrences = occurrenceRows();
             JsonArray catalog = new JsonArray();
             for (JsonObject occurrence : sourceOccurrences) {
@@ -329,7 +330,7 @@ public final class RegionInstancePlan {
                     "closureGoals")) {
                 if (element.isJsonObject()
                         && semanticKey.equals(semanticGoalKey(
-                        element.getAsJsonObject()))) {
+                        element.getAsJsonObject(), plan.regionId()))) {
                     matches.add(element.getAsJsonObject());
                 }
             }
@@ -375,6 +376,7 @@ public final class RegionInstancePlan {
                 String name = field.getKey();
                 if ("goalId".equals(name)
                         || "baselineObservedMethods".equals(name)
+                        || "excludedOutputBlockers".equals(name)
                         || runtimeIdentityField(name)) {
                     continue;
                 }
@@ -654,6 +656,8 @@ public final class RegionInstancePlan {
             // Runtime call/object/value ids are deliberately excluded.
             copyIfPresent(value, shape, "accessorOccurrence");
             copyIfPresent(value, shape, "replayOccurrence");
+            copyIfPresent(value, shape,
+                    "helperActivationBoundedOccurrence");
             copyIfPresent(value, shape, "containerAccessOrdinal");
             copyIfPresent(value, shape, "siteId");
             copyIfPresent(value, shape, "unitIndex");
@@ -679,11 +683,13 @@ public final class RegionInstancePlan {
             return CanonicalJson.render(shape);
         }
 
-        private static String semanticGoalKey(JsonObject goal) {
+        public static String semanticGoalKey(
+                JsonObject goal, String regionId) {
             String kind = string(goal, "kind");
             String pathSeed = string(goal, "pathSeedKey");
             if ("TARGET_REACH_CLOSURE".equals(kind)) {
-                return kind + "\n" + pathSeed;
+                return kind + "\n" + regionId + "\n" + pathSeed + "\n"
+                        + admissionIdentity(goal);
             }
             List<String> members = new ArrayList<>();
             for (JsonElement element : closureMembers(goal)) {
@@ -692,7 +698,35 @@ public final class RegionInstancePlan {
                 }
             }
             Collections.sort(members);
-            return kind + "\n" + pathSeed + "\n" + members;
+            List<String> inputs = new ArrayList<>();
+            for (JsonElement element : array(goal, "symbolize")) {
+                if (element.isJsonObject()) {
+                    inputs.add(portShape(element.getAsJsonObject(), false));
+                }
+            }
+            Collections.sort(inputs);
+            return kind + "\n" + regionId + "\n" + pathSeed + "\n"
+                    + members + "\n" + inputs + "\n"
+                    + admissionIdentity(goal);
+        }
+
+        private static String admissionIdentity(JsonObject goal) {
+            JsonObject admission = object(goal, "admission");
+            List<String> blockers = stringValues(array(admission,
+                    "blockers"));
+            Collections.sort(blockers);
+            return string(admission, "state") + "\n" + blockers;
+        }
+
+        private static List<String> stringValues(JsonArray values) {
+            List<String> result = new ArrayList<>();
+            for (JsonElement value : values) {
+                if (value.isJsonPrimitive()
+                        && value.getAsJsonPrimitive().isString()) {
+                    result.add(value.getAsString());
+                }
+            }
+            return result;
         }
 
         public String executionRegionInstanceId() {

@@ -274,6 +274,15 @@ public final class RelationSummary {
                 versioned.put(port, value.getAsJsonObject());
             }
         }
+        List<Map<String, Integer>> selections =
+                independentVersionSelections(versioned);
+        for (Map<String, Integer> selection : selections) {
+            cases.add(pathCase(path, projectRelationGuard, selection));
+        }
+    }
+
+    private static List<Map<String, Integer>> independentVersionSelections(
+            NavigableMap<String, JsonObject> versioned) {
         List<Map<String, Integer>> selections = new ArrayList<>();
         selections.add(new LinkedHashMap<String, Integer>());
         for (Map.Entry<String, JsonObject> entry : versioned.entrySet()) {
@@ -289,9 +298,7 @@ public final class RelationSummary {
             }
             selections = expanded;
         }
-        for (Map<String, Integer> selection : selections) {
-            cases.add(pathCase(path, projectRelationGuard, selection));
-        }
+        return selections;
     }
 
     private static JsonObject pathCase(PathObservation path,

@@ -1,6 +1,8 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.junit.Rule;
 import org.junit.Test;
@@ -28,6 +30,227 @@ public class RuntimeWorkflowDiscoveryTest {
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
+
+    @Test
+    public void rankedWorkflowReusesDecodedRowsAndIsOrderStable()
+            throws Exception {
+        String targetInstance = "REGION.T@test#call9";
+        File forward = writePlans("ranked-forward.jsonl",
+                leafProducerPlan("REGION.P", 3, targetInstance,
+                        "REGION.T.in.value"),
+                targetPlanWithInput(targetInstance));
+        List<JsonObject> rows = ArtifactIO.readJsonl(forward.toPath());
+        RuntimeWorkflowDiscovery.RankedWorkflow ranked =
+                RuntimeWorkflowDiscovery.rankedWorkflow(rows);
+
+        assertEquals(2, ranked.selections().size());
+        assertTrue(ranked.selections().get(0).producerProjection == null);
+        assertTrue(ranked.selections().get(1).producerProjection != null);
+        assertEquals("REGION.T", ranked.selections().get(0).regionId);
+        assertEquals("REGION.P", ranked.selections().get(1).regionId);
+
+        Collections.reverse(rows);
+        RuntimeWorkflowDiscovery.RankedWorkflow reversed =
+                RuntimeWorkflowDiscovery.rankedWorkflow(rows);
+        assertEquals(ranked.targetBinding(), reversed.targetBinding());
+        assertEquals(ranked.closureBindings(), reversed.closureBindings());
+    }
+
+    @Test
+    public void exactInvocationAndPathMergeSingletonProducerTasksAtomically()
+            throws Exception {
+        String targetInstance = "REGION.T@test#call9";
+        List<String> targetPorts = Arrays.asList(
+                "REGION.T.in.0", "REGION.T.in.1", "REGION.T.in.2",
+                "REGION.T.in.3", "REGION.T.in.4");
+        Map<String, Object> producer = singletonGoalProducerPlan(
+                targetInstance, targetPorts, false);
+        RuntimeWorkflowDiscovery.RankedWorkflow ranked =
+                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                        GSON.toJsonTree(producer).getAsJsonObject(),
+                        GSON.toJsonTree(targetPlanWithInputs(
+                                targetInstance, targetPorts))
+                                .getAsJsonObject()));
+
+        assertEquals(2, ranked.scheduledTaskCount());
+        assertEquals(2, ranked.closureBindings().size());
+        assertTrue(ranked.closureBindings().get(1).contains("#call3"));
+        Map<String, JsonObject> components = producerComponents(producer,
+                ranked);
+        JsonObject complementaryEdge = new JsonObject();
+        complementaryEdge.addProperty("edgeId", "EDGE.P.0");
+        complementaryEdge.addProperty("fromOutputCell", "value0");
+        for (JsonObject component : components.values()) {
+            JsonArray edges = component.getAsJsonArray("edgeBindings");
+            if ("EDGE.P.0".equals(edges.get(0).getAsJsonObject()
+                    .get("edgeId").getAsString())) {
+                edges.add(complementaryEdge);
+                break;
+            }
+        }
+        List<JsonObject> atomic = ConcolicScheduler
+                .atomicProducerTasksForTests(ranked, components);
+        assertEquals(1, atomic.size());
+        JsonObject task = atomic.get(0);
+        assertEquals("REGION.P@test#call2",
+                task.get("regionInstanceId").getAsString());
+        assertEquals(5, task.getAsJsonObject("outputClosure")
+                .getAsJsonArray("members").size());
+        int[] expectedOccurrences = {1, 1, 2, 2, 3};
+        for (JsonElement memberElement : task.getAsJsonObject(
+                "outputClosure").getAsJsonArray("members")) {
+            JsonObject member = memberElement.getAsJsonObject();
+            JsonObject output = member.getAsJsonObject("output");
+            int index = Integer.parseInt(output.get("portId").getAsString()
+                    .substring(output.get("portId").getAsString()
+                            .lastIndexOf('.') + 1));
+            int expectedOccurrence = expectedOccurrences[index];
+            JsonObject capture = member.getAsJsonObject("slice")
+                    .getAsJsonArray("captureBindings").get(0)
+                    .getAsJsonObject();
+            assertEquals(expectedOccurrence,
+                    capture.get("outputOccurrence").getAsInt());
+            assertEquals(expectedOccurrence,
+                    capture.get("replayOccurrence").getAsInt());
+        }
+        assertEquals(5, task.getAsJsonArray("edgeBindings").size());
+        JsonObject mergedEdge = task.getAsJsonArray("edgeBindings").get(0)
+                .getAsJsonObject();
+        assertEquals("rpc.p.0", mergedEdge.get("mappingId").getAsString());
+        assertEquals("value0", mergedEdge.get("fromOutputCell")
+                .getAsString());
+        assertEquals(5, task.getAsJsonObject("producerProjection")
+                .getAsJsonArray("outputPorts").size());
+        assertEquals(5, task.getAsJsonObject("producerProjection")
+                .getAsJsonArray("edgeIds").size());
+        assertEquals(3, task.getAsJsonArray("inputActions").size());
+        assertEquals(5, task.getAsJsonObject(
+                "occurrenceInstantiationCatalog")
+                .getAsJsonArray("occurrences").get(0).getAsJsonObject()
+                .getAsJsonArray("outputPortMap").size());
+        assertEquals(3, task.getAsJsonObject(
+                "occurrenceInstantiationCatalog")
+                .getAsJsonArray("occurrences").get(0).getAsJsonObject()
+                .getAsJsonArray("inputPortMap").size());
+
+        Map<String, JsonObject> conflicting = producerComponents(producer,
+                ranked);
+        for (JsonObject component : conflicting.values()) {
+            JsonArray edges = component.getAsJsonArray("edgeBindings");
+            if ("EDGE.P.0".equals(edges.get(0).getAsJsonObject()
+                    .get("edgeId").getAsString())) {
+                JsonObject conflict = complementaryEdge.deepCopy();
+                conflict.addProperty("mappingId", "rpc.conflict");
+                edges.add(conflict);
+                break;
+            }
+        }
+        try {
+            ConcolicScheduler.atomicProducerTasksForTests(ranked,
+                    conflicting);
+            fail("expected conflicting edge binding field to fail closed");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage().contains(
+                    "conflicting edge binding EDGE.P.0 field mappingId"));
+        }
+
+        Map<String, Object> splitPath = singletonGoalProducerPlan(
+                targetInstance, targetPorts, true);
+        RuntimeWorkflowDiscovery.RankedWorkflow separated =
+                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                        GSON.toJsonTree(splitPath).getAsJsonObject(),
+                        GSON.toJsonTree(targetPlanWithInputs(
+                                targetInstance, targetPorts))
+                                .getAsJsonObject()));
+        assertEquals(3, separated.scheduledTaskCount());
+        assertEquals(2, ConcolicScheduler.atomicProducerTasksForTests(
+                separated, producerComponents(splitPath, separated)).size());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void scheduleIndexBindsIdentitiesAndRejectsMissingProducerOccurrence()
+            throws Exception {
+        String targetInstance = "REGION.T@test#call9";
+        Map<String, Object> producer = leafProducerPlan("REGION.P", 3,
+                targetInstance, "REGION.T.in.value");
+        Map<String, Object> target = targetPlanWithInput(targetInstance);
+        RuntimeWorkflowDiscovery.RankedWorkflow ranked =
+                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                        GSON.toJsonTree(producer).getAsJsonObject(),
+                        GSON.toJsonTree(target).getAsJsonObject()));
+
+        Map<String, Object> targetTask = targetTask("TASK.TARGET",
+                "REGION.T", targetInstance, "GOAL.TARGET");
+        Map<String, Object> targetCatalog = (Map<String, Object>)
+                targetTask.get("occurrenceInstantiationCatalog");
+        ((Map<String, Object>) ((List<Map<String, Object>>)
+                targetCatalog.get("occurrences")).get(0)).put(
+                "rootCallId", 9);
+
+        RuntimeWorkflowDiscovery.Selection producerSelection =
+                ranked.selections().get(1);
+        Map<String, Object> selectedProducerTask = producerTask(producer,
+                producerSelection.producerProjection.json(),
+                "REGION.P@test#call3", 3);
+        JsonObject regionIdentity = new JsonObject();
+        regionIdentity.addProperty("sha256", "region-plan-hash");
+        JsonObject taskIdentity = new JsonObject();
+        taskIdentity.addProperty("sha256", "task-plan-hash");
+        JsonObject index = ranked.scheduleIndex(Arrays.asList(
+                        GSON.toJsonTree(targetTask).getAsJsonObject(),
+                        GSON.toJsonTree(selectedProducerTask)
+                                .getAsJsonObject()),
+                regionIdentity, taskIdentity);
+        assertEquals("RUNTIME_TARGET_FIRST_SCHEDULE_INDEX",
+                index.get("kind").getAsString());
+        assertEquals("region-plan-hash", index.getAsJsonObject(
+                "regionPlan").get("sha256").getAsString());
+        assertEquals("task-plan-hash", index.getAsJsonObject(
+                "executionTaskPlan").get("sha256").getAsString());
+        assertEquals("TASK.TARGET", index.getAsJsonObject("target")
+                .get("taskId").getAsString());
+        assertEquals("TASK.PRODUCER", index.getAsJsonArray("producers")
+                .get(0).getAsJsonObject().get("taskId").getAsString());
+
+        Map<String, Object> tamperedProducerTask = producerTask(producer,
+                producerSelection.producerProjection.json(),
+                "REGION.P@test#call3", 3);
+        Map<String, Object> tamperedCatalog = (Map<String, Object>)
+                tamperedProducerTask.get("occurrenceInstantiationCatalog");
+        Map<String, Object> tamperedOccurrence =
+                ((List<Map<String, Object>>) tamperedCatalog.get(
+                        "occurrences")).get(0);
+        ((List<Map<String, Object>>) tamperedOccurrence.get("outputPortMap"))
+                .get(0).put("exactPort", "REGION.P.out.tampered");
+        try {
+            ranked.scheduleIndex(Arrays.asList(
+                            GSON.toJsonTree(targetTask).getAsJsonObject(),
+                            GSON.toJsonTree(tamperedProducerTask)
+                                    .getAsJsonObject()),
+                    new JsonObject(), new JsonObject());
+            fail("selected producer occurrence port map must be exact");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains(
+                    "port/binding map does not match selected runtime evidence"));
+        }
+
+        Map<String, Object> producerTask = producerTask(producer,
+                producerSelection.producerProjection.json(),
+                "REGION.P@test#call4", 4);
+        List<JsonObject> tasks = Arrays.asList(
+                GSON.toJsonTree(targetTask).getAsJsonObject(),
+                GSON.toJsonTree(producerTask).getAsJsonObject());
+
+        try {
+            ranked.scheduleIndex(tasks, new JsonObject(),
+                    new JsonObject());
+            fail("selected exact producer occurrence must be catalogued");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains(
+                    "instance=REGION.P@test#call3"));
+        }
+    }
 
     @Test
     public void causalDiscoveryFollowsValuesButNotStructureCarriers() {
@@ -608,6 +831,67 @@ public class RuntimeWorkflowDiscoveryTest {
     }
 
     @Test
+    public void exactSameLogicalHeapHandoffBeatsStatelessClosure()
+            throws Exception {
+        String stateless = "REGION.T@test#call1";
+        String stateful = "REGION.T@test#call9";
+        String later = "REGION.STATE@test#call11";
+        String cachedInput = "REGION.STATE.in.cached";
+        Map<String, Object> earlier = leafProducerPlan(
+                "REGION.STATE", 10, later, cachedInput);
+        Map<String, Object> presentation =
+                producerWithIncomingDependencyPlan("REGION.STATE", 11,
+                        stateful, "REGION.T.in.value", cachedInput,
+                        earlier);
+        markExactHeapStateHandoff(earlier, presentation,
+                "REGION.STATE@owner7", "REGION.STATE@owner7");
+        List<Map<String, Object>> rows = Arrays.asList(
+                targetPlanWithInput(stateless),
+                leafProducerPlan("REGION.CHEAP", 2, stateless,
+                        "REGION.T.in.value"),
+                targetPlanWithInput(stateful), earlier, presentation);
+        File forward = writeRows("rank-heap-state-forward.jsonl", rows);
+        List<Map<String, Object>> reversed = new ArrayList<>(rows);
+        Collections.reverse(reversed);
+        File backward = writeRows("rank-heap-state-backward.jsonl",
+                reversed);
+
+        String forwardBindings = run(forward, "target-bindings");
+        String backwardBindings = run(backward, "target-bindings");
+
+        assertEquals(forwardBindings, backwardBindings);
+        assertTrue(forwardBindings.split("\\R")[0].contains(
+                stateful + "\tGOAL.TARGET"));
+    }
+
+    @Test
+    public void exactHeapHandoffAcrossLogicalProducersDoesNotBiasRank()
+            throws Exception {
+        String stateless = "REGION.T@test#call1";
+        String unrelated = "REGION.T@test#call9";
+        String later = "REGION.STATE@test#call11";
+        String cachedInput = "REGION.STATE.in.cached";
+        Map<String, Object> earlier = leafProducerPlan(
+                "REGION.STATE", 10, later, cachedInput);
+        Map<String, Object> presentation =
+                producerWithIncomingDependencyPlan("REGION.STATE", 11,
+                        unrelated, "REGION.T.in.value", cachedInput,
+                        earlier);
+        markExactHeapStateHandoff(earlier, presentation,
+                "REGION.STATE@owner7", "REGION.STATE@owner8");
+        File plans = writePlans("rank-unrelated-heap-state.jsonl",
+                targetPlanWithInput(stateless),
+                leafProducerPlan("REGION.CHEAP", 2, stateless,
+                        "REGION.T.in.value"),
+                targetPlanWithInput(unrelated), earlier, presentation);
+
+        String bindings = run(plans, "target-bindings");
+
+        assertTrue(bindings.split("\\R")[0].contains(
+                stateless + "\tGOAL.TARGET"));
+    }
+
+    @Test
     public void stateEvidenceMustCoverEachFatalOperandBeforeCostWins()
             throws Exception {
         String oneBacked = "REGION.T@test#call1";
@@ -843,6 +1127,282 @@ public class RuntimeWorkflowDiscoveryTest {
                                 "inputPortMap", Collections.emptyList(),
                                 "outputPortMap", Collections.emptyList(),
                                 "bindingIds", Collections.emptyList()))),
+                "loopBound", object("schemaVersion", 1,
+                        "kind", "CFG_BACKEDGE",
+                        "scope", "ALL_EXECUTION_SCOPE_LOOPS",
+                        "maxBackedgeTraversals", 8,
+                        "onLimit", "CUT_PATH"),
+                "admission", object("state", "EXECUTABLE"));
+    }
+
+    private static Map<String, Object> singletonGoalProducerPlan(
+            String targetInstance, List<String> targetPorts,
+            boolean splitLastPath) {
+        String region = "REGION.P";
+        String instance = region + "@test#call3";
+        List<Map<String, Object>> goals = new ArrayList<>();
+        for (int index = 0; index < targetPorts.size(); index++) {
+            String output = region + ".out." + index;
+            String edgeId = "EDGE.P." + index;
+            int inputOrdinal = index % 3;
+            String input = region + ".in." + inputOrdinal;
+            Map<String, Object> action = object(
+                    "symbol", input,
+                    "portId", input,
+                    "cell", "<example.Key: int keyId>",
+                    "javaType", "int",
+                    "location", "HEAP_OBJECT_FIELD",
+                    "sourceKind", "ACCESSOR_RETURN",
+                    "dependencyRole", "VALUE_FRONTIER",
+                    "bindingMode", "FIELD_ACCESS",
+                    "accessFieldSignature", "<example.Key: int keyId>",
+                    "fieldPath", Collections.singletonList("keyId"),
+                    "accessSites", Collections.singletonList(
+                            "<P: void run()>#u7"),
+                    "accessorCallerMethod", "<P: void run()>",
+                    "accessorCallUnitIndex", 7,
+                    "accessorDeclaredCallee",
+                    "<example.Key: int getKeyId()>",
+                    "accessorImplementationMethod",
+                    "<example.Key: int getKeyId()>",
+                    "replayOccurrence", inputOrdinal + 1,
+                    "helperActivationBoundedOccurrence", 1,
+                    "mode", "SYMBOLIC");
+            Map<String, Object> edge = object(
+                    "schemaVersion", 3,
+                    "edgeId", edgeId,
+                    "evidenceKind", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
+                    "correlationAuthority",
+                    "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
+                    "mappingId", "rpc.p." + index,
+                    "fromRegionInstance", instance,
+                    "fromOutputPort", output,
+                    "toRegionInstance", targetInstance,
+                    "toInputPort", targetPorts.get(index),
+                    "callerSiteEventSeq", 30 + index * 3,
+                    "sendEventSeq", 31 + index * 3,
+                    "receiveEventSeq", 32 + index * 3);
+            String captureSite = "CALL_ARGUMENT:<P: void run()>#u"
+                    + (index % 2 == 0 ? 10 : 20)
+                    + ":<P: void sink(int)>#arg0";
+            int outputOccurrence = index % 2 == 0
+                    ? index / 2 + 1 : (index + 1) / 2;
+            Map<String, Object> capture = object(
+                    "captureBindingId", "CAPTURE.P." + index,
+                    "captureKind", "CALL_ARGUMENT",
+                    "outputPort", output,
+                    "outputCell", "value" + index,
+                    "javaType", "int",
+                    "definitionMethod", "<P: void run()>",
+                    "definitionUnitIndex", index % 2 == 0 ? 10 : 20,
+                    "declaredCallee", "<P: void sink(int)>",
+                    "argumentIndex", 0,
+                    "outputSiteId", captureSite,
+                    "outputOccurrence", outputOccurrence,
+                    "replayOccurrence", outputOccurrence,
+                    "occurrenceScope", "REGION_ACTIVATION");
+            Map<String, Object> member = object(
+                    "output", object("portId", output,
+                            "cell", "value" + index,
+                            "kind", "REGION_OUTPUT",
+                            "javaTypeDescriptor", "I",
+                            "outputSiteId", captureSite,
+                            "outputOccurrence", outputOccurrence,
+                            "replayOccurrence", outputOccurrence),
+                    "slice", object("outputPort", output,
+                            "outputCell", "value" + index,
+                            "inputPorts", Collections.singletonList(input),
+                            "sites", Collections.emptyList(),
+                            "staticSites", Collections.emptyList(),
+                            "methods", Collections.singletonList(
+                                    "<P: void run()>"),
+                            "causalEdgeIds", Collections.singletonList(
+                                    edgeId),
+                            "selectedRuntimeEventSeq",
+                            index % 2 == 0
+                                    ? 100L * (index / 2 + 1)
+                                    : 100L * ((index + 1) / 2) + 10L,
+                            "captureBindings",
+                            Collections.singletonList(capture),
+                            "captureBindingIssues",
+                            Collections.emptyList()));
+            goals.add(object(
+                    "goalId", "GOAL.P." + index,
+                    "kind", "OUTPUT_RELATION_CLOSURE",
+                    "pathSeedKey", splitLastPath
+                            && index == targetPorts.size() - 1
+                            ? "PATH.OTHER" : "PATH.SHARED",
+                    "runtimeDefinitionMethods",
+                    Collections.singletonList("<P: void run()>"),
+                    "admission", object("state", "READY", "blockers",
+                            Collections.emptyList()),
+                    "symbolize", Collections.singletonList(action),
+                    "branches", Collections.emptyList(),
+                    "edgeBindings", Collections.singletonList(edge),
+                    "outputClosure", object(
+                            "schemaVersion", 2,
+                            "kind", "OUTPUT_CLOSURE_CONTRACT",
+                            "producer", object("regionId", region,
+                                    "regionInstanceId", instance,
+                                    "rootCallId", 3),
+                            "causalEdges", Collections.singletonList(edge),
+                            "members", Collections.singletonList(member))));
+        }
+        return object("schemaVersion", 3,
+                "kind", "CONCOLIC_REGION_PLAN",
+                "regionId", region,
+                "regionInstanceId", instance,
+                "rootCallId", 3,
+                "rootSelector", object("kind", "GLOBAL_INVOCATION",
+                        "method", "<P: void run()>", "ordinal", 1),
+                "closureGoals", goals);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, JsonObject> producerComponents(
+            Map<String, Object> producerPlan,
+            RuntimeWorkflowDiscovery.RankedWorkflow ranked) {
+        Map<String, Map<String, Object>> goals = new LinkedHashMap<>();
+        for (Map<String, Object> goal : (List<Map<String, Object>>)
+                producerPlan.get("closureGoals")) {
+            goals.put((String) goal.get("goalId"), goal);
+        }
+        String instance = (String) producerPlan.get("regionInstanceId");
+        String canonicalInstance = "REGION.P@test#call2";
+        String logical = (String) producerPlan.getOrDefault(
+                "logicalRegionId", instance);
+        Map<String, JsonObject> result = new LinkedHashMap<>();
+        int ordinal = 0;
+        for (RuntimeWorkflowDiscovery.Selection selection
+                : ranked.selections()) {
+            if (selection.producerProjection == null) continue;
+            Map<String, Object> goal = goals.get(selection.goalId);
+            Map<String, Object> closure = (Map<String, Object>)
+                    goal.get("outputClosure");
+            Map<String, Object> member = ((List<Map<String, Object>>)
+                    closure.get("members")).get(0);
+            String output = (String) ((Map<String, Object>)
+                    member.get("output")).get("portId");
+            Map<String, Object> edge = ((List<Map<String, Object>>)
+                    goal.get("edgeBindings")).get(0);
+            String edgeId = (String) edge.get("edgeId");
+            Map<String, Object> input = ((List<Map<String, Object>>)
+                    goal.get("symbolize")).get(0);
+            String inputPort = (String) input.get("symbol");
+            JsonObject taskClosure = GSON.toJsonTree(closure)
+                    .getAsJsonObject();
+            JsonObject taskProducer = taskClosure.getAsJsonObject(
+                    "producer");
+            taskProducer.addProperty("regionInstanceId",
+                    canonicalInstance);
+            taskProducer.addProperty("rootCallId", 2);
+            JsonObject task = GSON.toJsonTree(object(
+                    "taskId", "TASK.COMPONENT." + ordinal++,
+                    "goalId", selection.goalId,
+                    "goalKind", "OUTPUT_RELATION_CLOSURE",
+                    "regionId", selection.regionId,
+                    "regionInstanceId", canonicalInstance,
+                    "logicalRegionId", logical,
+                    "summaryReuseKey", logical,
+                    "rootCallId", 2,
+                    "rootSelector", producerPlan.get("rootSelector"),
+                    "pathSeedKey",
+                    edu.uva.liftlab.graphchecker.contract.BoundedPathSeed
+                            .key(new com.google.gson.JsonArray()),
+                    "inputActions", Collections.singletonList(input),
+                    "branches", Collections.emptyList(),
+                    "edgeBindings", Collections.singletonList(edge),
+                    "outputClosure", taskClosure,
+                    "producerProjection",
+                    selection.producerProjection.json(),
+                    "occurrenceInstantiationCatalog", object(
+                            "schemaVersion", 1,
+                            "kind", "LOGICAL_SUMMARY_OCCURRENCE_CATALOG",
+                            "logicalRegionId", logical,
+                            "summaryReuseKey", logical,
+                            "canonicalRegionInstanceId", canonicalInstance,
+                            "canonicalRootCallId", 2,
+                            "occurrences", Arrays.asList(object(
+                                    "regionInstanceId", instance,
+                                    "rootCallId", 3,
+                                    "inputPortMap",
+                                    Collections.singletonList(object(
+                                            "canonicalPort", inputPort,
+                                            "exactPort", inputPort)),
+                                    "outputPortMap",
+                                    Collections.singletonList(object(
+                                            "canonicalPort", output,
+                                            "exactPort", output)),
+                                    "bindingIds",
+                                    Collections.singletonList(edgeId)),
+                                    object("regionInstanceId",
+                                            canonicalInstance,
+                                            "rootCallId", 2,
+                                            "inputPortMap",
+                                            Collections.emptyList(),
+                                            "outputPortMap",
+                                            Collections.emptyList(),
+                                            "bindingIds",
+                                            Collections.emptyList()))),
+                    "loopBound", object("schemaVersion", 1,
+                            "kind", "CFG_BACKEDGE",
+                            "scope", "ALL_EXECUTION_SCOPE_LOOPS",
+                            "maxBackedgeTraversals", 8,
+                            "onLimit", "CUT_PATH"),
+                    "admission", object("state", "EXECUTABLE")))
+                    .getAsJsonObject();
+            result.put(selection.campaignId, task);
+        }
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> producerTask(
+            Map<String, Object> producerPlan, JsonObject projection,
+            String catalogInstance, long catalogRootCallId) {
+        String region = (String) producerPlan.get("regionId");
+        String canonicalInstance = (String) producerPlan.get(
+                "regionInstanceId");
+        String logical = (String) producerPlan.getOrDefault(
+                "logicalRegionId", canonicalInstance);
+        Map<String, Object> goal = ((List<Map<String, Object>>)
+                producerPlan.get("closureGoals")).get(0);
+        Map<String, Object> closure = (Map<String, Object>)
+                goal.get("outputClosure");
+        Map<String, Object> member = ((List<Map<String, Object>>)
+                closure.get("members")).get(0);
+        String output = (String) ((Map<String, Object>)
+                member.get("output")).get("portId");
+        String edgeId = (String) ((List<Map<String, Object>>)
+                goal.get("edgeBindings")).get(0).get("edgeId");
+        return object("taskId", "TASK.PRODUCER",
+                "goalId", goal.get("goalId"),
+                "goalKind", "OUTPUT_RELATION_CLOSURE",
+                "regionId", region,
+                "regionInstanceId", canonicalInstance,
+                "logicalRegionId", logical,
+                "summaryReuseKey", logical,
+                "rootCallId", producerPlan.get("rootCallId"),
+                "inputActions", Collections.emptyList(),
+                "branches", Collections.emptyList(),
+                "edgeBindings", goal.get("edgeBindings"),
+                "outputClosure", closure,
+                "producerProjection", projection.deepCopy(),
+                "occurrenceInstantiationCatalog", object(
+                        "schemaVersion", 1,
+                        "kind", "LOGICAL_SUMMARY_OCCURRENCE_CATALOG",
+                        "logicalRegionId", logical,
+                        "summaryReuseKey", logical,
+                        "canonicalRegionInstanceId", canonicalInstance,
+                        "occurrences", Collections.singletonList(object(
+                                "regionInstanceId", catalogInstance,
+                                "rootCallId", catalogRootCallId,
+                                "inputPortMap", Collections.emptyList(),
+                                "outputPortMap", Collections.singletonList(
+                                        object("canonicalPort", output,
+                                                "exactPort", output)),
+                                "bindingIds", Collections.singletonList(
+                                        edgeId)))),
                 "loopBound", object("schemaVersion", 1,
                         "kind", "CFG_BACKEDGE",
                         "scope", "ALL_EXECUTION_SCOPE_LOOPS",
@@ -1337,6 +1897,45 @@ public class RuntimeWorkflowDiscoveryTest {
         slice.put("containerPreStateAuthority",
                 "EARLIEST_READ_IN_EXACT_DEFINITION_INVOCATION_V1");
         slice.put("foldedMutationCount", 1);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void markExactHeapStateHandoff(
+            Map<String, Object> producer, Map<String, Object> consumer,
+            String producerLogicalRegion, String consumerLogicalRegion) {
+        producer.put("logicalRegionId", producerLogicalRegion);
+        consumer.put("logicalRegionId", consumerLogicalRegion);
+        Map<String, Object> producerGoal = ((List<Map<String, Object>>)
+                producer.get("closureGoals")).get(0);
+        Map<String, Object> consumerGoal = ((List<Map<String, Object>>)
+                consumer.get("closureGoals")).get(0);
+        producerGoal.put("goalId", "GOAL.PRODUCER.EARLIER");
+        consumerGoal.put("goalId", "GOAL.PRODUCER.LATER");
+
+        Map<String, Object> edge = ((List<Map<String, Object>>)
+                producerGoal.get("edgeBindings")).get(0);
+        edge.put("fromRegion", producer.get("regionId"));
+        edge.put("toRegion", consumer.get("regionId"));
+        edge.put("transportKind", "HEAP");
+        edge.put("evidenceKind", "FIELD_ASSIGNMENT_READ_FROM_V1");
+        edge.put("correlationAuthority",
+                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
+        edge.put("receiverObjectId", 41);
+        edge.put("writerEventSeq", 100);
+        edge.put("readerEventSeq", 200);
+        edge.put("writerLaneId", 1);
+        edge.put("readerLaneId", 2);
+        edge.put("programOrderRequired", false);
+
+        Map<String, Object> closure = (Map<String, Object>)
+                producerGoal.get("outputClosure");
+        Map<String, Object> member = ((List<Map<String, Object>>)
+                closure.get("members")).get(0);
+        ((Map<String, Object>) member.get("output"))
+                .put("kind", "HEAP_STATE");
+        ((Map<String, Object>) member.get("slice")).put(
+                "outputBoundaryKind",
+                "EXACT_FIELD_WRITE_AFTER_ASSIGNMENT");
     }
 
     @SuppressWarnings("unchecked")

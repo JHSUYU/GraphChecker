@@ -410,9 +410,17 @@ run_java_main() {
   if [[ -n "${causynth_protocol_stubs}" ]]; then
     properties+=("-Dcausynth.protocol.stubs=${causynth_protocol_stubs}")
   fi
+  local runtime_classpath="${graphchecker_jar}"
+  if [[ "${main_class}" == \
+      edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder ]]; then
+    # Boundary-scalar validation resolves configured client interfaces to the
+    # concrete callees recorded in the trace.  Keep that hierarchy available
+    # to this offline aggregation process just as it was to the recorder.
+    runtime_classpath="${runtime_classpath}:${project_classpath}"
+  fi
   run_in_directory "${graphchecker_work_dir}" "${java_bin}" \
     "${properties[@]}" \
-    -cp "${graphchecker_jar}" "${main_class}" "$@"
+    -cp "${runtime_classpath}" "${main_class}" "$@"
 }
 
 print_normalized_config() {

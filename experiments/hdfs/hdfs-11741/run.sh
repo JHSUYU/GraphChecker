@@ -682,13 +682,18 @@ verify_task_artifacts() {
   local tasks="${schedule}/execution_task_plan.jsonl"
   local selected_target="${schedule}/selected_target_binding.tsv"
   local selected_closure="${schedule}/selected_closure_bindings.tsv"
+  local workflow_index="${schedule}/runtime_workflow_schedule_index.json"
   local selected_count target_campaign target_region target_instance
-  local target_goal validation
+  local target_goal plan_sha task_sha plan_size task_size
   require_command jq
   require_nonempty_file "concolic execution task plan" "${tasks}"
   require_file "branch query plan" "${schedule}/branch_queries.jsonl"
   require_nonempty_file "selected target binding" "${selected_target}"
   require_nonempty_file "selected exact closure" "${selected_closure}"
+  # This index is the target-first schedule's commit record.  Missing it is
+  # an incomplete publication, not permission to rediscover against a
+  # potentially different region plan.
+  require_nonempty_file "target-first workflow index" "${workflow_index}"
   selected_count=$(sed -n '/[^[:space:]]/p' "${selected_target}" \
     | wc -l | tr -d '[:space:]')
   [[ "${selected_count}" == "1" ]] \
@@ -729,12 +734,133 @@ verify_task_artifacts() {
       "${schedule}/branch_queries.jsonl" >/dev/null \
       || die "branch query plan is not valid JSONL: ${schedule}/branch_queries.jsonl"
   fi
-  validation=$(workflow_discovery_for_target "${target_instance}" \
-    "${target_goal}" --command scheduled-target-task \
-    --task-plan "${tasks}") \
-    || die "scheduled target task does not instantiate selected exact occurrence"
-  [[ -n "${validation}" ]] \
-    || die "scheduled target occurrence validation returned no task"
+  plan_sha=$(sha256sum "${region_plan}" | cut -d' ' -f1)
+  task_sha=$(sha256sum "${tasks}" | cut -d' ' -f1)
+  plan_size=$(stat -c '%s' "${region_plan}")
+  task_size=$(stat -c '%s' "${tasks}")
+  jq -e --arg campaign "${target_campaign}" \
+      --arg region "${target_region}" \
+      --arg instance "${target_instance}" \
+      --arg goal "${target_goal}" \
+      --arg planSha "${plan_sha}" --arg taskSha "${task_sha}" \
+      --argjson planSize "${plan_size}" \
+      --argjson taskSize "${task_size}" \
+      --slurpfile tasks "${tasks}" '
+      def nonempty_unique_strings:
+        type == "array" and length > 0 and
+        all(.[]; type == "string" and length > 0) and
+        length == (unique | length);
+      .schemaVersion == 1 and
+      .kind == "RUNTIME_TARGET_FIRST_SCHEDULE_INDEX" and
+      .selectionAuthority ==
+        "RANKED_EXACT_RUNTIME_READ_FROM_CLOSURE_V1" and
+      .regionPlan.sha256 == $planSha and
+      .regionPlan.sizeBytes == $planSize and
+      .executionTaskPlan.sha256 == $taskSha and
+      .executionTaskPlan.sizeBytes == $taskSize and
+      .target.campaignId == $campaign and
+      .target.regionId == $region and
+      .target.regionInstanceId == $instance and
+      .target.goalId == $goal and
+      (.producers | type == "array" and length > 0) and
+      (([.target.taskId] + [.producers[].taskId]) as $indexedIds
+        | ($indexedIds | length) == ($indexedIds | unique | length)) and
+      (($tasks | map(.taskId) | length) ==
+        ($tasks | map(.taskId) | unique | length)) and
+      (([.target.taskId] + [.producers[].taskId] | sort) ==
+        ($tasks | map(.taskId) | sort)) and
+      (.target as $target
+        | ([$tasks[] | select(.taskId == $target.taskId)]) as $matched
+        | ($matched | length) == 1 and
+          $matched[0].regionId == $target.regionId and
+          $matched[0].logicalRegionId == $target.logicalRegionId and
+          $matched[0].goalId == $target.goalId and
+          $matched[0].goalKind == "TARGET_REACH_CLOSURE" and
+          $matched[0].admission.state == "EXECUTABLE" and
+          any($matched[0].occurrenceInstantiationCatalog.occurrences[]?;
+            .regionInstanceId == $target.regionInstanceId)) and
+      (all(.producers[];
+        . as $producer
+        | ([$tasks[] | select(.taskId == $producer.taskId)]) as $matched
+        | ($matched | length) == 1 and
+          $matched[0].regionId == $producer.regionId and
+          $matched[0].logicalRegionId == $producer.logicalRegionId and
+          $matched[0].goalId == $producer.goalId and
+          $matched[0].goalKind == "OUTPUT_RELATION_CLOSURE" and
+          $matched[0].admission.state == "EXECUTABLE" and
+          any($matched[0].occurrenceInstantiationCatalog.occurrences[]?;
+            .regionInstanceId == $producer.regionInstanceId) and
+          $matched[0].producerProjection ==
+            $producer.producerProjection and
+          ($producer.producerProjection as $groupProjection
+            | $groupProjection.schemaVersion == 1 and
+              $groupProjection.kind ==
+                "SELECTED_PRODUCER_OUTPUT_PROJECTION" and
+              $groupProjection.campaignId == $producer.campaignId and
+              $groupProjection.goalId == $producer.goalId and
+              $groupProjection.regionId == $producer.regionId and
+              $groupProjection.logicalRegionId ==
+                $producer.logicalRegionId and
+              ($groupProjection.pathSeedKey | type == "string" and
+                length > 0) and
+              ($groupProjection.outputPorts |
+                nonempty_unique_strings) and
+              ($groupProjection.edgeIds |
+                nonempty_unique_strings) and
+              (((($producer.goalId | type == "string") and
+                  ($producer.goalId |
+                    startswith("GOAL.OUTPUT_RELATION.ATOMIC."))) or
+                 (($producer.campaignId | type == "string") and
+                  ($producer.campaignId |
+                    test("-atomic-[0-9a-f]{64}$")))) as $isAtomic
+               | if $isAtomic then
+                 ($producer | has("selectedGoals")) and
+                 (($producer.goalId |
+                    sub("^GOAL\\.OUTPUT_RELATION\\.ATOMIC\\."; "")) as
+                    $atomicDigest
+                   | ($atomicDigest | test("^[0-9a-f]{64}$")) and
+                     $producer.campaignId ==
+                       ($producer.regionId + "-atomic-" + $atomicDigest)) and
+                 ($producer.selectedGoals | type == "array" and
+                   length > 1) and
+                 ([$producer.selectedGoals[].campaignId] as $campaigns
+                   | all($campaigns[];
+                       type == "string" and length > 0) and
+                     (($campaigns | length) ==
+                       ($campaigns | unique | length))) and
+                 ([$producer.selectedGoals[].goalId] as $goals
+                   | all($goals[];
+                       type == "string" and length > 0) and
+                     (($goals | length) ==
+                       ($goals | unique | length))) and
+                 (all($producer.selectedGoals[];
+                   . as $selected
+                   | ($selected.producerProjection as $projection
+                     | $projection.schemaVersion == 1 and
+                       $projection.kind ==
+                         "SELECTED_PRODUCER_OUTPUT_PROJECTION" and
+                       $projection.campaignId == $selected.campaignId and
+                       $projection.goalId == $selected.goalId and
+                       $projection.regionId == $producer.regionId and
+                       $projection.logicalRegionId ==
+                         $producer.logicalRegionId and
+                       $projection.pathSeedKey ==
+                         $groupProjection.pathSeedKey and
+                       ($projection.outputPorts |
+                         nonempty_unique_strings) and
+                       ($projection.edgeIds |
+                         nonempty_unique_strings)))) and
+                 (([$producer.selectedGoals[]
+                     .producerProjection.outputPorts[]] | unique | sort) ==
+                   ($groupProjection.outputPorts | unique | sort)) and
+                 (([$producer.selectedGoals[]
+                     .producerProjection.edgeIds[]] | unique | sort) ==
+                   ($groupProjection.edgeIds | unique | sort))
+               else
+                 ($producer | has("selectedGoals") | not)
+               end))))
+  ' "${workflow_index}" >/dev/null \
+    || die "target-first workflow index failed integrity validation: ${workflow_index}"
 }
 
 do_engine_config() {
@@ -854,230 +980,51 @@ run_graphchecker_main() {
     "${main_class}" "$@")
 }
 
-# Discovery answers a question about the region plan and changes nothing, but
-# it answers it in a fresh JVM over a large jar -- and a single candidate run
-# asks between fifteen and twenty times, once per producer per question.  That
-# is minutes per run, repeated identically on every rerun of an unchanged
-# plan.  Key the answer to the plan and the engine that read it, so a rerun
-# pays for the first ask only.  A question that fails is never recorded.
-workflow_discovery() {
-  local cache="${work_root}/.discovery-cache"
-  local jar="${graphchecker_dir}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
-  local key answer status
-  key=$( { printf '%s\0' "$@"
-           sha256sum "${region_plan}" 2>/dev/null
-           stat -c '%Y %s' "${jar}" 2>/dev/null
-         } | sha256sum | cut -d' ' -f1)
-  if [[ -s "${cache}/${key}" ]]; then
-    cat "${cache}/${key}"
-    return 0
-  fi
-  set +e
-  answer=$(run_graphchecker_main \
-    edu.uva.liftlab.graphchecker.concolic.RuntimeWorkflowDiscovery \
-    --region-plan "${region_plan}" "$@")
-  status=$?
-  set -e
-  if [[ "${status}" -eq 0 ]]; then
-    mkdir -p "${cache}"
-    printf '%s\n' "${answer}" >"${cache}/${key}.tmp.$$"
-    mv -f "${cache}/${key}.tmp.$$" "${cache}/${key}"
-  fi
-  printf '%s\n' "${answer}"
-  return "${status}"
-}
-
-workflow_discovery_for_target() {
-  local target_instance=$1
-  local target_goal=$2
-  shift 2
-  workflow_discovery --target-instance "${target_instance}" \
-    --target-goal "${target_goal}" "$@"
-}
-
-combine_scheduled_jsonl() {
-  local identity_field=$1
-  local output=$2
-  shift 2
-  local input temporary
-  [[ $# -gt 0 ]] || die "no scheduled JSONL input for ${output}"
-  for input in "$@"; do
-    require_file "scheduled JSONL input" "${input}"
-  done
-  temporary=$(mktemp "${output}.tmp.XXXXXX")
-  jq -c -s --arg identity "${identity_field}" '
-    reduce .[] as $row ({};
-      ($row[$identity] // "") as $key
-      | if ($key | type) != "string" or ($key | length) == 0 then
-          error("missing scheduled JSONL identity " + $identity)
-        elif has($key) and .[$key] != $row then
-          error("conflicting scheduled " + $identity + ":" + $key)
-        else .[$key] = $row
-        end)
-    | to_entries | sort_by(.key) | .[].value
-  ' "$@" >"${temporary}" \
-    || die "could not combine scheduled JSONL inputs for ${output}"
-  mv -f "${temporary}" "${output}"
-}
-
-schedule_filtered_goal() {
-  local output_dir=$1
-  local region=$2
-  local instance=$3
-  local goal=$4
-  local max_jobs=$5
-  local producer_projection=${6:-}
-  local -a projection_args=()
-  if [[ -n "${producer_projection}" ]]; then
-    require_nonempty_file "selected producer projection" \
-      "${producer_projection}"
-    projection_args+=(--producer-projection "${producer_projection}")
-  fi
-  mkdir -p "${output_dir}"
-  do_engine_config schedule --output-dir "${output_dir}" \
-    --region-id "${region}" --region-instance-id "${instance}" \
-    --goal-id "${goal}" --max-jobs "${max_jobs}" \
-    "${projection_args[@]}"
-  require_nonempty_file "filtered execution task plan" \
-    "${output_dir}/execution_task_plan.jsonl"
-  require_file "filtered branch query plan" \
-    "${output_dir}/branch_queries.jsonl"
-}
-
+# Schedules the complete ranked closure in one JVM.  Discovery and scheduler
+# indices share one parse of the large runtime plan; the compact index is
+# published last and acts as the integrity-checked commit record consumed by
+# candidates.
 schedule_target_first_closure() {
   local max_jobs=$1
-  local target_output target_binding="" target_campaign target_region
-  local target_instance target_goal discovery_output producer_id
-  local producer_binding ignored producer_region producer_instance
-  local producer_goal producer_projection staging index binding_index
-  local task_count validation
-  local merged_tasks merged_queries selected_target selected_closure
   local schedule="${work_root}/schedule"
-  local -a producer_ids=() unique_bindings=() unique_ids=()
-  local -a task_inputs=() query_inputs=()
-  declare -A seen_binding=()
-
-  target_output=$(workflow_discovery --command target-bindings) \
-    || die "target discovery failed before scheduling"
-  while IFS= read -r target_binding; do
-    [[ -n "${target_binding}" ]] && break
-  done <<< "${target_output}"
-  [[ -n "${target_binding}" ]] \
-    || die "runtime plan has no ranked target binding"
-  IFS=$'\t' read -r target_campaign target_region target_instance \
-    target_goal <<< "${target_binding}"
-  [[ -n "${target_campaign}" && -n "${target_region}" \
-      && -n "${target_instance}" && -n "${target_goal}" ]] \
-    || die "incomplete ranked target binding: ${target_binding}"
-
-  # RuntimeWorkflowDiscovery ranks valid exact-port closures first.  Demand
-  # discovery is deliberately performed before scheduling, so an unrelated
-  # occurrence/goal never enters the task plan and a malformed selected
-  # closure still fails closed.
-  discovery_output=$(workflow_discovery_for_target "${target_instance}" \
-    "${target_goal}" --command producer-demands) \
-    || die "producer discovery failed for ranked target ${target_campaign}"
-  while IFS= read -r producer_id; do
-    [[ -n "${producer_id}" ]] && producer_ids+=("${producer_id}")
-  done <<< "${discovery_output}"
-  (( ${#producer_ids[@]} > 0 )) \
-    || die "ranked target ${target_campaign} has no exact producer demand"
-
-  # The discovery output is already stable, but sort campaign ids here so
-  # task-plan byte order does not depend on plan row order.
-  mapfile -t producer_ids < <(printf '%s\n' "${producer_ids[@]}" \
-    | LC_ALL=C sort -u)
-  for producer_id in "${producer_ids[@]}"; do
-    producer_binding=$(workflow_discovery_for_target "${target_instance}" \
-      "${target_goal}" --command producer-binding \
-      --campaign "${producer_id}")
-    IFS=$'\t' read -r ignored producer_region producer_instance \
-      producer_goal <<< "${producer_binding}"
-    [[ "${ignored}" == "${producer_id}" && -n "${producer_region}" \
-        && -n "${producer_instance}" && -n "${producer_goal}" ]] \
-      || die "incomplete producer binding: ${producer_binding}"
-    if [[ -z "${seen_binding[${producer_binding}]+x}" ]]; then
-      seen_binding[${producer_binding}]=1
-      unique_bindings+=("${producer_binding}")
-      unique_ids+=("${producer_id}")
-    fi
-  done
-  (( 1 + ${#unique_bindings[@]} <= max_jobs )) \
-    || die "selected exact closure exceeds HDFS11741_SCHEDULE_MAX_JOBS: $((1 + ${#unique_bindings[@]})) > ${max_jobs}"
-
+  local staging task_count producer_count
   mkdir -p "${work_root}"
   staging=$(mktemp -d "${work_root}/schedule-stage.XXXXXX")
-  index=0
-  schedule_filtered_goal "${staging}/goal-$(printf '%04d' "${index}")" \
-    "${target_region}" "${target_instance}" "${target_goal}" "${max_jobs}"
-  task_inputs+=("${staging}/goal-$(printf '%04d' "${index}")/execution_task_plan.jsonl")
-  query_inputs+=("${staging}/goal-$(printf '%04d' "${index}")/branch_queries.jsonl")
-  index=$((index + 1))
-  for binding_index in "${!unique_bindings[@]}"; do
-    producer_binding=${unique_bindings[$binding_index]}
-    producer_id=${unique_ids[$binding_index]}
-    IFS=$'\t' read -r ignored producer_region producer_instance \
-      producer_goal <<< "${producer_binding}"
-    mkdir -p "${staging}/goal-$(printf '%04d' "${index}")"
-    producer_projection="${staging}/goal-$(printf '%04d' "${index}")/producer_projection.jsonl"
-    workflow_discovery_for_target "${target_instance}" "${target_goal}" \
-      --command producer-projection --campaign "${producer_id}" \
-      >"${producer_projection}" \
-      || die "could not materialize exact producer projection ${producer_id}"
-    require_nonempty_file "selected producer projection" \
-      "${producer_projection}"
-    schedule_filtered_goal \
-      "${staging}/goal-$(printf '%04d' "${index}")" \
-      "${producer_region}" "${producer_instance}" "${producer_goal}" \
-      "${max_jobs}" "${producer_projection}"
-    task_inputs+=("${staging}/goal-$(printf '%04d' "${index}")/execution_task_plan.jsonl")
-    query_inputs+=("${staging}/goal-$(printf '%04d' "${index}")/branch_queries.jsonl")
-    index=$((index + 1))
-  done
 
-  merged_tasks="${staging}/execution_task_plan.jsonl"
-  merged_queries="${staging}/branch_queries.jsonl"
-  combine_scheduled_jsonl taskId "${merged_tasks}" "${task_inputs[@]}"
-  combine_scheduled_jsonl queryKey "${merged_queries}" "${query_inputs[@]}"
-  task_count=$(jq -s 'length' "${merged_tasks}")
-  [[ "${task_count}" -eq $((1 + ${#unique_bindings[@]})) ]] \
-    || die "exact-closure scheduling emitted ${task_count} tasks for $((1 + ${#unique_bindings[@]})) logical goals; staging retained at ${staging}"
+  do_engine_config schedule --output-dir "${staging}" \
+    --target-first --max-jobs "${max_jobs}"
+  require_nonempty_file "target-first execution task plan" \
+    "${staging}/execution_task_plan.jsonl"
+  require_file "target-first branch query plan" \
+    "${staging}/branch_queries.jsonl"
+  require_nonempty_file "target-first workflow index" \
+    "${staging}/runtime_workflow_schedule_index.json"
+  require_nonempty_file "selected target binding" \
+    "${staging}/selected_target_binding.tsv"
+  require_nonempty_file "selected closure bindings" \
+    "${staging}/selected_closure_bindings.tsv"
 
-  validation=$(workflow_discovery_for_target "${target_instance}" \
-    "${target_goal}" --command scheduled-target-task \
-    --task-plan "${merged_tasks}") \
-    || die "ranked target did not map to exactly one scheduled task; staging retained at ${staging}"
-  [[ -n "${validation}" ]] \
-    || die "ranked target scheduled an empty task identity"
-  for producer_id in "${producer_ids[@]}"; do
-    validation=$(workflow_discovery_for_target "${target_instance}" \
-      "${target_goal}" --command scheduled-task --campaign "${producer_id}" \
-      --task-plan "${merged_tasks}") \
-      || die "producer ${producer_id} did not map to exactly one scheduled task; staging retained at ${staging}"
-    [[ -n "${validation}" ]] \
-      || die "producer ${producer_id} scheduled an empty task identity"
-  done
+  task_count=$(jq -s 'length' \
+    "${staging}/execution_task_plan.jsonl")
+  producer_count=$(jq -r '.producers | length' \
+    "${staging}/runtime_workflow_schedule_index.json")
+  [[ "${task_count}" -eq $((1 + producer_count)) ]] \
+    || die "target-first index/task count mismatch; staging retained at ${staging}"
 
-  selected_target="${staging}/selected_target_binding.tsv"
-  selected_closure="${staging}/selected_closure_bindings.tsv"
-  printf '%s\n' "${target_binding}" >"${selected_target}"
-  {
-    printf 'TARGET\t%s\n' "${target_binding}"
-    for producer_binding in "${unique_bindings[@]}"; do
-      printf 'PRODUCER\t%s\n' "${producer_binding}"
-    done
-  } >"${selected_closure}"
   mkdir -p "${schedule}"
-  publish_file_atomically "${merged_tasks}" \
+  publish_file_atomically "${staging}/execution_task_plan.jsonl" \
     "${schedule}/execution_task_plan.jsonl"
-  publish_file_atomically "${merged_queries}" \
+  publish_file_atomically "${staging}/branch_queries.jsonl" \
     "${schedule}/branch_queries.jsonl"
-  publish_file_atomically "${selected_target}" \
+  publish_file_atomically "${staging}/selected_target_binding.tsv" \
     "${schedule}/selected_target_binding.tsv"
-  publish_file_atomically "${selected_closure}" \
+  publish_file_atomically "${staging}/selected_closure_bindings.tsv" \
     "${schedule}/selected_closure_bindings.tsv"
+  publish_file_atomically \
+    "${staging}/runtime_workflow_schedule_index.json" \
+    "${schedule}/runtime_workflow_schedule_index.json"
   rm -rf -- "${staging}"
-  echo "[hdfs-11741] scheduled ranked exact closure: 1 target + ${#unique_bindings[@]} producer logical goal(s)"
+  echo "[hdfs-11741] scheduled ranked exact closure: 1 target + ${producer_count} producer logical goal(s)"
 }
 
 do_tasks() {
@@ -2051,10 +1998,11 @@ run_candidate_for_target() {
   local binding=$1
   local target_campaign_id target_region target_instance target_goal
   local schedule_plan="${work_root}/schedule/execution_task_plan.jsonl"
-  local target_task target_campaign output producer_id producer_binding
-  local ignored producer_region producer_instance producer_goal producer_task
+  local workflow_index="${work_root}/schedule/runtime_workflow_schedule_index.json"
+  local target_task target_campaign output producer_id
+  local producer_region producer_instance producer_goal producer_task
   local producer_campaign producer_summary compose_summaries reachability
-  local index discovery_output degeneracy
+  local index degeneracy producer_row
   local -a producer_ids=() producer_regions=()
   local -a producer_goals=() producer_tasks=() producer_campaigns=()
   local -a merged_inputs=() seed_specs=() producer_closure_specs=()
@@ -2065,35 +2013,36 @@ run_candidate_for_target() {
   [[ -n "${target_campaign_id}" && -n "${target_region}" \
       && -n "${target_instance}" && -n "${target_goal}" ]] \
     || die "incomplete target binding: ${binding}"
-  target_task=$(workflow_discovery_for_target "${target_instance}" \
-    "${target_goal}" --command scheduled-target-task \
-    --task-plan "${schedule_plan}")
-  discovery_output=$(workflow_discovery_for_target \
-    "${target_instance}" "${target_goal}" --command producer-demands) \
-    || die "producer discovery failed for ${target_campaign_id}"
-  while IFS= read -r producer_id; do
-    [[ -n "${producer_id}" ]] && producer_ids+=("${producer_id}")
-  done <<< "${discovery_output}"
-  (( ${#producer_ids[@]} > 0 )) \
-    || die "target ${target_campaign_id} has no runtime-confirmed producer"
-  for producer_id in "${producer_ids[@]}"; do
-    producer_binding=$(workflow_discovery_for_target "${target_instance}" \
-      "${target_goal}" --command producer-binding --campaign "${producer_id}")
-    IFS=$'\t' read -r ignored producer_region producer_instance \
-      producer_goal <<< "${producer_binding}"
-    [[ -n "${producer_region}" && -n "${producer_instance}" \
-        && -n "${producer_goal}" ]] \
-      || die "incomplete producer binding: ${producer_binding}"
-    producer_task=$(workflow_discovery_for_target "${target_instance}" \
-      "${target_goal}" --command scheduled-task --campaign "${producer_id}" \
-      --task-plan "${schedule_plan}")
+  require_nonempty_file "target-first workflow index" "${workflow_index}"
+  target_task=$(jq -er --arg campaign "${target_campaign_id}" \
+      --arg region "${target_region}" --arg instance "${target_instance}" \
+      --arg goal "${target_goal}" '
+        select(.target.campaignId == $campaign and
+          .target.regionId == $region and
+          .target.regionInstanceId == $instance and
+          .target.goalId == $goal) | .target.taskId
+    ' "${workflow_index}") \
+    || die "workflow index does not match selected target: ${workflow_index}"
+  while IFS= read -r producer_row; do
+    [[ -n "${producer_row}" ]] || continue
+    IFS=$'\t' read -r producer_id producer_region producer_instance \
+      producer_goal producer_task <<< "${producer_row}"
+    [[ -n "${producer_id}" && -n "${producer_region}" \
+        && -n "${producer_instance}" && -n "${producer_goal}" \
+        && -n "${producer_task}" ]] \
+      || die "incomplete producer row in workflow index: ${producer_row}"
     producer_campaign=$(seed_campaign_directory OUTPUT_RELATION_CLOSURE \
       "${producer_task}")
+    producer_ids+=("${producer_id}")
     producer_regions+=("${producer_region}")
     producer_goals+=("${producer_goal}")
     producer_tasks+=("${producer_task}")
     producer_campaigns+=("${producer_campaign}")
-  done
+  done < <(jq -r '.producers[] |
+    [.campaignId,.regionId,.regionInstanceId,.goalId,.taskId] | @tsv' \
+    "${workflow_index}")
+  (( ${#producer_ids[@]} > 0 )) \
+    || die "target ${target_campaign_id} has no runtime-confirmed producer"
 
   seed_specs+=("TARGET_REACH_CLOSURE"$'\t'"${target_task}")
   for index in "${!producer_tasks[@]}"; do
@@ -2212,17 +2161,11 @@ do_candidates() {
   require_nonempty_file "runtime region plan" "${region_plan}"
   require_nonempty_file "scheduled concolic tasks" \
     "${work_root}/schedule/execution_task_plan.jsonl"
+  verify_task_artifacts
   initialize_replay_engine_fingerprint
   selected_target_binding="${work_root}/schedule/selected_target_binding.tsv"
-  if [[ -s "${selected_target_binding}" ]]; then
-    discovery_output=$(sed -n '/[^[:space:]]/p' \
-      "${selected_target_binding}")
-  else
-    # Backward compatibility for a schedule produced before target-first
-    # closure selection was introduced.
-    discovery_output=$(workflow_discovery --command target-bindings) \
-      || die "target discovery failed"
-  fi
+  discovery_output=$(sed -n '/[^[:space:]]/p' \
+    "${selected_target_binding}")
   while IFS= read -r binding; do
     [[ -n "${binding}" ]] && targets+=("${binding}")
   done <<< "${discovery_output}"

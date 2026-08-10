@@ -277,11 +277,8 @@ public final class OutputClosureCodec {
                 "outputOccurrence", 1);
         int replay = requireIntAtLeast(output,
                 "replayOccurrence", 1);
-        // The ordinal is recorded provenance, not a replay demand: the goal
-        // states the relation without one, and a bounded replay reaches the
-        // site a different number of times than the recording did.  Only the
-        // internal coherence of the declared identity is validated here;
-        // OutputCaptureSpec applies the same rule.
+        // The ordinal is recorded provenance, not a replay demand: only its
+        // internal coherence with the capture ledger is validated here.
         if (occurrence != replay) {
             throw new IllegalArgumentException(path
                     + " output occurrence is outside the bounded replay");

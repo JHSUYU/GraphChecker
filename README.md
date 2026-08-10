@@ -62,11 +62,11 @@ failure; a different story is a result to report, not a deviation to correct.
 | Layer | Grounded in | Authority in the artifact |
 |---|---|---|
 | Relations inside a region | symbolic execution | the summary itself |
-| Transport and carrier fields | declaration | `TRUSTED_CONFIGURED_RPC_MAPPING_V1`, `TRUSTED_DECLARED_CARRIER_PROJECTION_V1` |
+| Transport and boundary scalar fields | configured declaration + schema-4 trace evidence | `TRUSTED_CONFIGURED_RPC_MAPPING_V1`, `TRUSTED_CONFIGURED_RPC_BOUNDARY_SCALAR_V1` |
 | Shared state | recording + solver-chosen schedule | versioned state channel, cut points |
 
-An auditor must be able to tell them apart; that is why the carrier projection
-carries its own constant rather than reusing the transport's.
+An auditor must be able to tell them apart; that is why the configured scalar
+projection carries its own authority rather than reusing the transport's.
 
 ### Three mechanical acceptance checks, none of them case knowledge
 
@@ -87,8 +87,9 @@ carries its own constant rather than reusing the transport's.
 
 ## Where the work stands
 
-The vulnerable baseline is complete. Everything in this first table is
-measured from the standard automatic pipeline, not estimated.
+The vulnerable baseline is a frozen historical measurement. Everything in
+this first table came from that baseline's automatic pipeline; it is not the
+current patched schedule described below.
 
 | | |
 |---|---|
@@ -105,66 +106,72 @@ measured from the standard automatic pipeline, not estimated.
 
 The standard automatic entry point now completes discovery, bounded two-level
 replay, path merge, closed-path composition, SMT emission, and Z3.  The SAT
-query includes the exact fatal lookup and a VM-derived removal case whose
+query includes the exact fatal lookup and an execution-derived removal case whose
 removed member key is constrained to that lookup key.  The general
 root-enumeration degeneracy probe does not enumerate all 54 existential roots;
 the semantic acceptance gate is instead the pinned mutation witness above.
 
-### Active handoff: patched HDFS-11741
+### Patched HDFS-11741 checkpoint and remaining work
 
-The current task is narrower: apply the real `expiryDate < Time.now()` repair,
-run the same automatic pipeline through Z3, and report what the patched bounded
-model says. `SAT` is not to be hidden or forced to `UNSAT`; it may expose a
-different feasible execution or a missing real-world assumption. The required
-deliverable is the solver result plus an auditable explanation of the model.
+The patched run is **not yet accepted**.  The campaign-local candidate currently
+on disk was composed at 01:00 on 2026-08-10, while the current schedule commit
+record was published later, at 10:13.  That candidate therefore belongs to an
+older task contract.  Its Z3 report also reduces reachability to `true` and its
+fatal mutation witness is `NOT_APPLICABLE` with zero clauses.  It is useful as
+a debugging artifact only; neither its `SAT` result nor its SMT hash is a
+current project result.
+
+The current source checkpoint keeps the exact target occurrence
+`rootCallId=3191805`, the first and cached Dispatcher occurrences
+`3180179 -> 3186426`, and one atomic `updateKeys` producer rooted at
+`call2454593`.  The remaining defect is local to that atomic producer: values
+written earlier in the same long-lived region must remain derived symbolic
+state, not become new free inputs.  Each demanded output now carries one exact
+causal accessor anchor; observing that slot selects the output boundary without
+re-symbolizing an internally written field or imposing a trace ordinal/version
+as replay semantics.
+
+The authoritative TODO, in order, is:
+
+1. Finish the in-progress CLOSED-trace refinement/plan rebuild and publish a
+   new target-first schedule.  Do not reuse a candidate whose composition is
+   not bound to that schedule's region-plan and task-plan hashes.
+2. Replay the current indexed tasks.  The atomic `call2454593` summary must
+   contain every demanded output from one compatible activation, preserve the
+   full final VM path condition, and expose internally derived values only
+   through their real expressions—not as extra `symbolicInputs`.
+3. Compose a fresh campaign-local `candidate.smt2` with zero gaps and complete
+   selected-edge coverage.  The exact target must remain `call3191805`, and
+   the producer lineage must include `3180179 -> 3186426 -> 3191805` plus both
+   configured block-key RPC reader chains.
+4. Run the real Z3 binary and the solver-native binding audit.  Accept either
+   `SAT` or `UNSAT`, but reject a vacuous `true` reach formula, an unbound fatal
+   operand, a non-load-bearing selected edge, or a missing fatal mutation
+   witness.
+5. Only after those checks pass, replace this checkpoint with the hashes,
+   sizes, reachability, trust state, path-set authority, and lineage copied
+   from the new campaign-local four-artifact result.
 
 The patched checkout and reusable evidence are:
 
 ```text
 Hadoop checkout: /tmp/hdfs-11741-patched-worktree
 work root:       /opt/GraphChecker/experiments-output/hdfs-11741-patched
-runtime trace:   runtime/runtime_trace.jsonl             (closed, 2.6 GB)
-static graph:    analysis/candidate_dataflow_edges.jsonl (2.0 GB)
+runtime trace:   runtime/runtime_trace.jsonl             (closed, 2,477,526,886 bytes)
+static graph:    analysis/candidate_dataflow_edges.jsonl (2,028,773,031 bytes)
 ```
 
-The trace contains two distinct paths through the same Balancer Dispatcher
-region. The first activation (`rootCallId=3388118`) creates the cached key and
-does not execute the repair guard. The second (`rootCallId=3394679`) reads that
-cached key, executes the expiry guard, and sends to the fatal DataNode
-activation (`rootCallId=3398578`). They are path alternatives/state steps of
-one logical region, not two stable replay identities. The exact cached
-`expiryDate` flow between them is already recorded; do not replace it with a
-fresh free variable.
+The stated call ids are evidence read from the current trace and schedule, not
+selection heuristics.  No Hadoop method name, call id, or line number
+participates in the generic ranking rule.
 
-Completed source fixes that still need one frozen end-to-end run:
+## Reproduce and verify the patched result
 
-- Producer selection is occurrence-local, so one path seed cannot claim an
-  RPC/state edge observed in another occurrence.
-- Target ranking prefers exact selected slices with observed semantic guards;
-  it now chooses fatal call `3398578` and Dispatcher call `3394679`, without an
-  HDFS-specific name or line rule.
-- Symbolization is positive-demand: exact incoming leaves, selected semantic
-  guard operands, bounded state, explicit fault markers, and true root/protocol
-  inputs. On the old first Dispatcher task this reduced eight symbolic values
-  to two; URI ports, serialization lengths, token settings, and unrelated
-  payload fields stay concrete.
-- An output relation stops at its publication event. Calls begun after the
-  authentication value was published are consumers, so the planner no longer
-  pulls the whole handshake/RPC/server execution into that producer summary.
-- Selected VM results now have a continuous finish-to-durable-append barrier;
-  the JUnit runner cannot call `System.exit` while a large summary is still
-  being published.
-- Class-tree cache hashing is batched and preserves the old digest exactly;
-  hashing roughly 11,000 classes now takes about one second rather than forking
-  tens of thousands of shell processes.
-
-## Next tasks, in order
-
-1. **Freeze and verify the current source.** Do not run Maven while a discovery
+1. **Build and verify the source.** Do not run Maven while a discovery
    or replay JVM is reading the GraphChecker jar. Run:
 
    ```bash
-   mvn -q -Dtest=RuntimeRegionPlannerTest,RuntimeWorkflowDiscoveryTest,ConcolicSchedulerTest,ConcolicRegionRuntimeTest,JUnitMethodRunnerTest test
+   mvn -q test
    mvn -q -DskipTests package
    git diff --check
    ```
@@ -194,14 +201,16 @@ Completed source fixes that still need one frozen end-to-end run:
    experiments/hdfs/hdfs-11741/run.sh schedule
    ```
 
-   Required checks: selected fatal call is `3398578`; the closure contains the
-   cached-key Dispatcher path and its prior producer; all seven NN/Balancer/DN
-   region templates remain represented; only demanded scalar/guard leaves are
-   symbolic. In particular, the second Dispatcher summary must include cached
-   `expiryDate`, `keyId`, and the VM clock expression, while endpoint, protobuf,
-   buffer-length, loop-control, and container-size values remain concrete.
+   Required checks: the selected fatal occurrence is `call3191805`; the
+   closure contains Dispatcher calls `3180179` and `3186426`; and the commit
+   index names exactly one target plus its complete exact producer closure.
+   Record the actual producer count from the newly published index rather than
+   copying an older count. Only demanded
+   scalar/guard leaves are symbolic. The second Dispatcher summary carries the
+   cached `expiryDate`, `keyId`, and recorded clock expression; endpoints,
+   protobuf bookkeeping, buffer lengths, and unrelated payload stay concrete.
 
-4. **Run bounded two-level VM replay, merge, compose, and Z3.** Keep the product
+4. **Run bounded two-level execution, merge, compose, and Z3.** Keep the product
    of the two job counts within available memory (each replay JVM is roughly
    1 GB); four region jobs by two path jobs is a safe starting point here:
 
@@ -213,42 +222,30 @@ Completed source fixes that still need one frozen end-to-end run:
    experiments/hdfs/hdfs-11741/run.sh candidates
    ```
 
-   Accept only the canonical artifacts under
-   `experiments-output/hdfs-11741-patched/schedule/`, including
-   `merged_region_summaries.jsonl`, `composed_fatal.smt2`, the composition
-   manifest, reachability report, and Z3 output. A summary that was truncated
-   before its terminating newline is invalid, not a partial success.
+   Accept only the schedule commit record and the campaign-local artifacts:
+
+   ```text
+   experiments-output/hdfs-11741-patched/schedule/runtime_workflow_schedule_index.json
+   experiments-output/hdfs-11741-patched/campaigns/auto-seeds/{target,producer}/<task>/merged_summary.jsonl
+   experiments-output/hdfs-11741-patched/candidates/<campaign>/candidate.smt2
+   experiments-output/hdfs-11741-patched/candidates/<campaign>/composition.json
+   experiments-output/hdfs-11741-patched/candidates/<campaign>/z3-result.json
+   experiments-output/hdfs-11741-patched/candidates/<campaign>/result.json
+   ```
+
+   A summary truncated before its terminating newline is invalid, not a
+   partial success.
 
 5. **Audit the result semantically.** The SMT must contain both NN reader
    chains (`updateKeys -> getBlockKeys -> Balancer` and
    `updateKeys -> sendHeartbeat -> DataNode`), the first-to-second Dispatcher
-   cached-state edge, the repair guard from a real VM summary, and the fatal DN
+   cached-state edge, the repair guard from a real execution summary, and the fatal DN
    lookup. RPC transport may use the configured logical mapping directly; do
    not add value fingerprints or descend into protobuf. Do not handwrite key
    lifetime, rolling-key, or HDFS-specific SMT formulas. Run the existing
-   solver pin/ablation checks and explain either `SAT` or `UNSAT`.
-
-6. **Only after the patched solver result, continue cleanup.** Project demanded
-   scalar RPC leaves directly at the configured trace boundary, then retire
-   `ARRAY_SNAPSHOT` and carrier reconstruction together. Until that replacement
-   exists, `ARRAY_SNAPSHOT` is live evidence for `BlockKey[]`, not dead code.
-   Pre-project the few scheduler indices currently recovered by repeatedly
-   parsing the large plan, and remove only fingerprints that add no cache or
-   composition correctness property. RPC value/argument/payload fingerprints
-   are already absent.
-
-The current generated plan is known to be noisy until step 2 is rerun: the old
-30-line plan is about 122 MB because whole closures are repeated. Do not treat
-its roughly 500,000 expressions as inherent symbolic complexity. The measured
-root cause was a post-publication call corridor plus fail-open symbolic input
-selection, both fixed above.
-
-The most recent offline rebuild was intentionally not accepted: a concurrent
-`mvn package` replaced the dependency jar while the aggregation JVM was still
-running, and it terminated in `NoClassDefFoundError` before publishing a new
-region plan. The closed traces remain reusable and the old plan remains in
-place. Start step 2 again only after the source and jar are frozen; do not
-resume from or bless that interrupted attempt.
+   solver pin/ablation checks and explain either `SAT` or `UNSAT`.  A bare
+   `true` reach formula or `NOT_APPLICABLE`/zero-clause fatal mutation witness
+   is a failed acceptance check even when Z3 prints `sat`.
 
 Concolic seed replay keeps the broad 2400-second emergency budget. Path flips
 have a separate 180-second default because a flip that never publishes a
@@ -261,11 +258,11 @@ selected result contributes no relation; it is recorded as
 
 Each of these once looked like a semantic failure.
 
-- **Retrying over failed campaign directories runs nothing.** `prepare_seed_campaign`
-  refuses a half-built directory rather than rebuilding it, and also refuses
-  previously-successful ones on payload mismatch. The round prints one refusal
-  per campaign and executes none of them, which reads exactly like reproducing
-  the failure. `rm -rf` them first; save any `hs_err_pid*.log` worth keeping.
+- **A malformed cache is not reusable evidence.** `prepare_seed_campaign`
+  automatically invalidates a safely scoped `TASK.SEED.*` directory when its
+  replay-cache marker is absent or stale. A directory whose marker still
+  matches but whose payload is malformed fails closed for manual inspection;
+  the runner never silently blesses it.
 - **Rebuilding the jar during a live run corrupts that run.** Discovery JVMs
   mmap the jar, not just campaign JVMs; one took `SIGBUS` in `libzip.so` and a
   scheduler answer came back as a literal `#`.
@@ -277,7 +274,8 @@ Each of these once looked like a semantic failure.
   single large fatal assert, and a channel's name carries the reader port twice
   rather than writer and reader. Both readings condemned a query that was fine.
   Ask the solver.
-- **Counting `EXPLORE` policy as flip candidates.** Producer `branches[]` is
-  `EXPLORE`-only by construction, so a "0% demotion rate" there compares two
-  differently-built artifacts. The real candidate count comes from the worklist:
-  75 policy branches, 8 actual witnesses.
+- **Counting policy metadata as executed relation evidence.** Producer seeds
+  export the symbolic input-to-output relation observed at their semantic
+  boundary. Target reachability retains its exact path condition; producer
+  branch-policy entries are not additional relation cases unless a replay
+  actually publishes one.

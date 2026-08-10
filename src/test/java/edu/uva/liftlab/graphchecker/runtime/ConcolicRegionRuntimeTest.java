@@ -103,10 +103,15 @@ public class ConcolicRegionRuntimeTest {
         assertTrue(ConcolicRegionRuntime.seedOutcomeConflict(
                 recorded, contradicting).startsWith("ROOT#u5:"));
 
-        // A wider environment revisits a site both ways.  The recorded
-        // outcome is still witnessed, so this is the same decision.
+        // A wider environment may revisit a site both ways.  The first
+        // opposite witness is not a monotone reason to abandon at the branch:
+        // a later visit can still witness the recorded outcome.  The runtime
+        // therefore makes this judgement only at a completed boundary.
         Map<String, Set<Boolean>> wider = new LinkedHashMap<>();
-        wider.put("ROOT#u5", outcomes(true, false));
+        wider.put("ROOT#u5", outcomes(true));
+        assertTrue(ConcolicRegionRuntime.seedOutcomeConflict(
+                recorded, wider).startsWith("ROOT#u5:"));
+        wider.get("ROOT#u5").add(false);
         wider.put("ROOT#u9", outcomes(true));
         assertEquals("", ConcolicRegionRuntime.seedOutcomeConflict(
                 recorded, wider));
@@ -168,6 +173,64 @@ public class ConcolicRegionRuntimeTest {
         assertEquals(0,
                 second.observedMethodArgument(constructor, 0));
         assertEquals(1, second.methodArgument(constructor, 0));
+    }
+
+    @Test
+    public void directFieldOccurrencesSelectOneBoundaryScalarPerSiteVisit() {
+        String method = "<test.Keys: void read()>";
+        ConcolicRegionRuntime.MaterializationOccurrenceCounter first =
+                new ConcolicRegionRuntime
+                        .MaterializationOccurrenceCounter();
+
+        // The recording authority numbers every execution of one static
+        // access site.  Its replay counter therefore has the same key: the
+        // method and unit, not the receiver or field declaration observed on
+        // a particular visit.
+        assertEquals(1, first.field(method, 7));
+        assertEquals(2, first.field(method, 7));
+        assertEquals(1, first.field(method, 9));
+        assertEquals(1, first.field("<test.Other: void read()>", 7));
+
+        // Each compatible root owns a fresh activation-local ordinal.
+        ConcolicRegionRuntime.MaterializationOccurrenceCounter second =
+                new ConcolicRegionRuntime
+                        .MaterializationOccurrenceCounter();
+        assertEquals(1, second.field(method, 7));
+
+        JsonObject element0 = directFieldAction(1);
+        JsonObject element1 = directFieldAction(2);
+        assertTrue(ConcolicRegionRuntime
+                .acceptsDirectFieldOccurrenceForTests(element0, 1));
+        assertFalse(ConcolicRegionRuntime
+                .acceptsDirectFieldOccurrenceForTests(element0, 2));
+        assertFalse(ConcolicRegionRuntime
+                .acceptsDirectFieldOccurrenceForTests(element1, 1));
+        assertTrue(ConcolicRegionRuntime
+                .acceptsDirectFieldOccurrenceForTests(element1, 2));
+
+        // Legacy direct-field actions without an exact occurrence retain
+        // their prior behavior.  Accessor-backed actions already carry a
+        // helper-call occurrence and must not be gated by this direct-site
+        // counter as well.
+        JsonObject legacy = directFieldAction(-1);
+        assertTrue(ConcolicRegionRuntime
+                .acceptsDirectFieldOccurrenceForTests(legacy, 17));
+        JsonObject accessor = directFieldAction(99);
+        accessor.addProperty("accessorCallerMethod",
+                "<test.Keys: int accessor()>");
+        assertTrue(ConcolicRegionRuntime
+                .acceptsDirectFieldOccurrenceForTests(accessor, 1));
+    }
+
+    private static JsonObject directFieldAction(int replayOccurrence) {
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", "REGION.IN." + replayOccurrence);
+        action.addProperty("bindingMode", "FIELD_ACCESS");
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        if (replayOccurrence > 0) {
+            action.addProperty("replayOccurrence", replayOccurrence);
+        }
+        return action;
     }
 
     /** Selection index for a capture whose version ordinal is irrelevant. */
@@ -255,6 +318,72 @@ public class ConcolicRegionRuntimeTest {
         captures.add(exactOutputCapture(1));
         assertTrue(ConcolicRegionRuntime
                 .exactOutputBoundaryReachedForTests(task, captures));
+    }
+
+    @Test
+    public void incompleteProducerRootYieldsToTheNextCompatibleRoot() {
+        JsonObject task = exactOutputTask(2);
+        JsonArray captures = new JsonArray();
+        captures.add(exactOutputCapture(0));
+
+        assertTrue(ConcolicRegionRuntime
+                .incompleteRelationOnlyBoundaryForTests(
+                        task, captures, "NORMAL"));
+        captures.add(exactOutputCapture(1));
+        assertFalse(ConcolicRegionRuntime
+                .incompleteRelationOnlyBoundaryForTests(
+                        task, captures, "NORMAL"));
+        assertFalse(ConcolicRegionRuntime
+                .incompleteRelationOnlyBoundaryForTests(
+                        task, new JsonArray(), "CUT"));
+    }
+
+    @Test
+    public void repeatedOutputSiteUsesItsCausalSymbolicSlotOnce() {
+        JsonObject task = exactOutputTask(2);
+        JsonArray actions = new JsonArray();
+        for (int index = 0; index < 2; index++) {
+            String input = "REGION.BOUNDARY.in." + index;
+            JsonObject action = new JsonObject();
+            action.addProperty("mode", "SYMBOLIC");
+            action.addProperty("symbol", input);
+            action.addProperty("bindingMode", "FIELD_ACCESS");
+            action.addProperty("location", "HEAP_OBJECT_FIELD");
+            action.addProperty("sourceKind", "ACCESSOR_RETURN");
+            action.addProperty("eventSeq", 10L + index);
+            actions.add(action);
+            JsonObject slice = task.getAsJsonObject("outputClosure")
+                    .getAsJsonArray("members").get(index).getAsJsonObject()
+                    .getAsJsonObject("slice");
+            slice.getAsJsonArray("inputPorts").add(input);
+            slice.addProperty("captureAnchorPort", input);
+        }
+        task.add("inputActions", actions);
+
+        JsonArray none = new JsonArray();
+        JsonArray first = strings("REGION.BOUNDARY.in.0");
+        assertFalse(ConcolicRegionRuntime.outputCaptureEligibleForTests(
+                task, "CAPTURE.0", none, new JsonArray()));
+        assertTrue(ConcolicRegionRuntime.outputCaptureEligibleForTests(
+                task, "CAPTURE.0", first, new JsonArray()));
+        assertFalse(ConcolicRegionRuntime.outputCaptureEligibleForTests(
+                task, "CAPTURE.1", first, new JsonArray()));
+
+        JsonArray captured = new JsonArray();
+        captured.add(exactOutputCapture(0));
+        assertFalse(ConcolicRegionRuntime.outputCaptureEligibleForTests(
+                task, "CAPTURE.0", first, captured));
+        first.add("REGION.BOUNDARY.in.1");
+        assertTrue(ConcolicRegionRuntime.outputCaptureEligibleForTests(
+                task, "CAPTURE.1", first, captured));
+
+        // A later accessor value written inside this same region is not a
+        // fresh solver input.  Merely observing its exact slot is enough to
+        // select the corresponding output capture; it must not be added to
+        // symbolizedInputs.
+        assertTrue(ConcolicRegionRuntime.outputCaptureEligibleForTests(
+                task, "CAPTURE.1", strings("REGION.BOUNDARY.in.0"),
+                strings("REGION.BOUNDARY.in.1"), captured));
     }
 
     @Test
@@ -405,6 +534,18 @@ public class ConcolicRegionRuntimeTest {
             budget.recordGuardedTraversal(loop);
         }
         assertFalse(budget.canEnterBody(loop));
+
+        // The same static helper loop starts a fresh unroll ledger in its
+        // next dynamic definition invocation.  Reporting keeps the static
+        // loop identity and the maximum bounded traversal, not a sum.
+        String nextInvocation = ConcolicRegionRuntime.LoopBackedgeBudget
+                .scoped(loop, 2L);
+        assertTrue(budget.canEnterBody(nextInvocation));
+        for (int traversal = 0; traversal < bound; traversal++) {
+            budget.recordGuardedTraversal(nextInvocation);
+        }
+        assertFalse(budget.canEnterBody(nextInvocation));
+        assertEquals(bound, budget.toJson().get(loop).getAsInt());
     }
 
     @Test
@@ -446,6 +587,11 @@ public class ConcolicRegionRuntimeTest {
         // stand in for.
         assertTrue(LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS
                 < LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES);
+
+        assertEquals(LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES,
+                ConcolicRegionRuntime.maxLoopBodiesForTests(
+                        exactOutputTask(1),
+                        "<test.Service: void run()>#loop:u1"));
     }
 
     @Test
@@ -620,27 +766,39 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void eachBoundedAccessorOccurrenceKeepsItsOwnSymbol() {
-        // The replay counts its accessor calls from one, so the demanded
-        // occurrence is the one bounded to a single helper activation.
-        // Every occurrence still stands on its own - the second key's
-        // accessor must not answer for the first key's.
-        assertTrue(ConcolicRegionRuntime
-                .acceptsBoundedAccessorOccurrence(1, 1));
-        assertTrue(ConcolicRegionRuntime
-                .acceptsBoundedAccessorOccurrence(7, 7));
-        assertFalse(ConcolicRegionRuntime
-                .acceptsBoundedAccessorOccurrence(2, 1));
+    public void accessorActionsUseActivationLocalReplayOccurrence() {
+        JsonObject first = accessorAction(1, 1);
+        JsonObject second = accessorAction(2, 1);
 
-        // A recording-wide ordinal such as 12 counts calls this replay's
-        // activation never made, so demanding it would leave the input
-        // concrete for every occurrence the replay does reach.
-        assertFalse(ConcolicRegionRuntime
-                .acceptsBoundedAccessorOccurrence(12, 1));
-
-        // An action that names no occurrence stays unconstrained.
+        // Several retained helper calls may each carry bounded occurrence 1.
+        // Their activation-local replay occurrences still select exactly one
+        // action at each visit to the shared accessor call site.
         assertTrue(ConcolicRegionRuntime
-                .acceptsBoundedAccessorOccurrence(-1, 3));
+                .acceptsAccessorOccurrenceForTests(first, 1));
+        assertFalse(ConcolicRegionRuntime
+                .acceptsAccessorOccurrenceForTests(second, 1));
+        assertFalse(ConcolicRegionRuntime
+                .acceptsAccessorOccurrenceForTests(first, 2));
+        assertTrue(ConcolicRegionRuntime
+                .acceptsAccessorOccurrenceForTests(second, 2));
+
+        // Legacy actions that name no replay occurrence remain unconstrained.
+        assertTrue(ConcolicRegionRuntime
+                .acceptsAccessorOccurrenceForTests(accessorAction(-1, 7), 3));
+    }
+
+    private static JsonObject accessorAction(
+            int replayOccurrence, int boundedOccurrence) {
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", "REGION.IN." + replayOccurrence);
+        action.addProperty("bindingMode", "FIELD_ACCESS");
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        if (replayOccurrence > 0) {
+            action.addProperty("replayOccurrence", replayOccurrence);
+        }
+        action.addProperty("helperActivationBoundedOccurrence",
+                boundedOccurrence);
+        return action;
     }
 
     private static JsonObject exactOutputTask(int outputCount) {
@@ -690,6 +848,13 @@ public class ConcolicRegionRuntimeTest {
         task.addProperty("regionInstanceId", instance);
         task.addProperty("rootCallId", 1L);
         ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(task);
+        JsonObject admission = new JsonObject();
+        admission.addProperty("state", "EXECUTABLE");
+        task.add("admission", admission);
+        JsonObject rootSelector = new JsonObject();
+        rootSelector.addProperty("kind", "GLOBAL_INVOCATION");
+        rootSelector.addProperty("method", method);
+        task.add("rootSelector", rootSelector);
         task.add("inputActions", new JsonArray());
         task.add("branches", new JsonArray());
         LoopBoundPolicy.cfgBackedges(
@@ -1338,6 +1503,130 @@ public class ConcolicRegionRuntimeTest {
     }
 
     /**
+     * A completed seed activation that contradicted its recording has the same
+     * ownership obligation as a contradicted path replay: it must hand the
+     * engine to a sibling before constructing a summary that cannot be kept.
+     * The seed judgement is deliberately made at completion, not at the first
+     * opposite witness, because one activation may later visit the site with
+     * the recorded outcome as tested above.
+     */
+    @Test
+    public void aCompletedSeedConflictHandsTheEngineToTheNextCandidate()
+            throws Exception {
+        long budget = 20_000L;
+        ConcolicRegionRuntime.resetForTests();
+        System.setProperty(ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY,
+                Long.toString(budget));
+        Map<String, Set<Boolean>> recorded = new LinkedHashMap<>();
+        recorded.put("ROOT#u5", outcomes(false));
+        SeedJob contradicting = new SeedJob(recorded,
+                Collections.singletonMap("ROOT#u5", outcomes(true)));
+        SeedJob matching = new SeedJob(recorded,
+                Collections.singletonMap("ROOT#u5", outcomes(false)));
+        Thread first = new Thread(contradicting, "seed-candidate-1");
+        Thread second = new Thread(matching, "seed-candidate-2");
+        try {
+            first.start();
+            assertTrue(contradicting.reserved.await(30, TimeUnit.SECONDS));
+            assertEquals("", contradicting.contention);
+
+            matching.mayFinish.countDown();
+            second.start();
+            assertFalse(matching.reserved.await(200, TimeUnit.MILLISECONDS));
+
+            contradicting.mayFinish.countDown();
+            second.join(budget - 5_000L);
+            assertFalse(second.isAlive());
+            assertEquals("PUBLISHED", matching.outcome);
+            assertEquals("", matching.conflict);
+            assertEquals("", matching.contention);
+            assertFalse(matching.cleanupCalled);
+            assertFalse(matching.rejectionPublished);
+            assertTrue(matching.summaryStarted);
+            assertTrue(matching.waitedMillis < budget / 2);
+
+            assertEquals("ABANDONED", contradicting.outcome);
+            assertTrue(contradicting.conflict.startsWith("ROOT#u5:"));
+            assertTrue(contradicting.cleanupCalled);
+            assertTrue(contradicting.rejectionPublished);
+            assertFalse("a rejected seed must not enter result build/api.finish",
+                    contradicting.summaryStarted);
+            assertTrue("the engine must return before the rejected root does",
+                    first.isAlive());
+        } finally {
+            contradicting.mayFinish.countDown();
+            contradicting.regionBodyReturns.countDown();
+            matching.mayFinish.countDown();
+            matching.regionBodyReturns.countDown();
+            first.join(30_000L);
+            second.join(30_000L);
+            System.clearProperty(
+                    ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY);
+            ConcolicRegionRuntime.resetForTests();
+        }
+    }
+
+    @Test
+    public void aCompletedSeedConflictIsPublishedWhenCleanupFails() {
+        ConcolicRegionRuntime.resetForTests();
+        System.setProperty(ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY, "0");
+        boolean firstReservationHeld = false;
+        boolean secondReservationHeld = false;
+        final boolean[] rejectionPublished = {false};
+        final boolean[] summaryStarted = {false};
+        Map<String, Set<Boolean>> recorded = new LinkedHashMap<>();
+        recorded.put("ROOT#u5", outcomes(false));
+        Map<String, Set<Boolean>> witnessed = new LinkedHashMap<>();
+        witnessed.put("ROOT#u5", outcomes(true));
+        try {
+            assertEquals("",
+                    ConcolicRegionRuntime.reserveSymbolicEngineForTests());
+            firstReservationHeld = true;
+            try {
+                ConcolicRegionRuntime.completeSeedResultAtBoundary(
+                        recorded, witnessed,
+                        new ConcolicRegionRuntime
+                                .CompletedSeedResultActions() {
+                            @Override
+                            public void cleanupRejectedSeed() {
+                                throw new IllegalStateException(
+                                        "cleanup failed");
+                            }
+
+                            @Override
+                            public void publishRejectedSeed(String conflict) {
+                                assertTrue(conflict.startsWith("ROOT#u5:"));
+                                rejectionPublished[0] = true;
+                            }
+
+                            @Override
+                            public void buildAcceptedResult() {
+                                summaryStarted[0] = true;
+                            }
+                        });
+                fail("cleanup failure must remain observable");
+            } catch (IllegalStateException expected) {
+                assertEquals("cleanup failed", expected.getMessage());
+            }
+            // The completion gate releases its reservation even though the
+            // cleanup callback failed.
+            firstReservationHeld = false;
+            assertTrue(rejectionPublished[0]);
+            assertFalse(summaryStarted[0]);
+            assertEquals("",
+                    ConcolicRegionRuntime.reserveSymbolicEngineForTests());
+            secondReservationHeld = true;
+        } finally {
+            if (firstReservationHeld || secondReservationHeld) {
+                ConcolicRegionRuntime.releaseSymbolicEngineForTests();
+            }
+            System.clearProperty(
+                    ConcolicRegionRuntime.ENGINE_WAIT_PROPERTY);
+            ConcolicRegionRuntime.resetForTests();
+        }
+    }
+
+    /**
      * A recorded entry value is compared value-wise, so it orders candidates
      * and never rejects one.  The candidate whose entry state still agrees
      * goes first while both are waiting.
@@ -1458,6 +1747,83 @@ public class ConcolicRegionRuntimeTest {
                     }
                 }
                 outcome = progress.complete() ? "PUBLISHED" : "INCOMPLETE";
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                outcome = "INTERRUPTED";
+            } finally {
+                if (held) {
+                    ConcolicRegionRuntime.releaseSymbolicEngineForTests();
+                }
+            }
+        }
+    }
+
+    /** Completion-side seed counterpart of {@link ReplayJob}. */
+    private static final class SeedJob implements Runnable {
+        private final Map<String, Set<Boolean>> recorded;
+        private final Map<String, Set<Boolean>> witnessed;
+        private final CountDownLatch reserved = new CountDownLatch(1);
+        private final CountDownLatch mayFinish = new CountDownLatch(1);
+        private final CountDownLatch regionBodyReturns =
+                new CountDownLatch(1);
+        private volatile String contention = "";
+        private volatile String conflict = "";
+        private volatile String outcome = "";
+        private volatile long waitedMillis = -1L;
+        private volatile boolean cleanupCalled;
+        private volatile boolean rejectionPublished;
+        private volatile boolean summaryStarted;
+
+        private SeedJob(Map<String, Set<Boolean>> recorded,
+                        Map<String, Set<Boolean>> witnessed) {
+            this.recorded = recorded;
+            this.witnessed = witnessed;
+        }
+
+        @Override
+        public void run() {
+            long started = System.currentTimeMillis();
+            contention = ConcolicRegionRuntime
+                    .reserveSymbolicEngineForTests();
+            waitedMillis = System.currentTimeMillis() - started;
+            reserved.countDown();
+            if (!contention.isEmpty()) {
+                outcome = "SKIPPED";
+                return;
+            }
+            boolean held = true;
+            try {
+                mayFinish.await(30, TimeUnit.SECONDS);
+                ConcolicRegionRuntime.completeSeedResultAtBoundary(
+                        recorded, witnessed,
+                        new ConcolicRegionRuntime.CompletedSeedResultActions() {
+                            @Override
+                            public void cleanupRejectedSeed() {
+                                cleanupCalled = true;
+                            }
+
+                            @Override
+                            public void publishRejectedSeed(
+                                    String rejectedConflict) {
+                                conflict = rejectedConflict;
+                                rejectionPublished = true;
+                                outcome = "ABANDONED";
+                            }
+
+                            @Override
+                            public void buildAcceptedResult() {
+                                summaryStarted = true;
+                                outcome = "PUBLISHED";
+                            }
+                        });
+                if (!conflict.isEmpty()) {
+                    // The production completion gate already released it.
+                    held = false;
+                    // The workload root continues after the selected bounded
+                    // activation has been rejected and cleaned up.
+                    regionBodyReturns.await(30, TimeUnit.SECONDS);
+                    return;
+                }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 outcome = "INTERRUPTED";

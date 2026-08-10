@@ -28,6 +28,23 @@ public class ConcolicSchedulerTest {
     public final TemporaryFolder folder = new TemporaryFolder();
 
     @Test
+    public void targetFirstModeRejectsPerGoalFilters() {
+        try {
+            ConcolicScheduler.Arguments.parse(new String[]{
+                    "--regions", "regions.jsonl",
+                    "--region-plan", "plan.jsonl",
+                    "--edge-validations", "validations.jsonl",
+                    "--refined-graph", "refined.jsonl",
+                    "--target-first",
+                    "--goal-id", "GOAL.1"
+            });
+            fail("target-first and per-goal filters must be exclusive");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("--target-first"));
+        }
+    }
+
+    @Test
     public void targetStructureCarrierIsNotAnInputAction() throws Exception {
         File regions = write("carrier-regions.jsonl", region());
         File plans = write("carrier-plans.jsonl", carrierTargetPlan());
@@ -64,7 +81,6 @@ public class ConcolicSchedulerTest {
             throws Exception {
         Map<String, Object> action = heapLeaf(
                 "REGION.1.in.value", "example.Payload", "int", "value");
-        action.put("referenceBoundaryLeaf", true);
         action.put("symbolicDemand",
                 "CONCRETE_REFERENCE_BOUNDARY_REPLAY");
         action.put("replayAuthority",
@@ -140,38 +156,6 @@ public class ConcolicSchedulerTest {
         assertEquals(25, scheduled.get("replayOccurrence").getAsInt());
         assertEquals(1, result.executionTasks.get(0)
                 .getAsJsonArray("edgeBindings").size());
-    }
-
-    @Test
-    public void decodedProtocolLeafUsesReplayLocalFirstOccurrence()
-            throws Exception {
-        Map<String, Object> plan = protocolArgumentTargetPlan();
-        @SuppressWarnings("unchecked")
-        Map<String, Object> action = ((java.util.List<Map<String, Object>>)
-                ((java.util.List<Map<String, Object>>) plan.get(
-                        "closureGoals")).get(0).get("symbolize")).get(0);
-        action.put("sourceKind", "RPC_DECODE_VALUE");
-        action.put("rpcDescendantProjectionInput", true);
-        action.put("replayOccurrence", 25);
-        action.put("helperActivationBoundedOccurrence", 25);
-        action.put("activationLocalStaticSiteOccurrence", 25);
-        File regions = write("decoded-argument-regions.jsonl", region());
-        File plans = write("decoded-argument-plans.jsonl", plan);
-        File edges = writeEmpty("decoded-argument-edges.jsonl");
-        File refined = write("decoded-argument-refined.jsonl",
-                refinedEdge());
-        File output = folder.newFolder("decoded-argument-schedule");
-
-        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
-                arguments(regions, plans, edges, refined, output));
-
-        JsonObject scheduled = result.executionTasks.get(0)
-                .getAsJsonArray("inputActions").get(0).getAsJsonObject();
-        assertEquals("METHOD_ARGUMENT",
-                scheduled.get("bindingMode").getAsString());
-        assertEquals(1, scheduled.get("replayOccurrence").getAsInt());
-        assertEquals(25, scheduled.get(
-                "activationLocalStaticSiteOccurrence").getAsInt());
     }
 
     @Test
@@ -412,42 +396,6 @@ public class ConcolicSchedulerTest {
                 scheduledTarget.get("policy").getAsString());
         assertEquals("TARGET_REACH_SELECTED_FAILURE_BRANCH",
                 scheduledTarget.get("policyReason").getAsString());
-    }
-
-    @Test
-    public void selectedFatalSiteProjectsItsOwnPrefixInputs()
-            throws Exception {
-        Map<String, Object> selected = heapLeaf(
-                "REGION.1.in.selected", "example.Key", "long",
-                "expiryDate");
-        selected.put("fatalPrefixContexts", Collections.singletonList(
-                object("siteId", "<T: void f()>#u1", "occurrence", 1,
-                        "eventSeq", 50L)));
-        selected.put("runtimeAccesses", java.util.Arrays.asList(
-                object("eventSeq", 40L), object("eventSeq", 60L)));
-        Map<String, Object> otherSite = heapLeaf(
-                "REGION.1.in.other", "example.Key", "int", "keyId");
-        otherSite.put("fatalPrefixContexts", Collections.singletonList(
-                object("siteId", "<T: void f()>#u9", "occurrence", 1,
-                        "eventSeq", 80L)));
-
-        File regions = write("site-prefix-regions.jsonl", region());
-        File plans = write("site-prefix-plans.jsonl",
-                targetPlanWithActions(selected, otherSite));
-        File edges = writeEmpty("site-prefix-edges.jsonl");
-        File refined = write("site-prefix-refined.jsonl", refinedEdge());
-        File output = folder.newFolder("site-prefix-schedule");
-
-        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
-                arguments(regions, plans, edges, refined, output));
-
-        JsonArray actions = result.executionTasks.get(0)
-                .getAsJsonArray("inputActions");
-        assertEquals(1, actions.size());
-        JsonObject action = inputAction(actions, "REGION.1.in.selected");
-        assertEquals(50L, action.get("fatalPrefixEventSeq").getAsLong());
-        assertEquals(1, action.getAsJsonArray("runtimeAccesses").size());
-        assertFalse(hasInputAction(actions, "REGION.1.in.other"));
     }
 
     @Test

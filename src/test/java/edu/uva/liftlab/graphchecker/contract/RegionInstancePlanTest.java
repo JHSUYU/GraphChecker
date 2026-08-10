@@ -67,6 +67,99 @@ public class RegionInstancePlanTest {
                 .getAsJsonArray("bindingIds").size());
     }
 
+    @Test
+    public void occurrenceCatalogSeparatesDifferentInputReplaySlots() {
+        String instance = "REGION.1@test#call1";
+        JsonObject canonical = outputGoal(
+                "GOAL.LOGICAL", instance, 1L, "canonical", 1);
+        JsonObject selected = outputGoal(
+                "GOAL.EXACT.1", instance, 1L, "selected", 1);
+        JsonObject other = outputGoal(
+                "GOAL.EXACT.2", instance, 1L, "other", 1);
+        canonical.getAsJsonArray("symbolize").add(
+                accessorPort("canonical", 2));
+        selected.getAsJsonArray("symbolize").add(
+                accessorPort("selected", 2));
+        other.getAsJsonArray("symbolize").add(
+                accessorPort("other", 3));
+
+        JsonObject plan = plan(instance, canonical,
+                occurrence(instance, 1L, selected, other));
+
+        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+                .occurrenceInstantiationCatalog()
+                .getAsJsonArray("occurrences");
+
+        assertEquals(1, catalog.size());
+        JsonArray mappings = catalog.get(0).getAsJsonObject()
+                .getAsJsonArray("inputPortMap");
+        assertEquals(1, mappings.size());
+        assertEquals("REGION.1.in.selected.2",
+                mappings.get(0).getAsJsonObject()
+                        .get("exactPort").getAsString());
+    }
+
+    @Test
+    public void occurrenceCatalogUsesAccessorHelperActivationSlot() {
+        String instance = "REGION.1@test#call1";
+        JsonObject canonical = outputGoal(
+                "GOAL.LOGICAL", instance, 1L, "canonical", 1);
+        JsonObject selected = outputGoal(
+                "GOAL.EXACT.1", instance, 1L, "selected", 1);
+        JsonObject other = outputGoal(
+                "GOAL.EXACT.2", instance, 1L, "other", 1);
+        JsonObject canonicalInput = accessorPort("canonical", 2);
+        JsonObject selectedInput = accessorPort("selected", 2);
+        JsonObject otherInput = accessorPort("other", 2);
+        canonicalInput.addProperty("helperActivationBoundedOccurrence", 1);
+        selectedInput.addProperty("helperActivationBoundedOccurrence", 1);
+        otherInput.addProperty("helperActivationBoundedOccurrence", 2);
+        canonical.getAsJsonArray("symbolize").add(canonicalInput);
+        selected.getAsJsonArray("symbolize").add(selectedInput);
+        other.getAsJsonArray("symbolize").add(otherInput);
+
+        JsonObject plan = plan(instance, canonical,
+                occurrence(instance, 1L, selected, other));
+
+        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+                .occurrenceInstantiationCatalog()
+                .getAsJsonArray("occurrences");
+
+        assertEquals(1, catalog.size());
+        JsonArray mappings = catalog.get(0).getAsJsonObject()
+                .getAsJsonArray("inputPortMap");
+        assertEquals(1, mappings.size());
+        assertEquals("REGION.1.in.selected.2",
+                mappings.get(0).getAsJsonObject()
+                        .get("exactPort").getAsString());
+    }
+
+    @Test
+    public void occurrenceCatalogIgnoresExcludedOutputDiagnostics() {
+        String instance = "REGION.1@test#call1";
+        JsonObject canonical = outputGoal(
+                "GOAL.LOGICAL", instance, 1L, "canonical", 1);
+        JsonObject first = outputGoal(
+                "GOAL.EXACT.1", instance, 1L, "canonical", 1);
+        JsonObject duplicate = first.deepCopy();
+        duplicate.addProperty("goalId", "GOAL.EXACT.2");
+        JsonArray firstDiagnostics = new JsonArray();
+        firstDiagnostics.add("OUTPUT_CLOSURE_PENDING:exact.port.1");
+        first.add("excludedOutputBlockers", firstDiagnostics);
+        JsonArray secondDiagnostics = new JsonArray();
+        secondDiagnostics.add("OUTPUT_CLOSURE_PENDING:exact.port.2");
+        duplicate.add("excludedOutputBlockers", secondDiagnostics);
+
+        JsonObject plan = plan(instance, canonical,
+                occurrence(instance, 1L, first, duplicate));
+
+        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+                .occurrenceInstantiationCatalog()
+                .getAsJsonArray("occurrences");
+
+        assertEquals(1, catalog.size());
+    }
+
     @Test(expected = IllegalArgumentException.class)
     public void occurrenceCatalogPreservesInternalSliceCausalIds() {
         String instance = "REGION.1@test#call1";
@@ -150,6 +243,33 @@ public class RegionInstancePlanTest {
                             "REGION.1.in.canonical." + slot));
         }
         assertFalse(second.has("closureGoals"));
+    }
+
+    @Test
+    public void occurrenceCatalogDoesNotCrossAdmissionLedgersAtSamePathSeed() {
+        String first = "REGION.1@test#call1";
+        String second = "REGION.1@test#call2";
+        JsonObject canonical = targetGoal("GOAL.LOGICAL", "canonical");
+        JsonObject ready = targetGoal("GOAL.EXACT.READY", "canonical");
+        JsonObject blocked = targetGoal("GOAL.EXACT.BLOCKED", "exact");
+        for (JsonObject goal : new JsonObject[]{canonical, ready, blocked}) {
+            goal.addProperty("pathSeedKey", "PATH.SEED.SHARED");
+        }
+        JsonObject blockedAdmission = blocked.getAsJsonObject("admission");
+        blockedAdmission.addProperty("state", "BLOCKED");
+        blockedAdmission.getAsJsonArray("blockers").add(
+                "CONFIGURED_BOUNDARY_SCALAR_GAP");
+
+        JsonObject plan = plan(first, canonical,
+                occurrence(first, 1L, ready),
+                occurrence(second, 2L, blocked));
+        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+                .occurrenceInstantiationCatalog()
+                .getAsJsonArray("occurrences");
+
+        assertEquals(1, catalog.size());
+        assertEquals(first, catalog.get(0).getAsJsonObject()
+                .get("regionInstanceId").getAsString());
     }
 
     @Test

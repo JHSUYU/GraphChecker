@@ -29,10 +29,13 @@ HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh prepare
 # Automatic static analysis + two runtime passes + task generation.
 HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh tasks
 
-# Resume from an existing task plan: VM summaries, SMT, and Z3 only.
+# Rebuild only the exact target-first schedule from existing analysis outputs.
+HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh schedule
+
+# Resume from a current indexed task plan: bounded summaries, SMT, and Z3 only.
 HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh candidates
 
-# Complete pipeline: prepare, task discovery, VM summaries, SMT, and Z3.
+# Complete pipeline: prepare, task discovery, bounded summaries, SMT, and Z3.
 HADOOP_REPO=/opt/hadoop experiments/hdfs/hdfs-11741/run.sh full
 
 # Run the fixed-code experiment in its own artifact tree.
@@ -66,6 +69,7 @@ experiments-output/hdfs-11741/schedule/execution_task_plan.jsonl
 experiments-output/hdfs-11741/schedule/branch_queries.jsonl
 experiments-output/hdfs-11741/schedule/selected_target_binding.tsv
 experiments-output/hdfs-11741/schedule/selected_closure_bindings.tsv
+experiments-output/hdfs-11741/schedule/runtime_workflow_schedule_index.json
 ```
 
 Scheduling is target-first. It takes the highest-ranked valid fatal target,
@@ -73,19 +77,86 @@ walks its trusted exact-port dependency closure, and schedules only that one
 target goal plus the unique producer logical goals in the closure. Each goal
 is selected with its region, runtime occurrence membership, and goal identity;
 the occurrence is discovery evidence, while the emitted task retains the
-logical replay identity. Per-goal scheduler outputs are isolated and then
-merged deterministically by `taskId` and `queryKey`.
+logical replay identity. The scheduler parses the large region plan once,
+materializes the target and all producers from one in-memory index, and writes
+the compact workflow index last as the schedule commit record. `candidates`
+requires that record and verifies its region-plan/task-plan hashes, task set,
+goal kinds, admissions, exact occurrence membership, and producer projections;
+a missing, stale, or malformed index fails closed rather than reparsing the
+large plan through a compatibility path.
+
+When several selected scalar goals come from the same exact producer
+invocation and path seed, the scheduler emits one atomic producer task. Its
+`selectedGoals` ledger retains every original goal and projection, while the
+task carries the union of their real outputs and edges. Versions emitted at the
+same semantic boundary share one version choice; they are not combined as an
+independent Cartesian product.
+
+## Current patched-run TODO
+
+The files presently under the patched candidate campaign predate the current
+schedule and are not reusable evidence.  In particular, their Z3 report has a
+vacuous `true` reach condition and no fatal mutation clause.  The sole current
+completion queue is:
+
+1. rebuild the region plan from the existing CLOSED pass-1/pass-2 traces;
+2. publish a new exact target-first schedule and treat its index as the commit
+   record;
+3. replay its task set, requiring the joint `call2454593` relation to publish
+   all demanded outputs from one activation while retaining the final VM path
+   condition;
+4. compose a zero-gap candidate bound to the selected edge set;
+5. run Z3 plus `solver_binding_audit.py`, and verify target `call3191805`, the
+   cold-to-cached Dispatcher heap lineage, both configured RPC reader chains,
+   and a load-bearing fatal mutation witness.
+
+Internally written accessor values are observation anchors, not new free
+solver inputs.  Do not restore output-occurrence/version ranking, hand-written
+HDFS lifetime constraints, or cross-invocation singleton-summary products to
+make this queue pass.  Once the five checks complete, replace this section
+with the new campaign-local hashes and result; until then, any older `SAT` file
+is explicitly non-authoritative.
 
 `full` does not hard-code thread ids, object ids, call ids, or HDFS region
-names. Each selected task is instrumented and replayed by the custom VM; the
-importer and composer consume those VM summaries directly. The SAT candidate
-is retained at:
+names. Each selected task is instrumented and run by the bounded execution
+engine; the importer and composer consume those summaries directly. Campaign
+and merged summaries remain below
+`campaigns/auto-seeds/{target,producer}/<task>/`. The canonical composition is
+retained at:
 
 ```text
 experiments-output/hdfs-11741/candidates/<campaign>/candidate.smt2
+experiments-output/hdfs-11741/candidates/<campaign>/composition.json
 experiments-output/hdfs-11741/candidates/<campaign>/z3-result.json
+experiments-output/hdfs-11741/candidates/<campaign>/result.json
 experiments-output/hdfs-11741/candidates/sat-result.json
 ```
+
+The last path is a convenience copy of the most recently published reachable
+result. The campaign-local four artifacts and the current schedule index are
+the authority; an unreachable later campaign does not turn an older pointer
+into evidence for the new schedule.
+
+Run the solver-native binding audit on a completed campaign without editing
+its formula. It consumes the composer's operand ledger, removes every
+exact named assertion recorded as fatal-dependent (including the mutation
+witness) to establish a satisfiable relation-only baseline, then proves each
+operand's own path prefix satisfiable before emitting its pin and runtime-edge
+ablation queries:
+
+```bash
+campaign_dir=experiments-output/hdfs-11741/candidates/<campaign>
+experiments/hdfs/hdfs-11741/solver_binding_audit.py \
+  --smt "${campaign_dir}/candidate.smt2" \
+  --manifest "${campaign_dir}/composition.json"
+```
+
+The versioned report and all derived SMT files are written under
+`<campaign>/solver-binding-audit/`. A relation-only result other than `sat` is
+reported as `NON_AUDITABLE_RELATION_BASELINE`; operand pins are not evaluated
+in that state, which prevents an already-unsatisfiable final query from
+vacuously passing every binding check. The command exits 0 only for `AUDITED`,
+1 for `AUDITED_WITH_FINDINGS`, and 2 for an inconclusive/non-auditable run.
 
 Concolic execution keeps two bounded parallelism levels. Independent logical
 region campaigns run in parallel (`HDFS11741_REGION_JOBS`), and one campaign
@@ -106,19 +177,19 @@ relation order.
 
 Replay-cache identity includes the selected variant and deterministic digests
 of the compiled HDFS main, test, and instrumented class trees. Rebuilding or
-changing the patched program therefore cannot reuse a vulnerable VM summary.
+changing the patched program therefore cannot reuse a vulnerable execution
+summary.
 
 All loops in a concolic task use the generic CFG-backedge limit of eight body
 iterations; this applies to service loops without recognizing Hadoop method
-names. The three HDFS workload activation knobs also default to eight so runtime
-discovery cannot record an eighth or thirty-second occurrence that replay must
-cut. `HDFS11741_NN_UPDATE_ITERATIONS`,
+names. The three HDFS workload activation knobs default to four.
+`HDFS11741_NN_UPDATE_ITERATIONS`,
 `HDFS11741_DATANODE_REFRESH_ITERATIONS`, and
 `HDFS11741_BALANCER_REFRESH_ITERATIONS` may reduce that concrete evidence
 window to 1--8; values above eight are rejected. Container materialization
-currently retains up to eight failure-relevant cells per logical input port; this
+currently retains up to 32 failure-relevant cells per logical input port; this
 is an independent exploration resource cap, not an assumption that an HDFS
-container has length eight and never a way to increase loop execution.
+container has length 32 and never a way to increase loop execution.
 
 The concrete workload is:
 
@@ -129,8 +200,15 @@ org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer
 
 The protocol mapping in `protocol-stubs.jsonl` declares the logical RPC pairs
 and whether a server callback starts a new execution entry or remains nested in
-its owning region. Runtime trace lineage chooses the actual occurrences; wire
-payload equality is deliberately not revalidated.
+its owning region. Schema version 2 also declares the bounded scalar leaves at
+each request/response boundary (`leafId`, direction, port, declared field path,
+and container bound). Trace schema 4 records those leaf cells, completion
+counts, and explicit gaps directly on both sides of the configured exchange.
+The refiner accepts only complete, configuration-matching evidence; missing,
+mixed, stale, or ambiguous cells become durable blockers for the selected
+demand. The former reference-array snapshot and carrier-reconstruction path is
+retired. Runtime trace lineage chooses the actual occurrences; wire payload
+equality is deliberately not revalidated.
 
 The lightweight patch gate uses a temporary clean checkout and tests first and
 idempotent second application:

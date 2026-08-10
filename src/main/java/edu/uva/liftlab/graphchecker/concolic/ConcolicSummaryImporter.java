@@ -168,11 +168,19 @@ public final class ConcolicSummaryImporter {
                 issues.add("UNRESOLVED_INPUT:" + unresolved);
             }
 
-            SemanticPath path = SemanticPath.from(
-                    array(engine, "pathCondition"),
+            boolean relationOnlySeed =
+                    task.goalKind().capturesOutputRelation()
+                    && task.replayContract() == null;
+            SemanticPath path = relationOnlySeed
+                    ? SemanticPath.atRelationBoundary(
+                    array(engine, "pathCondition"))
+                    : SemanticPath.from(array(engine, "pathCondition"),
                     array(raw, "branchMappings"));
-            JsonArray mappings = branchMappings(raw, task, path, issues);
-            String pathSeedMismatch = pathSeedMismatch(raw, task, mappings);
+            JsonArray mappings = relationOnlySeed
+                    ? new JsonArray()
+                    : branchMappings(raw, task, path, issues);
+            String pathSeedMismatch = relationOnlySeed ? ""
+                    : pathSeedMismatch(raw, task, mappings);
             if (!pathSeedMismatch.isEmpty()) {
                 diagnostics.add(diagnostic(raw, index,
                         "PATH_SEED_MISMATCH", pathSeedMismatch));
@@ -1259,21 +1267,17 @@ public final class ConcolicSummaryImporter {
     /**
      * Admits an observation of the recorded output relation.
      *
-     * <p>The recorded ordinal is not replay identity: the goal states this
-     * relation without one, and a bounded replay reaches the site a different
-     * number of times than the recording did.  What must agree is the shape —
-     * the same recorded static site, observed inside the bounded replay
-     * window.  Which version of the relation a reader sees is settled by the
-     * composed versioned channel, not here.</p>
+     * <p>The recorded ordinal is provenance, not replay identity.  The raw
+     * capture must name the requested static endpoint and a positive bounded
+     * occurrence; task-level semantic-boundary gating already happened before
+     * the row was emitted.</p>
      */
     private static boolean exactOutputCaptureOccurrence(
             OutputCaptureSpec request, JsonObject capture) {
         if (!request.occurrenceScoped()) return true;
         int occurrence = integer(capture, "outputOccurrence", -1);
         // The occurrence counts every activation-local execution of the
-        // site, nested calls included; a bounded replay can reach one site
-        // more often than the per-loop body bound.  What must agree is the
-        // shape (the recorded static site), never the ordinal.
+        // site, nested calls included; it is not itself replay identity.
         return request.outputSiteId().equals(
                 string(capture, "outputSiteId"))
                 && occurrence >= 1;
@@ -1442,6 +1446,23 @@ public final class ConcolicSummaryImporter {
                     indices[index] = expressions.size();
                     expressions.add(expression.deepCopy());
                 }
+            }
+            return new SemanticPath(original, expressions, indices);
+        }
+
+        /**
+         * A producer seed reads the VM path condition once, at its semantic
+         * output boundary.  There are intentionally no per-branch mappings
+         * in that mode, so filtering predicates by mapping ownership would
+         * erase the guard of the exported input/output relation.
+         */
+        private static SemanticPath atRelationBoundary(JsonArray raw) {
+            JsonArray original = raw == null
+                    ? new JsonArray() : raw.deepCopy();
+            JsonArray expressions = original.deepCopy();
+            int[] indices = new int[original.size()];
+            for (int index = 0; index < indices.length; index++) {
+                indices[index] = index;
             }
             return new SemanticPath(original, expressions, indices);
         }

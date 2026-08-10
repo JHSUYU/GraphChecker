@@ -5,8 +5,10 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.ProtocolBoundaryScalarConfig;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -41,25 +43,10 @@ public final class RuntimeSelectedRegionFinalizer {
             .setObjectToNumberStrategy(ToNumberPolicy.LONG_OR_DOUBLE)
             .create();
     private static final String REFINED_KIND = "RUNTIME_REFINED_DATAFLOW";
-
-    /**
-     * Equality that stands on a declared reply reconstruction rather than on
-     * the mapping alone.  It is a strictly weaker claim than
-     * {@code TRUSTED_CONFIGURED_RPC_MAPPING_V1} and is named separately so a
-     * composer or an audit can see which relations rest on the declaration.
-     */
-    private static final String DECLARED_CARRIER_AUTHORITY =
-            "TRUSTED_DECLARED_CARRIER_PROJECTION_V1";
-
-    private static final String DECLARED_CARRIER_SELECTION =
-            "DECLARED_CARRIER_PATH_PROJECTION_V1";
-
-    /** Exact decoded leaf inputs for individual accesses of one output. */
-    public static final String RPC_DECODED_LEAF_INPUTS =
-            "rpcDecodedLeafInputs";
-
-    /** A value received at an RPC boundary and installed by decode code. */
-    public static final String RPC_DECODE_VALUE = "RPC_DECODE_VALUE";
+    private static final String EXTERNAL_PRESTATE_AUTHORITY =
+            "EXACT_ACTIVATION_EXTERNAL_PRESTATE_WRITE_V1";
+    private static final String EXTERNAL_PRESTATE_REASON =
+            "ACTIVATION_EXTERNAL_PRESTATE";
 
     /** A boolean returned by the explicit application-side fault marker. */
     public static final String EXPLICIT_SYMBOLIC_FAULT =
@@ -506,15 +493,8 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, Set<Long>> demandedAccesses =
                 demandedRuntimeAccesses(program.regionEdges);
         Map<String, Long> fatalPrefixCutoffs = new LinkedHashMap<>();
-        Map<String, List<Map<String, Object>>> fatalPrefixContexts =
-                new LinkedHashMap<>();
         for (Map.Entry<String, Map<String, Object>> entry
                 : closure.instances.entrySet()) {
-            List<Map<String, Object>> contexts = rows(
-                    entry.getValue().get("fatalPrefixContexts"));
-            if (!contexts.isEmpty()) {
-                fatalPrefixContexts.put(entry.getKey(), contexts);
-            }
             long cutoff = longNumber(entry.getValue().get(
                     "fatalPrefixEventSeq"), -1L);
             if (cutoff >= 0L) fatalPrefixCutoffs.put(entry.getKey(), cutoff);
@@ -523,32 +503,24 @@ public final class RuntimeSelectedRegionFinalizer {
         for (Map<String, Object> region : program.regions) {
             String regionId = text(region.get("regionId"));
             Set<Long> rootCalls = new LinkedHashSet<>();
-            Set<String> methods = new LinkedHashSet<>();
             for (String key : closure.reached) {
                 Map<String, Object> instance = closure.instances.get(key);
                 if (!regionId.equals(text(instance.get("regionId")))) {
                     continue;
                 }
                 rootCalls.add(longNumber(instance.get("rootCallId"), -1L));
-                methods.addAll(strings(instance.get("observedMethods")));
             }
             List<Long> orderedCalls = new ArrayList<>(rootCalls);
             Collections.sort(orderedCalls);
             region.put("runtimeRootCallIds", orderedCalls);
-            region.put("runtimeInstanceCount", orderedCalls.size());
-            List<String> observedMethods = new ArrayList<>(methods);
-            Collections.sort(observedMethods);
-            region.put("runtimeObservedMethods", observedMethods);
             region.put("symbolicInputs", filterPorts(
                     rows(region.get("symbolicInputs")), regionId,
                     rootCalls, false, closure.demandedInputs,
-                    demandedAccesses, fatalPrefixCutoffs,
-                    fatalPrefixContexts));
+                    demandedAccesses, fatalPrefixCutoffs));
             region.put("outputs", filterPorts(
                     rows(region.get("outputs")), regionId,
                     rootCalls, true, closure.demandedOutputs,
-                    demandedAccesses, fatalPrefixCutoffs,
-                    fatalPrefixContexts));
+                    demandedAccesses, fatalPrefixCutoffs));
         }
     }
 
@@ -557,8 +529,7 @@ public final class RuntimeSelectedRegionFinalizer {
             Set<Long> rootCalls, boolean output,
             Set<String> demandedPorts,
             Map<String, Set<Long>> demandedAccesses,
-            Map<String, Long> fatalPrefixCutoffs,
-            Map<String, List<Map<String, Object>>> fatalPrefixContexts)
+            Map<String, Long> fatalPrefixCutoffs)
             throws IOException {
         List<Map<String, Object>> retained = new ArrayList<>();
         for (Map<String, Object> port : ports) {
@@ -576,16 +547,6 @@ public final class RuntimeSelectedRegionFinalizer {
             // canonical runtime-access catalog.
             Map<String, Object> selected = new LinkedHashMap<>(port);
             String instance = instanceKey(regionId, rootCallId);
-            List<Map<String, Object>> contexts = output
-                    ? Collections.<Map<String, Object>>emptyList()
-                    : fatalPrefixContexts.getOrDefault(instance,
-                    Collections.<Map<String, Object>>emptyList());
-            List<Map<String, Object>> portContexts =
-                    fatalPrefixContextsForPort(contexts,
-                            text(port.get("portId")));
-            if (!portContexts.isEmpty()) {
-                selected.put("fatalPrefixContexts", portContexts);
-            }
             Long cutoff = output ? null : fatalPrefixCutoffs.get(instance);
             if (cutoff != null && DependencyRole.valueFrontier(
                     selected.get("dependencyRole"))) {
@@ -597,20 +558,6 @@ public final class RuntimeSelectedRegionFinalizer {
             retained.add(selected);
         }
         return retained;
-    }
-
-    private static List<Map<String, Object>> fatalPrefixContextsForPort(
-            List<Map<String, Object>> contexts, String portId) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map<String, Object> context : contexts) {
-            if (!strings(context.get("inputPorts")).contains(portId)) {
-                continue;
-            }
-            Map<String, Object> compact = new LinkedHashMap<>(context);
-            compact.remove("inputPorts");
-            result.add(compact);
-        }
-        return result;
     }
 
     private static void trimFatalPrefixAccesses(
@@ -706,6 +653,11 @@ public final class RuntimeSelectedRegionFinalizer {
                     + eventSeqs);
         }
         port.put("runtimeAccesses", exact);
+        if (exact.size() == 1) {
+            copyRuntimeOccurrence(exact.get(0), port);
+            String site = text(port.get("staticAccessSiteId"));
+            if (!site.isEmpty()) port.put("siteId", site);
+        }
     }
 
     private static long portRootCallId(Map<String, Object> port,
@@ -873,19 +825,14 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             markBoundedContainerPort(preState, leaf.type,
                     "MUTATION_PRE_STATE");
-            preState.put("boundedContainerPreStateCandidate", true);
-            preState.put("boundedContainerPreStateUpperBoundSeq",
-                    upperBound);
             addUniqueValue(output, "boundedContainerPreStatePorts",
                     text(preState.get("portId")));
             output.put("boundedContainerStateAdmission", "PROVED");
             edge.put("boundedContainerStateAdmission", "PROVED");
             edge.put("boundedContainerStateAuthority",
                     "EXACT_RUNTIME_CONTAINER_MUTATION_STATE_CHAIN_V1");
-            edge.put("containerJavaType", leaf.type);
             edge.put("containerCapacity", LoopBoundPolicy
                     .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY);
-            edge.put("producerPreStatePort", preState.get("portId"));
         }
     }
 
@@ -1174,8 +1121,6 @@ public final class RuntimeSelectedRegionFinalizer {
             exactAccess.put("boundedContainerMemberProjection", copy);
         }
         port.put("boundedContainerMemberProjectionAdmission", "PROVED");
-        port.put("boundedContainerMemberProjectionAuthority",
-                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1");
         port.put("containerTimelineWriterPolicy",
                 "SINGLE_WRITER_REQUIRED");
     }
@@ -1321,6 +1266,12 @@ public final class RuntimeSelectedRegionFinalizer {
                     continue;
                 }
                 foundAccessor = true;
+                if (text(input.get("symbolicDemand")).startsWith(
+                        "CONCRETE_")
+                        || !text(input.get(
+                        "rpcConcreteRootAuthority")).isEmpty()) {
+                    continue;
+                }
                 input.put("symbolicDemand", "BOUNDED_STATE_FRONTIER");
                 input.put("boundedStateFrontierAuthority",
                         "STATIC_ACCESSOR_SEMANTIC_MUTATION_GUARD_V1");
@@ -1451,7 +1402,6 @@ public final class RuntimeSelectedRegionFinalizer {
                         receiverObjects(port))) {
                     continue;
                 }
-                port.put("referenceBoundaryLeaf", true);
                 port.put("symbolicDemand",
                         "CONCRETE_REFERENCE_BOUNDARY_REPLAY");
                 port.put("replayAuthority",
@@ -1650,19 +1600,20 @@ public final class RuntimeSelectedRegionFinalizer {
      * response: the VM must capture the derived output after the producer's
      * actual conversion code has run.</p>
      *
-     * <p>The producer is selected uniquely inside the exact server receive
-     * to normal-return window.  On the consumer, runtime object ids reject
-     * reads outside the concrete received-response descendant tree.  Object
-     * ids are deliberately absent from the projected edge and its
-     * deterministic identity.</p>
+     * <p>The producer is the unique latest exact write to the observed leaf
+     * object before the protocol boundary.  It may precede the server wrapper
+     * region when that wrapper returns an already-materialized state object.
+     * On the consumer, runtime object ids reject reads outside the concrete
+     * received-response descendant tree.  Object ids are deliberately absent
+     * from the projected edge and its deterministic identity.</p>
      */
     private static void addTrustedRpcDescendantProjections(
             StaticProgram program, List<Map<String, Object>> graph)
             throws IOException {
-        Map<String, String> carrierProjections =
-                ConfiguredProtocolStubs.declaredCarrierProjections();
         RpcDescendantProjectionIndex index =
                 new RpcDescendantProjectionIndex(program.regions, graph);
+        ProtocolBoundaryScalarConfig configured =
+                ProtocolBoundaryScalarConfig.fromConfiguration();
         List<Map<String, Object>> wholeFlows = new ArrayList<>(
                 program.regionEdges);
         Set<String> emittedEdges = new LinkedHashSet<>();
@@ -1671,97 +1622,527 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         for (Map<String, Object> whole : wholeFlows) {
-            if (!trustedResponseFlow(whole)) continue;
+            if (!trustedProtocolFlow(whole)) continue;
             String fromRegion = text(whole.get("fromRegion"));
             String toRegion = text(whole.get("toRegion"));
             long fromRoot = longNumber(whole.get("fromRootCallId"), -1L);
             long toRoot = longNumber(whole.get("toRootCallId"), -1L);
-            long producerLowerSeq = longNumber(whole.get(
-                    "receiveEventSeq"), -1L);
-            long producerUpperSeq = longNumber(whole.get(
-                    "producerResultEventSeq"), -1L);
-            long consumerLowerSeq = longNumber(whole.get(
-                    "callerResultEventSeq"), -1L);
-            long consumerUpperSeq = nextTrustedResponseCallerSite(
-                    wholeFlows, whole);
             if (fromRegion.isEmpty() || toRegion.isEmpty()
                     || fromRoot < 0L || toRoot < 0L) {
                 continue;
             }
+            for (Map<String, Object> binding : rows(
+                    whole.get("runtimeBoundaryScalarBindings"))) {
+                publishConfiguredBoundaryScalar(program, index, whole,
+                        binding, emittedEdges, configured, wholeFlows);
+            }
+            retainConfiguredBoundaryScalarGaps(index, whole, configured);
+        }
+    }
 
-            Map<String, List<RpcDescendantCandidate>> producers =
-                    candidatesByDeclaration(index.candidates(fromRegion,
-                            fromRoot, "HEAP_WRITE"), candidate ->
-                            producerLowerSeq >= 0L
-                                    && producerUpperSeq >= producerLowerSeq
-                                    && candidate.eventSeq >= producerLowerSeq
-                                    && candidate.eventSeq
-                                    <= producerUpperSeq);
-            Map<String, List<RpcDescendantCandidate>> consumers =
-                    candidatesByDeclaration(index.candidates(toRegion,
-                            toRoot, "HEAP_READ"), candidate ->
-                            consumerLowerSeq >= 0L
-                                    && candidate.eventSeq >= consumerLowerSeq
-                                    && candidate.eventSeq
-                                    < consumerUpperSeq);
+    static final String BOUNDARY_SCALAR_AUTHORITY =
+            "TRUSTED_CONFIGURED_RPC_BOUNDARY_SCALAR_V1";
+    static final String BOUNDARY_SCALAR_SELECTION =
+            "CONFIGURED_RPC_BOUNDARY_SCALAR_PATH_V1";
 
-            for (String declaration : consumers.keySet()) {
-                DeclaredFieldCell leaf = DeclaredFieldCell.parse(declaration);
-                if (leaf == null || rpcProjectionKind(leaf.type).isEmpty()) {
-                    // A carrier spine field is not a value endpoint.  Only a
-                    // declared carrier reconstruction can say anything about
-                    // it, and that runs below.
-                    continue;
-                }
-                List<RpcDescendantCandidate> sourceCandidates = producers
-                        .getOrDefault(declaration,
-                                Collections.<RpcDescendantCandidate>
-                                        emptyList());
-                List<RpcDescendantCandidate> targetCandidates =
-                        consumers.get(declaration);
-                if (sourceCandidates.size() != 1
-                        || targetCandidates.size() != 1) {
-                    markRpcProjectionBlocked(index, targetCandidates,
-                            "MISSING_OR_AMBIGUOUS_RPC_DESCENDANT_PROJECTION",
-                            -1);
-                    continue;
-                }
-                RpcDescendantCandidate source = sourceCandidates.get(0);
-                RpcDescendantCandidate target = targetCandidates.get(0);
-                ExactPort sourceState = index.exactPort(source, true);
-                ExactPort targetInput = index.exactInputPort(target);
-                if (sourceState == null || targetInput == null) {
-                    markRpcProjectionBlocked(index, targetCandidates,
-                            "MISSING_EXACT_RPC_DESCENDANT_PORT", -1);
-                    continue;
-                }
-                boolean container = rpcProjectableContainerType(target.type);
-                int width = Math.max(source.observedWidth,
-                        target.observedWidth);
-                if (container && width > LoopBoundPolicy
-                        .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
-                    markRpcProjectionBlocked(index, targetCandidates,
-                            "BOUND_INSUFFICIENT", width);
-                    continue;
-                }
+    private static boolean configuredBoundaryLeaf(
+            ProtocolBoundaryScalarConfig configured,
+            Map<String, Object> binding) {
+        for (ProtocolBoundaryScalarConfig.Leaf leaf
+                : configured.mappingLeaves(text(binding.get("mappingId")))) {
+            if (leaf.leafId().equals(text(binding.get("leafId")))
+                    && leaf.direction().equals(text(binding.get("direction")))
+                    && leaf.port().equals(text(binding.get("port")))
+                    && leaf.declaredPath().equals(
+                    strings(binding.get("declaredPath")))
+                    && leaf.javaType().equals(text(binding.get("javaType")))
+                    && leaf.containerBound() == number(
+                    binding.get("containerBound"), -1)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
-                if (!publishRpcDescendantProjection(program, index, whole,
-                        source, target, sourceState, targetInput,
-                        emittedEdges,
-                        "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
-                        rpcProjectionSelectionAuthority(source.type),
-                        Collections.singletonList(source.declaration))) {
-                    continue;
-                }
-                if (container) {
-                    markProducerContainerDependencies(index, whole, source);
+    private static boolean trustedBoundaryScalarSides(
+            Map<String, Object> binding) {
+        String direction = text(binding.get("direction"));
+        String producerSide = "RESPONSE".equals(direction)
+                ? "SERVER" : "CLIENT";
+        String consumerSide = "RESPONSE".equals(direction)
+                ? "CLIENT" : "SERVER";
+        return producerSide.equals(text(binding.get("producerSide")))
+                && consumerSide.equals(text(binding.get("consumerSide")))
+                && ProtocolBoundaryScalarConfig.VALUE_AUTHORITY.equals(
+                text(binding.get("producerValueAuthority")))
+                && ProtocolBoundaryScalarConfig.VALUE_AUTHORITY.equals(
+                text(binding.get("consumerValueAuthority")))
+                && Boolean.TRUE.equals(booleanValue(binding.get(
+                "producerLeafObservationComplete")))
+                && Boolean.TRUE.equals(booleanValue(binding.get(
+                "consumerLeafObservationComplete")))
+                && number(binding.get("producerLeafValueCount"), -1) > 0
+                && number(binding.get("consumerLeafValueCount"), -1) > 0;
+    }
+
+    private static String boundaryScalarIdentity(
+            Map<String, Object> binding) {
+        return text(binding.get("mappingId")) + "\n"
+                + text(binding.get("direction")) + "\n"
+                + text(binding.get("port")) + "\n"
+                + text(binding.get("leafId")) + "\n"
+                + strings(binding.get("declaredPath")) + "\n"
+                + String.valueOf(binding.get("arrayIndices")) + "\n"
+                + text(binding.get("javaType")) + "\n"
+                + number(binding.get("containerBound"), -1) + "\n"
+                // The configured path identifies a logical wire leaf, but
+                // one long-lived region may consume that leaf in several
+                // exact protocol exchanges.  Keep those replay occurrences
+                // distinct while retaining one identity inside an exchange.
+                + longNumber(binding.get("producerBoundaryEventSeq"), -1L)
+                + "\n"
+                + longNumber(binding.get("consumerBoundaryEventSeq"), -1L);
+    }
+
+    private static long nextConsumerBoundary(
+            List<Map<String, Object>> wholeFlows,
+            Map<String, Object> current, long boundary) {
+        String region = text(current.get("toRegion"));
+        long root = longNumber(current.get("toRootCallId"), -1L);
+        long upper = Long.MAX_VALUE;
+        for (Map<String, Object> candidate : wholeFlows) {
+            if (candidate == current || !trustedProtocolFlow(candidate)
+                    || !region.equals(text(candidate.get("toRegion")))
+                    || root != longNumber(candidate.get("toRootCallId"),
+                    -1L)) {
+                continue;
+            }
+            String candidateDirection = first(text(candidate.get(
+                    "direction")), text(candidate.get(
+                    "protocolDirection")));
+            long fence = "REQUEST".equals(candidateDirection)
+                    ? longNumber(candidate.get("receiveEventSeq"), -1L)
+                    : longNumber(candidate.get("callerSiteEventSeq"), -1L);
+            if (fence > boundary && fence < upper) upper = fence;
+        }
+        return upper;
+    }
+
+    private static void publishConfiguredBoundaryScalar(
+            StaticProgram program, RpcDescendantProjectionIndex index,
+            Map<String, Object> whole, Map<String, Object> binding,
+            Set<String> emittedEdges,
+            ProtocolBoundaryScalarConfig configured,
+            List<Map<String, Object>> wholeFlows) {
+        if (!BOUNDARY_SCALAR_AUTHORITY.equals(text(binding.get("authority")))
+                || !text(whole.get("mappingId")).equals(
+                text(binding.get("mappingId")))
+                || !text(whole.get("port")).equals(
+                text(binding.get("port")))
+                || !first(text(whole.get("direction")), text(whole.get(
+                "protocolDirection"))).equals(text(binding.get("direction")))
+                || !configuredBoundaryLeaf(configured, binding)
+                || !trustedBoundaryScalarSides(binding)) {
+            appendBoundaryScalarGap(whole, binding,
+                    "BOUNDARY_SCALAR_BINDING_AUTHORITY_MISMATCH");
+            return;
+        }
+        List<String> path = strings(binding.get("declaredPath"));
+        String declaration = lastDeclaredField(path);
+        String javaType = text(binding.get("javaType"));
+        if (declaration.isEmpty() || rpcProjectableScalarLeafType(javaType)
+                == false) {
+            appendBoundaryScalarGap(whole, binding,
+                    "INVALID_CONFIGURED_BOUNDARY_SCALAR_PATH");
+            return;
+        }
+        String toRegion = text(whole.get("toRegion"));
+        long toRoot = longNumber(whole.get("toRootCallId"), -1L);
+        int producerReceiver = number(binding.get(
+                "producerLeafReceiverObjectId"), 0);
+        int consumerReceiver = number(binding.get(
+                "consumerLeafReceiverObjectId"), 0);
+        String producerProcess = text(binding.get("producerProcess"));
+        String consumerProcess = text(binding.get("consumerProcess"));
+        long producerBoundary = longNumber(binding.get(
+                "producerBoundaryEventSeq"), -1L);
+        long consumerBoundary = longNumber(binding.get(
+                "consumerBoundaryEventSeq"), -1L);
+        if (producerReceiver == 0 || consumerReceiver == 0
+                || producerProcess.isEmpty() || consumerProcess.isEmpty()
+                || producerBoundary < 0L || consumerBoundary < 0L) {
+            appendBoundaryScalarGap(whole, binding,
+                    "MISSING_CONFIGURED_BOUNDARY_SCALAR_IDENTITY");
+            return;
+        }
+
+        List<RpcDescendantCandidate> targets = boundaryScalarCandidates(
+                index, toRegion, toRoot, "HEAP_READ", consumerProcess,
+                consumerReceiver, declaration, consumerBoundary,
+                nextConsumerBoundary(wholeFlows, whole, consumerBoundary),
+                false);
+        // A configured leaf that this occurrence never reads is not a
+        // symbolic input.  Completeness of the boundary observation was
+        // already checked by the trace validator; do not manufacture a
+        // consumer demand (or an admission blocker) where none exists.
+        if (targets.isEmpty()) return;
+
+        List<RpcDescendantCandidate> sources =
+                latestBoundaryScalarSources(index, producerProcess,
+                        producerReceiver, declaration, producerBoundary);
+        if (sources.isEmpty()
+                && trustedExternalPrestate(binding, text(whole.get(
+                        "fromRegion")), longNumber(whole.get(
+                        "fromRootCallId"), -1L), producerProcess,
+                        producerReceiver, declaration, producerBoundary)
+                && retainExternalPrestateTargets(index, targets, binding,
+                declaration)) {
+            return;
+        }
+        if (sources.size() != 1) {
+            String blocker = sources.size() > 1
+                    ? "AMBIGUOUS_CONFIGURED_BOUNDARY_SCALAR_SOURCE"
+                    : "MISSING_CONFIGURED_BOUNDARY_SCALAR_SOURCE";
+            markRpcProjectionBlocked(index, targets, blocker);
+            appendBoundaryScalarGap(whole, binding, blocker);
+            return;
+        }
+        RpcDescendantCandidate source = sources.get(0);
+        ExactPort sourceState = index.exactPort(source, true);
+        if (sourceState == null) {
+            markRpcProjectionBlocked(index, targets,
+                    "MISSING_EXACT_CONFIGURED_BOUNDARY_SCALAR_OUTPUT");
+            appendBoundaryScalarGap(whole, binding,
+                    "MISSING_EXACT_CONFIGURED_BOUNDARY_SCALAR_OUTPUT");
+            return;
+        }
+        for (RpcDescendantCandidate target : targets) {
+            ExactPort targetInput = index.exactInputPort(target);
+            if (targetInput == null) {
+                appendBoundaryScalarGap(whole, binding,
+                        "MISSING_EXACT_CONFIGURED_BOUNDARY_SCALAR_INPUT");
+                continue;
+            }
+            String boundaryIdentity = boundaryScalarIdentity(binding);
+            if (publishRpcDescendantProjection(program, index, whole,
+                    source, target, sourceState, targetInput, emittedEdges,
+                    BOUNDARY_SCALAR_AUTHORITY, BOUNDARY_SCALAR_SELECTION,
+                    path, boundaryIdentity, binding)) {
+                // Publication annotates the exact edge before insertion.
+            }
+        }
+    }
+
+    /**
+     * Accepts only an upstream proof produced from the complete raw field
+     * timeline.  An empty selected-region source index is not evidence that a
+     * value is setup state: it can also mean lost instrumentation or an
+     * uncovered write.  The evidence therefore names the exact latest write
+     * and attests both that it precedes this binding's exact producer root and
+     * that no later write to the same process/object/declaration precedes the
+     * protocol boundary.
+     */
+    private static boolean trustedExternalPrestate(
+            Map<String, Object> binding, String producerRegion,
+            long producerRootCallId,
+            String process, int receiver, String declaration,
+            long producerBoundary) {
+        Map<String, Object> evidence = row(binding.get(
+                "producerExternalPrestateEvidence"));
+        long write = longNumber(evidence.get("latestWriteEventSeq"), -1L);
+        long rootEvent = longNumber(evidence.get(
+                "producerRootEventSeq"), -1L);
+        return EXTERNAL_PRESTATE_AUTHORITY.equals(text(evidence.get(
+                "authority")))
+                && !producerRegion.isEmpty()
+                && producerRegion.equals(text(evidence.get(
+                "producerRegionId")))
+                && process.equals(text(evidence.get("process")))
+                && receiver == number(evidence.get("receiverObjectId"), 0)
+                && declaration.equals(text(evidence.get("declaration")))
+                && producerRootCallId > 0L
+                && producerRootCallId == longNumber(evidence.get(
+                "producerRootCallId"), -1L)
+                && write > 0L && rootEvent > write
+                && rootEvent < producerBoundary
+                && Boolean.TRUE.equals(booleanValue(evidence.get(
+                "beforeProducerRoot")))
+                && Boolean.TRUE.equals(booleanValue(evidence.get(
+                "noCoveringWrite")));
+    }
+
+    /** Retains each proven external setup read as an exact concrete root. */
+    private static boolean retainExternalPrestateTargets(
+            RpcDescendantProjectionIndex index,
+            List<RpcDescendantCandidate> targets,
+            Map<String, Object> binding, String declaration) {
+        List<ExactPort> exactTargets = new ArrayList<>();
+        for (RpcDescendantCandidate target : targets) {
+            ExactPort exact = index.exactInputPort(target);
+            if (exact == null) return false;
+            exactTargets.add(exact);
+        }
+        Map<String, Object> evidence = row(binding.get(
+                "producerExternalPrestateEvidence"));
+        for (int targetIndex = 0; targetIndex < targets.size();
+                targetIndex++) {
+            RpcDescendantCandidate target = targets.get(targetIndex);
+            ExactPort exact = exactTargets.get(targetIndex);
+            Map<String, Object> concrete = new LinkedHashMap<>(exact.port);
+            String identity = target.region + "\n" + target.rootCallId
+                    + "\n" + EXTERNAL_PRESTATE_AUTHORITY + "\n"
+                    + declaration + "\n" + target.eventSeq + "\n"
+                    + target.receiverObjectId;
+            concrete.put("portId", target.region + ".in."
+                    + UUID.nameUUIDFromBytes(identity.getBytes(
+                    StandardCharsets.UTF_8)));
+            concrete.put("runtimeAccesses",
+                    Collections.singletonList(exact.access));
+            copyRuntimeOccurrence(exact.access, concrete);
+            concrete.put("symbolicDemand",
+                    "CONCRETE_UNPROJECTED_BOUNDARY_ACCESS");
+            concrete.put("rpcConcreteRootAuthority",
+                    EXTERNAL_PRESTATE_AUTHORITY);
+            concrete.put("rpcConcreteRootReason", EXTERNAL_PRESTATE_REASON);
+            concrete.put("rpcExternalPrestateWriteEventSeq",
+                    evidence.get("latestWriteEventSeq"));
+            concrete.put("rpcProjectionMappingId",
+                    binding.get("mappingId"));
+            concrete.put("rpcBoundaryArrayIndices",
+                    binding.get("arrayIndices"));
+            concrete.put("rpcBoundaryDirection", binding.get("direction"));
+            concrete.put("rpcBoundaryPort", binding.get("port"));
+            concrete.put("rpcBoundaryLeafId", binding.get("leafId"));
+            concrete.put("rpcBoundaryDeclaredPath",
+                    binding.get("declaredPath"));
+            concrete.put("rpcBoundaryConsumerEventSeq",
+                    binding.get("consumerBoundaryEventSeq"));
+            concrete.remove("rpcProjectionAuthority");
+            concrete.remove("rpcProjectionAdmission");
+            concrete.remove("rpcProjectionBlocker");
+            replaceExactInputAccess(index.region(target.region), exact.port,
+                    exact.access, concrete);
+        }
+        return true;
+    }
+
+    /** Splits one exact access without changing the remaining port's policy. */
+    private static void replaceExactInputAccess(
+            Map<String, Object> region, Map<String, Object> original,
+            Map<String, Object> selectedAccess,
+            Map<String, Object> replacement) {
+        if (region == null) return;
+        List<Map<String, Object>> inputs = rows(region.get("symbolicInputs"));
+        List<Map<String, Object>> retained = new ArrayList<>();
+        for (Map<String, Object> candidate : inputs) {
+            if (candidate != original
+                    && !text(candidate.get("portId")).equals(
+                    text(original.get("portId")))) {
+                retained.add(candidate);
+                continue;
+            }
+            List<Map<String, Object>> residual = new ArrayList<>();
+            for (Map<String, Object> access : rows(
+                    candidate.get("runtimeAccesses"))) {
+                if (!sameRuntimeAccess(access, selectedAccess)) {
+                    residual.add(access);
                 }
             }
-            addDeclaredCarrierProjections(program, index, whole,
-                    carrierProjections.get(text(whole.get("mappingId"))),
-                    consumerUpperSeq, emittedEdges);
+            if (!residual.isEmpty()) {
+                candidate.put("runtimeAccesses", residual);
+                retained.add(candidate);
+            }
         }
-        markProtocolCarrierReconstructions(program, index);
+        addPortIfAbsent(retained, replacement);
+        region.put("symbolicInputs", retained);
+    }
+
+    private static List<RpcDescendantCandidate> boundaryScalarCandidates(
+            RpcDescendantProjectionIndex index, String region, long root,
+            String transfer, String process, int receiver, String declaration,
+            long lowerExclusive, long upperExclusive, boolean latestOnly) {
+        List<RpcDescendantCandidate> matches = new ArrayList<>();
+        long latest = Long.MIN_VALUE;
+        for (RpcDescendantCandidate candidate : index.candidates(
+                region, root, transfer)) {
+            if (!process.equals(text(candidate.binding.get("process")))
+                    || receiver > 0
+                    && candidate.receiverObjectId != receiver
+                    || !declaration.equals(candidate.declaration)
+                    || candidate.eventSeq <= lowerExclusive
+                    || candidate.eventSeq >= upperExclusive) {
+                continue;
+            }
+            if (latestOnly && candidate.eventSeq > latest) {
+                matches.clear();
+                latest = candidate.eventSeq;
+            }
+            if (!latestOnly || candidate.eventSeq == latest) {
+                matches.add(candidate);
+            }
+        }
+        return matches;
+    }
+
+    private static List<RpcDescendantCandidate> latestBoundaryScalarSources(
+            RpcDescendantProjectionIndex index, String process, int receiver,
+            String declaration, long producerBoundary) {
+        List<RpcDescendantCandidate> matches = new ArrayList<>();
+        long latest = Long.MIN_VALUE;
+        for (RpcDescendantCandidate candidate : index.boundaryScalarWrites(
+                process, receiver, declaration)) {
+            if (candidate.eventSeq >= producerBoundary) {
+                continue;
+            }
+            if (candidate.eventSeq > latest) {
+                matches.clear();
+                latest = candidate.eventSeq;
+            }
+            if (candidate.eventSeq == latest) matches.add(candidate);
+        }
+        return matches;
+    }
+
+    private static String lastDeclaredField(List<String> path) {
+        for (int index = path.size() - 1; index >= 0; index--) {
+            if (FieldPathSpec.declaredField(path.get(index)) != null) {
+                return path.get(index);
+            }
+        }
+        return "";
+    }
+
+    private static void retainConfiguredBoundaryScalarGaps(
+            RpcDescendantProjectionIndex index, Map<String, Object> whole,
+            ProtocolBoundaryScalarConfig configured) {
+        List<Map<String, Object>> gaps = new ArrayList<>(rows(
+                whole.get("rpcBoundaryScalarGaps")));
+        gaps.addAll(rows(whole.get("runtimeBoundaryScalarGaps")));
+        gaps = uniqueBoundaryScalarGaps(gaps);
+        if (gaps.isEmpty()) return;
+        whole.put("rpcBoundaryScalarGaps", gaps);
+        for (Map<String, Object> gap : gaps) {
+            // Only a joined proof that both exact endpoint observations were
+            // complete and empty is diagnostic.  A one-sided empty result is
+            // a transport inconsistency and must remain an admission blocker.
+            if (completeEmptyBoundaryScalarGap(whole, gap, configured)) {
+                continue;
+            }
+            attachBoundaryScalarGap(index, whole, gap, configured);
+        }
+    }
+
+    private static boolean completeEmptyBoundaryScalarGap(
+            Map<String, Object> whole, Map<String, Object> gap,
+            ProtocolBoundaryScalarConfig configured) {
+        String direction = text(gap.get("direction"));
+        String producerSide = "RESPONSE".equals(direction)
+                ? "SERVER" : "CLIENT";
+        String consumerSide = "RESPONSE".equals(direction)
+                ? "CLIENT" : "SERVER";
+        return "NO_CONFIGURED_SCALAR_ELEMENTS".equals(text(gap.get("gap")))
+                && Boolean.TRUE.equals(booleanValue(gap.get(
+                "bothBoundarySidesCompleteEmpty")))
+                && ProtocolBoundaryScalarConfig.GAP_AUTHORITY.equals(
+                text(gap.get("authority")))
+                && configuredBoundaryLeaf(configured, gap)
+                && text(whole.get("mappingId")).equals(
+                text(gap.get("mappingId")))
+                && text(whole.get("port")).equals(text(gap.get("port")))
+                && first(text(whole.get("direction")), text(whole.get(
+                "protocolDirection"))).equals(direction)
+                && producerSide.equals(text(gap.get("producerSide")))
+                && consumerSide.equals(text(gap.get("consumerSide")))
+                && ProtocolBoundaryScalarConfig.GAP_AUTHORITY.equals(
+                text(gap.get("producerValueAuthority")))
+                && ProtocolBoundaryScalarConfig.GAP_AUTHORITY.equals(
+                text(gap.get("consumerValueAuthority")))
+                && Boolean.TRUE.equals(booleanValue(gap.get(
+                "producerLeafObservationComplete")))
+                && Boolean.TRUE.equals(booleanValue(gap.get(
+                "consumerLeafObservationComplete")))
+                && number(gap.get("producerLeafValueCount"), -1) == 0
+                && number(gap.get("consumerLeafValueCount"), -1) == 0
+                && longNumber(gap.get("producerBoundaryEventSeq"), -1L) >= 0L
+                && longNumber(gap.get("consumerBoundaryEventSeq"), -1L) >= 0L;
+    }
+
+    private static void appendBoundaryScalarGap(
+            Map<String, Object> whole, Map<String, Object> binding,
+            String reason) {
+        List<Map<String, Object>> gaps = new ArrayList<>(rows(
+                whole.get("rpcBoundaryScalarGaps")));
+        Map<String, Object> gap = new LinkedHashMap<>();
+        for (String key : new String[]{"mappingId", "direction", "port",
+                "leafId", "declaredPath", "arrayIndices", "javaType",
+                "containerBound"}) {
+            copyIfPresent(gap, binding, key);
+        }
+        gap.put("gap", reason);
+        gap.put("authority",
+                "CONFIGURED_RPC_BOUNDARY_SCALAR_GAP_V1");
+        String direction = text(binding.get("direction"));
+        gap.put("side", "RESPONSE".equals(direction)
+                ? "CLIENT" : "SERVER");
+        copyIfPresent(gap, binding, "consumerBoundaryEventSeq");
+        if (binding.containsKey("consumerBoundaryEventSeq")) {
+            gap.put("boundaryEventSeq",
+                    binding.get("consumerBoundaryEventSeq"));
+        }
+        gaps.add(gap);
+        whole.put("rpcBoundaryScalarGaps",
+                uniqueBoundaryScalarGaps(gaps));
+    }
+
+    private static List<Map<String, Object>> uniqueBoundaryScalarGaps(
+            List<Map<String, Object>> gaps) {
+        Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
+        for (Map<String, Object> gap : gaps) {
+            unique.put(CausynthJson.write(gap), gap);
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    private static void attachBoundaryScalarGap(
+            RpcDescendantProjectionIndex index, Map<String, Object> whole,
+            Map<String, Object> gap,
+            ProtocolBoundaryScalarConfig configured) {
+        if (!configuredBoundaryLeaf(configured, gap)
+                || !text(whole.get("mappingId")).equals(
+                text(gap.get("mappingId")))
+                || !text(whole.get("port")).equals(text(gap.get("port")))) {
+            return;
+        }
+        String direction = text(gap.get("direction"));
+        String consumerSide = "RESPONSE".equals(direction)
+                ? "CLIENT" : "SERVER";
+        String declaration = lastDeclaredField(strings(
+                gap.get("declaredPath")));
+        long boundary = consumerSide.equals(text(gap.get("side")))
+                ? longNumber(gap.get("boundaryEventSeq"), -1L) : -1L;
+        if (boundary < 0L) {
+            boundary = longNumber(gap.get("consumerBoundaryEventSeq"),
+                    -1L);
+        }
+        if (boundary < 0L) {
+            boundary = "RESPONSE".equals(direction)
+                    ? longNumber(whole.get("callerResultEventSeq"), -1L)
+                    : longNumber(whole.get("receiveEventSeq"), -1L);
+        }
+        if (declaration.isEmpty() || boundary < 0L) return;
+        gap.put("consumerBoundaryEventSeq", boundary);
+        gap.put("rpcBoundaryConsumerRegionId", whole.get("toRegion"));
+        gap.put("rpcBoundaryConsumerRootCallId",
+                whole.get("toRootCallId"));
+        Map<String, Object> region = index.region(
+                text(whole.get("toRegion")));
+        if (region != null) {
+            List<Map<String, Object>> retained = new ArrayList<>(rows(
+                    region.get("rpcBoundaryScalarGaps")));
+            retained.add(gap);
+            region.put("rpcBoundaryScalarGaps",
+                    uniqueBoundaryScalarGaps(retained));
+        }
     }
 
     /**
@@ -1774,12 +2155,17 @@ public final class RuntimeSelectedRegionFinalizer {
             RpcDescendantCandidate target, ExactPort sourceState,
             ExactPort targetInput, Set<String> emittedEdges,
             String authority, String selection,
-            List<String> carrierPath) {
+            List<String> carrierPath, String boundaryIdentity,
+            Map<String, Object> binding) {
         Map<String, Object> outputRegion = index.region(source.region);
         if (outputRegion == null) return false;
         Map<String, Object> derivedOutput = derivedRpcDescendantOutput(
                 whole, source, sourceState, authority, selection,
-                carrierPath);
+                carrierPath, boundaryIdentity);
+        String scalarIdentity = UUID.nameUUIDFromBytes(
+                boundaryIdentity.getBytes(StandardCharsets.UTF_8))
+                .toString();
+        copyRuntimeOccurrence(sourceState.access, derivedOutput);
         Map<String, Object> member = index.exactContainerMember(source);
         copyContainerMemberIdentity(member, derivedOutput, false);
         List<Map<String, Object>> outputs = rows(
@@ -1787,17 +2173,44 @@ public final class RuntimeSelectedRegionFinalizer {
         addOrMergeRpcDerivedOutput(outputs, derivedOutput);
         outputRegion.put("outputs", outputs);
 
-        markProjectedDescendantInput(targetInput.port, whole,
-                source.declaration, target.type, false, authority,
-                selection);
-        copyContainerMemberIdentity(member, targetInput.port, true);
-        targetInput.port.put("runtimeAccesses",
+        Map<String, Object> projectedInput = new LinkedHashMap<>(
+                targetInput.port);
+        String inputIdentity = target.region + "\n" + target.rootCallId
+                + "\n" + boundaryIdentity + "\n" + target.eventSeq;
+        projectedInput.put("portId", target.region + ".in."
+                + UUID.nameUUIDFromBytes(inputIdentity.getBytes(
+                StandardCharsets.UTF_8)));
+        markProjectedDescendantInput(projectedInput, whole,
+                source.declaration, target.type, authority, selection);
+        copyContainerMemberIdentity(member, projectedInput, true);
+        projectedInput.put("runtimeAccesses",
                 Collections.singletonList(targetInput.access));
+        copyRuntimeOccurrence(targetInput.access, projectedInput);
+        projectedInput.put("rpcBoundaryScalarIdentity", scalarIdentity);
+        projectedInput.put("rpcBoundaryArrayIndices",
+                binding.get("arrayIndices"));
+        projectedInput.put("rpcBoundaryDirection",
+                binding.get("direction"));
+        projectedInput.put("rpcBoundaryPort", binding.get("port"));
+        projectedInput.put("rpcBoundaryLeafId", binding.get("leafId"));
+        projectedInput.put("rpcBoundaryDeclaredPath",
+                binding.get("declaredPath"));
+        projectedInput.put("rpcBoundaryConsumerEventSeq",
+                binding.get("consumerBoundaryEventSeq"));
+        projectedInput.put("rpcBoundaryLeafObservationComplete",
+                binding.get("consumerLeafObservationComplete"));
+        projectedInput.put("rpcBoundaryLeafValueCount",
+                binding.get("consumerLeafValueCount"));
+        String staticSite = text(projectedInput.get(
+                "staticAccessSiteId"));
+        if (!staticSite.isEmpty()) projectedInput.put("siteId", staticSite);
+        replaceProjectedInput(index.region(target.region), targetInput.port,
+                targetInput.access, projectedInput);
 
         Map<String, Object> projection = projectedRpcDescendantFlow(whole,
                 source, target, text(derivedOutput.get("portId")),
-                text(targetInput.port.get("portId")), authority, selection,
-                carrierPath);
+                text(projectedInput.get("portId")), authority, selection,
+                carrierPath, boundaryIdentity);
         copyContainerMemberIdentity(member, projection, false);
         if (emittedEdges.add(text(projection.get("edgeId")))) {
             program.regionEdges.add(projection);
@@ -1805,93 +2218,69 @@ public final class RuntimeSelectedRegionFinalizer {
         return true;
     }
 
-    /**
-     * Publishes a scalar that is installed by an exact decoder field write.
-     * The symbolic boundary is the helper parameter feeding that write, not
-     * the reconstructed object and not the Jimple identity local.
-     */
-    private static boolean publishDecodedRpcFieldProjection(
-            StaticProgram program, RpcDescendantProjectionIndex index,
-            Map<String, Object> whole, RpcDescendantCandidate source,
-            RpcDescendantCandidate target, ExactPort sourceState,
-            Set<String> emittedEdges, List<String> carrierPath) {
-        ExactPort targetOutput = index.exactPort(target, true);
-        ExactParameterIdentity parameter = index.exactParameterIdentity(
-                target.region, target.valueCell(), target.type);
-        if (targetOutput == null || parameter == null) return false;
-        int occurrence = number(targetOutput.access.get(
-                "activationLocalStaticSiteOccurrence"), -1);
-        if (occurrence < 1) return false;
-
-        Map<String, Object> targetRegion = index.region(target.region);
-        Map<String, Object> outputRegion = index.region(source.region);
-        if (targetRegion == null || outputRegion == null) return false;
-
-        Map<String, Object> derivedOutput = derivedRpcDescendantOutput(
-                whole, source, sourceState, DECLARED_CARRIER_AUTHORITY,
-                DECLARED_CARRIER_SELECTION, carrierPath);
-        List<Map<String, Object>> outputs = rows(outputRegion.get("outputs"));
-        addOrMergeRpcDerivedOutput(outputs, derivedOutput);
-        outputRegion.put("outputs", outputs);
-
-        Map<String, Object> input = decodedRpcFieldInput(whole, target,
-                targetOutput, parameter, occurrence, carrierPath);
-        List<Map<String, Object>> inputs = rows(
-                targetRegion.get("symbolicInputs"));
-        addPortIfAbsent(inputs, input);
-        targetRegion.put("symbolicInputs", inputs);
-
-        addDecodedLeafInput(targetOutput.port, target.eventSeq,
-                text(input.get("portId")), text(whole.get("toPort")));
-        Map<String, Object> projection = projectedRpcDescendantFlow(whole,
-                source, target, text(derivedOutput.get("portId")),
-                text(input.get("portId")), DECLARED_CARRIER_AUTHORITY,
-                DECLARED_CARRIER_SELECTION, carrierPath);
-        if (emittedEdges.add(text(projection.get("edgeId")))) {
-            program.regionEdges.add(projection);
+    private static void replaceProjectedInput(
+            Map<String, Object> region, Map<String, Object> original,
+            Map<String, Object> selectedAccess,
+            Map<String, Object> replacement) {
+        if (region == null) return;
+        List<Map<String, Object>> inputs = rows(region.get("symbolicInputs"));
+        List<Map<String, Object>> retained = new ArrayList<>();
+        for (Map<String, Object> candidate : inputs) {
+            if (candidate != original
+                    && !text(candidate.get("portId")).equals(
+                    text(original.get("portId")))) {
+                retained.add(candidate);
+                continue;
+            }
+            List<Map<String, Object>> residual = new ArrayList<>();
+            for (Map<String, Object> access : rows(
+                    candidate.get("runtimeAccesses"))) {
+                if (!sameRuntimeAccess(access, selectedAccess)) {
+                    residual.add(access);
+                }
+            }
+            if (!residual.isEmpty()) {
+                candidate.put("runtimeAccesses", residual);
+                candidate.put("symbolicDemand",
+                        "CONCRETE_UNPROJECTED_BOUNDARY_ACCESS");
+                retained.add(candidate);
+            }
         }
-        return true;
+        inputs = retained;
+        addPortIfAbsent(inputs, replacement);
+        region.put("symbolicInputs", inputs);
     }
 
-    private static Map<String, Object> decodedRpcFieldInput(
-            Map<String, Object> whole, RpcDescendantCandidate target,
-            ExactPort targetOutput, ExactParameterIdentity parameter,
-            int occurrence, List<String> carrierPath) {
-        String identity = target.region + "\n" + target.rootCallId + "\n"
-                + text(whole.get("edgeId")) + "\n" + carrierPath + "\n"
-                + target.eventSeq;
-        Map<String, Object> input = new LinkedHashMap<>(target.binding);
-        // These concrete observations locate the decode write in this trace;
-        // they are not replay identity and must not look like value matching.
-        input.remove("primitiveValue");
-        input.remove("valueObjectId");
-        input.remove("fieldReceiverObjectId");
-        input.remove("rootObjectId");
-        input.put("portId", target.region + ".in."
-                + UUID.nameUUIDFromBytes(identity.getBytes(
-                StandardCharsets.UTF_8)));
-        input.put("cell", parameter.parameterCell);
-        input.put("rootCallId", target.rootCallId);
-        input.put("sourceKind", RPC_DECODE_VALUE);
-        input.put("transportKind", "ACTIVATION_LOCAL");
-        input.put("rootKind", "ACTIVATION_LOCAL");
-        input.put("dependencyCells",
-                Collections.singletonList(parameter.parameterCell));
-        input.put("fieldPath", Collections.emptyList());
-        input.put("fieldPathDeclarations",
-                Collections.singletonList(target.declaration));
-        input.put("helperMethod", parameter.method);
-        input.put("helperArgumentIndex", parameter.parameterIndex);
-        input.put("activationLocalStaticSiteOccurrence", occurrence);
-        input.put("replayOccurrence", occurrence);
-        input.put("runtimeAccesses",
-                Collections.singletonList(targetOutput.access));
-        markProjectedDescendantInput(input, whole, target.declaration,
-                target.type, false, DECLARED_CARRIER_AUTHORITY,
-                DECLARED_CARRIER_SELECTION);
-        return input;
+    private static boolean sameRuntimeAccess(
+            Map<String, Object> left, Map<String, Object> right) {
+        return longNumber(left.get("eventSeq"), -1L)
+                == longNumber(right.get("eventSeq"), -1L)
+                && number(left.get("fieldReceiverObjectId"), 0)
+                == number(right.get("fieldReceiverObjectId"), 0)
+                && first(text(left.get("staticAccessSiteId")),
+                text(left.get("siteId"))).equals(first(
+                text(right.get("staticAccessSiteId")),
+                text(right.get("siteId"))));
     }
 
+    private static void copyRuntimeOccurrence(
+            Map<String, Object> access, Map<String, Object> port) {
+        for (String key : new String[]{"eventSeq", "staticAccessSiteId",
+                "activationLocalStaticSiteOccurrence",
+                "accessorOccurrence", "helperActivationBoundedOccurrence",
+                "fieldReceiverObjectId", "rootCallId", "callId"}) {
+            copyIfPresent(port, access, key);
+        }
+        int occurrence = number(access.get(
+                "activationLocalStaticSiteOccurrence"),
+                number(access.get("accessorOccurrence"), -1));
+        if (occurrence > 0) {
+            port.put("replayOccurrence", occurrence);
+            port.put("activationLocalStaticSiteOccurrence", occurrence);
+        }
+    }
+
+    /** Merges repeated exact producer observations for one derived port. */
     private static void addOrMergeRpcDerivedOutput(
             List<Map<String, Object>> outputs,
             Map<String, Object> candidate) {
@@ -1920,44 +2309,6 @@ public final class RuntimeSelectedRegionFinalizer {
         outputs.add(candidate);
     }
 
-    private static void addDecodedLeafInput(Map<String, Object> output,
-                                            long writerEventSeq,
-                                            String inputPort,
-                                            String responsePort) {
-        if (responsePort.isEmpty()) {
-            throw new IllegalStateException("decoded RPC leaf has no "
-                    + "response port at writer event " + writerEventSeq);
-        }
-        List<Map<String, Object>> mappings = new ArrayList<>(rows(
-                output.get(RPC_DECODED_LEAF_INPUTS)));
-        for (Map<String, Object> mapping : mappings) {
-            if (longNumber(mapping.get("writerEventSeq"), -1L)
-                    == writerEventSeq) {
-                if (inputPort.equals(text(mapping.get("inputPort")))
-                        && responsePort.equals(text(mapping.get(
-                        ProtocolCarrierReconstruction.RESPONSE_PORT)))
-                        && DECLARED_CARRIER_AUTHORITY.equals(
-                        text(mapping.get("authority")))) {
-                    return;
-                }
-                throw new IllegalStateException("ambiguous decoded RPC "
-                        + "leaf at writer event " + writerEventSeq);
-            }
-        }
-        if (mappings.size() >= MAX_RETAINED_SITE_ACCESSES) {
-            throw new IllegalStateException("decoded RPC leaf ledger "
-                    + "exceeds bound " + MAX_RETAINED_SITE_ACCESSES);
-        }
-        Map<String, Object> mapping = new LinkedHashMap<>();
-        mapping.put("writerEventSeq", writerEventSeq);
-        mapping.put("inputPort", inputPort);
-        mapping.put(ProtocolCarrierReconstruction.RESPONSE_PORT,
-                responsePort);
-        mapping.put("authority", DECLARED_CARRIER_AUTHORITY);
-        mappings.add(mapping);
-        output.put(RPC_DECODED_LEAF_INPUTS, mappings);
-    }
-
     private static void copyContainerMemberIdentity(
             Map<String, Object> member, Map<String, Object> target,
             boolean sourcePrefix) {
@@ -1974,752 +2325,31 @@ public final class RuntimeSelectedRegionFinalizer {
         }
     }
 
-    /**
-     * Projects the declared fields of a reply carrier the mapping states is
-     * rebuilt field by field.
-     *
-     * <p>A trusted mapping alone equates the whole reply object, which leaves
-     * every leaf below it unproven.  A mapping that additionally declares
-     * {@code DECLARED_FIELDS_AND_ELEMENT_ORDER} states a structural property
-     * of the transport: the reply is reconstructed as the same declared
-     * types, so the same declared field of the same declared type holds the
-     * same value on both sides.  That is a declared path match between two
-     * byte-identical declarations, never an inference from a name.</p>
-     *
-     * <p>The descent is seeded by the exact server-result and caller-result
-     * objects recorded on the trusted response edge.  From that corresponding
-     * carrier pair it continues into every declared field <em>both sides
-     * actually recorded</em>: a scalar leaf becomes an equality, another
-     * spine field becomes the next pair.  An exact consumer field definition
-     * is exposed only through the unique Soot parameter-identity edge feeding
-     * that write; the decoder object and its temporary local stay concrete.
-     * Nothing is paired by object contents or by a value fingerprint.</p>
-     *
-     * <p>A reference-array field descends only when both sides record the
-     * exact array object, index, and element identity and the configured
-     * transport declares element-order preservation.  Lists/maps and arrays
-     * with missing, conflicting, or over-bound evidence keep a named gap.
-     * The whole descent is bounded by
-     * {@link LoopBoundPolicy#SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY}
-     * corresponding pairs.</p>
-     */
-    private static void addDeclaredCarrierProjections(
-            StaticProgram program, RpcDescendantProjectionIndex index,
-            Map<String, Object> whole, String carrierProjection,
-            long consumerUpperSeq, Set<String> emittedEdges) {
-        if (!ProtocolCarrierProjection.DECLARED_FIELDS_AND_ELEMENT_ORDER
-                .equals(text(carrierProjection))) {
-            return;
-        }
-        String fromRegion = text(whole.get("fromRegion"));
-        String toRegion = text(whole.get("toRegion"));
-        long fromRoot = longNumber(whole.get("fromRootCallId"), -1L);
-        long toRoot = longNumber(whole.get("toRootCallId"), -1L);
-        long sendSeq = longNumber(whole.get("sendEventSeq"), -1L);
-        long producerLowerSeq = longNumber(whole.get("receiveEventSeq"), -1L);
-        long consumerLowerSeq = longNumber(whole.get(
-                "callerResultEventSeq"), -1L);
-        // The server method result starts response transport; it does not
-        // finish it.  Hadoop IPC (like many RPC stacks) reads the returned
-        // carrier in a serializer after the server stub has returned.  The
-        // caller-result event is the first recorded fence that proves that
-        // serialization and reconstruction have completed.  Exact producer
-        // region/root/object filtering below keeps this wider transaction
-        // window from admitting consumer or unrelated-object accesses.
-        long producerUpperSeq = responseProjectionUpperSeq(whole);
-        if (sendSeq < 0L || producerLowerSeq < 0L
-                || producerUpperSeq < producerLowerSeq
-                || consumerLowerSeq < 0L) {
-            return;
-        }
-
-        Deque<DeclaredCarrierPair> work = new ArrayDeque<>();
-        Set<String> visited = new LinkedHashSet<>();
-        int[] carrierPair = exactDeclaredCarrierRootPair(whole);
-        if (carrierPair == null) return;
-        work.addLast(new DeclaredCarrierPair(carrierPair[0], carrierPair[1],
-                Collections.<String>emptyList()));
-        while (!work.isEmpty() && visited.size()
-                < LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
-            DeclaredCarrierPair pair = work.removeFirst();
-            if (!visited.add(pair.producerObject + "\n"
-                    + pair.consumerObject + "\n" + pair.path)) continue;
-
-            Map<String, RpcDescendantCandidate> producerFields =
-                    lastDefinitionsOn(index, pair.producerObject,
-                            producerUpperSeq);
-            for (Map.Entry<String, RpcDescendantCandidate> entry
-                    : producerFields.entrySet()) {
-                DeclaredFieldCell field = DeclaredFieldCell.parse(
-                        entry.getKey());
-                if (field == null) continue;
-                RpcDescendantCandidate source = entry.getValue();
-                List<String> carrierPath = new ArrayList<>(pair.path);
-                carrierPath.add(entry.getKey());
-                List<RpcDescendantCandidate> definitions =
-                        reconstructedDefinitionsOn(index,
-                                pair.consumerObject, entry.getKey(),
-                                toRegion, toRoot, sendSeq,
-                                consumerLowerSeq);
-                List<RpcDescendantCandidate> reads =
-                        reconstructedReadsOn(index, pair.consumerObject,
-                                entry.getKey(),
-                                toRegion, toRoot, sendSeq, consumerLowerSeq,
-                                consumerUpperSeq);
-                if (rpcProjectableContainerType(field.type)) {
-                    // Lists/maps retain their existing bounded-container
-                    // algebra.  This recorder package proves only JVM
-                    // reference-array element identity.
-                    if (!rpcProjectableReferenceArrayType(field.type)) {
-                        continue;
-                    }
-                    List<RpcDescendantCandidate> rebuilt = reads.isEmpty()
-                            ? definitions : reads;
-                    if (rebuilt.isEmpty()) continue;
-                    int rebuiltArray = uniqueValueObject(rebuilt);
-                    ArrayElementProjection elements =
-                            exactDeclaredArrayElementPairs(
-                                    rows(source.binding.get(
-                                            "runtimeArrayElementBindings")),
-                                    source.valueObjectId,
-                                    combinedArrayElementBindings(rebuilt),
-                                    rebuiltArray,
-                                    source.eventSeq,
-                                    consumerLowerSeq,
-                                    sendSeq,
-                                    consumerLowerSeq);
-                    if (!elements.proved()) {
-                        markRpcProjectionBlocked(index, rebuilt,
-                                elements.blocker, elements.width);
-                        continue;
-                    }
-                    for (int[] elementPair : elements.pairs) {
-                        work.addLast(new DeclaredCarrierPair(elementPair[0],
-                                elementPair[1], carrierPath));
-                    }
-                    markArrayElementProjectionProved(index, rebuilt,
-                            elements.width);
-                    continue;
-                }
-                if (rpcCarrierReferenceType(field.type)) {
-                    List<RpcDescendantCandidate> rebuilt =
-                            definitions.isEmpty() ? reads : definitions;
-                    int next = uniqueValueObject(rebuilt);
-                    if (next != 0 && source.valueObjectId != 0) {
-                        work.addLast(new DeclaredCarrierPair(
-                                source.valueObjectId, next, carrierPath));
-                    }
-                    continue;
-                }
-                ExactPort sourceState = index.exactPort(source, true);
-                if (sourceState == null) continue;
-                if (!definitions.isEmpty()) {
-                    if (definitions.size() != 1) continue;
-                    publishDecodedRpcFieldProjection(program, index, whole,
-                            source, definitions.get(0), sourceState,
-                            emittedEdges, carrierPath);
-                    continue;
-                }
-                for (RpcDescendantCandidate target : reads) {
-                    ExactPort targetInput = index.exactInputPort(target);
-                    if (targetInput == null) continue;
-                    publishRpcDescendantProjection(program, index, whole,
-                            source, target, sourceState, targetInput,
-                            emittedEdges, DECLARED_CARRIER_AUTHORITY,
-                            DECLARED_CARRIER_SELECTION, carrierPath);
-                }
-            }
-        }
-    }
-
-    /** Last exact field definition performed while one reply is decoded. */
-    private static List<RpcDescendantCandidate> reconstructedDefinitionsOn(
-            RpcDescendantProjectionIndex index, int object,
-            String declaration, String toRegion, long toRoot, long sendSeq,
-            long consumerResultSeq) {
-        List<RpcDescendantCandidate> result = new ArrayList<>();
-        long latest = -1L;
-        for (RpcDescendantCandidate write
-                : index.onReceiver("HEAP_WRITE", object)) {
-            if (declaration.equals(write.declaration)
-                    && toRegion.equals(write.region)
-                    && write.rootCallId == toRoot
-                    && write.eventSeq > sendSeq
-                    && write.eventSeq <= consumerResultSeq) {
-                if (write.eventSeq > latest) {
-                    result.clear();
-                    latest = write.eventSeq;
-                }
-                if (write.eventSeq == latest) result.add(write);
-            }
-        }
-        return result;
-    }
-
-    /**
-     * End fence for reading a returned response carrier.
-     *
-     * <p>A server-stub method exit only publishes the carrier to the RPC
-     * stack. Serialization may read that object afterwards. The matching
-     * caller-result event is the first recorded event that proves the
-     * response transfer, including serialization, has completed.</p>
-     */
-    static long responseProjectionUpperSeq(Map<String, Object> flow) {
-        long producerResult = longNumber(flow.get(
-                "producerResultEventSeq"), -1L);
-        long callerResult = longNumber(flow.get(
-                "callerResultEventSeq"), -1L);
-        return producerResult >= 0L && callerResult >= producerResult
-                ? callerResult : -1L;
-    }
-
-    /**
-     * Exact carrier roots recorded at the two ends of one trusted response.
-     * A descendant value is deliberately not used as a seed: doing so would
-     * start the walk at (for example) two arrays and skip the declared field
-     * that establishes what those arrays mean.  Missing result identity is a
-     * hard stop, never an invitation to pair by a value or occurrence.
-     */
-    static int[] exactDeclaredCarrierRootPair(Map<String, Object> flow) {
-        if (!"EXACT_RUNTIME_PROTOCOL_CALLSITE_RESULT_V1".equals(
-                text(flow.get("callsiteAuthority")))) {
-            return null;
-        }
-        int producer = number(flow.get("producerResultObjectId"), 0);
-        int consumer = number(flow.get("callerResultObjectId"), 0);
-        return producer == 0 || consumer == 0
-                ? null : new int[]{producer, consumer};
-    }
-
-    /**
-     * The last recorded definition of each declared field of one producer
-     * object before the reply was sent.  A later write cannot be what the
-     * reply carried.
-     */
-    private static Map<String, RpcDescendantCandidate> lastDefinitionsOn(
-            RpcDescendantProjectionIndex index, int object,
-            long producerResultSeq) {
-        Map<String, RpcDescendantCandidate> result = new LinkedHashMap<>();
-        for (RpcDescendantCandidate candidate
-                : index.onReceiver("HEAP_WRITE", object)) {
-            if (candidate.eventSeq >= producerResultSeq) continue;
-            RpcDescendantCandidate prior = result.get(candidate.declaration);
-            if (prior == null || prior.eventSeq < candidate.eventSeq) {
-                result.put(candidate.declaration, candidate);
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Consumer reads of one declared field of a reconstructed object whose
-     * observed value this reply defined: the read is preceded by a write in
-     * this reply's decode window and by no later one.  A read that observes a
-     * value written after the decode is not this reply's value.
-     */
-    private static List<RpcDescendantCandidate> reconstructedReadsOn(
-            RpcDescendantProjectionIndex index, int object,
-            String declaration, String toRegion, long toRoot, long sendSeq,
-            long consumerLowerSeq, long consumerUpperSeq) {
-        List<RpcDescendantCandidate> result = new ArrayList<>();
-        for (RpcDescendantCandidate read
-                : index.onReceiver("HEAP_READ", object)) {
-            if (!declaration.equals(read.declaration)
-                    || !toRegion.equals(read.region)
-                    || read.rootCallId != toRoot
-                    || read.eventSeq >= consumerUpperSeq) {
-                continue;
-            }
-            long latest = -1L;
-            for (RpcDescendantCandidate write
-                    : index.onReceiver("HEAP_WRITE", object)) {
-                if (!declaration.equals(write.declaration)
-                        || write.eventSeq >= read.eventSeq) {
-                    continue;
-                }
-                latest = Math.max(latest, write.eventSeq);
-            }
-            if (latest > sendSeq && latest <= consumerLowerSeq) {
-                result.add(read);
-            }
-        }
-        return result;
-    }
-
-    private static int uniqueValueObject(
-            List<RpcDescendantCandidate> candidates) {
-        Set<Integer> values = new LinkedHashSet<>();
-        for (RpcDescendantCandidate candidate : candidates) {
-            if (candidate.valueObjectId != 0) {
-                values.add(candidate.valueObjectId);
-            }
-        }
-        return values.size() == 1 ? values.iterator().next() : 0;
-    }
-
-    private static List<Map<String, Object>> combinedArrayElementBindings(
-            List<RpcDescendantCandidate> candidates) {
-        Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
-        for (RpcDescendantCandidate candidate : candidates) {
-            for (Map<String, Object> access : rows(candidate.binding.get(
-                    "runtimeArrayElementBindings"))) {
-                unique.put(CausynthJson.write(access), access);
-            }
-        }
-        return new ArrayList<>(unique.values());
-    }
-
-    /**
-     * Pairs two reconstructed reference arrays solely by exact object id and
-     * the order-preserving index declared by the configured transport.
-     */
-    static ArrayElementProjection exactDeclaredArrayElementPairs(
-            List<Map<String, Object>> producerAccesses, int producerArray,
-            List<Map<String, Object>> consumerAccesses, int consumerArray,
-            long producerLowerExclusive, long producerUpperExclusive,
-            long consumerLowerExclusive, long consumerUpperExclusive) {
-        if (producerArray == 0 || consumerArray == 0) {
-            return ArrayElementProjection.blocked(
-                    "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY", -1);
-        }
-        // A declared carrier contract relates the two logical result
-        // objects, not their serializers.  Prefer the exact array snapshot
-        // recorded when each result field was published.  Older traces may
-        // still prove the same fact through concrete construction writes or
-        // a complete read traversal, in that order.
-        ArrayElementIndex producer = ArrayElementIndex.buildLogicalResult(
-                producerAccesses, producerArray,
-                producerLowerExclusive, producerUpperExclusive,
-                "ARRAY_WRITE", "ARRAY_READ");
-        ArrayElementIndex consumer = ArrayElementIndex.buildLogicalResult(
-                consumerAccesses, consumerArray,
-                consumerLowerExclusive, consumerUpperExclusive,
-                "ARRAY_WRITE", "ARRAY_READ");
-        int width = Math.max(producer.width, consumer.width);
-        if (!producer.blocker.isEmpty()) {
-            return ArrayElementProjection.blocked(producer.blocker, width);
-        }
-        if (!consumer.blocker.isEmpty()) {
-            return ArrayElementProjection.blocked(consumer.blocker, width);
-        }
-        if (width > LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
-            return ArrayElementProjection.blocked("BOUND_INSUFFICIENT",
-                    width);
-        }
-        if ((!producer.exactSnapshot && producer.elements.isEmpty())
-                || (!consumer.exactSnapshot && consumer.elements.isEmpty())
-                || !producer.elements.keySet().equals(
-                consumer.elements.keySet())) {
-            return ArrayElementProjection.blocked(
-                    "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY", width);
-        }
-        List<int[]> pairs = new ArrayList<>();
-        for (int index = 0; index < width; index++) {
-            Integer left = producer.elements.get(index);
-            Integer right = consumer.elements.get(index);
-            if (left == null || right == null || left == 0 || right == 0) {
-                return ArrayElementProjection.blocked(
-                        "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY", width);
-            }
-            pairs.add(new int[]{left, right});
-        }
-        return ArrayElementProjection.proved(pairs, width);
-    }
-
-    private static void markArrayElementProjectionProved(
-            RpcDescendantProjectionIndex index,
-            List<RpcDescendantCandidate> candidates, int width) {
-        for (RpcDescendantCandidate candidate : candidates) {
-            ExactPort port = index.exactInputPort(candidate);
-            if (port == null) continue;
-            port.port.put("rpcArrayElementProjectionAdmission", "PROVED");
-            port.port.put("rpcArrayElementProjectionAuthority",
-                    "EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_ORDER_V1");
-            port.port.put("observedContainerWidth", width);
-        }
-    }
-
-    static final class ArrayElementProjection {
-        final List<int[]> pairs;
-        final String blocker;
-        final int width;
-
-        private ArrayElementProjection(List<int[]> pairs, String blocker,
-                                       int width) {
-            this.pairs = pairs;
-            this.blocker = blocker;
-            this.width = width;
-        }
-
-        private static ArrayElementProjection proved(List<int[]> pairs,
-                                                      int width) {
-            return new ArrayElementProjection(pairs, "", width);
-        }
-
-        private static ArrayElementProjection blocked(String blocker,
-                                                       int width) {
-            return new ArrayElementProjection(
-                    Collections.<int[]>emptyList(), blocker, width);
-        }
-
-        boolean proved() {
-            return blocker.isEmpty();
-        }
-    }
-
-    private static final class ArrayElementIndex {
-        private final Map<Integer, Integer> elements =
-                new LinkedHashMap<>();
-        private String blocker = "";
-        private int width;
-        private boolean exactSnapshot;
-
-        private static ArrayElementIndex buildLogicalResult(
-                List<Map<String, Object>> accesses, int array,
-                long lowerExclusive, long upperExclusive,
-                String... fallbacks) {
-            ArrayElementIndex snapshot = latestSnapshot(accesses, array,
-                    lowerExclusive, upperExclusive);
-            if (snapshot != null) return snapshot;
-            for (String kind : fallbacks) {
-                ArrayElementIndex candidate = build(accesses, kind, array,
-                        lowerExclusive, upperExclusive);
-                if (!candidate.blocker.isEmpty()
-                        || !candidate.elements.isEmpty()) {
-                    return candidate;
-                }
-            }
-            return new ArrayElementIndex();
-        }
-
-        /** Latest exact FIELD_WRITE-bound snapshot in the result window. */
-        private static ArrayElementIndex latestSnapshot(
-                List<Map<String, Object>> accesses, int array,
-                long lowerExclusive, long upperExclusive) {
-            long latestBoundary = -1L;
-            for (Map<String, Object> access : accesses) {
-                if (!"ARRAY_SNAPSHOT".equals(text(access.get("kind")))
-                        || array != number(access.get("arrayObjectId"), 0)) {
-                    continue;
-                }
-                long boundary = longNumber(
-                        access.get("snapshotBoundarySeq"), -1L);
-                if (boundary < lowerExclusive
-                        || boundary >= upperExclusive) {
-                    continue;
-                }
-                latestBoundary = Math.max(latestBoundary, boundary);
-            }
-            if (latestBoundary < 0L) return null;
-
-            ArrayElementIndex result = new ArrayElementIndex();
-            result.exactSnapshot = true;
-            int declaredLength = -1;
-            long snapshotLastEvent = -1L;
-            for (Map<String, Object> access : accesses) {
-                if (!"ARRAY_SNAPSHOT".equals(text(access.get("kind")))
-                        || array != number(access.get("arrayObjectId"), 0)
-                        || latestBoundary != longNumber(
-                        access.get("snapshotBoundarySeq"), -1L)) {
-                    continue;
-                }
-                if (!"EXACT_RUNTIME_REFERENCE_ARRAY_SNAPSHOT_V1".equals(
-                        text(access.get("authority")))) {
-                    result.blocker =
-                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
-                    return result;
-                }
-                int length = number(access.get("arrayLength"), -1);
-                if (length < 0 || declaredLength >= 0
-                        && declaredLength != length) {
-                    result.blocker =
-                            "AMBIGUOUS_ARRAY_ELEMENT_IDENTITY";
-                    return result;
-                }
-                declaredLength = length;
-                result.width = length;
-                snapshotLastEvent = Math.max(snapshotLastEvent,
-                        longNumber(access.get("eventSeq"), -1L));
-                if (length == 0) continue;
-                int index = number(access.get("arrayIndex"), -1);
-                int element = number(access.get("elementObjectId"), 0);
-                if (index < 0 || index >= length || element == 0) {
-                    result.blocker =
-                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
-                    return result;
-                }
-                Integer prior = result.elements.putIfAbsent(index, element);
-                if (prior != null && prior != element) {
-                    result.blocker =
-                            "AMBIGUOUS_ARRAY_ELEMENT_IDENTITY";
-                    return result;
-                }
-            }
-            if (declaredLength < 0) {
-                result.blocker = "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
-                return result;
-            }
-            if (declaredLength > LoopBoundPolicy
-                    .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
-                result.blocker = "BOUND_INSUFFICIENT";
-                return result;
-            }
-            // The field write publishes the initial logical value.  Exact
-            // program writes after that snapshot but before the result fence
-            // update the same array state; take the latest write per index.
-            Map<Integer, Long> latestWrite = new LinkedHashMap<>();
-            for (Map<String, Object> access : accesses) {
-                long event = longNumber(access.get("eventSeq"), -1L);
-                if (!"ARRAY_WRITE".equals(text(access.get("kind")))
-                        || array != number(access.get("arrayObjectId"), 0)
-                        || event <= snapshotLastEvent
-                        || event >= upperExclusive) {
-                    continue;
-                }
-                if (!"EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_V1".equals(
-                        text(access.get("authority")))) {
-                    result.blocker =
-                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
-                    return result;
-                }
-                int index = number(access.get("arrayIndex"), -1);
-                int element = number(access.get("elementObjectId"), 0);
-                if (index < 0 || index >= declaredLength || element == 0) {
-                    result.blocker =
-                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
-                    return result;
-                }
-                if (event > latestWrite.getOrDefault(index, -1L)) {
-                    latestWrite.put(index, event);
-                    result.elements.put(index, element);
-                }
-            }
-            if (declaredLength != result.elements.size()) {
-                result.blocker = "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
-            }
-            return result;
-        }
-
-        private static ArrayElementIndex build(
-                List<Map<String, Object>> accesses, String kind, int array,
-                long lowerExclusive, long upperExclusive) {
-            ArrayElementIndex result = new ArrayElementIndex();
-            for (Map<String, Object> access : accesses) {
-                long event = longNumber(access.get("eventSeq"), -1L);
-                if (!kind.equals(text(access.get("kind")))
-                        || array != number(access.get("arrayObjectId"), 0)
-                        || event <= lowerExclusive
-                        || event >= upperExclusive) {
-                    continue;
-                }
-                if (!"EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_V1".equals(
-                        text(access.get("authority")))) {
-                    result.blocker =
-                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
-                    return result;
-                }
-                int index = number(access.get("arrayIndex"), -1);
-                int element = number(access.get("elementObjectId"), 0);
-                if (index < 0 || element == 0) {
-                    result.blocker =
-                            "MISSING_EXACT_ARRAY_ELEMENT_IDENTITY";
-                    return result;
-                }
-                result.width = Math.max(result.width, index + 1);
-                Integer prior = "ARRAY_WRITE".equals(kind)
-                        ? result.elements.put(index, element)
-                        : result.elements.putIfAbsent(index, element);
-                if (!"ARRAY_WRITE".equals(kind)
-                        && prior != null && prior != element) {
-                    result.blocker =
-                            "AMBIGUOUS_ARRAY_ELEMENT_IDENTITY";
-                    return result;
-                }
-            }
-            return result;
-        }
-    }
-
-    /**
-     * Stops the demand closure from treating a rebuilt protocol carrier as
-     * the authoritative producer of the value it carries.
-     *
-     * <p>A write recorded between a configured request send and its own
-     * caller result is reply decoding, and a later read of a field that such
-     * a write last defined observes a decoded value.  Both penetrate to the
-     * configured response port instead of ending the chain, so the demand
-     * continues into the server region.  A carrier without an exact declared
-     * descendant projection keeps a named gap rather than an implicit
-     * equality.</p>
-     */
-    private static void markProtocolCarrierReconstructions(
-            StaticProgram program, RpcDescendantProjectionIndex index) {
-        for (Map<String, Object> region : program.regions) {
-            List<Map<String, Object>> inputs = rows(
-                    region.get("symbolicInputs"));
-            ProtocolCarrierReconstruction decode =
-                    ProtocolCarrierReconstruction.of(inputs);
-            if (decode.isEmpty()) continue;
-            String regionId = text(region.get("regionId"));
-            for (Map<String, Object> output : rows(region.get("outputs"))) {
-                if ("PROTOCOL_INPUT".equals(
-                        text(output.get("sourceKind")))) {
-                    continue;
-                }
-                if (!rows(output.get(RPC_DECODED_LEAF_INPUTS)).isEmpty()) {
-                    // One aggregated heap port may contain writes from many
-                    // response decodes.  A singular response-port annotation
-                    // would describe only its first top-level access and can
-                    // silently redirect a later demanded occurrence.  The
-                    // exact event->leaf ledger is the authority instead.
-                    output.remove(ProtocolCarrierReconstruction.RESPONSE_PORT);
-                    output.remove(ProtocolCarrierReconstruction.MAPPING_ID);
-                    output.remove(ProtocolCarrierReconstruction.AUTHORITY);
-                    output.remove(ProtocolCarrierReconstruction.PROJECTION_GAP);
-                    continue;
-                }
-                long rootCallId = portRootCallId(output, true);
-                ProtocolCarrierReconstruction.Window window =
-                        decode.reconstructionOf(rootCallId,
-                                longNumber(output.get("eventSeq"), -1L));
-                if (window != null) {
-                    ProtocolCarrierReconstruction.mark(output, window,
-                            Boolean.TRUE.equals(booleanValue(output.get(
-                                    "rpcDescendantProjectionOutput"))));
-                }
-            }
-            for (Map<String, Object> input : inputs) {
-                if ("PROTOCOL_INPUT".equals(text(input.get("sourceKind")))) {
-                    continue;
-                }
-                long rootCallId = portRootCallId(input, false);
-                ProtocolCarrierReconstruction.Window window =
-                        decode.reconstructionOf(rootCallId,
-                                carrierDefinitionSeq(index, regionId,
-                                        rootCallId, input));
-                if (window != null) {
-                    ProtocolCarrierReconstruction.mark(input, window,
-                            Boolean.TRUE.equals(booleanValue(input.get(
-                                    "rpcDescendantProjectionInput"))));
-                }
-            }
-        }
-    }
-
-    /**
-     * Returns the event that last defined the exact field value one input
-     * port observes, or {@code -1} when no write to that receiver and
-     * declaration precedes the read inside the same activation.
-     */
-    private static long carrierDefinitionSeq(
-            RpcDescendantProjectionIndex index, String regionId,
-            long rootCallId, Map<String, Object> input) {
-        List<String> declarations = strings(
-                input.get("fieldPathDeclarations"));
-        if (declarations.isEmpty() || rootCallId < 0L) return -1L;
-        String declaration = declarations.get(declarations.size() - 1);
-        DeclaredFieldCell leaf = DeclaredFieldCell.parse(declaration);
-        if (leaf == null || rpcProjectionKind(leaf.type).isEmpty()) {
-            // A carrier spine field holds an object, not a value; a rebuilt
-            // reference is not evidence about anything the demand asked for.
-            return -1L;
-        }
-        long readSeq = longNumber(input.get("eventSeq"), -1L);
-        int receiver = number(input.get("fieldReceiverObjectId"), 0);
-        if (readSeq < 0L || receiver == 0) return -1L;
-        long latest = -1L;
-        for (RpcDescendantCandidate candidate : index.candidates(regionId,
-                rootCallId, "HEAP_WRITE")) {
-            if (candidate.receiverObjectId != receiver
-                    || !declaration.equals(candidate.declaration)
-                    || candidate.eventSeq >= readSeq
-                    || candidate.eventSeq <= latest) {
-                continue;
-            }
-            latest = candidate.eventSeq;
-        }
-        return latest;
-    }
-
-    private interface RpcCandidatePredicate {
-        boolean test(RpcDescendantCandidate candidate);
-    }
-
-    private static Map<String, List<RpcDescendantCandidate>>
-            candidatesByDeclaration(
-            List<RpcDescendantCandidate> candidates,
-            RpcCandidatePredicate predicate) {
-        Map<String, Map<String, RpcDescendantCandidate>> unique =
-                new LinkedHashMap<>();
-        for (RpcDescendantCandidate candidate : candidates) {
-            if (!predicate.test(candidate)) continue;
-            String occurrence = candidate.staticSite + "\n"
-                    + candidate.eventSeq + "\n" + candidate.declaration;
-            unique.computeIfAbsent(candidate.declaration,
-                    ignored -> new LinkedHashMap<>()).putIfAbsent(
-                    occurrence, candidate);
-        }
-        Map<String, List<RpcDescendantCandidate>> result =
-                new LinkedHashMap<>();
-        for (Map.Entry<String, Map<String, RpcDescendantCandidate>> entry
-                : unique.entrySet()) {
-            result.put(entry.getKey(), new ArrayList<>(
-                    entry.getValue().values()));
-        }
-        return result;
-    }
-
-    private static boolean trustedResponseFlow(Map<String, Object> flow) {
+    /** Accepts one runtime-correlated configured protocol transfer. */
+    private static boolean trustedProtocolFlow(Map<String, Object> flow) {
         long caller = longNumber(flow.get("callerSiteEventSeq"), -1L);
         long send = longNumber(flow.get("sendEventSeq"), -1L);
         long receive = longNumber(flow.get("receiveEventSeq"), -1L);
+        String direction = first(text(flow.get("direction")),
+                text(flow.get("protocolDirection")));
         return "RUNTIME_PROTOCOL_FLOW".equals(text(flow.get("kind")))
-                && "RESPONSE".equals(first(text(flow.get("direction")),
-                text(flow.get("protocolDirection"))))
+                && ("REQUEST".equals(direction)
+                || "RESPONSE".equals(direction))
                 && "TRUSTED_CONFIGURED_RPC_MAPPING_V1".equals(
                 text(flow.get("authority")))
                 && !text(flow.get("mappingId")).isEmpty()
                 && caller >= 0L && caller < send && send < receive;
     }
 
-    /**
-     * Returns the next trusted RPC call boundary in the same consumer
-     * activation.  A response-derived read belongs to the half-open corridor
-     * beginning at this response's concrete caller result and ending when the
-     * next RPC starts.  This keeps repeated service-loop iterations separate
-     * without depending on replay-unstable object identities or invocation
-     * ordinals.
-     */
-    private static long nextTrustedResponseCallerSite(
-            List<Map<String, Object>> flows, Map<String, Object> current) {
-        String region = text(current.get("toRegion"));
-        long rootCallId = longNumber(current.get("toRootCallId"), -1L);
-        long caller = longNumber(current.get("callerSiteEventSeq"), -1L);
-        long next = Long.MAX_VALUE;
-        for (Map<String, Object> candidate : flows) {
-            if (!trustedResponseFlow(candidate)
-                    || !region.equals(text(candidate.get("toRegion")))
-                    || rootCallId != longNumber(
-                    candidate.get("toRootCallId"), -1L)) {
-                continue;
-            }
-            long candidateCaller = longNumber(
-                    candidate.get("callerSiteEventSeq"), -1L);
-            if (candidateCaller > caller && candidateCaller < next) {
-                next = candidateCaller;
-            }
-        }
-        return next;
-    }
-
     private static Map<String, Object> derivedRpcDescendantOutput(
             Map<String, Object> whole, RpcDescendantCandidate source,
             ExactPort exact, String authority, String selection,
-            List<String> carrierPath) {
+            List<String> carrierPath, String boundaryIdentity) {
         Map<String, Object> output = new LinkedHashMap<>(exact.port);
         String identity = source.region + "\n" + source.rootCallId + "\n"
                 + text(whole.get("mappingId")) + "\n"
-                + source.staticSite + "\n" + carrierPath;
+                + source.staticSite + "\n" + carrierPath + "\n"
+                + boundaryIdentity;
         output.put("portId", source.region + ".out."
                 + UUID.nameUUIDFromBytes(identity.getBytes(
                 StandardCharsets.UTF_8)));
@@ -2727,19 +2357,12 @@ public final class RuntimeSelectedRegionFinalizer {
                 Collections.singletonList(exact.access));
         output.put("javaType", source.type);
         output.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
-        if (rpcProjectableContainerType(source.type)) {
-            output.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
-        } else {
-            output.remove("symbolicDemand");
-        }
+        output.remove("symbolicDemand");
         output.put("rpcDescendantProjectionOutput", true);
         output.put("rpcProjectionAuthority", authority);
         output.put("rpcProjectionSelectionAuthority", selection);
         output.put("rpcProjectionMappingId", whole.get("mappingId"));
         output.put("rpcProjectionFieldDeclaration", source.declaration);
-        output.put("rpcProjectionValueCell", source.valueCell());
-        output.put("rpcProjectionWholeOutputCell", whole.get("fromCell"));
-        output.put("rpcProjectionWholeOutputPort", whole.get("fromPort"));
         output.put("rpcProjectionStaticAccessSiteId", source.staticSite);
         return output;
     }
@@ -2748,9 +2371,10 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Object> whole, RpcDescendantCandidate source,
             RpcDescendantCandidate target, String fromPort, String toPort,
             String authority, String selection,
-            List<String> carrierPath) {
+            List<String> carrierPath, String boundaryIdentity) {
         String identity = text(whole.get("edgeId")) + "\n"
-                + carrierPath + "\n" + fromPort + "\n" + toPort;
+                + carrierPath + "\n" + boundaryIdentity + "\n"
+                + fromPort + "\n" + toPort;
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("schemaVersion", 3);
         result.put("kind", "RUNTIME_PROTOCOL_FLOW");
@@ -2769,8 +2393,10 @@ public final class RuntimeSelectedRegionFinalizer {
         result.put("writerEventSeq", source.eventSeq);
         result.put("readerEventSeq", target.eventSeq);
         result.put("transportKind", whole.get("transportKind"));
-        result.put("direction", "RESPONSE");
-        result.put("protocolDirection", "RESPONSE");
+        String direction = first(text(whole.get("direction")),
+                text(whole.get("protocolDirection")));
+        result.put("direction", direction);
+        result.put("protocolDirection", direction);
         result.put("mappingId", whole.get("mappingId"));
         result.put("port", whole.get("port"));
         result.put("authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1");
@@ -2781,12 +2407,10 @@ public final class RuntimeSelectedRegionFinalizer {
         result.put("projectionSelectionAuthority", selection);
         result.put("projectionOfEdgeId", whole.get("edgeId"));
         result.put("projectionOfFromPort", whole.get("fromPort"));
-        result.put("projectionOfToPort", whole.get("toPort"));
         result.put("javaType", source.type);
         result.put("fieldPathDeclarations",
                 new ArrayList<>(carrierPath));
         result.put("producerProjectionSiteId", source.staticSite);
-        result.put("consumerProjectionSiteId", target.staticSite);
         for (String field : new String[]{
                 "callerSiteEventSeq", "sendEventSeq", "receiveEventSeq",
                 "callerResultEventSeq", "callerMethod", "callerSiteId",
@@ -2800,12 +2424,11 @@ public final class RuntimeSelectedRegionFinalizer {
 
     private static void markProjectedDescendantInput(
             Map<String, Object> input, Map<String, Object> whole,
-            String declaration, String javaType, boolean producerDependency,
-            String authority, String selection) {
+            String declaration, String javaType, String authority,
+            String selection) {
         input.put("javaType", javaType);
         input.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
-        input.put("rpcDescendantProjectionInput", !producerDependency);
-        input.put("rpcDescendantProjectionDependency", producerDependency);
+        input.put("rpcDescendantProjectionInput", true);
         input.put("rpcProjectionAuthority", authority);
         input.put("rpcProjectionSelectionAuthority", selection);
         // A projection answers the very question an earlier blocker asked.
@@ -2813,52 +2436,13 @@ public final class RuntimeSelectedRegionFinalizer {
         input.remove("rpcProjectionBlocker");
         input.put("rpcProjectionMappingId", whole.get("mappingId"));
         input.put("rpcProjectionFieldDeclaration", declaration);
-        if (rpcProjectableContainerType(javaType)) {
-            input.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
-            input.put("containerCapacity", LoopBoundPolicy
-                    .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY);
-        } else {
-            // A scalar leaf carried below the wire object is an ordinary
-            // symbolic value once its exact producer definition is bound.
-            // The carrier object itself keeps no demand and stays concrete.
-            input.remove("symbolicDemand");
-            input.remove("containerCapacity");
-        }
-    }
-
-    private static void markProducerContainerDependencies(
-            RpcDescendantProjectionIndex index, Map<String, Object> whole,
-            RpcDescendantCandidate source) {
-        Map<String, Object> region = index.region(
-                text(whole.get("fromRegion")));
-        if (region == null) return;
-        long rootCallId = longNumber(whole.get("fromRootCallId"), -1L);
-        for (Map<String, Object> input
-                : rows(region.get("symbolicInputs"))) {
-            if (portRootCallId(input, false) != rootCallId) continue;
-            String type = projectableContainerType(input);
-            if (type.isEmpty()) continue;
-            boolean reaches = false;
-            for (String boundary : RegionDemandIndex.boundaryCells(input)) {
-                if (index.valueFlow.reaches(text(whole.get("fromRegion")),
-                        boundary, source.valueCell())) {
-                    reaches = true;
-                    break;
-                }
-            }
-            if (reaches) {
-                markProjectedDescendantInput(input, whole,
-                        source.declaration, type, true,
-                        "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
-                        rpcProjectionSelectionAuthority(type));
-            }
-        }
+        input.remove("symbolicDemand");
+        input.remove("containerCapacity");
     }
 
     private static void markRpcProjectionBlocked(
             RpcDescendantProjectionIndex index,
-            List<RpcDescendantCandidate> candidates, String blocker,
-            int observedWidth) {
+            List<RpcDescendantCandidate> candidates, String blocker) {
         for (RpcDescendantCandidate candidate : candidates) {
             ExactPort port = index.exactInputPort(candidate);
             if (port == null) continue;
@@ -2867,13 +2451,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     : "CONCRETE_RPC_DESCENDANT_REPLAY");
             port.port.put("rpcProjectionAdmission", "BLOCKED");
             port.port.put("rpcProjectionBlocker", blocker);
-            if (rpcProjectableContainerType(candidate.type)) {
-                port.port.put("containerCapacity", LoopBoundPolicy
-                        .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY);
-                if (observedWidth >= 0) {
-                    port.port.put("observedContainerWidth", observedWidth);
-                }
-            }
         }
     }
 
@@ -2884,47 +2461,6 @@ public final class RuntimeSelectedRegionFinalizer {
             if (id.equals(text(prior.get("portId")))) return;
         }
         ports.add(port);
-    }
-
-    private static String projectableContainerType(
-            Map<String, Object> port) {
-        String type = text(port.get("javaType"));
-        if (rpcProjectableContainerType(type)) return type;
-        List<String> declarations = strings(
-                port.get("fieldPathDeclarations"));
-        if (!declarations.isEmpty()) {
-            DeclaredFieldCell leaf = DeclaredFieldCell.parse(
-                    declarations.get(declarations.size() - 1));
-            if (leaf != null && rpcProjectableContainerType(leaf.type)) {
-                return leaf.type;
-            }
-        }
-        return "";
-    }
-
-    private static boolean rpcProjectableContainerType(String type) {
-        String value = text(type).trim();
-        if (value.startsWith("[") || value.endsWith("[]")) return true;
-        return "java.util.Map".equals(value)
-                || "java.util.HashMap".equals(value)
-                || "java.util.LinkedHashMap".equals(value)
-                || "java.util.List".equals(value)
-                || "java.util.AbstractList".equals(value)
-                || "java.util.ArrayList".equals(value);
-    }
-
-    private static boolean rpcProjectableReferenceArrayType(String type) {
-        String value = text(type).trim();
-        if (value.startsWith("[")) {
-            return value.startsWith("[L") || value.startsWith("[[");
-        }
-        if (!value.endsWith("[]")) return false;
-        String component = value.substring(0, value.length() - 2).trim();
-        if (component.endsWith("[]")) return true;
-        return !("boolean".equals(component) || "byte".equals(component)
-                || "char".equals(component) || "short".equals(component)
-                || "int".equals(component) || "long".equals(component)
-                || "float".equals(component) || "double".equals(component));
     }
 
     /**
@@ -2941,45 +2477,9 @@ public final class RuntimeSelectedRegionFinalizer {
                 || "java.lang.String".equals(value);
     }
 
-    /**
-     * A declared field whose type is neither a container nor a semantic
-     * scalar carries further declared fields rather than a value.  Such a
-     * field is the spine of a transferred object graph: it is never itself
-     * an equality endpoint, but a declared carrier reconstruction makes the
-     * object it holds correspond, which is what lets the demanded descent
-     * continue to a leaf that lives on that object.
-     */
-    private static boolean rpcCarrierReferenceType(String type) {
-        String value = text(type).trim();
-        return !value.isEmpty() && !rpcProjectableContainerType(value)
-                && !rpcProjectableScalarLeafType(value)
-                && value.indexOf('.') > 0;
-    }
-
     /** Empty when the declared type is neither a projectable leaf shape. */
     private static String rpcProjectionKind(String type) {
-        if (rpcProjectableContainerType(type)) {
-            return "BOUNDED_CONTAINER_STATE";
-        }
         return rpcProjectableScalarLeafType(type) ? "SCALAR_LEAF_VALUE" : "";
-    }
-
-    private static String rpcProjectionSelectionAuthority(String type) {
-        return rpcProjectableContainerType(type)
-                ? "STATIC_DEF_USE_CONTAINER_PROJECTION_V1"
-                : "STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1";
-    }
-
-    private static int observedContainerWidth(Map<String, Object> edge,
-                                              Map<String, Object> binding) {
-        for (String field : new String[]{"observedContainerWidth",
-                "observedContainerSize", "containerSize",
-                "containerLength", "arrayLength", "boundedWidth"}) {
-            int value = number(binding.get(field), -1);
-            if (value < 0) value = number(edge.get(field), -1);
-            if (value >= 0) return value;
-        }
-        return -1;
     }
 
     private static List<Map<String, Object>> statePorts(
@@ -3938,9 +3438,6 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         edge.put("edgeId", edgeIdPrefix + UUID.nameUUIDFromBytes(
                 alternative.getBytes(StandardCharsets.UTF_8)));
-        edge.put("causalAlternativeId", "FIELD_OCCURRENCE."
-                + UUID.nameUUIDFromBytes(alternative.getBytes(
-                StandardCharsets.UTF_8)));
         edge.put("fromRegion", write.region);
         edge.put("toRegion", read.region);
         edge.put("fromPort", write.port);
@@ -3952,16 +3449,11 @@ public final class RuntimeSelectedRegionFinalizer {
         edge.put("primitiveValue", write.primitiveValue);
         edge.put("writerEventSeq", write.seq);
         edge.put("readerEventSeq", read.seq);
-        edge.put("writerStaticSiteId", write.site);
-        edge.put("readerStaticSiteId", read.site);
         edge.put("writerOccurrence", write.occurrence);
-        edge.put("readerOccurrence", read.occurrence);
         edge.put("bindingKind", write.bindingKind);
         edge.put("dependencyRole", read.dependencyRole);
         edge.put("fieldPathDeclarations", Collections.singletonList(
                 write.leafDeclaration()));
-        edge.put("writerFieldPathDeclarations", write.declarations);
-        edge.put("readerFieldPathDeclarations", read.declarations);
         return edge;
     }
 
@@ -4316,6 +3808,13 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     @SuppressWarnings("unchecked")
+    private static Map<String, Object> row(Object value) {
+        return value instanceof Map<?, ?>
+                ? (Map<String, Object>) value
+                : Collections.<String, Object>emptyMap();
+    }
+
+    @SuppressWarnings("unchecked")
     private static List<Map<String, Object>> rows(Object value) {
         List<Map<String, Object>> result = new ArrayList<>();
         if (value instanceof Collection<?>) {
@@ -4377,9 +3876,6 @@ public final class RuntimeSelectedRegionFinalizer {
         private final Map<String, List<String>>
                 boundedMutationFrontiersByOutput = new LinkedHashMap<>();
         private final Map<String, List<String>> localIncoming =
-                new LinkedHashMap<>();
-        /** Demand a rebuilt protocol carrier penetrates to. */
-        private final Map<String, String> carrierDemands =
                 new LinkedHashMap<>();
         private final Map<String, Map<String, List<String>>>
                 explicitFatalSeedsBySite = new LinkedHashMap<>();
@@ -4465,11 +3961,6 @@ public final class RuntimeSelectedRegionFinalizer {
             if (rootCallId < 0L || portId.isEmpty()) return;
             String demand = portDemandKey(regionId, rootCallId, portId);
             (output ? outputs : inputs).put(demand, port);
-            String carrier = ProtocolCarrierReconstruction.responsePort(port);
-            if (!carrier.isEmpty()) {
-                carrierDemands.put(demand, portDemandKey(regionId,
-                        rootCallId, carrier));
-            }
             if (output) return;
             addUnique(inputsByInstance,
                     instanceKey(regionId, rootCallId), demand);
@@ -4516,7 +4007,6 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, List<String>> explicit =
                     explicitFatalSeedsBySite.get(regionId);
             if (explicit != null && !explicit.isEmpty()) {
-                Set<String> observedSites = new LinkedHashSet<>();
                 Map<String, List<Map<String, Object>>> evidenceBySite =
                         new LinkedHashMap<>();
                 for (Map<String, Object> evidence
@@ -4532,7 +4022,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     String site = text(evidence.get("siteId"));
                     List<String> siteSeeds = explicit.get(site);
                     if (siteSeeds != null) {
-                        observedSites.add(site);
                         evidenceBySite.computeIfAbsent(site,
                                 ignored -> new ArrayList<>()).add(evidence);
                     }
@@ -4542,9 +4031,6 @@ public final class RuntimeSelectedRegionFinalizer {
                             + "not observe its explicit fatal target branch: "
                             + instanceKey(regionId, rootCallId));
                 }
-                instance.put("observedFatalTargetSites",
-                        new ArrayList<>(observedSites));
-
                 Set<String> retained = new LinkedHashSet<>();
                 List<Map<String, Object>> contexts = new ArrayList<>();
                 for (Map.Entry<String, List<Map<String, Object>>> entry
@@ -4644,7 +4130,6 @@ public final class RuntimeSelectedRegionFinalizer {
                 Map<String, Object> instance, List<String> candidates,
                 long fatalEventSeq) throws IOException {
             List<String> retained = new ArrayList<>();
-            List<String> rejectedAfterFatal = new ArrayList<>();
             List<String> missingEvidence = new ArrayList<>();
             for (String demand : candidates) {
                 Map<String, Object> port = inputs.get(demand);
@@ -4661,15 +4146,9 @@ public final class RuntimeSelectedRegionFinalizer {
                         port, fatalEventSeq);
                 if (evidence.atOrBefore) {
                     retained.add(demand);
-                } else if (evidence.observedAfter) {
-                    rejectedAfterFatal.add(text(port.get("portId")));
-                } else {
+                } else if (!evidence.observedAfter) {
                     missingEvidence.add(text(port.get("portId")));
                 }
-            }
-            if (!rejectedAfterFatal.isEmpty()) {
-                instance.put("postFatalInputPorts",
-                        rejectedAfterFatal);
             }
             if (!missingEvidence.isEmpty()) {
                 throw new IOException("FATAL_PREFIX_EVIDENCE_GAP: target "
@@ -4770,51 +4249,6 @@ public final class RuntimeSelectedRegionFinalizer {
             String demand = portDemandKey(regionId, rootCallId, portId);
             Map<String, Object> output = outputs.get(demand);
             if (output == null) return Collections.emptyList();
-            List<Map<String, Object>> mappings = rows(
-                    output.get(RPC_DECODED_LEAF_INPUTS));
-            if (!mappings.isEmpty()) {
-                List<String> selected = null;
-                for (Map<String, Object> mapping : mappings) {
-                    if (longNumber(mapping.get("writerEventSeq"), -1L)
-                            != writerEventSeq
-                            || !DECLARED_CARRIER_AUTHORITY.equals(
-                            text(mapping.get("authority")))) {
-                        continue;
-                    }
-                    String inputPort = text(mapping.get("inputPort"));
-                    String responsePort = text(mapping.get(
-                            ProtocolCarrierReconstruction.RESPONSE_PORT));
-                    if (inputPort.isEmpty() || responsePort.isEmpty()) {
-                        continue;
-                    }
-                    List<String> candidate = Arrays.asList(
-                            portDemandKey(regionId, rootCallId, inputPort),
-                            portDemandKey(regionId, rootCallId,
-                                    responsePort));
-                    if (selected != null && !selected.equals(candidate)) {
-                        throw new IllegalStateException("ambiguous decoded "
-                                + "RPC leaf mapping for writer event "
-                                + writerEventSeq);
-                    }
-                    selected = candidate;
-                }
-                if (selected == null) {
-                    throw new IllegalStateException("decoded RPC leaf output "
-                            + portId + " has no unique mapping for writer "
-                            + "event " + writerEventSeq);
-                }
-                return Arrays.asList(requireInput(selected.get(0),
-                                "decoded RPC leaf"),
-                        requireInput(selected.get(1),
-                                "protocol carrier reconstruction"));
-            }
-            String carrier = carrierDemands.get(demand);
-            if (carrier != null) {
-                // The write only rebuilt the transferred carrier, so its
-                // decode-path operands are not the producer of this value.
-                return Collections.singletonList(requireInput(carrier,
-                        "protocol carrier reconstruction"));
-            }
             Set<String> result = new LinkedHashSet<>(backwardInputs(
                     regionId, rootCallId, boundaryCells(output)));
             if ("CONTAINER_MUTATION".equals(
@@ -4849,14 +4283,6 @@ public final class RuntimeSelectedRegionFinalizer {
                         Collections.<String>emptyList());
                 if (!boundary.isEmpty()) {
                     result.addAll(boundary);
-                    // A region input is the boundary.  Following another
-                    // write to the same declared field would re-introduce a
-                    // cross-activation alias through the local slice.
-                    for (String input : boundary) {
-                        String carrier = carrierDemands.get(input);
-                        if (carrier != null) result.add(requireInput(carrier,
-                                "protocol carrier reconstruction"));
-                    }
                     continue;
                 }
                 work.addAll(localIncoming.getOrDefault(
@@ -4864,15 +4290,6 @@ public final class RuntimeSelectedRegionFinalizer {
                         Collections.<String>emptyList()));
             }
             return new ArrayList<>(result);
-        }
-
-        /** Fails closed when a declared correspondence has no exact port. */
-        private String requireInput(String demand, String source) {
-            if (!inputs.containsKey(demand)) {
-                throw new IllegalStateException(source
-                        + " has no projected input port: " + demand);
-            }
-            return demand;
         }
 
         private static List<String> boundaryCells(
@@ -4933,50 +4350,17 @@ public final class RuntimeSelectedRegionFinalizer {
         }
     }
 
-    private static final class DeclaredCarrierPair {
-        private final int producerObject;
-        private final int consumerObject;
-        private final List<String> path;
-
-        private DeclaredCarrierPair(int producerObject, int consumerObject,
-                                    List<String> path) {
-            this.producerObject = producerObject;
-            this.consumerObject = consumerObject;
-            this.path = Collections.unmodifiableList(
-                    new ArrayList<>(path));
-        }
-    }
-
-    private static final class ExactParameterIdentity {
-        private final String parameterCell;
-        private final String method;
-        private final int parameterIndex;
-        private final String javaType;
-
-        private ExactParameterIdentity(String parameterCell, String method,
-                                       int parameterIndex,
-                                       String javaType) {
-            this.parameterCell = parameterCell;
-            this.method = method;
-            this.parameterIndex = parameterIndex;
-            this.javaType = javaType;
-        }
-    }
-
     private static final class RpcDescendantProjectionIndex {
         private final Map<String, Map<String, Object>> regions =
                 new LinkedHashMap<>();
         private final Map<String, List<RpcDescendantCandidate>> candidates =
                 new LinkedHashMap<>();
+        private final Map<String, Map<String, RpcDescendantCandidate>>
+                boundaryScalarWrites = new LinkedHashMap<>();
         private final Map<String, List<ExactPort>> ports =
                 new LinkedHashMap<>();
-        private final Map<String, List<RpcDescendantCandidate>> byReceiver =
-                new LinkedHashMap<>();
-        private final Map<String, List<ExactParameterIdentity>>
-                parameterIdentities = new LinkedHashMap<>();
         private final Map<String, List<Map<String, Object>>> membersByValue =
                 new LinkedHashMap<>();
-        private final StaticValueFlowIndex valueFlow;
 
         private RpcDescendantProjectionIndex(
                 List<Map<String, Object>> regionRows,
@@ -4989,7 +4373,6 @@ public final class RuntimeSelectedRegionFinalizer {
                 indexPorts(regionId, rows(region.get("outputs")), true);
             }
             for (Map<String, Object> edge : graph) {
-                indexParameterIdentity(edge);
                 for (Map<String, Object> binding
                         : rows(edge.get("runtimeFieldBindings"))) {
                     indexContainerMember(binding);
@@ -5010,57 +4393,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     }
                 }
             }
-            valueFlow = new StaticValueFlowIndex(graph);
-        }
-
-        private void indexParameterIdentity(Map<String, Object> edge) {
-            if (!"SOOT_EXACT_PARAMETER_IDENTITY_BINDING_V1".equals(
-                    text(edge.get("valueFlowAuthority")))
-                    || !"PARAMETER_IDENTITY".equals(
-                    text(edge.get("directCopyKind")))) {
-                return;
-            }
-            String method = text(edge.get("method"));
-            String parameterCell = text(edge.get("fromCell"));
-            String localCell = text(edge.get("toCell"));
-            String prefix = method + ".param";
-            if (method.isEmpty() || localCell.isEmpty()
-                    || !parameterCell.startsWith(prefix)) {
-                return;
-            }
-            int colon = parameterCell.indexOf(':', prefix.length());
-            if (colon < 0) return;
-            int parameterIndex;
-            try {
-                parameterIndex = Integer.parseInt(parameterCell.substring(
-                        prefix.length(), colon));
-            } catch (RuntimeException invalid) {
-                return;
-            }
-            String type = parameterCell.substring(colon + 1).trim();
-            if (parameterIndex < 0 || type.isEmpty()) return;
-            ExactParameterIdentity identity = new ExactParameterIdentity(
-                    parameterCell, method, parameterIndex, type);
-            for (String region : strings(edge.get("regionIds"))) {
-                parameterIdentities.computeIfAbsent(
-                        contextKey(region, localCell),
-                        ignored -> new ArrayList<>()).add(identity);
-            }
-        }
-
-        private ExactParameterIdentity exactParameterIdentity(
-                String region, String localCell, String javaType) {
-            ExactParameterIdentity match = null;
-            for (ExactParameterIdentity identity
-                    : parameterIdentities.getOrDefault(
-                    contextKey(region, localCell),
-                    Collections.<ExactParameterIdentity>emptyList())) {
-                if (javaType.equals(identity.javaType)) {
-                    if (match != null) return null;
-                    match = identity;
-                }
-            }
-            return match;
         }
 
         private void indexContainerMember(Map<String, Object> binding) {
@@ -5112,8 +4444,7 @@ public final class RuntimeSelectedRegionFinalizer {
             long eventSeq = longNumber(binding.get("eventSeq"), -1L);
             if (field == null || region.isEmpty() || rootCallId < 0L
                     || eventSeq < 0L
-                    || rpcProjectionKind(field.type).isEmpty()
-                    && !rpcCarrierReferenceType(field.type)) {
+                    || !rpcProjectableScalarLeafType(field.type)) {
                 return;
             }
             int receiver = number(binding.get(accessor ? "receiverObjectId"
@@ -5121,23 +4452,21 @@ public final class RuntimeSelectedRegionFinalizer {
             RpcDescendantCandidate candidate = new RpcDescendantCandidate(
                     region, rootCallId, transfer, declaration, field.type,
                     staticAccessSiteId(edge), eventSeq, receiver,
-                    number(binding.get("valueObjectId"), 0),
-                    observedContainerWidth(edge, binding), edge, binding,
+                    number(binding.get("valueObjectId"), 0), edge, binding,
                     accessor);
             String key = endpointKey(region, rootCallId, transfer);
             candidates.computeIfAbsent(key,
                     ignored -> new ArrayList<>()).add(candidate);
-            if (receiver != 0) {
-                byReceiver.computeIfAbsent(transfer + "\n" + receiver,
-                        ignored -> new ArrayList<>()).add(candidate);
+            if ("HEAP_WRITE".equals(transfer)) {
+                String process = text(binding.get("process"));
+                if (!process.isEmpty() && receiver != 0) {
+                    boundaryScalarWrites.computeIfAbsent(
+                            boundaryScalarWriterKey(process, receiver,
+                                    declaration),
+                            ignored -> new LinkedHashMap<>()).putIfAbsent(
+                            exactCandidateAccessKey(candidate), candidate);
+                }
             }
-        }
-
-        /** Recorded accesses whose receiver is one concrete object. */
-        private List<RpcDescendantCandidate> onReceiver(String transfer,
-                                                        int receiver) {
-            return byReceiver.getOrDefault(transfer + "\n" + receiver,
-                    Collections.<RpcDescendantCandidate>emptyList());
         }
 
         private void indexPorts(String region,
@@ -5185,6 +4514,14 @@ public final class RuntimeSelectedRegionFinalizer {
                 String region, long rootCallId, String transfer) {
             return candidates.getOrDefault(endpointKey(region, rootCallId,
                     transfer), Collections.<RpcDescendantCandidate>emptyList());
+        }
+
+        private List<RpcDescendantCandidate> boundaryScalarWrites(
+                String process, int receiver, String declaration) {
+            return new ArrayList<>(boundaryScalarWrites.getOrDefault(
+                    boundaryScalarWriterKey(process, receiver, declaration),
+                    Collections.<String, RpcDescendantCandidate>emptyMap())
+                    .values());
         }
 
         private ExactPort exactPort(RpcDescendantCandidate candidate,
@@ -5276,6 +4613,19 @@ public final class RuntimeSelectedRegionFinalizer {
             return region + "\n" + rootCallId + "\n" + transfer;
         }
 
+        private static String boundaryScalarWriterKey(
+                String process, int receiver, String declaration) {
+            return process + "\n" + receiver + "\n" + declaration;
+        }
+
+        private static String exactCandidateAccessKey(
+                RpcDescendantCandidate candidate) {
+            return candidate.region + "\n" + candidate.rootCallId + "\n"
+                    + candidate.staticSite + "\n" + candidate.eventSeq + "\n"
+                    + candidate.receiverObjectId + "\n"
+                    + candidate.declaration;
+        }
+
         private static String exactPortKey(String region, long rootCallId,
                                            boolean output,
                                            String declaration,
@@ -5296,7 +4646,6 @@ public final class RuntimeSelectedRegionFinalizer {
         private final long eventSeq;
         private final int receiverObjectId;
         private final int valueObjectId;
-        private final int observedWidth;
         private final Map<String, Object> edge;
         private final Map<String, Object> binding;
         private final boolean accessor;
@@ -5305,7 +4654,6 @@ public final class RuntimeSelectedRegionFinalizer {
                 String region, long rootCallId, String transfer,
                 String declaration, String type, String staticSite,
                 long eventSeq, int receiverObjectId, int valueObjectId,
-                int observedWidth,
                 Map<String, Object> edge, Map<String, Object> binding,
                 boolean accessor) {
             this.region = region;
@@ -5317,7 +4665,6 @@ public final class RuntimeSelectedRegionFinalizer {
             this.eventSeq = eventSeq;
             this.receiverObjectId = receiverObjectId;
             this.valueObjectId = valueObjectId;
-            this.observedWidth = observedWidth;
             this.edge = edge;
             this.binding = binding;
             this.accessor = accessor;
@@ -5340,62 +4687,6 @@ public final class RuntimeSelectedRegionFinalizer {
                           Map<String, Object> access) {
             this.port = port;
             this.access = access;
-        }
-    }
-
-    private static final class StaticValueFlowIndex {
-        private final Map<String, List<String>> outgoing =
-                new LinkedHashMap<>();
-        private final Map<String, Boolean> reachability =
-                new LinkedHashMap<>();
-
-        private StaticValueFlowIndex(List<Map<String, Object>> graph) {
-            for (Map<String, Object> edge : graph) {
-                String transfer = text(edge.get("transferKind"));
-                if ("GUARD".equals(transfer)
-                        || "PROTOCOL_TRANSFER".equals(transfer)
-                        || "EXCEPTION".equals(transfer)
-                        || "UNKNOWN".equals(transfer)) {
-                    continue;
-                }
-                String from = text(edge.get("fromCell"));
-                String to = text(edge.get("toCell"));
-                if (from.isEmpty() || to.isEmpty()) continue;
-                for (String region : strings(edge.get("regionIds"))) {
-                    String key = contextKey(region, from);
-                    List<String> values = outgoing.computeIfAbsent(key,
-                            ignored -> new ArrayList<>());
-                    if (!values.contains(to)) values.add(to);
-                }
-            }
-        }
-
-        private boolean reaches(String region, String from, String to) {
-            if (region.isEmpty() || from.isEmpty() || to.isEmpty()) {
-                return false;
-            }
-            if (from.equals(to)) return true;
-            String cacheKey = region + "\n" + from + "\n" + to;
-            Boolean cached = reachability.get(cacheKey);
-            if (cached != null) return cached;
-            Set<String> visited = new LinkedHashSet<>();
-            Deque<String> work = new ArrayDeque<>();
-            work.add(from);
-            while (!work.isEmpty()) {
-                String current = work.removeFirst();
-                if (!visited.add(current)) continue;
-                for (String next : outgoing.getOrDefault(
-                        contextKey(region, current),
-                        Collections.<String>emptyList())) {
-                    if (to.equals(next)) {
-                        reachability.put(cacheKey, true);
-                        return true;
-                    }
-                    if (!visited.contains(next)) work.addLast(next);
-                }
-            }
-            reachability.put(cacheKey, false);
-            return false;
         }
     }
 

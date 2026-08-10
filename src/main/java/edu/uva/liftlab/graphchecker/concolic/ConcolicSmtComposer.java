@@ -166,6 +166,7 @@ public final class ConcolicSmtComposer {
         emitter.unsupported.addAll(resolved.gaps);
 
         List<String> fatalTerms = new ArrayList<>();
+        List<String> fatalPrefixTerms = new ArrayList<>();
         String previousFatalScope = emitter.enterSymbolScope("fatal:"
                 + firstNonBlank(string(fatal, "regionInstanceId"),
                 string(fatal, "queryId"), fatalSite,
@@ -174,20 +175,46 @@ public final class ConcolicSmtComposer {
             int pathOrdinal = 0;
             for (JsonElement element : array(fatal, "paths")) {
                 JsonObject path = element.getAsJsonObject();
-                String label = "fatal target path " + pathOrdinal++;
+                int selectedPathOrdinal = pathOrdinal++;
+                String label = "fatal target path " + selectedPathOrdinal;
                 List<String> pathTerms = new ArrayList<>();
-                for (JsonElement constraint
-                        : array(path, "constraints")) {
-                    pathTerms.add(emitter.constraint(constraint, label));
+                List<String> prefixTerms = new ArrayList<>();
+                JsonArray constraints = array(path, "constraints");
+                for (int constraintIndex = 0;
+                     constraintIndex < constraints.size();
+                     constraintIndex++) {
+                    boolean fatalCondition = constraintIndex
+                            == constraints.size() - 1;
+                    if (fatalCondition) {
+                        emitter.beginFatalOperandCapture(
+                                selectedPathOrdinal);
+                    }
+                    try {
+                        String constraintTerm = emitter.constraint(
+                                constraints.get(constraintIndex), label);
+                        pathTerms.add(constraintTerm);
+                        if (!fatalCondition) {
+                            prefixTerms.add(constraintTerm);
+                        }
+                    } finally {
+                        if (fatalCondition) {
+                            emitter.endFatalOperandCapture();
+                        }
+                    }
                 }
                 String pathTerm = and(pathTerms);
+                String prefixTerm = and(prefixTerms);
                 fatalTerms.add(pathTerm);
-                emitter.bindFatalPath(pathOrdinal - 1, pathTerm);
+                fatalPrefixTerms.add(prefixTerm);
+                emitter.bindFatalPathPrefix(selectedPathOrdinal,
+                        prefixTerm);
+                emitter.bindFatalPath(selectedPathOrdinal, pathTerm);
             }
         } finally {
             emitter.restoreSymbolScope(previousFatalScope);
         }
-        emitter.assertNamed("fatal_path", or(fatalTerms));
+        emitter.bindFatalPrefixAssertion(or(fatalPrefixTerms));
+        emitter.bindFatalPathAssertion(or(fatalTerms));
 
         for (RelationSummary selection
                 : resolved.selectedRegionSummaries.values()) {
@@ -224,6 +251,8 @@ public final class ConcolicSmtComposer {
                 GSON.toJsonTree(emitter.suppliedInputs));
         manifest.add("canonicalPortOccurrences",
                 emitter.canonicalPortOccurrences());
+        manifest.add("operandBindingLedger",
+                emitter.operandBindingLedger());
         manifest.addProperty("droppedEdgeEvidenceAudit",
                 auditedEdgeEvidence ? "AUDITED"
                         : "EDGE_VALIDATIONS_NOT_SUPPLIED");
@@ -1438,7 +1467,8 @@ public final class ConcolicSmtComposer {
         }
 
         private void connect(Emitter.VersionedWriter writer,
-                             PortOccurrence target, String writerGuard) {
+                             PortOccurrence target, String writerGuard,
+                             String targetState) {
             List<RemovalCaseEffect> candidates = effects.get(writer.source);
             if (candidates == null) return;
             for (Demand demand : demands) {
@@ -1454,7 +1484,9 @@ public final class ConcolicSmtComposer {
                             writerGuard, effect.selector,
                             demand.keyPrecondition, effect.precondition,
                             "(= " + effect.removedKey + " "
-                                    + demand.keyTerm + ")")));
+                                    + demand.keyTerm + ")",
+                            "(not (assoc_has " + targetState + " "
+                                    + demand.keyTerm + "))")));
                 }
             }
         }
@@ -2023,6 +2055,28 @@ public final class ConcolicSmtComposer {
                 new LinkedHashSet<>();
         private final Map<String, JsonObject> canonicalPortOccurrences =
                 new LinkedHashMap<>();
+        /**
+         * Solver terms read by the final branch condition of each fatal
+         * path.  These are captured while lowering the real expression, so
+         * the audit consumes the exact terms and sorts emitted to SMT rather
+         * than reconstructing them from source names.
+         */
+        private final Map<String, FatalOperand> fatalOperands =
+                new LinkedHashMap<>();
+        /** Exact value-carrying named assertions, indexed by runtime edge. */
+        private final List<ProducerVersionBinding> producerVersionBindings =
+                new ArrayList<>();
+        private boolean capturingFatalOperands;
+        private int capturedFatalPathOrdinal = -1;
+        private int nextFatalOperandOrdinal;
+        private String fatalPrefixAssertionName = "";
+        private String fatalPrefixAssertionTerm = "";
+        private String fatalPathAssertionName = "";
+        private String fatalPathAssertionTerm = "";
+        private final Map<Integer, String> fatalPathPrefixes =
+                new LinkedHashMap<>();
+        private final Set<String> fatalDependentAssertionNames =
+                new LinkedHashSet<>();
         /** Definedness facts collected while lowering one container term. */
         private Set<String> currentContainerRequirements;
         private String currentGuard = "";
@@ -2066,6 +2120,16 @@ public final class ConcolicSmtComposer {
             currentSymbolScope = firstNonBlank(scope, "global");
         }
 
+        private void beginFatalOperandCapture(int pathOrdinal) {
+            capturingFatalOperands = true;
+            capturedFatalPathOrdinal = pathOrdinal;
+        }
+
+        private void endFatalOperandCapture() {
+            capturingFatalOperands = false;
+            capturedFatalPathOrdinal = -1;
+        }
+
         private void begin(JsonObject fatal) {
             preamble.add("; GraphChecker composed concolic query");
             preamble.add("; fatal region: " + string(fatal, "regionId"));
@@ -2107,6 +2171,46 @@ public final class ConcolicSmtComposer {
                 demand.keyTerm = key.text;
                 demand.keyPrecondition = key.precondition;
             }
+        }
+
+        private void bindFatalPathAssertion(String pathTerm) {
+            fatalPathAssertionTerm = pathTerm;
+            fatalPathAssertionName = assertNamed("fatal_path", pathTerm);
+            fatalDependentAssertionNames.add(fatalPathAssertionName);
+        }
+
+        private void bindFatalPathPrefix(int pathOrdinal,
+                                         String prefixTerm) {
+            fatalPathPrefixes.put(pathOrdinal,
+                    firstNonBlank(prefixTerm, "true"));
+        }
+
+        private void bindFatalPrefixAssertion(String prefixTerm) {
+            fatalPrefixAssertionTerm = prefixTerm;
+            fatalPrefixAssertionName = assertNamed(
+                    "fatal_path_prefix", prefixTerm);
+        }
+
+        private void captureFatalOperand(JsonObject expression, Term term) {
+            if (!capturingFatalOperands || term == null) return;
+            String raw = string(expression, "_exp");
+            // These are fixed engine literals, not solver operands.
+            if ("N".equals(raw) || "V".equals(raw)) return;
+            String port = findPort(raw);
+            PortOccurrence occurrence = port.isEmpty() ? null
+                    : currentOccurrence(port);
+            String javaType = string(expression, "_java_type");
+            Term pin = term.sort == Sort.VALUE || term.sort == Sort.MAP
+                    || term.sort == Sort.ARRAY_VALUE
+                    ? term : asValue(term, javaType);
+            String key = capturedFatalPathOrdinal + "\u0000" + term.text
+                    + "\u0000" + term.sort.name();
+            if (fatalOperands.containsKey(key)) return;
+            String operandId = "fatal_operand_" + capturedFatalPathOrdinal
+                    + "_" + nextFatalOperandOrdinal++;
+            fatalOperands.put(key, new FatalOperand(operandId,
+                    capturedFatalPathOrdinal,
+                    term.text, term.sort, pin.text, pin.sort, occurrence));
         }
 
         /**
@@ -2332,7 +2436,9 @@ public final class ConcolicSmtComposer {
             JsonObject object = expression.getAsJsonObject();
             String type = string(object, "_type");
             if ("SymbolExpression".equals(type)) {
-                return symbol(object, expected);
+                Term result = symbol(object, expected);
+                captureFatalOperand(object, result);
+                return result;
             }
             if ("ConstExpr".equals(type)
                     || "ConSymbolExp".equals(type)
@@ -2365,8 +2471,10 @@ public final class ConcolicSmtComposer {
                         .substring(0, 10);
                 declare(name, Sort.INT);
                 assertJavaIntegralDomain(name, Sort.INT, "J", identity);
-                return new Term(name, Sort.INT,
+                Term result = new Term(name, Sort.INT,
                         IntegralWidth.JAVA_LONG);
+                captureFatalOperand(object, result);
+                return result;
             }
             if ("TypeCastExpression".equals(type)) {
                 return typeCast(object);
@@ -2813,6 +2921,117 @@ public final class ConcolicSmtComposer {
             for (Map.Entry<String, JsonObject> row : rows) {
                 result.add(row.getValue().deepCopy());
             }
+            return result;
+        }
+
+        /**
+         * Emits the minimum solver-native evidence required by a generic
+         * pin/ablation audit.  The ledger deliberately contains no source
+         * method, application field, or expected value: it names only terms,
+         * sorts, dynamic ports, runtime edge ids, and the exact assertions
+         * already present in the generated SMT.
+         */
+        private JsonObject operandBindingLedger() {
+            JsonObject result = new JsonObject();
+            result.addProperty("schemaVersion", 2);
+            result.addProperty("kind", "FATAL_OPERAND_BINDING_LEDGER");
+            JsonObject fatalAssertion = new JsonObject();
+            fatalAssertion.addProperty("name", fatalPathAssertionName);
+            fatalAssertion.addProperty("solverTerm",
+                    fatalPathAssertionTerm);
+            result.add("fatalPathAssertion", fatalAssertion);
+            result.add("fatalDependentAssertionNames", GSON.toJsonTree(
+                    fatalDependentAssertionNames));
+            JsonObject retainedPrefix = new JsonObject();
+            retainedPrefix.addProperty("name", fatalPrefixAssertionName);
+            retainedPrefix.addProperty("solverTerm",
+                    fatalPrefixAssertionTerm);
+            result.add("retainedPathPrefixAssertion", retainedPrefix);
+
+            JsonArray paths = new JsonArray();
+            for (Map.Entry<Integer, String> entry
+                    : fatalPathPrefixes.entrySet()) {
+                int operandCount = 0;
+                for (FatalOperand operand : fatalOperands.values()) {
+                    if (operand.pathOrdinal == entry.getKey()) {
+                        operandCount++;
+                    }
+                }
+                JsonObject path = new JsonObject();
+                path.addProperty("pathOrdinal", entry.getKey());
+                path.addProperty("pathPrefixTerm", entry.getValue());
+                path.addProperty("operandCount", operandCount);
+                paths.add(path);
+            }
+            result.add("paths", paths);
+
+            JsonArray operands = new JsonArray();
+            for (FatalOperand operand : fatalOperands.values()) {
+                JsonObject row = new JsonObject();
+                row.addProperty("operandId", operand.operandId);
+                row.addProperty("pathOrdinal", operand.pathOrdinal);
+                row.addProperty("solverTerm", operand.solverTerm);
+                row.addProperty("solverSort", operand.solverSort.smt);
+                boolean exactOccurrence = operand.occurrence != null;
+                row.addProperty("pinTerm", exactOccurrence
+                        ? operand.solverTerm : operand.pinTerm);
+                row.addProperty("pinSort", exactOccurrence
+                        ? operand.solverSort.smt : operand.pinSort.smt);
+                row.addProperty("pathPrefixTerm",
+                        fatalPathPrefixes.getOrDefault(
+                                operand.pathOrdinal, "true"));
+                if (operand.occurrence != null) {
+                    row.addProperty("portId", operand.occurrence.portId);
+                    row.addProperty("regionInstanceId",
+                            operand.occurrence.invocation.instanceId);
+                    row.addProperty("producerLineageStatus",
+                            "EXACT_TARGET_PORT_OCCURRENCE");
+                } else {
+                    row.addProperty("producerLineageStatus",
+                            "UNAUDITABLE_NO_EXACT_PRODUCER_LINEAGE");
+                }
+                JsonArray versions = new JsonArray();
+                Set<String> emitted = new LinkedHashSet<>();
+                for (ProducerVersionBinding binding
+                        : producerVersionBindings) {
+                    // Producer-version evidence belongs only to the exact
+                    // dynamic consumer port occurrence named by this fatal
+                    // operand.  A same-sort producer elsewhere in the composed
+                    // workflow is not lineage evidence for an engine-local
+                    // temporary, even when both happen to take the same value.
+                    if (!exactOccurrence
+                            || !operand.occurrence.equals(binding.target)
+                            || operand.solverSort != binding.solverSort) {
+                        continue;
+                    }
+                    String key = binding.edgeId + "\u0000"
+                            + binding.assertionName + "\u0000"
+                            + binding.solverTerm;
+                    if (!emitted.add(key)) continue;
+                    versions.add(binding.toJson());
+                }
+                row.add("producerVersions", versions);
+                operands.add(row);
+            }
+            result.add("operands", operands);
+
+            Map<String, Set<String>> assertionsByEdge =
+                    new LinkedHashMap<>();
+            for (ProducerVersionBinding binding : producerVersionBindings) {
+                assertionsByEdge.computeIfAbsent(binding.edgeId,
+                        ignored -> new LinkedHashSet<>()).add(
+                        binding.assertionName);
+            }
+            JsonArray edges = new JsonArray();
+            for (Map.Entry<String, Set<String>> entry
+                    : assertionsByEdge.entrySet()) {
+                JsonObject edge = new JsonObject();
+                edge.addProperty("edgeId", entry.getKey());
+                edge.add("assertionNames", GSON.toJsonTree(
+                        entry.getValue()));
+                edges.add(edge);
+            }
+            result.add("edgeAssertions", edges);
             return result;
         }
 
@@ -4333,6 +4552,8 @@ public final class ConcolicSmtComposer {
                             + port);
                     continue;
                 }
+                requireExactRuntimePutReferenceValue(port,
+                        entry.getValue(), closure);
                 requireObservedSnapshotReferenceMembers(entry.getValue());
                 Term value = term(entry.getValue(), portSort(port));
                 if (value.sort == Sort.MAP
@@ -4342,6 +4563,82 @@ public final class ConcolicSmtComposer {
                 bindPort(port, value);
             }
             bindReferenceIdentityOutputs(region, summary, closure);
+        }
+
+        /**
+         * Preserves the non-null identity of the reference value observed by
+         * one exact runtime {@code Map.put} completion.
+         *
+         * <p>The selected output event is the join key between the imported
+         * output closure and the static port's runtime-access ledger.  A
+         * constraint is emitted only when that join selects exactly one
+         * access in the same root invocation, the access carries the exact
+         * associative-put provenance authority, and its recorded value object
+         * id is non-zero.  Consequently no Java type, symbol spelling, or
+         * application-specific name is used to infer nullness.</p>
+         *
+         * <p>That runtime event completes the outermost mutation represented
+         * by the selected output expression.  Earlier {@code PUT}s on the
+         * receiver spine are not constrained by this evidence.</p>
+         */
+        private void requireExactRuntimePutReferenceValue(
+                String port, JsonElement expression,
+                OutputClosureContract closure) {
+            OutputClosureContract.Member member = closure.member(port);
+            Port schema = ports.get(port);
+            if (member == null || schema == null
+                    || expression == null || !expression.isJsonObject()) {
+                return;
+            }
+            long selectedEvent = longInteger(member.slice(),
+                    "selectedRuntimeEventSeq", -1L);
+            if (selectedEvent < 0L) return;
+
+            JsonObject selectedAccess = null;
+            int selectedAccessCount = 0;
+            for (JsonElement element : array(schema.metadata,
+                    "runtimeAccesses")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject access = element.getAsJsonObject();
+                if (longInteger(access, "eventSeq", -1L)
+                        != selectedEvent
+                        || longInteger(access, "rootCallId", -1L)
+                        != closure.producer().rootCallId()) {
+                    continue;
+                }
+                selectedAccess = access;
+                selectedAccessCount++;
+            }
+            if (selectedAccessCount != 1
+                    || !"EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1"
+                    .equals(string(selectedAccess,
+                            "containerMemberIdentityAuthority"))
+                    || longInteger(selectedAccess,
+                            "containerValueObjectId", 0L) <= 0L) {
+                return;
+            }
+
+            JsonObject relation = expression.getAsJsonObject();
+            JsonArray arguments = array(relation, "arguments");
+            if (!ContainerSmtCodec.EXPRESSION_TYPE.equals(
+                    string(relation, "_type"))
+                    || !"ASSOCIATIVE".equals(string(relation, "shape"))
+                    || !"PUT".equals(string(relation, "operation"))
+                    || arguments.size() != 2) {
+                return;
+            }
+            JsonElement valueExpression = arguments.get(1);
+            Term value = term(valueExpression, null);
+            if (value.sort != Sort.REF || isNull(value)) return;
+            String identity = currentSymbolScope + "\u0000" + port
+                    + "\u0000" + selectedEvent + "\u0000"
+                    + longInteger(selectedAccess,
+                    "containerValueObjectId", 0L) + "\u0000"
+                    + CanonicalJson.render(valueExpression);
+            assertNamed("exact_runtime_put_reference_non_null_"
+                            + CanonicalJson.sha256(identity)
+                            .substring(0, 16),
+                    "(distinct " + value.text + " nullRef)");
         }
 
         /**
@@ -4614,14 +4911,13 @@ public final class ConcolicSmtComposer {
             return true;
         }
 
-        private boolean assertGuardedPortEquality(PortOccurrence left,
-                                                  PortOccurrence right,
-                                                  String guard,
-                                                  String label) {
-            if (!preparePortEquality(left, right)) return false;
-            assertNamed(label, "(=> " + guard + " (= " + portName(left)
-                    + " " + portName(right) + "))");
-            return true;
+        private String assertGuardedPortEquality(PortOccurrence left,
+                                                 PortOccurrence right,
+                                                 String guard,
+                                                 String label) {
+            if (!preparePortEquality(left, right)) return "";
+            return assertNamed(label, "(=> " + guard + " (= "
+                    + portName(left) + " " + portName(right) + "))");
         }
 
         /**
@@ -4787,12 +5083,17 @@ public final class ConcolicSmtComposer {
                 assertNamed("state_writer_guard_definition__" + suffix
                         + "_" + index, "(= " + guard + " "
                         + and(latest) + ")");
-                if (assertGuardedPortEquality(writer.source, target, guard,
-                        "state_writer_value__" + suffix + "_" + index)) {
+                String valueAssertion = assertGuardedPortEquality(
+                        writer.source, target, guard,
+                        "state_writer_value__" + suffix + "_" + index);
+                if (!valueAssertion.isEmpty()) {
                     guards.add(guard);
                     emittedVersionedBindings.add(
                             versionedBindingKey(writer.binding));
-                    failureWitness.connect(writer, target, guard);
+                    recordProducerVersionBinding(writer.binding,
+                            writer.source, target, valueAssertion);
+                    failureWitness.connect(writer, target, guard,
+                            portName(target));
                 }
             }
 
@@ -4869,15 +5170,19 @@ public final class ConcolicSmtComposer {
                 boolean valueEquality = "EQUALITY".equals(
                         bindingRelationKind(binding));
                 if (valueEquality) {
-                    boolean equalityEmitted = assertPortEquality(
+                    String equalityAssertion = assertPortEqualityNamed(
                             outputOccurrence,
                             inputOccurrence, label);
-                    if (equalityEmitted) {
+                    if (!equalityAssertion.isEmpty()) {
+                        recordProducerVersionBinding(binding,
+                                outputOccurrence, inputOccurrence,
+                                equalityAssertion);
                         emitProtocolCausalOrder(binding, label);
                         validateIncomingEdgeInput(inputOccurrence, input);
                         failureWitness.connect(new VersionedWriter(binding,
                                         outputOccurrence, ""),
-                                inputOccurrence, "true");
+                                inputOccurrence, "true",
+                                portName(inputOccurrence));
                     } else {
                         heapGap("EdgeBindingEqualityGap@" + region
                                 + ":" + output + "->" + input);
@@ -4956,6 +5261,116 @@ public final class ConcolicSmtComposer {
                     + bindingTargetInput(binding) + "\n"
                     + longInteger(binding, "writerEventSeq", -1L) + "\n"
                     + longInteger(binding, "readerEventSeq", -1L);
+        }
+
+        private void recordProducerVersionBinding(
+                JsonObject binding, PortOccurrence source,
+                PortOccurrence target, String assertionName) {
+            String edgeId = string(binding, "edgeId");
+            if (edgeId.isEmpty() || assertionName.isEmpty()) return;
+            Term producer = producerSolverTerm(source);
+            producerVersionBindings.add(new ProducerVersionBinding(
+                    edgeId, target, producer.text,
+                    producer.sort, assertionName));
+        }
+
+        /**
+         * Projects a schema-level {@code Value} carrier back to the native
+         * solver sort used by an exact fatal operand.  The edge assertion
+         * equates the complete carriers, so applying the matching datatype
+         * selector preserves that exact producer lineage without comparing
+         * unrelated values of the same sort.
+         */
+        private Term producerSolverTerm(PortOccurrence source) {
+            String carrier = portName(source);
+            Sort carrierSort = portSort(source);
+            Port schema = ports.get(source.portId);
+            String javaType = schema == null ? "" : schema.javaType;
+            Sort nativeSort = sortOfJava(javaType);
+            if (carrierSort != Sort.VALUE || nativeSort == Sort.VALUE) {
+                return new Term(carrier, carrierSort);
+            }
+            if (nativeSort == Sort.INT) {
+                String integral = ContainerSmtCodec.unboxIntegral(
+                        carrier, javaType);
+                if (!integral.isEmpty()) {
+                    return new Term(integral, Sort.INT,
+                            integralWidthOfJava(javaType));
+                }
+            }
+            if (nativeSort == Sort.BOOL) {
+                return new Term("(valueBool " + carrier + ")", Sort.BOOL);
+            }
+            if (nativeSort == Sort.FLOAT32) {
+                return new Term("(valueFloat " + carrier + ")",
+                        Sort.FLOAT32);
+            }
+            if (nativeSort == Sort.FLOAT64) {
+                return new Term("(valueDouble " + carrier + ")",
+                        Sort.FLOAT64);
+            }
+            if (nativeSort == Sort.STRING) {
+                return new Term("(valueString " + carrier + ")",
+                        Sort.STRING);
+            }
+            if (nativeSort == Sort.REF) {
+                return new Term("(valueRef " + carrier + ")", Sort.REF);
+            }
+            return new Term(carrier, carrierSort);
+        }
+
+        private static final class FatalOperand {
+            private final String operandId;
+            private final int pathOrdinal;
+            private final String solverTerm;
+            private final Sort solverSort;
+            private final String pinTerm;
+            private final Sort pinSort;
+            private final PortOccurrence occurrence;
+
+            private FatalOperand(String operandId, int pathOrdinal,
+                                 String solverTerm, Sort solverSort,
+                                 String pinTerm, Sort pinSort,
+                                 PortOccurrence occurrence) {
+                this.operandId = operandId;
+                this.pathOrdinal = pathOrdinal;
+                this.solverTerm = solverTerm;
+                this.solverSort = solverSort;
+                this.pinTerm = pinTerm;
+                this.pinSort = pinSort;
+                this.occurrence = occurrence;
+            }
+        }
+
+        private static final class ProducerVersionBinding {
+            private final String edgeId;
+            private final PortOccurrence target;
+            private final String solverTerm;
+            private final Sort solverSort;
+            private final String assertionName;
+
+            private ProducerVersionBinding(
+                    String edgeId, PortOccurrence target,
+                    String solverTerm, Sort solverSort,
+                    String assertionName) {
+                this.edgeId = edgeId;
+                this.target = target;
+                this.solverTerm = solverTerm;
+                this.solverSort = solverSort;
+                this.assertionName = assertionName;
+            }
+
+            private JsonObject toJson() {
+                JsonObject result = new JsonObject();
+                result.addProperty("edgeId", edgeId);
+                result.addProperty("solverTerm", solverTerm);
+                result.addProperty("solverSort", solverSort.smt);
+                result.addProperty("assertionName", assertionName);
+                result.addProperty("targetPortId", target.portId);
+                result.addProperty("targetRegionInstanceId",
+                        target.invocation.instanceId);
+                return result;
+            }
         }
 
         private static final class VersionedWriter {
@@ -5280,13 +5695,19 @@ public final class ConcolicSmtComposer {
         private boolean assertPortEquality(PortOccurrence left,
                                            PortOccurrence right,
                                            String label) {
-            if (!preparePortEquality(left, right)) return false;
+            return !assertPortEqualityNamed(left, right, label).isEmpty();
+        }
+
+        private String assertPortEqualityNamed(PortOccurrence left,
+                                               PortOccurrence right,
+                                               String label) {
+            if (!preparePortEquality(left, right)) return "";
             String formula = "(= " + portName(left) + " "
                     + portName(right) + ")";
-            assertNamed(label, formula);
+            String assertionName = assertNamed(label, formula);
             recordSuppliedInput(left, right);
             portEqualities.add(new PortOccurrence[]{left, right});
-            return true;
+            return assertionName;
         }
 
         private boolean preparePortEquality(PortOccurrence left,
@@ -5574,7 +5995,7 @@ public final class ConcolicSmtComposer {
             if (declarationKeys.add(key)) declarations.add(declaration);
         }
 
-        private void assertNamed(String name, String expression) {
+        private String assertNamed(String name, String expression) {
             String unique = smtName(name);
             if (!assertionNames.add(unique)) {
                 int suffix = 2;
@@ -5587,6 +6008,7 @@ public final class ConcolicSmtComposer {
                     : "(=> " + currentGuard + " " + expression + ")";
             assertions.add("(assert (! " + asserted + " :named "
                     + unique + "))");
+            return unique;
         }
 
         private boolean isNull(Term term) {
@@ -5685,8 +6107,9 @@ public final class ConcolicSmtComposer {
                 unsupported.add("FatalAbsenceMutationWitnessGap");
                 return;
             }
-            assertNamed("fatal_absence_mutation_witness",
-                    or(failureWitness.clauses));
+            fatalDependentAssertionNames.add(assertNamed(
+                    "fatal_absence_mutation_witness",
+                    or(failureWitness.clauses)));
         }
 
         private String render() {

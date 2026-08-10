@@ -70,7 +70,8 @@ public final class ConcolicScheduler {
 
     public static void main(String[] args) throws Exception {
         Arguments arguments = Arguments.parse(args);
-        Result result = schedule(arguments);
+        Result result = arguments.targetFirst
+                ? scheduleTargetFirst(arguments) : schedule(arguments);
         if (result.executionTasks.isEmpty()) {
             throw new IllegalStateException(noCandidateDiagnostic(arguments,
                     readJsonl(arguments.regionPlan)));
@@ -78,12 +79,28 @@ public final class ConcolicScheduler {
     }
 
     public static Result schedule(Arguments arguments) throws IOException {
+        if (arguments.targetFirst) {
+            return scheduleTargetFirst(arguments);
+        }
+        LoadedInputs loaded = loadInputs(arguments);
+        ProducerOutputProjection producerProjection =
+                readProducerProjection(arguments.producerProjection);
+        Result result = scheduleLoaded(arguments, loaded,
+                producerProjection);
+        writeResult(arguments.outputDirectory, result);
+        return result;
+    }
+
+    private static LoadedInputs loadInputs(Arguments arguments)
+            throws IOException {
         requireFile(arguments.regions, "symbolic regions");
         requireFile(arguments.regionPlan, "region plan");
         requireFile(arguments.edgeValidations, "runtime edge validation");
         requireFile(arguments.refinedGraph, "runtime-refined graph");
         Files.createDirectories(arguments.outputDirectory);
 
+        JsonObject regionPlanIdentity = arguments.targetFirst
+                ? artifactIdentity(arguments.regionPlan) : null;
         List<JsonObject> regions = readJsonl(arguments.regions);
         List<JsonObject> regionPlans = readJsonl(arguments.regionPlan);
         List<JsonObject> edges = readJsonl(arguments.edgeValidations);
@@ -93,8 +110,6 @@ public final class ConcolicScheduler {
         List<JsonObject> refinedGraph = readJsonl(arguments.refinedGraph);
         requireRefinedGraph(refinedGraph);
         DefinitionIndex definitions = DefinitionIndex.from(refinedGraph);
-        ProducerOutputProjection producerProjection =
-                readProducerProjection(arguments.producerProjection);
 
         Map<String, Region> regionIndex = new LinkedHashMap<>();
         for (JsonObject row : regions) {
@@ -105,8 +120,20 @@ public final class ConcolicScheduler {
         }
 
         MergePlan mergePlan = buildMergePlan(regionIndex, edges);
-        List<Candidate> candidates = candidates(arguments, regionPlans,
-                regionIndex, definitions, producerProjection);
+        if (regionPlanIdentity != null) {
+            requireArtifactIdentity(arguments.regionPlan,
+                    regionPlanIdentity, "region plan changed while loading");
+        }
+        return new LoadedInputs(regionPlans, summaries, regionIndex,
+                definitions, mergePlan, regionPlanIdentity);
+    }
+
+    private static Result scheduleLoaded(
+            Arguments arguments, LoadedInputs loaded,
+            ProducerOutputProjection producerProjection) {
+        List<Candidate> candidates = candidates(arguments,
+                loaded.regionPlans, loaded.regionIndex,
+                loaded.definitions, producerProjection);
         Collections.sort(candidates, Candidate.ORDER);
 
         Result result = new Result();
@@ -117,8 +144,8 @@ public final class ConcolicScheduler {
             }
             OutputClosureContract outputContract = candidate.outputContract();
             JsonObject captured = outputContract != null ? null
-                    : exactTargetSummary(candidate, summaries);
-            JsonArray edgeBindings = mergePlan
+                    : exactTargetSummary(candidate, loaded.summaries);
+            JsonArray edgeBindings = loaded.mergePlan
                     .outboundValueEqualityBindings(candidate.goal,
                             outputContract, candidate.projection);
             if (candidate.targetEdgeBindings != null) {
@@ -165,7 +192,7 @@ public final class ConcolicScheduler {
 
             if (captured != null && outputContract == null) {
                 JsonObject query = branchQuery(candidate, captured,
-                        mergePlan);
+                        loaded.mergePlan);
                 result.queries.add(query);
             }
             result.executionTasks.add(executionTask);
@@ -176,13 +203,587 @@ public final class ConcolicScheduler {
                     + "exactly one execution task; found "
                     + result.executionTasks.size());
         }
-        writeJsonl(arguments.outputDirectory.resolve(
-                        "execution_task_plan.jsonl"),
-                result.executionTasks);
-        writeJsonl(arguments.outputDirectory.resolve(
-                        "branch_queries.jsonl"),
-                result.queries);
         return result;
+    }
+
+    private static void writeResult(Path output, Result result)
+            throws IOException {
+        writeJsonl(output.resolve("execution_task_plan.jsonl"),
+                result.executionTasks);
+        writeJsonl(output.resolve("branch_queries.jsonl"), result.queries);
+    }
+
+    private static Result scheduleTargetFirst(Arguments arguments)
+            throws IOException {
+        LoadedInputs loaded = loadInputs(arguments);
+        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
+                RuntimeWorkflowDiscovery.rankedWorkflow(
+                        loaded.regionPlans);
+        if (workflow.scheduledTaskCount() > arguments.maxJobs) {
+            throw new IOException("selected exact closure exceeds max jobs: "
+                    + workflow.scheduledTaskCount() + " > "
+                    + arguments.maxJobs);
+        }
+
+        Map<String, JsonObject> tasks = new LinkedHashMap<>();
+        Map<String, JsonObject> producerComponents = new LinkedHashMap<>();
+        Map<String, JsonObject> queries = new LinkedHashMap<>();
+        for (RuntimeWorkflowDiscovery.Selection selection
+                : workflow.selections()) {
+            Result selected = scheduleLoaded(
+                    arguments.forSelection(selection), loaded,
+                    selection.producerProjection);
+            if (selected.executionTasks.size() != 1) {
+                throw new IOException("target-first selection emitted "
+                        + selected.executionTasks.size()
+                        + " execution tasks; campaign="
+                        + selection.campaignId);
+            }
+            JsonObject task = selected.executionTasks.get(0);
+            if (selection.producerProjection == null) {
+                putUnique(tasks, task, "taskId");
+            } else {
+                JsonObject prior = producerComponents.putIfAbsent(
+                        selection.campaignId, task);
+                if (prior != null && !prior.equals(task)) {
+                    throw new IOException("conflicting producer component "
+                            + selection.campaignId);
+                }
+            }
+            for (JsonObject query : selected.queries) {
+                putUnique(queries, query, "queryKey");
+            }
+        }
+        for (JsonObject atomic : atomicProducerTasks(workflow,
+                producerComponents)) {
+            putUnique(tasks, atomic, "taskId");
+        }
+
+        Result result = new Result();
+        result.executionTasks.addAll(sortedValues(tasks));
+        result.queries.addAll(sortedValues(queries));
+        writeResult(arguments.outputDirectory, result);
+        Path taskPlan = arguments.outputDirectory.resolve(
+                "execution_task_plan.jsonl");
+        JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
+        JsonObject index = workflow.scheduleIndex(result.executionTasks,
+                loaded.regionPlanIdentity, taskPlanIdentity);
+        requireArtifactIdentity(arguments.regionPlan,
+                loaded.regionPlanIdentity,
+                "region plan changed while scheduling");
+        requireArtifactIdentity(taskPlan, taskPlanIdentity,
+                "execution task plan changed before index publication");
+        ArtifactIO.replace(arguments.outputDirectory.resolve(
+                        "selected_target_binding.tsv"),
+                workflow.targetBinding() + "\n");
+        StringBuilder closure = new StringBuilder();
+        for (String binding : workflow.closureBindings()) {
+            closure.append(binding).append('\n');
+        }
+        ArtifactIO.replace(arguments.outputDirectory.resolve(
+                        "selected_closure_bindings.tsv"),
+                closure.toString());
+        // The integrity-checked index is the commit record.  Publish it only
+        // after every artifact it describes or accompanies is durable.
+        ArtifactIO.replace(arguments.outputDirectory.resolve(
+                        "runtime_workflow_schedule_index.json"),
+                CanonicalJson.render(index) + "\n");
+        return result;
+    }
+
+    private static JsonObject artifactIdentity(Path path)
+            throws IOException {
+        JsonObject result = new JsonObject();
+        result.addProperty("sha256", ArtifactIO.sha256(path));
+        result.addProperty("sizeBytes", Files.size(path));
+        return result;
+    }
+
+    private static void requireArtifactIdentity(
+            Path path, JsonObject expected, String message)
+            throws IOException {
+        JsonObject actual = artifactIdentity(path);
+        if (expected == null || !expected.equals(actual)) {
+            throw new IOException(message + ": " + path);
+        }
+    }
+
+    private static void putUnique(Map<String, JsonObject> values,
+                                  JsonObject row, String identity)
+            throws IOException {
+        String key = JsonFields.string(row, identity);
+        if (key.isEmpty()) {
+            throw new IOException("scheduled row has no " + identity);
+        }
+        JsonObject prior = values.putIfAbsent(key, row);
+        if (prior != null && !prior.equals(row)) {
+            throw new IOException("conflicting scheduled " + identity
+                    + ": " + key);
+        }
+    }
+
+    private static List<JsonObject> sortedValues(
+            Map<String, JsonObject> values) {
+        List<String> keys = new ArrayList<>(values.keySet());
+        Collections.sort(keys);
+        List<JsonObject> result = new ArrayList<>();
+        for (String key : keys) result.add(values.get(key));
+        return result;
+    }
+
+    private static final Set<String> ATOMIC_PRODUCER_MERGED_FIELDS =
+            new LinkedHashSet<>(java.util.Arrays.asList(
+                    "taskId", "goalId", "pathSeedKey", "inputActions",
+                    "branches", "edgeBindings", "outputClosure",
+                    "occurrenceInstantiationCatalog",
+                    "producerProjection"));
+
+    private static List<JsonObject> atomicProducerTasks(
+            RuntimeWorkflowDiscovery.RankedWorkflow workflow,
+            Map<String, JsonObject> componentsByCampaign)
+            throws IOException {
+        List<JsonObject> result = new ArrayList<>();
+        for (RuntimeWorkflowDiscovery.ProducerGroup group
+                : workflow.producerGroups()) {
+            List<JsonObject> components = new ArrayList<>();
+            for (RuntimeWorkflowDiscovery.Selection selection
+                    : group.selections) {
+                JsonObject component = componentsByCampaign.get(
+                        selection.campaignId);
+                if (component == null) {
+                    throw new IOException("missing scheduled producer "
+                            + "component " + selection.campaignId);
+                }
+                components.add(component);
+            }
+            result.add(mergeAtomicProducerTasks(group, components));
+        }
+        return result;
+    }
+
+    static List<JsonObject> atomicProducerTasksForTests(
+            RuntimeWorkflowDiscovery.RankedWorkflow workflow,
+            Map<String, JsonObject> componentsByCampaign)
+            throws IOException {
+        return atomicProducerTasks(workflow, componentsByCampaign);
+    }
+
+    /**
+     * Joins independently validated projections of one exact producer
+     * invocation into the single task that must capture their outputs
+     * atomically.
+     */
+    private static JsonObject mergeAtomicProducerTasks(
+            RuntimeWorkflowDiscovery.ProducerGroup group,
+            List<JsonObject> encodedComponents) throws IOException {
+        if (encodedComponents == null || encodedComponents.isEmpty()) {
+            throw new IOException("atomic producer group has no tasks");
+        }
+        List<ExecutionTask> components = new ArrayList<>();
+        Map<String, JsonObject> componentByTaskId = new LinkedHashMap<>();
+        for (JsonObject encoded : encodedComponents) {
+            ExecutionTask task = ExecutionTask.decode(encoded);
+            if (!group.regionId.equals(task.regionId())
+                    || !group.logicalRegionId.equals(task.logicalRegionId())
+                    || !group.pathSeedKey.equals(string(
+                    task.producerProjection(), "pathSeedKey"))) {
+                throw new IOException("atomic producer component crosses "
+                        + "invocation or path boundary");
+            }
+            requireExactProducerOccurrence(task
+                    .occurrenceInstantiationCatalog(), group);
+            JsonObject prior = componentByTaskId.putIfAbsent(task.taskId(),
+                    encoded);
+            if (prior != null && !prior.equals(encoded)) {
+                throw new IOException("conflicting atomic producer taskId "
+                        + task.taskId());
+            }
+            if (prior == null) components.add(task);
+        }
+        components.sort(Comparator.comparing(ExecutionTask::taskId));
+        if (components.size() == 1) {
+            return components.get(0).json().deepCopy();
+        }
+        JsonObject merged = components.get(0).json().deepCopy();
+        for (ExecutionTask component : components) {
+            requireSameAtomicProducerEnvelope(merged, component.json());
+        }
+
+        JsonArray inputs = mergeInputActions(components);
+        JsonArray branches = mergeObjectArrays(components, "branches",
+                "siteId", "branch site");
+        JsonArray edges = mergeEdgeBindings(components);
+        List<OutputClosureContract> closures = new ArrayList<>();
+        List<String> componentIds = new ArrayList<>();
+        for (ExecutionTask component : components) {
+            closures.add(component.outputClosure());
+            componentIds.add(component.taskId());
+        }
+        OutputClosureContract closure = OutputClosureCodec.merge(closures);
+        JsonObject catalog = mergeOccurrenceCatalogs(components);
+        String atomicIdentity = String.join("\n", componentIds);
+        String taskId = "TASK.SEED." + ArtifactIO.sha256(
+                "ATOMIC_PROJECTED_PRODUCER_TASK_V1\n" + atomicIdentity);
+        ProducerOutputProjection projection = group.projection();
+
+        merged.addProperty("taskId", taskId);
+        merged.addProperty("goalId", group.goalId());
+        merged.add("inputActions", inputs);
+        merged.add("branches", branches);
+        if (string(merged, "pathSeedKey").isEmpty()) {
+            merged.remove("pathSeedKey");
+        } else {
+            merged.addProperty("pathSeedKey",
+                    edu.uva.liftlab.graphchecker.contract.BoundedPathSeed
+                            .key(branches));
+        }
+        merged.add("edgeBindings", edges);
+        OutputClosureCodec.writeTo(merged, closure);
+        merged.add(RegionInstancePlan.OCCURRENCE_CATALOG, catalog);
+        merged.add("producerProjection", projection.json());
+        ExecutionTask verified = ExecutionTask.decode(merged);
+        if (!verified.outputClosure().executionScope().inputPorts().equals(
+                group.inputPorts())) {
+            throw new IOException("atomic producer input closure does not "
+                    + "match grouped demand");
+        }
+        return verified.json().deepCopy();
+    }
+
+    private static JsonObject requireExactProducerOccurrence(
+            JsonObject catalog,
+            RuntimeWorkflowDiscovery.ProducerGroup group)
+            throws IOException {
+        JsonObject selected = null;
+        for (JsonElement element : array(catalog, "occurrences")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject occurrence = element.getAsJsonObject();
+            if (!group.regionInstanceId.equals(string(occurrence,
+                    "regionInstanceId"))) {
+                continue;
+            }
+            if (selected != null || longInteger(occurrence, "rootCallId",
+                    -1L) != group.rootCallId) {
+                throw new IOException("atomic producer exact occurrence is "
+                        + "duplicated or has inconsistent root: "
+                        + group.regionInstanceId);
+            }
+            selected = occurrence;
+        }
+        if (selected == null) {
+            throw new IOException("atomic producer component catalog omits "
+                    + "exact occurrence " + group.regionInstanceId);
+        }
+        return selected;
+    }
+
+    private static void requireSameAtomicProducerEnvelope(
+            JsonObject expected, JsonObject actual) throws IOException {
+        Set<String> fields = new LinkedHashSet<>(expected.keySet());
+        fields.addAll(actual.keySet());
+        for (String field : fields) {
+            if (ATOMIC_PRODUCER_MERGED_FIELDS.contains(field)) continue;
+            JsonElement left = expected.get(field);
+            JsonElement right = actual.get(field);
+            if (left == null ? right != null : !left.equals(right)) {
+                throw new IOException("atomic producer components disagree "
+                        + "on " + field);
+            }
+        }
+    }
+
+    private static JsonArray mergeInputActions(
+            List<ExecutionTask> components) throws IOException {
+        JsonArray result = new JsonArray();
+        Set<String> exactRows = new LinkedHashSet<>();
+        Map<String, String> symbolBySelector = new LinkedHashMap<>();
+        for (ExecutionTask component : components) {
+            for (JsonElement element : component.inputActions().all()) {
+                JsonObject action = element.getAsJsonObject();
+                String canonical = CanonicalJson.render(action);
+                if (!exactRows.add(canonical)) continue;
+                if (InputActionCatalog.Mode.SYMBOLIC.name().equals(
+                        string(action, "mode"))) {
+                    for (String selector : materializationSelectors(action)) {
+                        String prior = symbolBySelector.putIfAbsent(selector,
+                                string(action, "symbol"));
+                        if (prior != null) {
+                            throw new IOException("atomic producer inputs "
+                                    + "share runtime materialization selector "
+                                    + selector + ": " + prior + " and "
+                                    + string(action, "symbol"));
+                        }
+                    }
+                }
+                result.add(action.deepCopy());
+            }
+        }
+        return result;
+    }
+
+    private static Set<String> materializationSelectors(JsonObject action)
+            throws IOException {
+        Set<String> result = new LinkedHashSet<>();
+        String mode = string(action, "bindingMode");
+        String occurrence = String.valueOf(integer(action,
+                "replayOccurrence", -1));
+        if ("METHOD_ARGUMENT".equals(mode)) {
+            result.add("METHOD_ARGUMENT\n" + string(action, "method")
+                    + "\n" + integer(action, "index", -1) + "\n"
+                    + occurrence);
+        } else if ("LOCAL_DEFINITION".equals(mode)) {
+            Set<Integer> units = new LinkedHashSet<>();
+            int direct = integer(action, "unitIndex", -1);
+            if (direct >= 0) units.add(direct);
+            for (JsonElement element : array(action, "definitionSites")) {
+                if (element.isJsonObject()) {
+                    int unit = integer(element.getAsJsonObject(),
+                            "unitIndex", -1);
+                    if (unit >= 0) units.add(unit);
+                }
+            }
+            if (units.isEmpty()) units.add(-1);
+            for (Integer unit : units) {
+                result.add("LOCAL_DEFINITION\n"
+                        + string(action, "method") + "\n" + unit + "\n"
+                        + string(action, "local") + "\n" + occurrence);
+            }
+        } else if ("FIELD_ACCESS".equals(mode)) {
+            String caller = string(action, "accessorCallerMethod");
+            int callUnit = integer(action, "accessorCallUnitIndex", -1);
+            String callee = string(action, "accessorDeclaredCallee");
+            String implementation = string(action,
+                    "accessorImplementationMethod");
+            if (!caller.isEmpty() || callUnit >= 0 || !callee.isEmpty()
+                    || !implementation.isEmpty()) {
+                result.add("ACCESSOR_RETURN\n" + caller + "\n" + callUnit
+                        + "\n" + callee + "\n" + implementation + "\n"
+                        + occurrence);
+            } else {
+                JsonArray sites = array(action, "accessSites");
+                if (sites.size() == 0) {
+                    result.add("FIELD_ACCESS\n<NO_SITE>\n"
+                            + string(action, "accessFieldSignature") + "\n"
+                            + CanonicalJson.render(array(action,
+                            "fieldPath")) + "\n" + occurrence);
+                }
+                for (JsonElement site : sites) {
+                    result.add("FIELD_ACCESS\n" + site.getAsString() + "\n"
+                            + string(action, "accessFieldSignature") + "\n"
+                            + CanonicalJson.render(array(action,
+                            "fieldPath")) + "\n" + occurrence);
+                }
+            }
+        } else if ("ROOT_ENTRY".equals(mode)) {
+            String location = string(action, "location");
+            if ("ARGUMENT".equals(location)) {
+                result.add("ROOT_ARGUMENT\n"
+                        + integer(action, "index", -1));
+            } else {
+                result.add("ROOT_ENTRY\n" + location + "\n"
+                        + integer(action, "index", -1) + "\n"
+                        + CanonicalJson.render(array(action, "fieldPath"))
+                        + "\n" + CanonicalJson.render(array(action,
+                        "fieldPaths")) + "\n"
+                        + string(action, "accessFieldSignature"));
+            }
+        } else if ("VM_INTRINSIC_PLACEHOLDER".equals(mode)) {
+            result.add("VM_INTRINSIC_PLACEHOLDER\n"
+                    + string(action, "cell"));
+        } else {
+            throw new IOException("atomic producer symbolic input has "
+                    + "unsupported runtime selector mode " + mode);
+        }
+        return result;
+    }
+
+    private static JsonArray mergeObjectArrays(
+            List<ExecutionTask> components, String field, String identity,
+            String subject) throws IOException {
+        Map<String, JsonObject> rows = new LinkedHashMap<>();
+        for (ExecutionTask component : components) {
+            for (JsonElement element : array(component.json(), field)) {
+                if (!element.isJsonObject()) {
+                    throw new IOException(subject + " must be an object");
+                }
+                JsonObject row = element.getAsJsonObject();
+                String key = string(row, identity);
+                if (key.isEmpty()) {
+                    throw new IOException(subject + " has no " + identity);
+                }
+                JsonObject prior = rows.putIfAbsent(key, row);
+                if (prior != null && !prior.equals(row)) {
+                    throw new IOException("conflicting " + subject + " "
+                            + key);
+                }
+            }
+        }
+        JsonArray result = new JsonArray();
+        for (JsonObject row : rows.values()) result.add(row.deepCopy());
+        return result;
+    }
+
+    /**
+     * One causal edge can be represented by a refined runtime row and by a
+     * compact closure row.  They share an edgeId and may carry complementary
+     * fields, so join compatible views without weakening conflict checks.
+     */
+    private static JsonArray mergeEdgeBindings(
+            List<ExecutionTask> components) throws IOException {
+        Map<String, JsonObject> rows = new LinkedHashMap<>();
+        for (ExecutionTask component : components) {
+            for (JsonElement element : component.edgeBindings()) {
+                if (!element.isJsonObject()) {
+                    throw new IOException("edge binding must be an object");
+                }
+                JsonObject row = element.getAsJsonObject();
+                String edgeId = string(row, "edgeId");
+                if (edgeId.isEmpty()) {
+                    throw new IOException("edge binding has no edgeId");
+                }
+                JsonObject merged = rows.get(edgeId);
+                if (merged == null) {
+                    rows.put(edgeId, row.deepCopy());
+                    continue;
+                }
+                for (Map.Entry<String, JsonElement> field
+                        : row.entrySet()) {
+                    JsonElement prior = merged.get(field.getKey());
+                    if (prior == null) {
+                        merged.add(field.getKey(), field.getValue().deepCopy());
+                    } else if (!prior.equals(field.getValue())) {
+                        throw new IOException("conflicting edge binding "
+                                + edgeId + " field " + field.getKey());
+                    }
+                }
+            }
+        }
+        JsonArray result = new JsonArray();
+        for (JsonObject row : rows.values()) result.add(row.deepCopy());
+        return result;
+    }
+
+    private static JsonObject mergeOccurrenceCatalogs(
+            List<ExecutionTask> components) throws IOException {
+        JsonObject merged = components.get(0)
+                .occurrenceInstantiationCatalog();
+        Map<String, JsonObject> occurrences = new LinkedHashMap<>();
+        for (ExecutionTask component : components) {
+            JsonObject catalog = component.occurrenceInstantiationCatalog();
+            requireSameObjectExcept(merged, catalog,
+                    Collections.singleton("occurrences"),
+                    "occurrence catalog");
+            for (JsonElement element : array(catalog, "occurrences")) {
+                if (!element.isJsonObject()) {
+                    throw new IOException("occurrence must be an object");
+                }
+                JsonObject occurrence = element.getAsJsonObject();
+                String instance = string(occurrence, "regionInstanceId");
+                if (instance.isEmpty()) {
+                    throw new IOException("occurrence has no instance");
+                }
+                JsonObject target = occurrences.get(instance);
+                if (target == null) {
+                    target = occurrence.deepCopy();
+                    target.add("inputPortMap", new JsonArray());
+                    target.add("outputPortMap", new JsonArray());
+                    target.add("bindingIds", new JsonArray());
+                    occurrences.put(instance, target);
+                } else {
+                    requireSameObjectExcept(target, occurrence,
+                            new LinkedHashSet<>(java.util.Arrays.asList(
+                                    "inputPortMap", "outputPortMap",
+                                    "bindingIds")), "occurrence " + instance);
+                }
+                target.add("inputPortMap", mergePortMappings(
+                        array(target, "inputPortMap"),
+                        array(occurrence, "inputPortMap"),
+                        "input port", instance));
+                target.add("outputPortMap", mergePortMappings(
+                        array(target, "outputPortMap"),
+                        array(occurrence, "outputPortMap"),
+                        "output port", instance));
+                target.add("bindingIds", mergeStrings(
+                        array(target, "bindingIds"),
+                        array(occurrence, "bindingIds")));
+            }
+        }
+        JsonArray encoded = new JsonArray();
+        for (JsonObject occurrence : occurrences.values()) {
+            encoded.add(occurrence);
+        }
+        merged.add("occurrences", encoded);
+        return merged;
+    }
+
+    private static JsonArray mergePortMappings(
+            JsonArray left, JsonArray right, String subject,
+            String instance) throws IOException {
+        Map<String, JsonObject> mappings = new LinkedHashMap<>();
+        Map<String, String> canonicalByExact = new LinkedHashMap<>();
+        for (JsonArray source : java.util.Arrays.asList(left, right)) {
+            for (JsonElement element : source) {
+                if (!element.isJsonObject()) {
+                    throw new IOException(subject + " mapping must be an "
+                            + "object");
+                }
+                JsonObject mapping = element.getAsJsonObject();
+                String canonical = string(mapping, "canonicalPort");
+                String exact = string(mapping, "exactPort");
+                if (canonical.isEmpty() || exact.isEmpty()) {
+                    throw new IOException(subject + " mapping has no exact "
+                            + "canonicalPort/exactPort pair");
+                }
+                JsonObject prior = mappings.putIfAbsent(canonical, mapping);
+                if (prior != null && !prior.equals(mapping)) {
+                    throw new IOException("conflicting " + subject
+                            + " mapping for " + instance + ": "
+                            + canonical);
+                }
+                String priorCanonical = canonicalByExact.putIfAbsent(exact,
+                        canonical);
+                if (priorCanonical != null
+                        && !priorCanonical.equals(canonical)) {
+                    throw new IOException("conflicting " + subject
+                            + " inverse mapping for " + instance + ": "
+                            + exact);
+                }
+            }
+        }
+        JsonArray result = new JsonArray();
+        for (JsonObject mapping : mappings.values()) {
+            result.add(mapping.deepCopy());
+        }
+        return result;
+    }
+
+    private static JsonArray mergeStrings(JsonArray left, JsonArray right) {
+        Set<String> values = new LinkedHashSet<>();
+        for (JsonArray source : java.util.Arrays.asList(left, right)) {
+            for (JsonElement element : source) {
+                if (element.isJsonPrimitive()) {
+                    values.add(element.getAsString());
+                }
+            }
+        }
+        JsonArray result = new JsonArray();
+        for (String value : values) result.add(value);
+        return result;
+    }
+
+    private static void requireSameObjectExcept(
+            JsonObject expected, JsonObject actual, Set<String> ignored,
+            String subject) throws IOException {
+        Set<String> fields = new LinkedHashSet<>(expected.keySet());
+        fields.addAll(actual.keySet());
+        for (String field : fields) {
+            if (ignored.contains(field)) continue;
+            JsonElement left = expected.get(field);
+            JsonElement right = actual.get(field);
+            if (left == null ? right != null : !left.equals(right)) {
+                throw new IOException(subject + " disagrees on " + field);
+            }
+        }
     }
 
     private static List<Candidate> candidates(Arguments arguments,
@@ -268,14 +869,19 @@ public final class ConcolicScheduler {
             }
             goal.rejectOutputClosure();
             JsonArray branches = goal.branches();
-            boolean hasFailureTarget = false;
+            int eligibleFailureTargets = 0;
             for (JsonElement element : branches) {
-                if (element.isJsonObject()
-                        && bool(element.getAsJsonObject(),
-                        "failureTarget", false)) {
-                    hasFailureTarget = true;
-                    break;
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (eligibleFailureTarget(branch)) {
+                    eligibleFailureTargets++;
                 }
+            }
+            if (eligibleFailureTargets != 1) {
+                throw new IllegalArgumentException(
+                        "UNSUPPORTED_AMBIGUOUS_TARGET_PATH: expected one "
+                                + "eligible failure target; found "
+                                + eligibleFailureTargets);
             }
             for (int index = 0; index < branches.size(); index++) {
                 JsonElement element = branches.get(index);
@@ -288,7 +894,7 @@ public final class ConcolicScheduler {
                         && !arguments.targetSite.equals(siteId)) {
                     continue;
                 }
-                if (arguments.targetSite.isEmpty() && hasFailureTarget
+                if (arguments.targetSite.isEmpty()
                         && !bool(branch, "failureTarget", false)) {
                     continue;
                 }
@@ -320,7 +926,6 @@ public final class ConcolicScheduler {
                         goal.symbolize(), definitions,
                         definitionMethods, null, reachSlice,
                         queryInstance);
-                inputActions = targetFatalPrefix(inputActions, target);
                 inputActions = targetSymbolicFrontier(goal, inputActions,
                         queryInstance);
                 JsonArray targetBindings = targetInputBindings(goal,
@@ -335,6 +940,18 @@ public final class ConcolicScheduler {
                                 occurrenceCatalog), null,
                         null, occurrenceCatalog, targetBindings));
             }
+    }
+
+    private static boolean eligibleFailureTarget(JsonObject branch) {
+        if (!bool(branch, "failureTarget", false)
+                || !bool(branch, "observed", false)
+                || !branch.has("requiredOutcome")
+                || branch.get("requiredOutcome").isJsonNull()) {
+            return false;
+        }
+        return TargetBranch.select(string(branch, "siteId"),
+                array(branch, "occurrences"),
+                bool(branch, "requiredOutcome", false)) != null;
     }
 
     private static String targetQueryInstance(
@@ -401,72 +1018,6 @@ public final class ConcolicScheduler {
                 continue;
             }
             result.add(action.deepCopy());
-        }
-        return result;
-    }
-
-    /** Projects a logical target input union onto one exact fatal site. */
-    private static JsonArray targetFatalPrefix(
-            JsonArray actions, TargetBranch target) {
-        JsonArray result = new JsonArray();
-        for (JsonElement element : actions) {
-            if (!element.isJsonObject()) continue;
-            JsonObject action = element.getAsJsonObject();
-            JsonArray contexts = array(action, "fatalPrefixContexts");
-            if (contexts.size() == 0) {
-                // Backward compatibility for already-finalized singleton
-                // target artifacts. New multi-site artifacts always carry
-                // the site-keyed context.
-                result.add(action.deepCopy());
-                continue;
-            }
-            JsonObject selected = null;
-            for (JsonElement contextElement : contexts) {
-                if (!contextElement.isJsonObject()) continue;
-                JsonObject context = contextElement.getAsJsonObject();
-                if (!target.siteId.equals(string(context, "siteId"))
-                        || target.selectedOccurrence != integer(context,
-                        "occurrence", -1)) {
-                    continue;
-                }
-                if (selected != null) {
-                    throw new IllegalArgumentException(
-                            "ambiguous fatal prefix context for "
-                                    + target.siteId + " occurrence "
-                                    + target.selectedOccurrence);
-                }
-                selected = context;
-            }
-            if (selected == null) {
-                continue;
-            }
-            JsonObject projected = action.deepCopy();
-            long cutoff = longInteger(selected, "eventSeq", -1L);
-            if (cutoff < 0L) {
-                throw new IllegalArgumentException(
-                        "fatal prefix context has no eventSeq for "
-                                + target.siteId + " occurrence "
-                                + target.selectedOccurrence);
-            }
-            JsonArray accesses = array(projected, "runtimeAccesses");
-            if (accesses.size() > 0) {
-                JsonArray prefix = new JsonArray();
-                for (JsonElement accessElement : accesses) {
-                    if (accessElement.isJsonObject()
-                            && longInteger(accessElement.getAsJsonObject(),
-                            "eventSeq", -1L) <= cutoff) {
-                        prefix.add(accessElement.deepCopy());
-                    }
-                }
-                projected.add("runtimeAccesses", prefix);
-            }
-            projected.addProperty("fatalPrefixEventSeq", cutoff);
-            projected.addProperty("fatalPrefixSiteId", target.siteId);
-            projected.addProperty("fatalPrefixOccurrence",
-                    target.selectedOccurrence);
-            projected.addProperty("fatalPrefixAuthority",
-                    "EXACT_FATAL_BRANCH_OCCURRENCE_PREFIX_V1");
-            result.add(projected);
         }
         return result;
     }
@@ -861,19 +1412,6 @@ public final class ConcolicScheduler {
                 binding.addProperty("method", parameter.group(1));
                 binding.addProperty("index", argumentIndex);
                 binding.addProperty("javaType", parameter.group(3));
-                if (RuntimeSelectedRegionFinalizer.RPC_DECODE_VALUE.equals(
-                        string(action, "sourceKind"))
-                        && bool(action, "rpcDescendantProjectionInput",
-                        false)) {
-                    // The trace ordinal selects the exact producer edge; it
-                    // is evidence, not stable replay identity.  The matching
-                    // FIELD_WRITE_STATE boundary exports the first replay-
-                    // local invocation, so its helper parameter must be
-                    // materialized on that same invocation.  The recorded
-                    // ordinal remains in activationLocalStaticSiteOccurrence
-                    // and runtimeAccesses for composition/audit.
-                    binding.addProperty("replayOccurrence", 1);
-                }
             } else {
                 addInputAction(result, represented, binding,
                         InputActionCatalog.Mode.CONCRETE);
@@ -3210,6 +3748,29 @@ public final class ConcolicScheduler {
         public final List<JsonObject> queries = new ArrayList<>();
     }
 
+    private static final class LoadedInputs {
+        private final List<JsonObject> regionPlans;
+        private final List<JsonObject> summaries;
+        private final Map<String, Region> regionIndex;
+        private final DefinitionIndex definitions;
+        private final MergePlan mergePlan;
+        private final JsonObject regionPlanIdentity;
+
+        private LoadedInputs(List<JsonObject> regionPlans,
+                             List<JsonObject> summaries,
+                             Map<String, Region> regionIndex,
+                             DefinitionIndex definitions,
+                             MergePlan mergePlan,
+                             JsonObject regionPlanIdentity) {
+            this.regionPlans = regionPlans;
+            this.summaries = summaries;
+            this.regionIndex = regionIndex;
+            this.definitions = definitions;
+            this.mergePlan = mergePlan;
+            this.regionPlanIdentity = regionPlanIdentity;
+        }
+    }
+
     public static final class Arguments {
         public final Path regions;
         public final Path regionPlan;
@@ -3222,6 +3783,7 @@ public final class ConcolicScheduler {
         public final String regionInstanceId;
         public final String goalId;
         public final String targetSite;
+        public final boolean targetFirst;
         public final int maxJobs;
         public final int maxLoopIterations;
 
@@ -3230,7 +3792,7 @@ public final class ConcolicScheduler {
                           Path summaries, Path producerProjection,
                           Path outputDirectory, String regionId,
                           String regionInstanceId, String goalId,
-                          String targetSite, int maxJobs,
+                          String targetSite, boolean targetFirst, int maxJobs,
                           int maxLoopIterations) {
             this.regions = regions;
             this.regionPlan = regionPlan;
@@ -3243,6 +3805,7 @@ public final class ConcolicScheduler {
             this.regionInstanceId = safe(regionInstanceId);
             this.goalId = safe(goalId);
             this.targetSite = safe(targetSite);
+            this.targetFirst = targetFirst;
             this.maxJobs = Math.max(1, maxJobs);
             this.maxLoopIterations = maxLoopIterations;
         }
@@ -3278,12 +3841,25 @@ public final class ConcolicScheduler {
             Path summaries = optionalPath(values.get("summaries"));
             Path producerProjection = optionalPath(values.get(
                     "producer-projection"));
+            boolean targetFirst = Boolean.parseBoolean(
+                    values.getOrDefault("target-first", "false"));
+            if (targetFirst && (producerProjection != null
+                    || !firstNonBlank(values.get("region-id")).isEmpty()
+                    || !firstNonBlank(values.get("region-instance-id"))
+                    .isEmpty()
+                    || !firstNonBlank(values.get("goal-id")).isEmpty()
+                    || !firstNonBlank(values.get("target-site")).isEmpty())) {
+                throw new IllegalArgumentException("--target-first cannot "
+                        + "be combined with goal filters or "
+                        + "--producer-projection");
+            }
             return new Arguments(regions, regionPlan, edges, refinedGraph,
                     summaries, producerProjection, output,
                     firstNonBlank(values.get("region-id")),
                     firstNonBlank(values.get("region-instance-id")),
                     firstNonBlank(values.get("goal-id")),
                     firstNonBlank(values.get("target-site")),
+                    targetFirst,
                     parseInt(values.get("max-jobs"), 1),
                     positiveInt(values.get("max-loop-iterations"),
                             LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
@@ -3302,6 +3878,7 @@ public final class ConcolicScheduler {
                     || "region-instance-id".equals(key)
                     || "goal-id".equals(key)
                     || "target-site".equals(key)
+                    || "target-first".equals(key)
                     || "max-jobs".equals(key)
                     || "max-loop-iterations".equals(key);
         }
@@ -3347,6 +3924,15 @@ public final class ConcolicScheduler {
                         + " requires a positive integer");
             }
             return parsed;
+        }
+
+        private Arguments forSelection(
+                RuntimeWorkflowDiscovery.Selection selection) {
+            return new Arguments(regions, regionPlan, edgeValidations,
+                    refinedGraph, summaries, null, outputDirectory,
+                    selection.regionId, selection.regionInstanceId,
+                    selection.goalId, "", false, 1,
+                    maxLoopIterations);
         }
 
     }

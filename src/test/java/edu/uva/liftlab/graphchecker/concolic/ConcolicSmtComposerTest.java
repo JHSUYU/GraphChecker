@@ -626,7 +626,48 @@ public class ConcolicSmtComposerTest {
         assertTrue(result.smtLib, result.smtLib.contains(
                 ":named fatal_absence_mutation_witness"));
         assertTrue(result.smtLib, result.smtLib.contains("assoc_key_at"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(not (assoc_has port__REGION_0_in_0__instance__"
+                        + "REGION_0_Test_call30 "));
         if (z3Available()) assertSat(result.smtLib, "");
+    }
+
+    @Test
+    public void reinsertionCannotMasqueradeAsFatalRemovalAbsence()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.ABSENCE.REINSERT",
+                producerInstance, "REGION.1.out.0", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+        JsonObject removed = associativeOperation("REMOVE_AT",
+                associativeState("REGION.1.in.0"), integer(0));
+        JsonObject reinsertedNull = associativeOperation("PUT", removed,
+                integer(7), recordedNull());
+        RelationSummary summary = summary("ABSENCE.REINSERT",
+                producerInstance, 20, reinsertedNull,
+                Collections.singletonList("REGION.1.in.0"),
+                Collections.singletonList(edge), "java.util.Map");
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(associativeRead(
+                        associativeState("REGION.0.in.0"), integer(7), "L"),
+                "==", recordedNull()));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary), Arrays.asList(
+                        region("REGION.0", "java.util.Map", ""),
+                        region("REGION.1", "java.util.Map",
+                                "java.util.Map")), constraints, edge);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        assertEquals("PINNED", result.manifest
+                .getAsJsonObject("fatalAbsenceMutationWitness")
+                .get("state").getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(not (assoc_has port__REGION_0_in_0__instance__"
+                        + "REGION_0_Test_call30 (VInt 7)))"));
+        if (z3Available()) assertUnsat(result.smtLib, "");
     }
 
     @Test
@@ -1083,6 +1124,112 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void exactRuntimePutObjectCannotAliasNull() throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        long selectedEvent = 3255402L;
+        JsonObject edge = binding("EDGE.EXACT.RUNTIME.PUT",
+                producerInstance, "REGION.1.out.0", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+        JsonObject update = associativeOperation("PUT",
+                associativeState("REGION.1.in.0"), integer(11745),
+                reference("P_L'example/Key'_", "example/Key"));
+        RelationSummary selected = withSelectedOutputEvent(summary(
+                "EXACT.RUNTIME.PUT", producerInstance, 20, update,
+                Collections.singletonList("REGION.1.in.0"),
+                Collections.singletonList(edge), "java.util.Map"),
+                selectedEvent);
+        JsonObject producer = exactRuntimePutRegion(selectedEvent, 20L,
+                80377L,
+                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1");
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(selected), Arrays.asList(
+                        region("REGION.0", "java.util.Map", ""),
+                        producer), edge);
+
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "exact_runtime_put_reference_non_null_"));
+        assertTrue(result.smtLib, Arrays.stream(result.smtLib.split("\\n"))
+                .anyMatch(line -> line.contains(
+                        "exact_runtime_put_reference_non_null_")
+                        && line.contains("(=> case_selector__")));
+        if (z3Available()) {
+            String output = "port__REGION_1_out_0__instance__"
+                    + "REGION_1_Test_call20";
+            assertUnsat(result.smtLib,
+                    "(assert (= (valueRef (assoc_read " + output
+                            + " (VInt 11745))) nullRef))\n");
+        }
+    }
+
+    @Test
+    public void putReferenceNeedsExactRuntimeProvenanceAndObjectIdentity()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        long selectedEvent = 3255402L;
+        JsonObject edge = binding("EDGE.EXACT.RUNTIME.PUT.NEGATIVE",
+                producerInstance, "REGION.1.out.0", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+        JsonObject update = associativeOperation("PUT",
+                associativeState("REGION.1.in.0"), integer(11745),
+                reference("P_L'example/Key'_", "example/Key"));
+        RelationSummary selected = withSelectedOutputEvent(summary(
+                "EXACT.RUNTIME.PUT.NEGATIVE", producerInstance, 20,
+                update, Collections.singletonList("REGION.1.in.0"),
+                Collections.singletonList(edge), "java.util.Map"),
+                selectedEvent);
+
+        ConcolicSmtComposer.Result missingProvenance = compose(
+                fatalInstance, Collections.singletonList(selected),
+                Arrays.asList(region("REGION.0", "java.util.Map", ""),
+                        exactRuntimePutRegion(selectedEvent, 20L, 80377L,
+                                "")), edge);
+        ConcolicSmtComposer.Result zeroObjectId = compose(
+                fatalInstance, Collections.singletonList(selected),
+                Arrays.asList(region("REGION.0", "java.util.Map", ""),
+                        exactRuntimePutRegion(selectedEvent, 20L, 0L,
+                                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1")),
+                edge);
+        ConcolicSmtComposer.Result differentOutputEvent = compose(
+                fatalInstance, Collections.singletonList(selected),
+                Arrays.asList(region("REGION.0", "java.util.Map", ""),
+                        exactRuntimePutRegion(selectedEvent + 1L, 20L,
+                                80377L,
+                                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1")),
+                edge);
+
+        assertEquals(missingProvenance.manifest.toString(),
+                "CANDIDATE_READY",
+                missingProvenance.manifest.get("state").getAsString());
+        assertEquals(zeroObjectId.manifest.toString(), "CANDIDATE_READY",
+                zeroObjectId.manifest.get("state").getAsString());
+        assertEquals(differentOutputEvent.manifest.toString(),
+                "CANDIDATE_READY",
+                differentOutputEvent.manifest.get("state").getAsString());
+        assertFalse(missingProvenance.smtLib,
+                missingProvenance.smtLib.contains(
+                        "exact_runtime_put_reference_non_null_"));
+        assertFalse(zeroObjectId.smtLib, zeroObjectId.smtLib.contains(
+                "exact_runtime_put_reference_non_null_"));
+        assertFalse(differentOutputEvent.smtLib,
+                differentOutputEvent.smtLib.contains(
+                        "exact_runtime_put_reference_non_null_"));
+        if (z3Available()) {
+            String output = "port__REGION_1_out_0__instance__"
+                    + "REGION_1_Test_call20";
+            String nullable = "(assert (= (valueRef (assoc_read " + output
+                    + " (VInt 11745))) nullRef))\n";
+            assertSat(missingProvenance.smtLib, nullable);
+            assertSat(zeroObjectId.smtLib, nullable);
+            assertSat(differentOutputEvent.smtLib, nullable);
+        }
+    }
+
+    @Test
     public void trustedRpcProjectionBindsOneBoundedObjectArrayState()
             throws Exception {
         String fatalInstance = "REGION.0@Test#call30";
@@ -1197,6 +1344,163 @@ public class ConcolicSmtComposerTest {
         assertEquals(
                 "sym__port__REGION_1_Test_call20_REGION_1_in_0__int",
                 occurrence.get("solverTerm").getAsString());
+    }
+
+    @Test
+    public void manifestsSolverNativeFatalOperandAndExactEdgeAssertion()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.PIN", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        JsonArray constraints = new JsonArray();
+        JsonObject local = reference("local.result", "I");
+        constraints.add(binary(local, "==",
+                reference("REGION.0.in.0", "I")));
+        constraints.add(binary(local, "==", integer(99)));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("PIN", producerInstance,
+                        20, 7, Collections.<String>emptyList(),
+                        Collections.singletonList(edge))),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", false, true)),
+                constraints, edge);
+
+        JsonObject ledger = result.manifest.getAsJsonObject(
+                "operandBindingLedger");
+        assertEquals("FATAL_OPERAND_BINDING_LEDGER",
+                ledger.get("kind").getAsString());
+        JsonObject fatalAssertion = ledger.getAsJsonObject(
+                "fatalPathAssertion");
+        assertEquals("fatal_path",
+                fatalAssertion.get("name").getAsString());
+        assertTrue(ledger.getAsJsonArray("fatalDependentAssertionNames")
+                .contains(new com.google.gson.JsonPrimitive("fatal_path")));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                ":named fatal_path"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                ":named fatal_path_prefix"));
+        assertEquals("fatal_path_prefix", ledger.getAsJsonObject(
+                "retainedPathPrefixAssertion").get("name").getAsString());
+
+        JsonArray operands = ledger.getAsJsonArray("operands");
+        assertEquals(ledger.toString(), 1, operands.size());
+        JsonObject operand = operands.get(0).getAsJsonObject();
+        assertEquals("Int", operand.get("solverSort").getAsString());
+        assertEquals("Value", operand.get("pinSort").getAsString());
+        assertFalse(operand.has("portId"));
+        assertEquals("UNAUDITABLE_NO_EXACT_PRODUCER_LINEAGE",
+                operand.get("producerLineageStatus").getAsString());
+        assertTrue(operand.get("pinTerm").getAsString(),
+                operand.get("pinTerm").getAsString().startsWith("(VInt "));
+        assertFalse(operand.get("pathPrefixTerm").getAsString().isEmpty());
+
+        JsonArray versions = operand.getAsJsonArray("producerVersions");
+        assertEquals(operand.toString(), 0, versions.size());
+    }
+
+    @Test
+    public void fatalPortOperandIncludesOnlyItsExactProducerOccurrence()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        JsonObject edge = binding("EDGE.EXACT.PIN", producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(reference("REGION.0.in.0", "I"), "==",
+                integer(99)));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("EXACT_PIN",
+                        producerInstance, 20, 7,
+                        Collections.<String>emptyList(),
+                        Collections.singletonList(edge))),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", false, true)),
+                constraints, edge);
+
+        JsonObject operand = result.manifest.getAsJsonObject(
+                "operandBindingLedger").getAsJsonArray("operands")
+                .get(0).getAsJsonObject();
+        assertEquals("REGION.0.in.0", operand.get("portId").getAsString());
+        assertEquals(fatalInstance,
+                operand.get("regionInstanceId").getAsString());
+        assertEquals("EXACT_TARGET_PORT_OCCURRENCE",
+                operand.get("producerLineageStatus").getAsString());
+        assertEquals("Int", operand.get("pinSort").getAsString());
+        assertEquals(operand.get("solverTerm").getAsString(),
+                operand.get("pinTerm").getAsString());
+        JsonArray versions = operand.getAsJsonArray("producerVersions");
+        assertEquals(operand.toString(), 1, versions.size());
+        JsonObject version = versions.get(0).getAsJsonObject();
+        assertEquals("Int", version.get("solverSort").getAsString());
+        assertTrue(version.toString(), version.get("solverTerm").getAsString()
+                .startsWith("(valueInt "));
+        assertEquals("EDGE.EXACT.PIN", version.get("edgeId").getAsString());
+        assertEquals("REGION.0.in.0",
+                version.get("targetPortId").getAsString());
+        assertEquals(fatalInstance,
+                version.get("targetRegionInstanceId").getAsString());
+    }
+
+    @Test
+    public void fatalNonIntPortOperandsUseNativeExactProducerSort()
+            throws Exception {
+        assertNativeExactProducerSort("LONG", "J", "long",
+                typedIntegral("J", 99), typedIntegral("J", 7),
+                "Int", "(valueLong ");
+        assertNativeExactProducerSort("STRING", "java/lang/String",
+                "java.lang.String", strLiteral("expected"),
+                strLiteral("producer"), "String", "(valueString ");
+        assertNativeExactProducerSort("REF", "Ljava/lang/Object;",
+                "java.lang.Object", recordedNull(), recordedNull(),
+                "Ref", "(valueRef ");
+    }
+
+    private void assertNativeExactProducerSort(
+            String label, String referenceType, String javaType,
+            JsonObject expectedValue, JsonObject producerValue,
+            String solverSort, String producerTermPrefix) throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String producerInstance = "REGION.1@Test#call20";
+        String edgeId = "EDGE.EXACT." + label;
+        JsonObject edge = binding(edgeId, producerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(reference("REGION.0.in.0", referenceType),
+                "==", expectedValue));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(summary("EXACT_" + label,
+                        producerInstance, 20, producerValue,
+                        Collections.<String>emptyList(),
+                        Collections.singletonList(edge), javaType)),
+                Arrays.asList(region("REGION.0", javaType, ""),
+                        region("REGION.1", "", javaType)),
+                constraints, edge);
+
+        JsonObject operand = result.manifest.getAsJsonObject(
+                "operandBindingLedger").getAsJsonArray("operands")
+                .get(0).getAsJsonObject();
+        assertEquals("REGION.0.in.0", operand.get("portId").getAsString());
+        assertEquals(fatalInstance,
+                operand.get("regionInstanceId").getAsString());
+        assertEquals(solverSort, operand.get("solverSort").getAsString());
+        assertEquals(solverSort, operand.get("pinSort").getAsString());
+        assertEquals(operand.get("solverTerm").getAsString(),
+                operand.get("pinTerm").getAsString());
+        JsonArray versions = operand.getAsJsonArray("producerVersions");
+        assertEquals(operand.toString(), 1, versions.size());
+        JsonObject version = versions.get(0).getAsJsonObject();
+        assertEquals(solverSort, version.get("solverSort").getAsString());
+        assertTrue(version.toString(), version.get("solverTerm").getAsString()
+                .startsWith(producerTermPrefix));
+        assertEquals(edgeId, version.get("edgeId").getAsString());
+        assertEquals("REGION.0.in.0",
+                version.get("targetPortId").getAsString());
+        assertEquals(fatalInstance,
+                version.get("targetRegionInstanceId").getAsString());
     }
 
     /**
@@ -2262,6 +2566,36 @@ public class ConcolicSmtComposerTest {
         row.add("regionRelation", relation);
         row.addProperty("relationallyComplete", true);
         return RelationSummary.decode(row);
+    }
+
+    private static RelationSummary withSelectedOutputEvent(
+            RelationSummary summary, long eventSeq) {
+        JsonObject row = summary.toJson();
+        row.getAsJsonObject(OutputClosureContract.FIELD)
+                .getAsJsonArray("members").get(0).getAsJsonObject()
+                .getAsJsonObject("slice").addProperty(
+                        "selectedRuntimeEventSeq", eventSeq);
+        return RelationSummary.decode(row);
+    }
+
+    private static JsonObject exactRuntimePutRegion(
+            long eventSeq, long rootCallId, long valueObjectId,
+            String authority) {
+        JsonObject region = region("REGION.1", "java.util.Map",
+                "java.util.Map");
+        JsonObject access = new JsonObject();
+        access.addProperty("eventSeq", eventSeq);
+        access.addProperty("rootCallId", rootCallId);
+        if (authority != null && !authority.isEmpty()) {
+            access.addProperty("containerMemberIdentityAuthority",
+                    authority);
+        }
+        access.addProperty("containerValueObjectId", valueObjectId);
+        JsonArray accesses = new JsonArray();
+        accesses.add(access);
+        region.getAsJsonArray("outputs").get(0).getAsJsonObject()
+                .add("runtimeAccesses", accesses);
+        return region;
     }
 
     private static RelationSummary timelineSummary(

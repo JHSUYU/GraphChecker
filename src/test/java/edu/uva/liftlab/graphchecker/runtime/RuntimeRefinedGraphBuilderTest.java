@@ -686,12 +686,15 @@ public class RuntimeRefinedGraphBuilderTest {
     public void trustedResponseMappingUsesTraceLineage()
             throws Exception {
         String client = "<example.Client: example.Payload fetch()>";
+        String actualClient =
+                "<example.ClientAdapter: example.Payload fetch()>";
         String server = "<example.Server: example.Payload fetch()>";
         String adapter = "<example.Adapter: void invoke()>";
+        String setupWriter = "<example.Key: void <init>(int)>";
         File candidate = write("rpc-response-candidate.jsonl", object(
                 "schemaVersion", 3, "id", "DF.rpc.response",
                 "kind", "rpc_return", "transferKind", "PROTOCOL_TRANSFER",
-                "method", adapter, "unitIndex", 7, "invoke", client,
+                "method", adapter, "unitIndex", 7, "invoke", actualClient,
                 "fromCell", server + ".return",
                 "toCell", client + ".return",
                 "protocolStubMappingId", "example.response",
@@ -708,46 +711,104 @@ public class RuntimeRefinedGraphBuilderTest {
                 object("schemaVersion", 3, "kind", "REGION_SKELETON",
                         "regionId", "REGION.server", "rootMethod", server,
                         "anchorMethod", server,
-                        "methods", Collections.singletonList(server)));
+                        "methods", Collections.singletonList(server)),
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.setup", "rootMethod", setupWriter,
+                        "anchorMethod", setupWriter,
+                        "methods", Collections.singletonList(setupWriter)));
         RuntimeRegionPlanner.MethodEvent clientCall =
-                new RuntimeRegionPlanner.MethodEvent(1, "test", "p", "c",
-                        1, client, 0, "", 11, 0, 10,
+                new RuntimeRegionPlanner.MethodEvent(1, "test",
+                        "client-process", "c", 1, client, 0, "", 11, 0, 10,
                         101, 201, 301, 0, 0);
+        RuntimeRegionPlanner.MethodEvent setupWriterCall =
+                new RuntimeRegionPlanner.MethodEvent(0, "test",
+                        "server-process", "s", 2, setupWriter, 201,
+                        "example.Key", 44, 0, 0);
         RuntimeRegionPlanner.MethodEvent serverCall =
-                new RuntimeRegionPlanner.MethodEvent(5, "test", "p", "s",
-                        2, server, 0, "", 22, 0, 0,
+                new RuntimeRegionPlanner.MethodEvent(5, "test",
+                        "server-process", "s", 2, server, 0, "", 22, 0, 0,
                         102, 202, 302, 0, 301);
         RuntimeRegionPlanner.RuntimeEvent callerSite = runtimeEvent(2,
                 "CALL_SITE_ENTER", adapter, 9, 91, adapter + "#u7",
-                client);
+                actualClient);
         RuntimeRegionPlanner.RuntimeEvent producerReturn =
                 new RuntimeRegionPlanner.RuntimeEvent(6,
                         "METHOD_EXIT_NORMAL", server, 22, 0, 0, "", "",
                         -1, "example.Payload", 2, "", false, false);
         RuntimeRegionPlanner.RuntimeEvent callerReturn = runtimeEvent(7,
                 "CALL_SITE_RETURN", adapter, 9, 91, adapter + "#u7",
-                client);
+                actualClient);
         RuntimeRegionPlanner.ProtocolEvent send =
                 new RuntimeRegionPlanner.ProtocolEvent(3, "SEND", "TEST_RPC",
-                        "native-a", "p", "c", 1,
-                        client, 11, 91, client,
+                        "native-a", "client-process", "c", 1,
+                        client, 11, 91, actualClient,
                         101, 201, 301, 0, 0);
         RuntimeRegionPlanner.ProtocolEvent receive =
                 new RuntimeRegionPlanner.ProtocolEvent(4, "RECEIVE",
-                        "TEST_RPC", "native-b", "p", "s", 2,
+                        "TEST_RPC", "native-b", "server-process", "s", 2,
                         server, 22, 0, "",
                         102, 202, 302, 0, 301);
+        List<String> scalarPath = Arrays.asList(
+                "<example.Payload: example.Key[] keys>", "[]",
+                "<example.Key: int id>");
+        RuntimeRegionPlanner.ProtocolEvent producerScalar =
+                new RuntimeRegionPlanner.ProtocolEvent(8,
+                        "RPC_BOUNDARY_SCALAR", "example.response",
+                        "RESPONSE", "SERVER", "response", "keys.id",
+                        "METHOD_RETURN", server, 22, 0, 6,
+                        200, 201, 777, scalarPath,
+                        Collections.singletonList(0), "int", "41", false,
+                        8, -1,
+                        "EXACT_CONFIGURED_RPC_BOUNDARY_SCALAR_V1", "",
+                        true, 2, Collections.singletonList("ROOT=2"));
+        RuntimeRegionPlanner.ProtocolEvent consumerScalar =
+                new RuntimeRegionPlanner.ProtocolEvent(9,
+                        "RPC_BOUNDARY_SCALAR", "example.response",
+                        "RESPONSE", "CLIENT", "response", "keys.id",
+                        "CALL_RETURN", actualClient, 9, 91, 7,
+                        300, 301, 0, scalarPath,
+                        Collections.singletonList(0), "int", "99", false,
+                        8, -1,
+                        "EXACT_CONFIGURED_RPC_BOUNDARY_SCALAR_V1", "",
+                        true, 1, Collections.singletonList("ROOT=1"));
+        RuntimeRegionPlanner.ProtocolEvent unmatchedScalar =
+                new RuntimeRegionPlanner.ProtocolEvent(10,
+                        "RPC_BOUNDARY_SCALAR", "example.response",
+                        "RESPONSE", "SERVER", "response", "keys.id",
+                        "METHOD_RETURN", server, 22, 0, 6,
+                        200, 202, 0, scalarPath,
+                        Collections.singletonList(1), "int", "52", false,
+                        8, -1,
+                        "EXACT_CONFIGURED_RPC_BOUNDARY_SCALAR_V1", "",
+                        true, 2, Collections.singletonList("ROOT=2"));
+        RuntimeRegionPlanner.ProtocolEvent wrongClientScalar =
+                new RuntimeRegionPlanner.ProtocolEvent(11,
+                        "RPC_BOUNDARY_SCALAR", "example.response",
+                        "RESPONSE", "CLIENT", "response", "keys.id",
+                        "CALL_RETURN",
+                        "<example.WrongClient: example.Payload fetch()>",
+                        9, 91, 7, 300, 302, 0, scalarPath,
+                        Collections.singletonList(1), "int", "52", false,
+                        8, -1,
+                        "EXACT_CONFIGURED_RPC_BOUNDARY_SCALAR_V1", "",
+                        true, 1, Collections.singletonList("ROOT=1"));
         File refined = new File(folder.getRoot(),
                 "rpc-response-refined.jsonl");
+        RuntimeRegionPlanner.FieldAccessEvent setupWrite =
+                new RuntimeRegionPlanner.FieldAccessEvent(4, "FIELD_WRITE",
+                        setupWriter, 44, "<example.Key: int id>", 201, 0,
+                        "41");
 
         RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
                 Arrays.asList(activation("REGION.client", 11,
                                 "PROTOCOL_CONTEXT", client),
                         activation("REGION.server", 22,
                                 "EXCEPTION_CONTEXT", server)),
-                Arrays.asList(clientCall, serverCall),
+                Arrays.asList(setupWriterCall, clientCall, serverCall),
                 Arrays.asList(callerSite, producerReturn, callerReturn),
-                Collections.emptyList(), Arrays.asList(send, receive),
+                Collections.singletonList(setupWrite), Arrays.asList(send,
+                        receive, producerScalar, consumerScalar,
+                        unmatchedScalar, wrongClientScalar),
                 refined.toPath());
 
         JsonObject edge = GSON.fromJson(Files.readAllLines(refined.toPath(),
@@ -769,8 +830,141 @@ public class RuntimeRefinedGraphBuilderTest {
         assertEquals("example.Payload",
                 binding.get("producerResultRuntimeType").getAsString());
         assertEquals(6, binding.get("producerResultEventSeq").getAsLong());
+        assertEquals(actualClient,
+                binding.get("callerDeclaredCallee").getAsString());
         assertFalse(binding.has("writerEventSeq"));
         assertFalse(binding.has("readerEventSeq"));
+        JsonObject scalar = binding.getAsJsonArray(
+                "runtimeBoundaryScalarBindings").get(0).getAsJsonObject();
+        assertEquals("TRUSTED_CONFIGURED_RPC_BOUNDARY_SCALAR_V1",
+                scalar.get("authority").getAsString());
+        assertEquals("keys.id", scalar.get("leafId").getAsString());
+        assertEquals("server-process",
+                scalar.get("producerProcess").getAsString());
+        assertEquals("client-process",
+                scalar.get("consumerProcess").getAsString());
+        assertEquals(0, scalar.getAsJsonArray("arrayIndices").get(0)
+                .getAsInt());
+        // Pairing is declared-path/index based. Raw observed values remain
+        // in trace schema 4 and are not duplicated into this pair ledger.
+        assertFalse(scalar.has("producerPrimitiveValue"));
+        assertFalse(scalar.has("consumerPrimitiveValue"));
+        JsonObject prestate = scalar.getAsJsonObject(
+                "producerExternalPrestateEvidence");
+        assertEquals("EXACT_ACTIVATION_EXTERNAL_PRESTATE_WRITE_V1",
+                prestate.get("authority").getAsString());
+        assertEquals("server-process",
+                prestate.get("process").getAsString());
+        assertEquals("REGION.server",
+                prestate.get("producerRegionId").getAsString());
+        assertEquals(201, prestate.get("receiverObjectId").getAsInt());
+        assertEquals("<example.Key: int id>",
+                prestate.get("declaration").getAsString());
+        assertEquals(4, prestate.get("latestWriteEventSeq").getAsLong());
+        assertEquals(22, prestate.get("producerRootCallId").getAsLong());
+        assertEquals(5, prestate.get("producerRootEventSeq").getAsLong());
+        assertTrue(prestate.get("beforeProducerRoot").getAsBoolean());
+        assertTrue(prestate.get("noCoveringWrite").getAsBoolean());
+        assertEquals(2, binding.getAsJsonArray(
+                "runtimeBoundaryScalarGaps").size());
+        boolean rejectedWrongClientMethod = false;
+        boolean rejectedUnmatchedProducerIndex = false;
+        for (com.google.gson.JsonElement gapElement : binding
+                .getAsJsonArray("runtimeBoundaryScalarGaps")) {
+            JsonObject scalarGap = gapElement.getAsJsonObject();
+            if ("CLIENT".equals(scalarGap.get("side").getAsString())
+                    && scalarGap.getAsJsonArray("arrayIndices").get(0)
+                    .getAsInt() == 1
+                    && "BOUNDARY_SCALAR_ROLE_MISMATCH".equals(
+                    scalarGap.get("gap").getAsString())) {
+                rejectedWrongClientMethod = true;
+            }
+            if ("SERVER".equals(scalarGap.get("side").getAsString())
+                    && scalarGap.getAsJsonArray("arrayIndices").get(0)
+                    .getAsInt() == 1
+                    && "MISSING_CONFIGURED_BOUNDARY_SCALAR_SIDE".equals(
+                    scalarGap.get("gap").getAsString())) {
+                rejectedUnmatchedProducerIndex = true;
+            }
+        }
+        assertTrue(rejectedWrongClientMethod);
+        assertTrue(rejectedUnmatchedProducerIndex);
+
+        // An earlier execution of the same logical region does not invalidate
+        // pre-state for this exact producer activation.
+        RuntimeRegionPlanner.MethodEvent earlierServerCall =
+                new RuntimeRegionPlanner.MethodEvent(3, "test",
+                        "server-process", "s", 2, server, 0, "", 33, 0, 0);
+        File betweenProducerRoots = new File(folder.getRoot(),
+                "rpc-response-write-between-producer-roots.jsonl");
+        RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                Arrays.asList(activation("REGION.client", 11,
+                                "PROTOCOL_CONTEXT", client),
+                        activation("REGION.server", 33,
+                                "EXCEPTION_CONTEXT", server),
+                        activation("REGION.server", 22,
+                                "EXCEPTION_CONTEXT", server)),
+                Arrays.asList(setupWriterCall, clientCall, earlierServerCall,
+                        serverCall),
+                Arrays.asList(callerSite, producerReturn, callerReturn),
+                Collections.singletonList(setupWrite), Arrays.asList(send,
+                        receive, producerScalar, consumerScalar,
+                        unmatchedScalar, wrongClientScalar),
+                betweenProducerRoots.toPath());
+        JsonObject fencedScalar = protocolBinding(betweenProducerRoots)
+                .getAsJsonArray("runtimeBoundaryScalarBindings").get(0)
+                .getAsJsonObject();
+        JsonObject exactPrestate = fencedScalar.getAsJsonObject(
+                "producerExternalPrestateEvidence");
+        assertEquals(22, exactPrestate.get("producerRootCallId").getAsLong());
+        assertEquals(5, exactPrestate.get("producerRootEventSeq").getAsLong());
+
+        // A write after the exact producer root is not activation pre-state,
+        // even when it still precedes the scalar boundary observation.
+        File afterProducerRoot = new File(folder.getRoot(),
+                "rpc-response-write-after-producer-root.jsonl");
+        RuntimeRegionPlanner.FieldAccessEvent lateSetupWrite =
+                new RuntimeRegionPlanner.FieldAccessEvent(6, "FIELD_WRITE",
+                        setupWriter, 44, "<example.Key: int id>", 201, 0,
+                        "41");
+        RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                Arrays.asList(activation("REGION.client", 11,
+                                "PROTOCOL_CONTEXT", client),
+                        activation("REGION.server", 22,
+                                "EXCEPTION_CONTEXT", server)),
+                Arrays.asList(setupWriterCall, clientCall, serverCall),
+                Arrays.asList(callerSite, producerReturn, callerReturn),
+                Collections.singletonList(lateSetupWrite), Arrays.asList(
+                        send, receive, producerScalar, consumerScalar,
+                        unmatchedScalar, wrongClientScalar),
+                afterProducerRoot.toPath());
+        JsonObject lateScalar = protocolBinding(afterProducerRoot)
+                .getAsJsonArray("runtimeBoundaryScalarBindings").get(0)
+                .getAsJsonObject();
+        assertFalse(lateScalar.has("producerExternalPrestateEvidence"));
+
+        // Time fencing is producer-region-local, but selected-activation
+        // membership is process-wide.  A write modeled by another region in
+        // the server process is not external setup state.
+        File modeledByOtherRegion = new File(folder.getRoot(),
+                "rpc-response-write-modeled-by-other-region.jsonl");
+        RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                Arrays.asList(activation("REGION.client", 11,
+                                "PROTOCOL_CONTEXT", client),
+                        activation("REGION.setup", 44,
+                                "STATE_CONTEXT", setupWriter),
+                        activation("REGION.server", 22,
+                                "EXCEPTION_CONTEXT", server)),
+                Arrays.asList(setupWriterCall, clientCall, serverCall),
+                Arrays.asList(callerSite, producerReturn, callerReturn),
+                Collections.singletonList(setupWrite), Arrays.asList(send,
+                        receive, producerScalar, consumerScalar,
+                        unmatchedScalar, wrongClientScalar),
+                modeledByOtherRegion.toPath());
+        JsonObject modeledScalar = protocolBinding(modeledByOtherRegion)
+                .getAsJsonArray("runtimeBoundaryScalarBindings").get(0)
+                .getAsJsonObject();
+        assertFalse(modeledScalar.has("producerExternalPrestateEvidence"));
 
         RuntimeRegionPlanner.RuntimeEvent duplicateProducerReturn =
                 new RuntimeRegionPlanner.RuntimeEvent(6,
@@ -794,6 +988,141 @@ public class RuntimeRefinedGraphBuilderTest {
                 .get(0).getAsJsonObject();
         assertFalse(ambiguousBinding.has("producerResultObjectId"));
         assertFalse(ambiguousBinding.has("producerResultEventSeq"));
+
+        RuntimeRegionPlanner.ProtocolEvent inconsistentSend =
+                new RuntimeRegionPlanner.ProtocolEvent(3, "SEND", "TEST_RPC",
+                        "native-a", "other-client-process", "c", 1,
+                        client, 11, 91, actualClient,
+                        101, 201, 301, 0, 0);
+        File inconsistentProcess = new File(folder.getRoot(),
+                "rpc-response-inconsistent-process.jsonl");
+        RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                Arrays.asList(activation("REGION.client", 11,
+                                "PROTOCOL_CONTEXT", client),
+                        activation("REGION.server", 22,
+                                "EXCEPTION_CONTEXT", server)),
+                Arrays.asList(clientCall, serverCall),
+                Arrays.asList(callerSite, producerReturn, callerReturn),
+                Collections.emptyList(), Arrays.asList(inconsistentSend,
+                        receive, producerScalar, consumerScalar,
+                        unmatchedScalar, wrongClientScalar),
+                inconsistentProcess.toPath());
+        assertBoundaryScalarProcessGap(inconsistentProcess);
+
+        RuntimeRegionPlanner.ProtocolEvent missingProcessSend =
+                new RuntimeRegionPlanner.ProtocolEvent(3, "SEND", "TEST_RPC",
+                        "native-a", "", "c", 1,
+                        client, 11, 91, actualClient,
+                        101, 201, 301, 0, 0);
+        File missingProcess = new File(folder.getRoot(),
+                "rpc-response-missing-process.jsonl");
+        RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                Arrays.asList(activation("REGION.client", 11,
+                                "PROTOCOL_CONTEXT", client),
+                        activation("REGION.server", 22,
+                                "EXCEPTION_CONTEXT", server)),
+                Arrays.asList(clientCall, serverCall),
+                Arrays.asList(callerSite, producerReturn, callerReturn),
+                Collections.emptyList(), Arrays.asList(missingProcessSend,
+                        receive, producerScalar, consumerScalar,
+                        unmatchedScalar, wrongClientScalar),
+                missingProcess.toPath());
+        assertBoundaryScalarProcessGap(missingProcess);
+
+        RuntimeRegionPlanner.ProtocolEvent malformedProducer =
+                new RuntimeRegionPlanner.ProtocolEvent(12,
+                        "RPC_BOUNDARY_SCALAR", "example.response",
+                        "RESPONSE", "SERVER", "response", "keys.id",
+                        "METHOD_RETURN",
+                        "<example.WrongServer: example.Payload fetch()>",
+                        22, 0, 6, 200, 201, 0, scalarPath,
+                        Collections.singletonList(0), "int", "41", false,
+                        8, -1,
+                        "EXACT_CONFIGURED_RPC_BOUNDARY_SCALAR_V1", "",
+                        true, 1, Collections.singletonList("ROOT=1"));
+        RuntimeRegionPlanner.ProtocolEvent malformedConsumer =
+                new RuntimeRegionPlanner.ProtocolEvent(13,
+                        "RPC_BOUNDARY_SCALAR", "example.response",
+                        "RESPONSE", "CLIENT", "response", "keys.id",
+                        "CALL_RETURN",
+                        "<example.WrongClient: example.Payload fetch()>",
+                        9, 91, 7, 300, 301, 0, scalarPath,
+                        Collections.singletonList(0), "int", "41", false,
+                        8, -1,
+                        "EXACT_CONFIGURED_RPC_BOUNDARY_SCALAR_V1", "",
+                        true, 1, Collections.singletonList("ROOT=1"));
+        File doubleMalformed = new File(folder.getRoot(),
+                "rpc-response-double-malformed-role.jsonl");
+        RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                Arrays.asList(activation("REGION.client", 11,
+                                "PROTOCOL_CONTEXT", client),
+                        activation("REGION.server", 22,
+                                "EXCEPTION_CONTEXT", server)),
+                Arrays.asList(clientCall, serverCall),
+                Arrays.asList(callerSite, producerReturn, callerReturn),
+                Collections.emptyList(), Arrays.asList(send, receive,
+                        malformedProducer, malformedConsumer),
+                doubleMalformed.toPath());
+        JsonObject doubleMalformedBinding = protocolBinding(doubleMalformed);
+        assertFalse(doubleMalformedBinding.has(
+                "runtimeBoundaryScalarBindings"));
+        int roleMismatchCount = 0;
+        for (com.google.gson.JsonElement element : doubleMalformedBinding
+                .getAsJsonArray("runtimeBoundaryScalarGaps")) {
+            if ("BOUNDARY_SCALAR_ROLE_MISMATCH".equals(element
+                    .getAsJsonObject().get("gap").getAsString())) {
+                roleMismatchCount++;
+            }
+        }
+        assertEquals(2, roleMismatchCount);
+
+        RuntimeRegionPlanner.ProtocolEvent producerEmpty =
+                boundaryScalarEmpty(14, "SERVER", "METHOD_RETURN", server,
+                        22, 0, 6, 200, scalarPath);
+        File inconsistentEmpty = new File(folder.getRoot(),
+                "rpc-response-producer-empty-consumer-value.jsonl");
+        RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                Arrays.asList(activation("REGION.client", 11,
+                                "PROTOCOL_CONTEXT", client),
+                        activation("REGION.server", 22,
+                                "EXCEPTION_CONTEXT", server)),
+                Arrays.asList(clientCall, serverCall),
+                Arrays.asList(callerSite, producerReturn, callerReturn),
+                Collections.emptyList(), Arrays.asList(send, receive,
+                        producerEmpty, consumerScalar),
+                inconsistentEmpty.toPath());
+        JsonObject inconsistentEmptyBinding = protocolBinding(
+                inconsistentEmpty);
+        assertFalse(inconsistentEmptyBinding.has(
+                "runtimeBoundaryScalarBindings"));
+        assertEquals("INCONSISTENT_CONFIGURED_BOUNDARY_SCALAR_EMPTY_SIDES",
+                inconsistentEmptyBinding.getAsJsonArray(
+                        "runtimeBoundaryScalarGaps").get(0).getAsJsonObject()
+                        .get("gap").getAsString());
+
+        RuntimeRegionPlanner.ProtocolEvent consumerEmpty =
+                boundaryScalarEmpty(15, "CLIENT", "CALL_RETURN",
+                        actualClient, 9, 91, 7, 300, scalarPath);
+        File bothEmpty = new File(folder.getRoot(),
+                "rpc-response-both-sides-empty.jsonl");
+        RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
+                Arrays.asList(activation("REGION.client", 11,
+                                "PROTOCOL_CONTEXT", client),
+                        activation("REGION.server", 22,
+                                "EXCEPTION_CONTEXT", server)),
+                Arrays.asList(clientCall, serverCall),
+                Arrays.asList(callerSite, producerReturn, callerReturn),
+                Collections.emptyList(), Arrays.asList(send, receive,
+                        producerEmpty, consumerEmpty), bothEmpty.toPath());
+        JsonObject bothEmptyBinding = protocolBinding(bothEmpty);
+        assertFalse(bothEmptyBinding.has("runtimeBoundaryScalarBindings"));
+        JsonObject completeEmpty = bothEmptyBinding.getAsJsonArray(
+                "runtimeBoundaryScalarGaps").get(0).getAsJsonObject();
+        assertEquals("NO_CONFIGURED_SCALAR_ELEMENTS",
+                completeEmpty.get("gap").getAsString());
+        assertTrue(completeEmpty.get(
+                "bothBoundarySidesCompleteEmpty").getAsBoolean());
+
     }
 
     @Test
@@ -876,6 +1205,44 @@ public class RuntimeRefinedGraphBuilderTest {
         return new RuntimeRegionPlanner.RuntimeEvent(seq, kind, method,
                 callId, invocationId, 0, siteId, declaredCallee, -1,
                 "example.Payload", 1, "", false, false);
+    }
+
+    private static void assertBoundaryScalarProcessGap(File refined)
+            throws Exception {
+        JsonObject binding = protocolBinding(refined);
+        assertFalse(binding.has("runtimeBoundaryScalarBindings"));
+        boolean found = false;
+        for (com.google.gson.JsonElement element : binding.getAsJsonArray(
+                "runtimeBoundaryScalarGaps")) {
+            if ("MISSING_OR_INCONSISTENT_CONFIGURED_BOUNDARY_SCALAR_PROCESS"
+                    .equals(element.getAsJsonObject().get("gap")
+                            .getAsString())) {
+                found = true;
+            }
+        }
+        assertTrue(found);
+    }
+
+    private static JsonObject protocolBinding(File refined) throws Exception {
+        return GSON.fromJson(Files.readAllLines(refined.toPath(),
+                StandardCharsets.UTF_8).get(0), JsonObject.class)
+                .getAsJsonArray("runtimeProtocolBindings").get(0)
+                .getAsJsonObject();
+    }
+
+    private static RuntimeRegionPlanner.ProtocolEvent boundaryScalarEmpty(
+            long seq, String side, String boundaryKind, String method,
+            long callId, long invocationId, long boundaryEventSeq,
+            int rootObjectId, List<String> scalarPath) {
+        return new RuntimeRegionPlanner.ProtocolEvent(seq,
+                "RPC_BOUNDARY_SCALAR_GAP", "example.response", "RESPONSE",
+                side, "response", "keys.id", boundaryKind, method, callId,
+                invocationId, boundaryEventSeq, rootObjectId, 0, 0,
+                scalarPath, Collections.<Integer>emptyList(), "int", "",
+                false, 8, -1,
+                "CONFIGURED_RPC_BOUNDARY_SCALAR_GAP_V1",
+                "NO_CONFIGURED_SCALAR_ELEMENTS", true, 0,
+                Collections.singletonList("ROOT=0"));
     }
 
     private static RuntimeRegionPlanner.FieldAccessEvent field(

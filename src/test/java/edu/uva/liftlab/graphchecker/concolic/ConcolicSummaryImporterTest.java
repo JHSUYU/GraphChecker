@@ -240,6 +240,28 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void producerSeedKeepsItsBoundaryPathGuard()
+            throws Exception {
+        JsonObject task = outputBoundaryTask(1);
+        task.addProperty("pathSeedKey", "PATH.SEED.RELATION");
+        task.add("branches", pathTask(false).get("branches").deepCopy());
+        JsonObject raw = outputBoundaryResult(1);
+        raw.getAsJsonObject("engineSummary").getAsJsonArray("pathCondition")
+                .add(branchPredicate(true));
+
+        PathImport imported = importOutputPath("relation-boundary-guard",
+                task, raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertEquals(1, summary.getAsJsonArray("pathCondition").size());
+        assertEquals(branchPredicate(true),
+                summary.getAsJsonArray("pathCondition").get(0));
+        assertEquals(0, summary.getAsJsonArray("branchMappings").size());
+    }
+
+    @Test
     public void anObservationAtAnotherOccurrenceIsImported() throws Exception {
         // The goal states the relation without an invocation ordinal, so a
         // bounded replay that reached the site a different number of times
@@ -374,12 +396,13 @@ public class ConcolicSummaryImporterTest {
             capture.addProperty("outputSiteId",
                     "<test.Worker: void run()>#u1");
             // Every capture is the first selected mutation of its own
-            // definition invocation, so the selection index is 1 throughout;
+            // definition invocation, so outputOccurrence is 1 throughout.
+            // replayOccurrence is the request provenance and also stays 1;
             // only the boundary-wide version ordinal tells them apart.
             capture.addProperty("outputOccurrence", 1);
             capture.addProperty("outputVersionOrdinal",
                     collide ? 1 : version);
-            capture.addProperty("replayOccurrence", collide ? 1 : version);
+            capture.addProperty("replayOccurrence", 1);
             JsonObject expression = new JsonObject();
             expression.addProperty("_type", "ConstExpr");
             expression.addProperty("_exp", "Y_I_" + version);

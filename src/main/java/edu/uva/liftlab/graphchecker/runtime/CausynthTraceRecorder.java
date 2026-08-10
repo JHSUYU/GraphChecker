@@ -6,7 +6,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.causynth.CausynthJson;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.ProtocolBoundaryScalarConfig;
 
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
@@ -15,6 +16,8 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.lang.reflect.Array;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayDeque;
@@ -62,6 +65,8 @@ public final class CausynthTraceRecorder {
     private static volatile File outputDir;
     private static volatile String testName;
     private static volatile int maxEvents;
+    /** Immutable declarations shared by all recording threads. */
+    private static volatile ProtocolBoundaryScalarConfig boundaryScalars;
     /** Guarded by {@link #LOCK}; persisted in the streaming close manifest. */
     private static boolean traceWriteFailure;
     private static BufferedWriter traceWriter;
@@ -218,6 +223,10 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(value);
         event.primitiveValue = safe(primitiveValue);
         emitExecutionEvent(event);
+        emitBoundaryScalars(boundaryScalars.serverLeaves(event.method,
+                        "REQUEST", argumentIndex), "SERVER", "REQUEST",
+                "METHOD_ARGUMENT", event.method, callId, 0L, event.id,
+                value);
     }
 
     public static long beginCall(long ownerCallId, String caller, int unitIndex,
@@ -261,6 +270,10 @@ public final class CausynthTraceRecorder {
             RuntimeTraceContext.captureAsync(value);
         }
         emitExecutionEvent(event);
+        emitBoundaryScalars(boundaryScalars.clientLeaves(
+                        event.declaredCallee, "REQUEST", argumentIndex),
+                "CLIENT", "REQUEST", "CALL_ARGUMENT", event.declaredCallee,
+                event.callId, invocationId, event.id, value);
     }
 
     public static void endCall(long invocationId, Object returnValue,
@@ -276,6 +289,10 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(returnValue);
         event.primitiveValue = safe(primitiveValue);
         emitExecutionEvent(event);
+        emitBoundaryScalars(boundaryScalars.clientLeaves(
+                        event.declaredCallee, "RESPONSE", -1),
+                "CLIENT", "RESPONSE", "CALL_RETURN", event.declaredCallee,
+                event.callId, invocationId, event.id, returnValue);
         removeCallSite(invocationId);
     }
 
@@ -318,6 +335,10 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(returnValue);
         event.primitiveValue = safe(primitiveValue);
         emitExecutionEvent(event);
+        emitBoundaryScalars(boundaryScalars.serverLeaves(event.method,
+                        "RESPONSE", -1), "SERVER", "RESPONSE",
+                "METHOD_RETURN", event.method, resolvedCallId, 0L, event.id,
+                returnValue);
         removeCall(resolvedCallId);
         if (call != null && call.rootContext) {
             RuntimeTraceContext.exitRoot(call.spanId);
@@ -413,41 +434,6 @@ public final class CausynthTraceRecorder {
                         receiverObjectId, valueObjectId, primitiveValue);
         synchronized (LOCK) {
             writeFieldTraceLine(event);
-            if ("FIELD_WRITE".equals(kind)
-                    && valueObject instanceof Object[]) {
-                recordReferenceArraySnapshotLocked(method,
-                        activeCall == null ? 0L : activeCall.callId,
-                        unitIndex, valueObject, (Object[]) valueObject, id);
-            }
-        }
-    }
-
-    /**
-     * Captures the logical value of a reference-array field when it is
-     * published.  This is the result-object boundary used by declared RPC
-     * carrier contracts; it does not depend on a particular serializer
-     * subsequently loading the array.
-     */
-    private static void recordReferenceArraySnapshotLocked(
-            String method, long callId, int unitIndex, Object array,
-            Object[] elements, long boundarySeq) {
-        int retained = Math.min(elements.length,
-                LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY);
-        // Preserve an exact empty snapshot as a row too.  arrayLength, rather
-        // than the sentinel index, is the semantic width.
-        int rows = Math.max(1, retained);
-        for (int index = 0; index < rows; index++) {
-            long id = EVENT_COUNTER.incrementAndGet();
-            if (id > maxEvents) return;
-            int elementIndex = elements.length == 0 ? -1 : index;
-            Object element = elements.length == 0 ? null : elements[index];
-            RuntimeRegionPlanner.ArrayAccessEvent event =
-                    new RuntimeRegionPlanner.ArrayAccessEvent(id,
-                            "ARRAY_SNAPSHOT", method, callId, unitIndex,
-                            siteId(method, unitIndex), identity(array),
-                            elementIndex, identity(element), boundarySeq,
-                            elements.length);
-            writeArrayTraceLine(event);
         }
     }
 
@@ -512,6 +498,287 @@ public final class CausynthTraceRecorder {
                         context.parentSpanId, context.remoteParentSpanId);
         synchronized (LOCK) {
             writeProtocolTraceLine(event);
+        }
+    }
+
+    /**
+     * Records only configured scalar leaves at a logical call boundary.
+     * Reflection follows canonical declared fields and bounded reference-array
+     * indices from the boundary value itself.  A traversal failure emits one
+     * named gap and never a partial set of values for that declaration.
+     */
+    private static void emitBoundaryScalars(
+            List<ProtocolBoundaryScalarConfig.Leaf> leaves, String side,
+            String direction, String boundaryKind, String boundaryMethod,
+            long callId, long invocationId, long boundaryEventSeq,
+            Object root) {
+        if (contextOnlyConcolicReplay || leaves == null || leaves.isEmpty()
+                || boundaryEventSeq <= 0L) {
+            return;
+        }
+        for (ProtocolBoundaryScalarConfig.Leaf leaf : leaves) {
+            List<BoundaryScalarObservation> observations = new ArrayList<>();
+            List<String> containerObservations = new ArrayList<>();
+            BoundaryScalarGap gap = projectBoundaryScalar(leaf, root,
+                    observations, containerObservations);
+            if (gap != null) {
+                writeBoundaryScalarGap(leaf, side, direction, boundaryKind,
+                        boundaryMethod, callId, invocationId,
+                        boundaryEventSeq, identity(root), gap,
+                        containerObservations);
+                continue;
+            }
+            for (BoundaryScalarObservation observation : observations) {
+                writeBoundaryScalarValue(leaf, side, direction, boundaryKind,
+                        boundaryMethod, callId, invocationId,
+                        boundaryEventSeq, identity(root), observation,
+                        observations.size(), containerObservations);
+            }
+        }
+    }
+
+    private static BoundaryScalarGap projectBoundaryScalar(
+            ProtocolBoundaryScalarConfig.Leaf leaf, Object root,
+            List<BoundaryScalarObservation> output,
+            List<String> containerObservations) {
+        List<BoundaryScalarObservation> staged = new ArrayList<>();
+        BoundaryScalarGap gap = descendBoundaryScalar(leaf, root, 0,
+                new ArrayList<Integer>(), 0, staged,
+                containerObservations);
+        if (gap == null && staged.isEmpty()
+                && leaf.containerBound() > 0) {
+            // Empty and heterogeneous arrays must still leave explicit
+            // schema-4 evidence.  Otherwise a valid empty selection is
+            // indistinguishable from a pre-migration trace.
+            return new BoundaryScalarGap(
+                    "NO_CONFIGURED_SCALAR_ELEMENTS", -1);
+        }
+        if (gap == null) output.addAll(staged);
+        return gap;
+    }
+
+    private static BoundaryScalarGap descendBoundaryScalar(
+            ProtocolBoundaryScalarConfig.Leaf leaf, Object value, int step,
+            List<Integer> indices, int leafReceiverObjectId,
+            List<BoundaryScalarObservation> output,
+            List<String> containerObservations) {
+        if (value == null) {
+            return new BoundaryScalarGap("NULL_PATH_VALUE", -1);
+        }
+        List<String> path = leaf.declaredPath();
+        if (step >= path.size()) {
+            if (!boundaryScalarValue(leaf.javaType(), value)) {
+                return new BoundaryScalarGap("SCALAR_TYPE_MISMATCH", -1);
+            }
+            output.add(new BoundaryScalarObservation(indices,
+                    leafReceiverObjectId, identity(value),
+                    String.valueOf(value), false));
+            return null;
+        }
+        String pathStep = path.get(step);
+        if (ProtocolBoundaryScalarConfig.ARRAY_ELEMENT.equals(pathStep)) {
+            Class<?> type = value.getClass();
+            if (!type.isArray() || type.getComponentType().isPrimitive()) {
+                return new BoundaryScalarGap(
+                        "REFERENCE_ARRAY_TYPE_MISMATCH", -1);
+            }
+            int length = Array.getLength(value);
+            containerObservations.add(containerObservation(indices, length));
+            if (length > leaf.containerBound()) {
+                return new BoundaryScalarGap("CONTAINER_BOUND_INSUFFICIENT",
+                        length);
+            }
+            for (int index = 0; index < length; index++) {
+                Object element = Array.get(value, index);
+                if (step + 1 < path.size()
+                        && !ProtocolBoundaryScalarConfig.ARRAY_ELEMENT.equals(
+                        path.get(step + 1))) {
+                    FieldPathSpec.DeclaredField next =
+                            FieldPathSpec.declaredField(path.get(step + 1));
+                    if (element == null || next != null
+                            && !declaresOwner(element.getClass(),
+                            next.owner())) {
+                        // A heterogeneous reference array can carry several
+                        // declared variants.  A configured subclass field
+                        // selects only elements of that declared variant.
+                        continue;
+                    }
+                }
+                List<Integer> nested = new ArrayList<>(indices);
+                nested.add(index);
+                BoundaryScalarGap gap = descendBoundaryScalar(leaf,
+                        element, step + 1, nested,
+                        leafReceiverObjectId, output,
+                        containerObservations);
+                if (gap != null) return gap;
+            }
+            return null;
+        }
+
+        FieldPathSpec.DeclaredField declared =
+                FieldPathSpec.declaredField(pathStep);
+        Field field = exactDeclaredField(value.getClass(), declared);
+        if (field == null) {
+            return new BoundaryScalarGap("DECLARED_FIELD_UNAVAILABLE", -1);
+        }
+        try {
+            if (!field.isAccessible()) field.setAccessible(true);
+            Object fieldValue = field.get(value);
+            int receiver = identity(value);
+            if (step == path.size() - 1 && fieldValue == null
+                    && "java.lang.String".equals(leaf.javaType())) {
+                output.add(new BoundaryScalarObservation(indices, receiver,
+                        0, "", true));
+                return null;
+            }
+            return descendBoundaryScalar(leaf, fieldValue, step + 1,
+                    indices, receiver, output, containerObservations);
+        } catch (RuntimeException | IllegalAccessException inaccessible) {
+            return new BoundaryScalarGap("DECLARED_FIELD_UNAVAILABLE", -1);
+        }
+    }
+
+    private static Field exactDeclaredField(
+            Class<?> runtimeClass, FieldPathSpec.DeclaredField declared) {
+        if (runtimeClass == null || declared == null) return null;
+        for (Class<?> type = runtimeClass; type != null;
+             type = type.getSuperclass()) {
+            if (!declared.owner().equals(type.getName())) continue;
+            try {
+                Field field = type.getDeclaredField(declared.name());
+                return fieldType(field.getType()).equals(declared.type())
+                        ? field : null;
+            } catch (NoSuchFieldException missing) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static boolean declaresOwner(Class<?> runtimeClass,
+                                         String owner) {
+        for (Class<?> type = runtimeClass; type != null;
+             type = type.getSuperclass()) {
+            if (safe(owner).equals(type.getName())) return true;
+        }
+        return false;
+    }
+
+    private static String containerObservation(List<Integer> prefix,
+                                               int width) {
+        StringBuilder encoded = new StringBuilder();
+        if (prefix.isEmpty()) {
+            encoded.append("ROOT");
+        } else {
+            for (int index = 0; index < prefix.size(); index++) {
+                if (index > 0) encoded.append(',');
+                encoded.append(prefix.get(index));
+            }
+        }
+        return encoded.append('=').append(width).toString();
+    }
+
+    private static String fieldType(Class<?> type) {
+        if (!type.isArray()) return type.getName();
+        int dimensions = 0;
+        Class<?> component = type;
+        while (component.isArray()) {
+            dimensions++;
+            component = component.getComponentType();
+        }
+        StringBuilder result = new StringBuilder(component.getName());
+        for (int index = 0; index < dimensions; index++) {
+            result.append("[]");
+        }
+        return result.toString();
+    }
+
+    private static boolean boundaryScalarValue(String javaType,
+                                               Object value) {
+        if (value == null) return "java.lang.String".equals(javaType);
+        if ("java.lang.String".equals(javaType)) {
+            return value instanceof String;
+        }
+        if ("boolean".equals(javaType)) return value instanceof Boolean;
+        if ("char".equals(javaType)) return value instanceof Character;
+        return value instanceof Number;
+    }
+
+    private static void writeBoundaryScalarValue(
+            ProtocolBoundaryScalarConfig.Leaf leaf, String side,
+            String direction, String boundaryKind, String boundaryMethod,
+            long callId, long invocationId, long boundaryEventSeq,
+            int rootObjectId, BoundaryScalarObservation observation,
+            int leafValueCount, List<String> containerObservations) {
+        long id = EVENT_COUNTER.incrementAndGet();
+        if (id > maxEvents) return;
+        synchronized (LOCK) {
+            writeTraceRow(
+                    "schemaVersion", 4,
+                    "event", "RPC_BOUNDARY_SCALAR",
+                    "seq", id,
+                    "mappingId", leaf.mappingId(),
+                    "leafId", leaf.leafId(),
+                    "protocolDirection", direction,
+                    "side", side,
+                    "port", leaf.port(),
+                    "boundaryKind", boundaryKind,
+                    "boundaryMethod", boundaryMethod,
+                    "callId", callId,
+                    "invocationId", invocationId,
+                    "boundaryEventSeq", boundaryEventSeq,
+                    "boundaryRootObjectId", rootObjectId,
+                    "leafReceiverObjectId",
+                    observation.leafReceiverObjectId,
+                    "valueObjectId", observation.valueObjectId,
+                    "declaredPath", leaf.declaredPath(),
+                    "arrayIndices", observation.indices,
+                    "javaType", leaf.javaType(),
+                    "primitiveValue", observation.primitiveValue,
+                    "nullValue", observation.nullValue,
+                    "containerBound", leaf.containerBound(),
+                    "leafObservationComplete", true,
+                    "leafValueCount", leafValueCount,
+                    "containerObservations", containerObservations,
+                    "valueAuthority",
+                    ProtocolBoundaryScalarConfig.VALUE_AUTHORITY);
+        }
+    }
+
+    private static void writeBoundaryScalarGap(
+            ProtocolBoundaryScalarConfig.Leaf leaf, String side,
+            String direction, String boundaryKind, String boundaryMethod,
+            long callId, long invocationId, long boundaryEventSeq,
+            int rootObjectId, BoundaryScalarGap gap,
+            List<String> containerObservations) {
+        long id = EVENT_COUNTER.incrementAndGet();
+        if (id > maxEvents) return;
+        synchronized (LOCK) {
+            writeTraceRow(
+                    "schemaVersion", 4,
+                    "event", "RPC_BOUNDARY_SCALAR_GAP",
+                    "seq", id,
+                    "mappingId", leaf.mappingId(),
+                    "leafId", leaf.leafId(),
+                    "protocolDirection", direction,
+                    "side", side,
+                    "port", leaf.port(),
+                    "boundaryKind", boundaryKind,
+                    "boundaryMethod", boundaryMethod,
+                    "callId", callId,
+                    "invocationId", invocationId,
+                    "boundaryEventSeq", boundaryEventSeq,
+                    "boundaryRootObjectId", rootObjectId,
+                    "declaredPath", leaf.declaredPath(),
+                    "javaType", leaf.javaType(),
+                    "containerBound", leaf.containerBound(),
+                    "observedContainerWidth", gap.observedWidth,
+                    "leafObservationComplete", true,
+                    "leafValueCount", 0,
+                    "containerObservations", containerObservations,
+                    "gap", gap.reason,
+                    "valueAuthority",
+                    ProtocolBoundaryScalarConfig.GAP_AUTHORITY);
         }
     }
 
@@ -709,6 +976,8 @@ public final class CausynthTraceRecorder {
                     : new File(configuredOutputDir, "runtime_trace.jsonl");
             BufferedWriter configuredWriter = null;
             try {
+                ProtocolBoundaryScalarConfig configuredBoundaryScalars =
+                        ProtocolBoundaryScalarConfig.fromConfiguration();
                 if (configuredContextOnly) {
                     // Keep the exact method/call-site TLS alive for every
                     // accessor invocation.  Applying the ordinary trace event
@@ -719,6 +988,7 @@ public final class CausynthTraceRecorder {
                     traceWriteFailure = false;
                     outputDir = null;
                     traceWriter = null;
+                    boundaryScalars = configuredBoundaryScalars;
                     contextOnlyConcolicReplay = true;
                     INITIALIZED.set(true);
                     return;
@@ -750,6 +1020,7 @@ public final class CausynthTraceRecorder {
                 traceWriteFailure = false;
                 outputDir = configuredOutputDir;
                 traceWriter = configuredWriter;
+                boundaryScalars = configuredBoundaryScalars;
                 contextOnlyConcolicReplay = false;
                 INITIALIZED.set(true);
             } catch (IOException | RuntimeException failure) {
@@ -829,6 +1100,7 @@ public final class CausynthTraceRecorder {
             TraceData trace = loadExistingTrace(new File(directory,
                     "runtime_trace.jsonl"), test, false);
             trace.sort();
+            requireConfiguredBoundaryScalarEvidence(trace);
             long traceLoadMillis = elapsedMillis(traceLoadStart);
             Set<String> observedMethods = new LinkedHashSet<>();
             for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
@@ -1170,6 +1442,315 @@ public final class CausynthTraceRecorder {
         }
     }
 
+    /**
+     * Proves that every configured leaf at every observed logical boundary
+     * has one complete schema-4 observation.  Completeness is per leaf and
+     * occurrence: an unrelated row can never discharge a missing boundary.
+     */
+    private static void requireConfiguredBoundaryScalarEvidence(
+            TraceData trace) throws IOException {
+        requireConfiguredBoundaryScalarEvidenceForTests(trace.execution,
+                trace.protocol);
+    }
+
+    static void requireConfiguredBoundaryScalarEvidenceForTests(
+            List<RuntimeRegionPlanner.RuntimeEvent> execution,
+            List<RuntimeRegionPlanner.ProtocolEvent> protocol)
+            throws IOException {
+        ProtocolBoundaryScalarConfig configured =
+                ProtocolBoundaryScalarConfig.fromConfiguration();
+        Map<String, ExpectedBoundaryLeaf> expected = new LinkedHashMap<>();
+        for (RuntimeRegionPlanner.RuntimeEvent event : execution) {
+            if ("CALL_ARGUMENT".equals(event.kind)) {
+                addExpectedBoundaryLeaves(expected,
+                        configured.clientLeaves(event.declaredCallee,
+                                "REQUEST", event.argumentIndex),
+                        "CLIENT", "CALL_ARGUMENT", event.declaredCallee,
+                        event);
+            } else if ("CALL_SITE_RETURN".equals(event.kind)) {
+                addExpectedBoundaryLeaves(expected,
+                        configured.clientLeaves(event.declaredCallee,
+                                "RESPONSE", -1),
+                        "CLIENT", "CALL_RETURN", event.declaredCallee,
+                        event);
+            } else if ("METHOD_ARGUMENT".equals(event.kind)) {
+                addExpectedBoundaryLeaves(expected,
+                        configured.serverLeaves(event.method,
+                                "REQUEST", event.argumentIndex),
+                        "SERVER", "METHOD_ARGUMENT", event.method, event);
+            } else if ("METHOD_EXIT_NORMAL".equals(event.kind)) {
+                addExpectedBoundaryLeaves(expected,
+                        configured.serverLeaves(event.method,
+                                "RESPONSE", -1),
+                        "SERVER", "METHOD_RETURN", event.method, event);
+            }
+        }
+
+        Map<String, List<RuntimeRegionPlanner.ProtocolEvent>> actual =
+                new LinkedHashMap<>();
+        for (RuntimeRegionPlanner.ProtocolEvent event : protocol) {
+            if (!("RPC_BOUNDARY_SCALAR".equals(event.direction)
+                    || "RPC_BOUNDARY_SCALAR_GAP".equals(event.direction))) {
+                continue;
+            }
+            String key = boundaryEvidenceKey(event.mappingId,
+                    event.protocolDirection, event.side, event.port,
+                    event.leafId, event.declaredPath, event.javaType,
+                    event.containerBound, event.boundaryKind, event.method,
+                    event.boundaryEventSeq, event.callId,
+                    event.invocationId, event.boundaryRootObjectId);
+            if (!expected.containsKey(key)) {
+                throw new IOException("Unconfigured or misbound schema-4 "
+                        + "boundary-scalar row at seq " + event.seq);
+            }
+            actual.computeIfAbsent(key,
+                    ignored -> new ArrayList<>()).add(event);
+        }
+        for (Map.Entry<String, ExpectedBoundaryLeaf> entry
+                : expected.entrySet()) {
+            List<RuntimeRegionPlanner.ProtocolEvent> rows = actual.get(
+                    entry.getKey());
+            if (rows == null || rows.isEmpty()) {
+                throw new IOException("Missing complete schema-4 boundary "
+                        + "evidence for " + entry.getValue().description());
+            }
+            validateCompleteBoundaryLeaf(entry.getValue(), rows);
+        }
+    }
+
+    private static void addExpectedBoundaryLeaves(
+            Map<String, ExpectedBoundaryLeaf> expected,
+            List<ProtocolBoundaryScalarConfig.Leaf> leaves,
+            String side, String boundaryKind, String boundaryMethod,
+            RuntimeRegionPlanner.RuntimeEvent event) throws IOException {
+        for (ProtocolBoundaryScalarConfig.Leaf leaf : leaves) {
+            ExpectedBoundaryLeaf value = new ExpectedBoundaryLeaf(leaf,
+                    side, boundaryKind, boundaryMethod, event.seq,
+                    event.callId, event.invocationId, event.objectId);
+            String key = value.key();
+            if (expected.putIfAbsent(key, value) != null) {
+                throw new IOException("Duplicate configured boundary leaf "
+                        + "occurrence: " + value.description());
+            }
+        }
+    }
+
+    private static void validateCompleteBoundaryLeaf(
+            ExpectedBoundaryLeaf expected,
+            List<RuntimeRegionPlanner.ProtocolEvent> rows)
+            throws IOException {
+        List<RuntimeRegionPlanner.ProtocolEvent> values = new ArrayList<>();
+        List<RuntimeRegionPlanner.ProtocolEvent> gaps = new ArrayList<>();
+        for (RuntimeRegionPlanner.ProtocolEvent row : rows) {
+            if (!row.leafObservationComplete) {
+                throw incompleteBoundaryEvidence(expected,
+                        "completion marker absent");
+            }
+            if ("RPC_BOUNDARY_SCALAR_GAP".equals(row.direction)) {
+                gaps.add(row);
+            } else {
+                values.add(row);
+            }
+        }
+        if (!values.isEmpty() && !gaps.isEmpty()) {
+            throw incompleteBoundaryEvidence(expected,
+                    "value and gap rows are mixed");
+        }
+        if (!gaps.isEmpty()) {
+            if (gaps.size() != 1) {
+                throw incompleteBoundaryEvidence(expected,
+                        "gap row is not unique");
+            }
+            RuntimeRegionPlanner.ProtocolEvent gap = gaps.get(0);
+            if (!ProtocolBoundaryScalarConfig.GAP_AUTHORITY.equals(
+                    gap.valueAuthority) || gap.gap.isEmpty()
+                    || gap.leafValueCount != 0
+                    || !gap.arrayIndices.isEmpty()) {
+                throw incompleteBoundaryEvidence(expected,
+                        "invalid gap authority or completion metadata");
+            }
+            validateContainerObservations(expected, gap, false);
+            return;
+        }
+        if (values.isEmpty()) {
+            throw incompleteBoundaryEvidence(expected, "no value rows");
+        }
+        List<String> completedContainers = null;
+        Set<List<Integer>> indices = new LinkedHashSet<>();
+        for (RuntimeRegionPlanner.ProtocolEvent value : values) {
+            if (!ProtocolBoundaryScalarConfig.VALUE_AUTHORITY.equals(
+                    value.valueAuthority)
+                    || !value.gap.isEmpty()
+                    || value.leafValueCount != values.size()
+                    || value.leafReceiverObjectId <= 0) {
+                throw incompleteBoundaryEvidence(expected,
+                        "invalid value authority or count");
+            }
+            if (!indices.add(new ArrayList<>(value.arrayIndices))) {
+                throw incompleteBoundaryEvidence(expected,
+                        "duplicate array index tuple");
+            }
+            if (completedContainers == null) {
+                completedContainers = value.containerObservations;
+            } else if (!completedContainers.equals(
+                    value.containerObservations)) {
+                throw incompleteBoundaryEvidence(expected,
+                        "inconsistent container completion metadata");
+            }
+            validateContainerObservations(expected, value, true);
+        }
+        if (expected.arrayDepth == 0
+                && (values.size() != 1
+                || !values.get(0).arrayIndices.isEmpty())) {
+            throw incompleteBoundaryEvidence(expected,
+                    "non-array leaf must have exactly one scalar row");
+        }
+    }
+
+    private static void validateContainerObservations(
+            ExpectedBoundaryLeaf expected,
+            RuntimeRegionPlanner.ProtocolEvent row, boolean requireIndices)
+            throws IOException {
+        if (expected.arrayDepth == 0) {
+            if (!row.containerObservations.isEmpty()) {
+                throw incompleteBoundaryEvidence(expected,
+                        "non-array leaf has container metadata");
+            }
+            return;
+        }
+        Map<String, Integer> widths = new LinkedHashMap<>();
+        int overflowCount = 0;
+        for (String observation : row.containerObservations) {
+            int separator = observation.lastIndexOf('=');
+            if (separator <= 0 || separator == observation.length() - 1) {
+                throw incompleteBoundaryEvidence(expected,
+                        "malformed container observation");
+            }
+            String prefix = observation.substring(0, separator);
+            int width;
+            try {
+                width = Integer.parseInt(observation.substring(
+                        separator + 1));
+            } catch (NumberFormatException invalid) {
+                throw incompleteBoundaryEvidence(expected,
+                        "malformed container width");
+            }
+            if (width > expected.leaf.containerBound()) overflowCount++;
+            boolean declaredOverflow = !requireIndices
+                    && "CONTAINER_BOUND_INSUFFICIENT".equals(row.gap)
+                    && width == row.observedContainerWidth;
+            if (width < 0
+                    || width > expected.leaf.containerBound()
+                    && !declaredOverflow
+                    || widths.put(prefix, width) != null) {
+                throw incompleteBoundaryEvidence(expected,
+                        "invalid or duplicate container width");
+            }
+        }
+        if (!requireIndices
+                && "CONTAINER_BOUND_INSUFFICIENT".equals(row.gap)
+                && (overflowCount != 1 || row.observedContainerWidth
+                <= expected.leaf.containerBound())) {
+            throw incompleteBoundaryEvidence(expected,
+                    "bound gap lacks one exact overflowing width");
+        }
+        if (!requireIndices) return;
+        for (Integer index : row.arrayIndices) {
+            if (index == null || index < 0) {
+                throw incompleteBoundaryEvidence(expected,
+                        "negative array index");
+            }
+        }
+        if (row.arrayIndices.size() != expected.arrayDepth) {
+            throw incompleteBoundaryEvidence(expected,
+                    "array index depth mismatch");
+        }
+        for (int depth = 0; depth < expected.arrayDepth; depth++) {
+            String prefix = containerPrefix(row.arrayIndices, depth);
+            Integer width = widths.get(prefix);
+            if (width == null || row.arrayIndices.get(depth) >= width) {
+                throw incompleteBoundaryEvidence(expected,
+                        "array index lacks completed container width");
+            }
+        }
+    }
+
+    private static String containerPrefix(List<Integer> indices, int depth) {
+        if (depth == 0) return "ROOT";
+        StringBuilder result = new StringBuilder();
+        for (int index = 0; index < depth; index++) {
+            if (index > 0) result.append(',');
+            result.append(indices.get(index));
+        }
+        return result.toString();
+    }
+
+    private static IOException incompleteBoundaryEvidence(
+            ExpectedBoundaryLeaf expected, String reason) {
+        return new IOException("Incomplete schema-4 boundary evidence for "
+                + expected.description() + ": " + reason);
+    }
+
+    private static String boundaryEvidenceKey(
+            String mappingId, String direction, String side, String port,
+            String leafId, List<String> path, String javaType, int bound,
+            String boundaryKind, String method, long boundaryEventSeq,
+            long callId, long invocationId, int boundaryRootObjectId) {
+        return safe(mappingId) + '\n' + safe(direction) + '\n'
+                + safe(side) + '\n' + safe(port) + '\n' + safe(leafId)
+                + '\n' + path + '\n' + safe(javaType) + '\n' + bound
+                + '\n' + safe(boundaryKind) + '\n' + safe(method) + '\n'
+                + boundaryEventSeq + '\n' + callId + '\n' + invocationId
+                + '\n' + boundaryRootObjectId;
+    }
+
+    private static final class ExpectedBoundaryLeaf {
+        private final ProtocolBoundaryScalarConfig.Leaf leaf;
+        private final String side;
+        private final String boundaryKind;
+        private final String boundaryMethod;
+        private final long boundaryEventSeq;
+        private final long callId;
+        private final long invocationId;
+        private final int boundaryRootObjectId;
+        private final int arrayDepth;
+
+        private ExpectedBoundaryLeaf(
+                ProtocolBoundaryScalarConfig.Leaf leaf, String side,
+                String boundaryKind, String boundaryMethod,
+                long boundaryEventSeq, long callId, long invocationId,
+                int eventObjectId) {
+            this.leaf = leaf;
+            this.side = side;
+            this.boundaryKind = boundaryKind;
+            this.boundaryMethod = boundaryMethod;
+            this.boundaryEventSeq = boundaryEventSeq;
+            this.callId = callId;
+            this.invocationId = invocationId;
+            this.boundaryRootObjectId = eventObjectId;
+            int depth = 0;
+            for (String step : leaf.declaredPath()) {
+                if (ProtocolBoundaryScalarConfig.ARRAY_ELEMENT.equals(step)) {
+                    depth++;
+                }
+            }
+            this.arrayDepth = depth;
+        }
+
+        private String key() {
+            return boundaryEvidenceKey(leaf.mappingId(), leaf.direction(),
+                    side, leaf.port(), leaf.leafId(), leaf.declaredPath(),
+                    leaf.javaType(), leaf.containerBound(), boundaryKind,
+                    boundaryMethod, boundaryEventSeq, callId, invocationId,
+                    boundaryRootObjectId);
+        }
+
+        private String description() {
+            return leaf.mappingId() + "/" + leaf.leafId() + " " + side
+                    + " " + boundaryKind + "@" + boundaryEventSeq;
+        }
+    }
+
     private static void clearInMemoryTrace() {
         INITIALIZED.set(false);
         EVENT_COUNTER.set(0L);
@@ -1181,6 +1762,7 @@ public final class CausynthTraceRecorder {
         contextOnlyConcolicReplay = false;
         traceWriteFailure = false;
         traceWriter = null;
+        boundaryScalars = null;
     }
 
     /**
@@ -1321,16 +1903,30 @@ public final class CausynthTraceRecorder {
                 throw new IOException("Malformed runtime trace row "
                         + lineNumber + " in " + file, malformed);
             }
-            if (integer(parsed, "schemaVersion", -1) != 3) {
+            int schemaVersion = integer(parsed, "schemaVersion", -1);
+            if (schemaVersion != 3 && schemaVersion != 4) {
                 throw new IOException("Unsupported runtime trace row: "
                         + line);
             }
             row = FlatJsonRow.fromJsonObject(parsed, pool);
         }
-        if (row.longValue("schemaVersion", -1L) != 3L) {
+        long schemaVersion = row.longValue("schemaVersion", -1L);
+        if (schemaVersion != 3L && schemaVersion != 4L) {
             throw new IOException("Unsupported runtime trace row: " + line);
         }
         String eventKind = row.stringValue("event");
+        if (schemaVersion == 3L
+                && ("RPC_BOUNDARY_SCALAR".equals(eventKind)
+                || "RPC_BOUNDARY_SCALAR_GAP".equals(eventKind))) {
+            throw new IOException("Boundary-scalar runtime rows require "
+                    + "schemaVersion 4: " + line);
+        }
+        if (schemaVersion == 4L
+                && !("RPC_BOUNDARY_SCALAR".equals(eventKind)
+                || "RPC_BOUNDARY_SCALAR_GAP".equals(eventKind))) {
+            throw new IOException("Unsupported schema-4 runtime trace row: "
+                    + line);
+        }
         if ("METHOD_ENTER".equals(eventKind)) {
             String process = row.stringValue("process");
             if (process.isEmpty()) {
@@ -1370,8 +1966,7 @@ public final class CausynthTraceRecorder {
                     row.intValue("valueObjectId", 0),
                     row.stringValue("primitiveValue")));
         } else if (!skeletonOnly && ("ARRAY_READ".equals(eventKind)
-                || "ARRAY_WRITE".equals(eventKind)
-                || "ARRAY_SNAPSHOT".equals(eventKind))) {
+                || "ARRAY_WRITE".equals(eventKind))) {
             trace.arrays.add(new RuntimeRegionPlanner.ArrayAccessEvent(
                     row.longValue("seq", 0L),
                     eventKind,
@@ -1381,9 +1976,7 @@ public final class CausynthTraceRecorder {
                     row.stringValue("siteId"),
                     row.intValue("arrayObjectId", 0),
                     row.intValue("arrayIndex", -1),
-                    row.intValue("elementObjectId", 0),
-                    row.longValue("snapshotBoundarySeq", -1L),
-                    row.intValue("arrayLength", -1)));
+                    row.intValue("elementObjectId", 0)));
         } else if (!skeletonOnly && ("RPC_SEND".equals(eventKind)
                 || "RPC_RECEIVE".equals(eventKind))) {
             trace.protocol.add(new RuntimeRegionPlanner.ProtocolEvent(
@@ -1403,6 +1996,34 @@ public final class CausynthTraceRecorder {
                     row.longValue("spanId", 0L),
                     row.longValue("parentSpanId", 0L),
                     row.longValue("remoteParentSpanId", 0L)));
+        } else if (!skeletonOnly && ("RPC_BOUNDARY_SCALAR".equals(eventKind)
+                || "RPC_BOUNDARY_SCALAR_GAP".equals(eventKind))) {
+            trace.protocol.add(new RuntimeRegionPlanner.ProtocolEvent(
+                    row.longValue("seq", 0L), eventKind,
+                    row.stringValue("mappingId"),
+                    row.stringValue("protocolDirection"),
+                    row.stringValue("side"), row.stringValue("port"),
+                    row.stringValue("leafId"),
+                    row.stringValue("boundaryKind"),
+                    row.stringValue("boundaryMethod"),
+                    row.longValue("callId", 0L),
+                    row.longValue("invocationId", 0L),
+                    row.longValue("boundaryEventSeq", -1L),
+                    row.intValue("boundaryRootObjectId", 0),
+                    row.intValue("leafReceiverObjectId", 0),
+                    row.intValue("valueObjectId", 0),
+                    row.stringList("declaredPath"),
+                    row.integerList("arrayIndices"),
+                    row.stringValue("javaType"),
+                    row.stringValue("primitiveValue"),
+                    row.booleanValue("nullValue", false),
+                    row.intValue("containerBound", 0),
+                    row.intValue("observedContainerWidth", -1),
+                    row.stringValue("valueAuthority"),
+                    row.stringValue("gap"),
+                    row.booleanValue("leafObservationComplete", false),
+                    row.intValue("leafValueCount", -1),
+                    row.stringList("containerObservations")));
         } else if (!skeletonOnly && isExecutionEventKind(eventKind)) {
             trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
                     row.longValue("seq", 0L), eventKind,
@@ -1424,6 +2045,12 @@ public final class CausynthTraceRecorder {
                     row.stringValue("branchKind"),
                     ""));
         }
+    }
+
+    static void parseTraceLineForTests(String line) throws IOException {
+        parseTraceLine(new TraceData(), line, 1,
+                new File("runtime-trace-test.jsonl"), "test", false,
+                new ConcurrentHashMap<String, String>());
     }
 
     private static boolean isExecutionEventKind(String kind) {
@@ -1487,9 +2114,7 @@ public final class CausynthTraceRecorder {
                 "unitIndex", event.unitIndex,
                 "arrayObjectId", event.arrayObjectId,
                 "arrayIndex", event.index,
-                "elementObjectId", event.elementObjectId,
-                "snapshotBoundarySeq", event.snapshotBoundarySeq,
-                "arrayLength", event.arrayLength);
+                "elementObjectId", event.elementObjectId);
     }
 
     private static void writeProtocolTraceLine(
@@ -1697,6 +2322,37 @@ public final class CausynthTraceRecorder {
         private Boolean outcome;
         private String branchKind = "";
         private Integer successorIndex;
+    }
+
+    private static final class BoundaryScalarObservation {
+        private final List<Integer> indices;
+        private final int leafReceiverObjectId;
+        private final int valueObjectId;
+        private final String primitiveValue;
+        private final boolean nullValue;
+
+        private BoundaryScalarObservation(List<Integer> indices,
+                                          int leafReceiverObjectId,
+                                          int valueObjectId,
+                                          String primitiveValue,
+                                          boolean nullValue) {
+            this.indices = Collections.unmodifiableList(
+                    new ArrayList<>(indices));
+            this.leafReceiverObjectId = leafReceiverObjectId;
+            this.valueObjectId = valueObjectId;
+            this.primitiveValue = safe(primitiveValue);
+            this.nullValue = nullValue;
+        }
+    }
+
+    private static final class BoundaryScalarGap {
+        private final String reason;
+        private final int observedWidth;
+
+        private BoundaryScalarGap(String reason, int observedWidth) {
+            this.reason = safe(reason);
+            this.observedWidth = observedWidth;
+        }
     }
 
     private static final class TraceData {
@@ -1972,10 +2628,11 @@ public final class CausynthTraceRecorder {
                         decoded = intern(pool, value.getAsString());
                     }
                 } else {
-                    // Preserve the forgiving legacy accessor behavior for
-                    // structured values: string() returned "" and numeric
-                    // accessors returned their fallback.
-                    decoded = STRUCTURED;
+                    // Boundary scalar rows deliberately carry two small
+                    // arrays.  Preserve them for their dedicated accessors;
+                    // ordinary scalar accessors still treat structure as
+                    // absent, matching their legacy behavior.
+                    decoded = value.deepCopy();
                 }
                 keys.add(intern(pool, entry.getKey()));
                 values.add(decoded);
@@ -1983,8 +2640,6 @@ public final class CausynthTraceRecorder {
             return new FlatJsonRow(keys.toArray(new String[0]),
                     values.toArray(), keys.size());
         }
-
-        private static final Object STRUCTURED = new Object();
 
         private Object find(String key) {
             // Later duplicate keys win, matching JsonObject.add overwrite.
@@ -2005,7 +2660,7 @@ public final class CausynthTraceRecorder {
         private String stringValue(String key) {
             Object value = find(key);
             if (value == MISSING || value == null
-                    || value == STRUCTURED) {
+                    || value instanceof JsonElement) {
                 return "";
             }
             return String.valueOf(value);
@@ -2014,7 +2669,7 @@ public final class CausynthTraceRecorder {
         private long longValue(String key, long fallback) {
             Object value = find(key);
             if (value == MISSING || value == null
-                    || value == STRUCTURED) {
+                    || value instanceof JsonElement) {
                 return fallback;
             }
             if (value instanceof Long) {
@@ -2036,7 +2691,7 @@ public final class CausynthTraceRecorder {
         private int intValue(String key, int fallback) {
             Object value = find(key);
             if (value == MISSING || value == null
-                    || value == STRUCTURED) {
+                    || value instanceof JsonElement) {
                 return fallback;
             }
             if (value instanceof Long) {
@@ -2058,7 +2713,7 @@ public final class CausynthTraceRecorder {
         private boolean booleanValue(String key, boolean fallback) {
             Object value = find(key);
             if (value == MISSING || value == null
-                    || value == STRUCTURED) {
+                    || value instanceof JsonElement) {
                 return fallback;
             }
             if (value instanceof Boolean) {
@@ -2067,6 +2722,37 @@ public final class CausynthTraceRecorder {
             // JsonPrimitive.getAsBoolean parses any non-boolean primitive
             // with Boolean.parseBoolean.
             return Boolean.parseBoolean(String.valueOf(value));
+        }
+
+        private List<String> stringList(String key) {
+            Object value = find(key);
+            if (!(value instanceof JsonArray)) {
+                return Collections.emptyList();
+            }
+            List<String> result = new ArrayList<>();
+            for (JsonElement element : (JsonArray) value) {
+                if (!element.isJsonPrimitive()) {
+                    return Collections.emptyList();
+                }
+                result.add(element.getAsString());
+            }
+            return result;
+        }
+
+        private List<Integer> integerList(String key) {
+            Object value = find(key);
+            if (!(value instanceof JsonArray)) {
+                return Collections.emptyList();
+            }
+            List<Integer> result = new ArrayList<>();
+            for (JsonElement element : (JsonArray) value) {
+                if (!element.isJsonPrimitive()
+                        || !element.getAsJsonPrimitive().isNumber()) {
+                    return Collections.emptyList();
+                }
+                result.add(element.getAsInt());
+            }
+            return result;
         }
     }
 

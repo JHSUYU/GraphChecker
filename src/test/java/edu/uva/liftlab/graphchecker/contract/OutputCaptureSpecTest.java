@@ -48,6 +48,18 @@ public class OutputCaptureSpecTest {
         OutputCaptureSpec.decodeValidated(capture);
     }
 
+    @Test(expected = IllegalArgumentException.class)
+    public void nestedFieldWriteRejectsMultiHopProjection() {
+        JsonObject capture = nestedCapture();
+        JsonArray path = new JsonArray();
+        path.add("currentKey");
+        path.add("delegate");
+        path.add("keyId");
+        capture.add("fieldPath", path);
+
+        OutputCaptureSpec.decodeValidated(capture);
+    }
+
     @Test
     public void legacyDirectFieldWriteRemainsUnambiguous() {
         JsonObject capture = nestedCapture();

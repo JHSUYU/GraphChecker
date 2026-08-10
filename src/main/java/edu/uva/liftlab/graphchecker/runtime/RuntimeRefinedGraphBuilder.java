@@ -6,7 +6,9 @@ import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.annotation.CausynthFault;
 import edu.uva.liftlab.graphchecker.causynth.CausynthJson;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.contract.ProtocolBoundaryScalarConfig;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -56,6 +58,14 @@ final class RuntimeRefinedGraphBuilder {
             "EXACT_RUNTIME_PROTOCOL_CALLSITE_RESULT_V1";
     static final String ASSOCIATIVE_MEMBER_AUTHORITY =
             "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1";
+    private static final String NO_CONFIGURED_SCALAR_ELEMENTS =
+            "NO_CONFIGURED_SCALAR_ELEMENTS";
+    private static final String INCONSISTENT_BOUNDARY_SCALAR_EMPTY_SIDES =
+            "INCONSISTENT_CONFIGURED_BOUNDARY_SCALAR_EMPTY_SIDES";
+    private static final String BOUNDARY_SCALAR_ROLE_MISMATCH =
+            "BOUNDARY_SCALAR_ROLE_MISMATCH";
+    private static final String EXTERNAL_PRESTATE_AUTHORITY =
+            "EXACT_ACTIVATION_EXTERNAL_PRESTATE_WRITE_V1";
 
     private static final Type ROW_TYPE =
             new TypeToken<Map<String, Object>>() { }.getType();
@@ -110,6 +120,8 @@ final class RuntimeRefinedGraphBuilder {
                 arraysByObject = arraysByObject(arrays, methodEvents);
         List<RuntimeRegionPlanner.ProtocolEvent> protocolEvents =
                 sortedProtocol(protocol);
+        ProtocolBoundaryScalarConfig boundaryScalarConfig =
+                ProtocolBoundaryScalarConfig.fromConfiguration();
         ProtocolCallsiteIndex protocolCallsites = new ProtocolCallsiteIndex(
                 methodEvents, runtimeEvents);
 
@@ -124,6 +136,9 @@ final class RuntimeRefinedGraphBuilder {
                 new LinkedHashMap<>();
         List<Activation> activations = activations(runtimeInstances,
                 skeletons, methodEvents);
+        BoundaryScalarExternalPrestateIndex externalPrestate =
+                new BoundaryScalarExternalPrestateIndex(methodEvents,
+                        fieldEvents, protocolEvents, activations);
         for (Activation activation : activations) {
                 RuntimeRegionPlanner.MethodEvent root = activation.root;
                 Set<Long> calls = activation.calls;
@@ -293,7 +308,8 @@ final class RuntimeRefinedGraphBuilder {
             } else if ("PROTOCOL_TRANSFER".equals(transfer)) {
                 List<RuntimeProtocolBinding> bindings = protocolBindings(
                         edge, activations, methodEvents, protocolCallsites,
-                        protocolEvents);
+                        protocolEvents, boundaryScalarConfig,
+                        externalPrestate);
                 if (bindings.isEmpty()) {
                     edge.put("runtimeObserved", false);
                 } else {
@@ -635,7 +651,9 @@ final class RuntimeRefinedGraphBuilder {
             Map<String, Object> edge, List<Activation> activations,
             List<RuntimeRegionPlanner.MethodEvent> methods,
             ProtocolCallsiteIndex callsites,
-            List<RuntimeRegionPlanner.ProtocolEvent> events) {
+            List<RuntimeRegionPlanner.ProtocolEvent> events,
+            ProtocolBoundaryScalarConfig boundaryScalarConfig,
+            BoundaryScalarExternalPrestateIndex externalPrestate) {
         String transport = string(edge.get("protocolTransport"));
         String clientStub = string(edge.get("protocolClientStub"));
         String serverStub = string(edge.get("protocolServerStub"));
@@ -685,15 +703,390 @@ final class RuntimeRefinedGraphBuilder {
             if (client == null || server == null) {
                 continue;
             }
+            String clientProcess = exactEndpointProcess(
+                    client.root.process, send.process);
+            String serverProcess = exactEndpointProcess(
+                    server.root.process, serverCall.process,
+                    receive.process);
+            RuntimeRegionPlanner.RuntimeEvent callerResult =
+                    callsites.returned(callerSite);
+            RuntimeRegionPlanner.RuntimeEvent producerResult = response
+                    ? callsites.uniqueNormalExit(serverCall.callId) : null;
             usedReceives.add(receive.seq);
             result.add(new RuntimeProtocolBinding(edge, send, receive,
                     response ? server : client,
                     response ? client : server, callerSite,
-                    callsites.returned(callerSite),
-                    response ? callsites.uniqueNormalExit(serverCall.callId)
-                            : null));
+                    callerResult, producerResult,
+                    boundaryScalarBindings(edge, events, callerSite,
+                            callerResult, serverCall, producerResult,
+                            response ? serverProcess : clientProcess,
+                            response ? clientProcess : serverProcess,
+                            response ? server : client,
+                            boundaryScalarConfig, externalPrestate)));
         }
         return result;
+    }
+
+    /**
+     * Returns one endpoint's exact process only when every independently
+     * correlated event/activation supplies the same non-empty identity.
+     */
+    private static String exactEndpointProcess(String... evidence) {
+        String selected = "";
+        for (String candidate : evidence) {
+            String process = string(candidate);
+            if (process.isEmpty()) return "";
+            if (selected.isEmpty()) {
+                selected = process;
+            } else if (!selected.equals(process)) {
+                return "";
+            }
+        }
+        return selected;
+    }
+
+    /**
+     * Pairs configured scalar observations by declaration and index only.
+     * Primitive values are evidence carried by each side, never a pairing
+     * key or a transport fingerprint.
+     */
+    private static BoundaryScalarBindings boundaryScalarBindings(
+            Map<String, Object> edge,
+            List<RuntimeRegionPlanner.ProtocolEvent> events,
+            RuntimeRegionPlanner.RuntimeEvent callerSite,
+            RuntimeRegionPlanner.RuntimeEvent callerResult,
+            RuntimeRegionPlanner.MethodEvent serverCall,
+            RuntimeRegionPlanner.RuntimeEvent producerResult,
+            String producerProcess, String consumerProcess,
+            Activation producerActivation,
+            ProtocolBoundaryScalarConfig boundaryScalarConfig,
+            BoundaryScalarExternalPrestateIndex externalPrestate) {
+        String mapping = string(edge.get("protocolStubMappingId"));
+        String direction = string(edge.get("protocolDirection"));
+        String port = string(edge.get("protocolPort"));
+        String serverStub = string(edge.get("protocolServerStub"));
+        String actualClientMethod = callerSite.declaredCallee;
+        boolean response = "RESPONSE".equals(direction);
+        BoundaryScalarBindings result = new BoundaryScalarBindings();
+        Map<String, List<RuntimeRegionPlanner.ProtocolEvent>> producerLeaves =
+                new LinkedHashMap<>();
+        Map<String, List<RuntimeRegionPlanner.ProtocolEvent>> consumerLeaves =
+                new LinkedHashMap<>();
+        for (RuntimeRegionPlanner.ProtocolEvent event : events) {
+            if (!mapping.equals(event.mappingId)
+                    || !direction.equals(event.protocolDirection)
+                    || !port.equals(event.port)
+                    || !("RPC_BOUNDARY_SCALAR".equals(event.direction)
+                    || "RPC_BOUNDARY_SCALAR_GAP".equals(event.direction))) {
+                continue;
+            }
+            boolean producerOccurrence = response
+                    ? producerResult != null
+                    && event.boundaryEventSeq == producerResult.seq
+                    && serverCall != null
+                    && event.callId == serverCall.callId
+                    : event.callId == callerSite.callId
+                    && event.invocationId == callerSite.invocationId;
+            boolean consumerOccurrence = response
+                    ? callerResult != null
+                    && event.boundaryEventSeq == callerResult.seq
+                    && event.callId == callerSite.callId
+                    && event.invocationId == callerSite.invocationId
+                    : serverCall != null && event.callId == serverCall.callId;
+            if (!producerOccurrence && !consumerOccurrence) continue;
+            boolean producer = producerOccurrence && !consumerOccurrence;
+            String expectedSide = response
+                    ? producer ? "SERVER" : "CLIENT"
+                    : producer ? "CLIENT" : "SERVER";
+            String expectedKind = response
+                    ? producer ? "METHOD_RETURN" : "CALL_RETURN"
+                    : producer ? "CALL_ARGUMENT" : "METHOD_ARGUMENT";
+            String expectedMethod = producer == response
+                    ? serverStub : actualClientMethod;
+            String leafKey = boundaryScalarLeafKey(event);
+            if (!expectedSide.equals(event.side)
+                    || !expectedKind.equals(event.boundaryKind)
+                    || !expectedMethod.equals(event.method)) {
+                // A malformed role is evidence about neither endpoint.  In
+                // particular, two malformed rows must never validate each
+                // other merely because their leaf identities coincide.
+                result.gaps.add(encodeBoundaryScalarGap(event,
+                        BOUNDARY_SCALAR_ROLE_MISMATCH));
+                continue;
+            }
+            (producer ? producerLeaves : consumerLeaves).computeIfAbsent(
+                    leafKey,
+                    ignored -> new ArrayList<>()).add(event);
+        }
+
+        Set<String> keys = new LinkedHashSet<>();
+        keys.addAll(producerLeaves.keySet());
+        keys.addAll(consumerLeaves.keySet());
+        for (String key : keys) {
+            BoundarySideEvidence from = completeBoundarySide(
+                    producerLeaves.getOrDefault(key,
+                            Collections.emptyList()));
+            BoundarySideEvidence to = completeBoundarySide(
+                    consumerLeaves.getOrDefault(key,
+                            Collections.emptyList()));
+            if (from == null || to == null) {
+                RuntimeRegionPlanner.ProtocolEvent sample = from != null
+                        ? from.sample : to.sample;
+                result.gaps.add(encodeBoundaryScalarGap(sample,
+                        "MISSING_CONFIGURED_BOUNDARY_SCALAR_SIDE"));
+                continue;
+            }
+            if (from.gap != null || to.gap != null) {
+                boolean fromEmpty = completeNoConfiguredElements(from);
+                boolean toEmpty = completeNoConfiguredElements(to);
+                if (fromEmpty && toEmpty) {
+                    result.gaps.add(encodeCompleteEmptyBoundaryScalarGap(
+                            from.sample, to.sample));
+                    continue;
+                }
+                if (fromEmpty || toEmpty) {
+                    result.gaps.add(encodeBoundaryScalarGap(to.sample,
+                            INCONSISTENT_BOUNDARY_SCALAR_EMPTY_SIDES));
+                    continue;
+                }
+                if (from.gap != null) {
+                    result.gaps.add(encodeBoundaryScalarGap(from.sample,
+                            from.gap));
+                }
+                if (to.gap != null) {
+                    result.gaps.add(encodeBoundaryScalarGap(to.sample,
+                            to.gap));
+                }
+                continue;
+            }
+            Set<String> indices = new LinkedHashSet<>();
+            indices.addAll(from.values.keySet());
+            indices.addAll(to.values.keySet());
+            for (String index : indices) {
+                RuntimeRegionPlanner.ProtocolEvent producer =
+                        from.values.get(index);
+                RuntimeRegionPlanner.ProtocolEvent consumer =
+                        to.values.get(index);
+                if (producer == null || consumer == null) {
+                    result.gaps.add(encodeBoundaryScalarGap(
+                            producer == null ? consumer : producer,
+                            "MISSING_CONFIGURED_BOUNDARY_SCALAR_SIDE"));
+                } else if (producerProcess.isEmpty()
+                        || consumerProcess.isEmpty()) {
+                    result.gaps.add(encodeBoundaryScalarGap(producer,
+                            "MISSING_OR_INCONSISTENT_CONFIGURED_BOUNDARY_"
+                                    + "SCALAR_PROCESS"));
+                } else {
+                    result.values.add(encodeBoundaryScalarPair(producer,
+                            consumer, producerProcess, consumerProcess,
+                            externalPrestate.evidence(producerProcess,
+                                    producerActivation, producer)));
+                }
+            }
+        }
+        for (ProtocolBoundaryScalarConfig.Leaf leaf
+                : boundaryScalarConfig.mappingLeaves(mapping)) {
+                if (!direction.equals(leaf.direction())
+                        || !port.equals(leaf.port())) {
+                    continue;
+                }
+                String leafKey = boundaryScalarLeafKey(leaf);
+                if (!producerLeaves.containsKey(leafKey)
+                        && !consumerLeaves.containsKey(leafKey)) {
+                    result.gaps.add(encodeMissingBoundaryScalarGap(leaf,
+                            response ? "CLIENT" : "SERVER",
+                            response && callerResult != null
+                                    ? callerResult.seq
+                                    : serverCall == null ? -1L
+                                    : serverCall.seq));
+                }
+        }
+        return result;
+    }
+
+    private static boolean completeNoConfiguredElements(
+            BoundarySideEvidence evidence) {
+        return evidence != null && NO_CONFIGURED_SCALAR_ELEMENTS.equals(
+                evidence.gap);
+    }
+
+    private static BoundarySideEvidence completeBoundarySide(
+            List<RuntimeRegionPlanner.ProtocolEvent> rows) {
+        if (rows.isEmpty()) return null;
+        RuntimeRegionPlanner.ProtocolEvent sample = rows.get(0);
+        List<RuntimeRegionPlanner.ProtocolEvent> gaps = new ArrayList<>();
+        Map<String, RuntimeRegionPlanner.ProtocolEvent> values =
+                new LinkedHashMap<>();
+        List<String> containers = null;
+        for (RuntimeRegionPlanner.ProtocolEvent row : rows) {
+            if (!row.leafObservationComplete) {
+                return BoundarySideEvidence.gap(sample,
+                        "INCOMPLETE_CONFIGURED_BOUNDARY_SCALAR_SIDE");
+            }
+            if ("RPC_BOUNDARY_SCALAR_GAP".equals(row.direction)) {
+                gaps.add(row);
+                continue;
+            }
+            if (!ProtocolBoundaryScalarConfig.VALUE_AUTHORITY.equals(
+                    row.valueAuthority) || row.leafValueCount != rows.size()
+                    || !row.gap.isEmpty()) {
+                return BoundarySideEvidence.gap(sample,
+                        "INVALID_CONFIGURED_BOUNDARY_SCALAR_COMPLETION");
+            }
+            if (containers == null) {
+                containers = row.containerObservations;
+            } else if (!containers.equals(row.containerObservations)) {
+                return BoundarySideEvidence.gap(sample,
+                        "INCONSISTENT_CONFIGURED_BOUNDARY_SCALAR_COMPLETION");
+            }
+            if (values.put(boundaryScalarIndexKey(row), row) != null) {
+                return BoundarySideEvidence.gap(sample,
+                        "DUPLICATE_CONFIGURED_BOUNDARY_SCALAR_INDEX");
+            }
+        }
+        if (!gaps.isEmpty()) {
+            if (!values.isEmpty() || gaps.size() != 1
+                    || !ProtocolBoundaryScalarConfig.GAP_AUTHORITY.equals(
+                    gaps.get(0).valueAuthority)
+                    || gaps.get(0).leafValueCount != 0
+                    || gaps.get(0).gap.isEmpty()) {
+                return BoundarySideEvidence.gap(sample,
+                        "MIXED_OR_INVALID_CONFIGURED_BOUNDARY_SCALAR_GAP");
+            }
+            return BoundarySideEvidence.gap(gaps.get(0), gaps.get(0).gap);
+        }
+        if (values.isEmpty()) {
+            return BoundarySideEvidence.gap(sample,
+                    "EMPTY_CONFIGURED_BOUNDARY_SCALAR_COMPLETION");
+        }
+        return BoundarySideEvidence.values(sample, values);
+    }
+
+    private static String boundaryScalarLeafKey(
+            RuntimeRegionPlanner.ProtocolEvent event) {
+        return event.mappingId + "\n" + event.protocolDirection + "\n"
+                + event.port + "\n" + event.leafId + "\n"
+                + event.declaredPath + "\n" + event.javaType + "\n"
+                + event.containerBound;
+    }
+
+    private static String boundaryScalarLeafKey(
+            ProtocolBoundaryScalarConfig.Leaf leaf) {
+        return leaf.mappingId() + "\n" + leaf.direction() + "\n"
+                + leaf.port() + "\n" + leaf.leafId() + "\n"
+                + leaf.declaredPath() + "\n" + leaf.javaType() + "\n"
+                + leaf.containerBound();
+    }
+
+    private static String boundaryScalarIndexKey(
+            RuntimeRegionPlanner.ProtocolEvent event) {
+        return String.valueOf(event.arrayIndices);
+    }
+
+    private static Map<String, Object> encodeBoundaryScalarPair(
+            RuntimeRegionPlanner.ProtocolEvent producer,
+            RuntimeRegionPlanner.ProtocolEvent consumer,
+            String producerProcess, String consumerProcess,
+            Map<String, Object> externalPrestate) {
+        Map<String, Object> result = boundaryScalarIdentity(producer);
+        result.put("authority",
+                "TRUSTED_CONFIGURED_RPC_BOUNDARY_SCALAR_V1");
+        putBoundaryScalarSide(result, "producer", producer,
+                producerProcess);
+        putBoundaryScalarSide(result, "consumer", consumer,
+                consumerProcess);
+        if (externalPrestate != null && !externalPrestate.isEmpty()) {
+            result.put("producerExternalPrestateEvidence", externalPrestate);
+        }
+        return result;
+    }
+
+    private static Map<String, Object> encodeBoundaryScalarGap(
+            RuntimeRegionPlanner.ProtocolEvent sample, String reason) {
+        Map<String, Object> result = boundaryScalarIdentity(sample);
+        result.put("authority",
+                "CONFIGURED_RPC_BOUNDARY_SCALAR_GAP_V1");
+        result.put("gap", reason);
+        result.put("side", sample.side);
+        result.put("boundaryEventSeq", sample.boundaryEventSeq);
+        if (sample.observedContainerWidth >= 0) {
+            result.put("observedContainerWidth",
+                    sample.observedContainerWidth);
+        }
+        return result;
+    }
+
+    /** Encodes the sole non-blocking gap: both exact endpoint sides are empty. */
+    private static Map<String, Object> encodeCompleteEmptyBoundaryScalarGap(
+            RuntimeRegionPlanner.ProtocolEvent producer,
+            RuntimeRegionPlanner.ProtocolEvent consumer) {
+        Map<String, Object> result = encodeBoundaryScalarGap(consumer,
+                NO_CONFIGURED_SCALAR_ELEMENTS);
+        result.put("bothBoundarySidesCompleteEmpty", true);
+        putEmptyBoundaryScalarSide(result, "producer", producer);
+        putEmptyBoundaryScalarSide(result, "consumer", consumer);
+        return result;
+    }
+
+    private static void putEmptyBoundaryScalarSide(
+            Map<String, Object> target, String prefix,
+            RuntimeRegionPlanner.ProtocolEvent event) {
+        target.put(prefix + "Side", event.side);
+        target.put(prefix + "BoundaryEventSeq", event.boundaryEventSeq);
+        target.put(prefix + "ValueAuthority", event.valueAuthority);
+        target.put(prefix + "LeafObservationComplete",
+                event.leafObservationComplete);
+        target.put(prefix + "LeafValueCount", event.leafValueCount);
+    }
+
+    private static Map<String, Object> encodeMissingBoundaryScalarGap(
+            ProtocolBoundaryScalarConfig.Leaf leaf, String side,
+            long boundaryEventSeq) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("mappingId", leaf.mappingId());
+        result.put("direction", leaf.direction());
+        result.put("port", leaf.port());
+        result.put("leafId", leaf.leafId());
+        result.put("declaredPath",
+                new ArrayList<>(leaf.declaredPath()));
+        result.put("arrayIndices", Collections.emptyList());
+        result.put("javaType", leaf.javaType());
+        result.put("containerBound", leaf.containerBound());
+        result.put("authority",
+                ProtocolBoundaryScalarConfig.GAP_AUTHORITY);
+        result.put("gap",
+                "MISSING_BOTH_CONFIGURED_BOUNDARY_SCALAR_SIDES");
+        result.put("side", side);
+        result.put("boundaryEventSeq", boundaryEventSeq);
+        return result;
+    }
+
+    private static Map<String, Object> boundaryScalarIdentity(
+            RuntimeRegionPlanner.ProtocolEvent event) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("mappingId", event.mappingId);
+        result.put("direction", event.protocolDirection);
+        result.put("port", event.port);
+        result.put("leafId", event.leafId);
+        result.put("declaredPath", new ArrayList<>(event.declaredPath));
+        result.put("arrayIndices", new ArrayList<>(event.arrayIndices));
+        result.put("javaType", event.javaType);
+        result.put("containerBound", event.containerBound);
+        return result;
+    }
+
+    private static void putBoundaryScalarSide(
+            Map<String, Object> target, String prefix,
+            RuntimeRegionPlanner.ProtocolEvent event, String process) {
+        target.put(prefix + "Side", event.side);
+        target.put(prefix + "Process", process);
+        target.put(prefix + "BoundaryEventSeq", event.boundaryEventSeq);
+        target.put(prefix + "LeafReceiverObjectId",
+                event.leafReceiverObjectId);
+        target.put(prefix + "ValueAuthority", event.valueAuthority);
+        target.put(prefix + "LeafObservationComplete",
+                event.leafObservationComplete);
+        target.put(prefix + "LeafValueCount", event.leafValueCount);
     }
 
     private static Activation activationForCall(List<Activation> activations,
@@ -857,15 +1250,8 @@ final class RuntimeRefinedGraphBuilder {
             row.put("arrayObjectId", access.arrayObjectId);
             row.put("arrayIndex", access.index);
             row.put("elementObjectId", access.elementObjectId);
-            if ("ARRAY_SNAPSHOT".equals(access.kind)) {
-                row.put("snapshotBoundarySeq", access.snapshotBoundarySeq);
-                row.put("arrayLength", access.arrayLength);
-                row.put("authority",
-                        "EXACT_RUNTIME_REFERENCE_ARRAY_SNAPSHOT_V1");
-            } else {
-                row.put("authority",
-                        "EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_V1");
-            }
+            row.put("authority",
+                    "EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_V1");
             rows.add(row);
         }
         encoded.put("runtimeArrayElementBindings", rows);
@@ -1225,6 +1611,7 @@ final class RuntimeRefinedGraphBuilder {
         private final RuntimeRegionPlanner.RuntimeEvent callerSite;
         private final RuntimeRegionPlanner.RuntimeEvent callerResult;
         private final RuntimeRegionPlanner.RuntimeEvent producerResult;
+        private final BoundaryScalarBindings boundaryScalars;
 
         private RuntimeProtocolBinding(Map<String, Object> edge,
                                        RuntimeRegionPlanner.ProtocolEvent send,
@@ -1232,7 +1619,8 @@ final class RuntimeRefinedGraphBuilder {
                                        Activation from, Activation to,
                                        RuntimeRegionPlanner.RuntimeEvent callerSite,
                                        RuntimeRegionPlanner.RuntimeEvent callerResult,
-                                       RuntimeRegionPlanner.RuntimeEvent producerResult) {
+                                       RuntimeRegionPlanner.RuntimeEvent producerResult,
+                                       BoundaryScalarBindings boundaryScalars) {
             this.edge = edge;
             this.send = send;
             this.receive = receive;
@@ -1241,6 +1629,7 @@ final class RuntimeRefinedGraphBuilder {
             this.callerSite = callerSite;
             this.callerResult = callerResult;
             this.producerResult = producerResult;
+            this.boundaryScalars = boundaryScalars;
         }
 
         private Map<String, Object> toMap() {
@@ -1300,6 +1689,16 @@ final class RuntimeRefinedGraphBuilder {
             if (serverIndex >= 0) {
                 result.put("serverParameterIndex", serverIndex);
             }
+            if (boundaryScalars != null
+                    && !boundaryScalars.values.isEmpty()) {
+                result.put("runtimeBoundaryScalarBindings",
+                        new ArrayList<>(boundaryScalars.values));
+            }
+            if (boundaryScalars != null
+                    && !boundaryScalars.gaps.isEmpty()) {
+                result.put("runtimeBoundaryScalarGaps",
+                        new ArrayList<>(boundaryScalars.gaps));
+            }
             return result;
         }
 
@@ -1321,6 +1720,249 @@ final class RuntimeRefinedGraphBuilder {
                 target.put(prefix + "SpanId", spanId);
             }
         }
+    }
+
+    private static final class BoundaryScalarBindings {
+        private final List<Map<String, Object>> values = new ArrayList<>();
+        private final List<Map<String, Object>> gaps = new ArrayList<>();
+    }
+
+    private static final class BoundarySideEvidence {
+        private final RuntimeRegionPlanner.ProtocolEvent sample;
+        private final Map<String, RuntimeRegionPlanner.ProtocolEvent> values;
+        private final String gap;
+
+        private BoundarySideEvidence(
+                RuntimeRegionPlanner.ProtocolEvent sample,
+                Map<String, RuntimeRegionPlanner.ProtocolEvent> values,
+                String gap) {
+            this.sample = sample;
+            this.values = values;
+            this.gap = gap;
+        }
+
+        private static BoundarySideEvidence values(
+                RuntimeRegionPlanner.ProtocolEvent sample,
+                Map<String, RuntimeRegionPlanner.ProtocolEvent> values) {
+            return new BoundarySideEvidence(sample, values, null);
+        }
+
+        private static BoundarySideEvidence gap(
+                RuntimeRegionPlanner.ProtocolEvent sample, String reason) {
+            return new BoundarySideEvidence(sample,
+                    Collections.<String,
+                            RuntimeRegionPlanner.ProtocolEvent>emptyMap(),
+                    reason);
+        }
+    }
+
+    /**
+     * Proves that one observed producer scalar is fixed by concrete setup
+     * state outside every selected activation in the producer process.  The
+     * proof is deliberately stricter than merely failing to find a refined-
+     * graph source: raw write/process evidence must identify one latest
+     * matching primitive write, and that write must precede the exact
+     * producer activation named by this protocol occurrence.  Membership is
+     * process-wide so a write modeled by another selected region cannot
+     * masquerade as setup.  Earlier executions of the same logical region do
+     * not invalidate later activation pre-state.
+     */
+    private static final class BoundaryScalarExternalPrestateIndex {
+        private final Map<String, List<RuntimeRegionPlanner.FieldAccessEvent>>
+                writes = new LinkedHashMap<>();
+        private final Map<String, Set<Long>> selectedCallsByProcess =
+                new LinkedHashMap<>();
+
+        private BoundaryScalarExternalPrestateIndex(
+                List<RuntimeRegionPlanner.MethodEvent> methods,
+                List<RuntimeRegionPlanner.FieldAccessEvent> fields,
+                List<RuntimeRegionPlanner.ProtocolEvent> protocol,
+                List<Activation> activations) {
+            Set<String> boundaryReceivers = new LinkedHashSet<>();
+            for (RuntimeRegionPlanner.ProtocolEvent event : values(protocol)) {
+                String declaration = lastBoundaryDeclaration(
+                        event.declaredPath);
+                if ("RPC_BOUNDARY_SCALAR".equals(event.direction)
+                        && event.leafReceiverObjectId != 0
+                        && !declaration.isEmpty()) {
+                    boundaryReceivers.add(receiverDeclarationKey(
+                            event.leafReceiverObjectId, declaration));
+                }
+            }
+            List<RuntimeRegionPlanner.FieldAccessEvent> relevantWrites =
+                    new ArrayList<>();
+            Set<String> relevantMethodCalls = new LinkedHashSet<>();
+            for (RuntimeRegionPlanner.FieldAccessEvent field
+                    : values(fields)) {
+                if (!"FIELD_WRITE".equals(field.kind)
+                        || field.seq < 0L || field.receiverObjectId == 0
+                        || FieldPathSpec.declaredField(field.field) == null
+                        || !boundaryReceivers.contains(receiverDeclarationKey(
+                        field.receiverObjectId, field.field))) {
+                    continue;
+                }
+                relevantWrites.add(field);
+                relevantMethodCalls.add(methodCallKey(field.callId,
+                        field.method));
+            }
+
+            Map<String, String> processByMethodCall = new LinkedHashMap<>();
+            Set<String> inconsistentMethodCalls = new LinkedHashSet<>();
+            for (RuntimeRegionPlanner.MethodEvent method : values(methods)) {
+                String process = string(method.process);
+                String key = methodCallKey(method.callId, method.method);
+                if (!relevantMethodCalls.contains(key)) continue;
+                if (process.isEmpty()) {
+                    inconsistentMethodCalls.add(key);
+                    processByMethodCall.remove(key);
+                    continue;
+                }
+                String previous = processByMethodCall.putIfAbsent(key,
+                        process);
+                if (previous != null && !previous.equals(process)) {
+                    inconsistentMethodCalls.add(key);
+                    processByMethodCall.remove(key);
+                }
+            }
+            for (String inconsistent : inconsistentMethodCalls) {
+                processByMethodCall.remove(inconsistent);
+            }
+
+            for (Activation activation : values(activations)) {
+                String process = string(activation.root.process);
+                if (process.isEmpty()) continue;
+                selectedCallsByProcess.computeIfAbsent(process,
+                        ignored -> new LinkedHashSet<>()).addAll(
+                        activation.calls);
+            }
+            for (RuntimeRegionPlanner.FieldAccessEvent field : relevantWrites) {
+                String methodCall = methodCallKey(field.callId, field.method);
+                if (inconsistentMethodCalls.contains(methodCall)) continue;
+                String process = processByMethodCall.get(methodCall);
+                if (process == null || process.isEmpty()) continue;
+                writes.computeIfAbsent(writeKey(process,
+                                field.receiverObjectId, field.field),
+                        ignored -> new ArrayList<>()).add(field);
+            }
+            for (List<RuntimeRegionPlanner.FieldAccessEvent> candidates
+                    : writes.values()) {
+                candidates.sort(Comparator.comparingLong(value -> value.seq));
+            }
+        }
+
+        private Map<String, Object> evidence(
+                String producerProcess,
+                Activation producerActivation,
+                RuntimeRegionPlanner.ProtocolEvent producer) {
+            String process = string(producerProcess);
+            String producerRegion = producerActivation == null ? ""
+                    : string(producerActivation.regionId);
+            long producerRootCallId = producerActivation == null ? -1L
+                    : producerActivation.root.callId;
+            long producerRootEventSeq = producerActivation == null ? -1L
+                    : producerActivation.root.seq;
+            String declaration = lastBoundaryDeclaration(
+                    producer.declaredPath);
+            if (process.isEmpty() || producerRegion.isEmpty()
+                    || producerActivation == null
+                    || !process.equals(producerActivation.root.process)
+                    || producerRootCallId <= 0L
+                    || producerRootEventSeq <= 0L
+                    || declaration.isEmpty()
+                    || producer.leafReceiverObjectId == 0
+                    || producer.boundaryEventSeq < 0L
+                    || producer.nullValue
+                    || producer.primitiveValue.isEmpty()
+                    || !primitiveScalarType(producer.javaType)) {
+                return Collections.emptyMap();
+            }
+            List<RuntimeRegionPlanner.FieldAccessEvent> candidates = writes.get(
+                    writeKey(process, producer.leafReceiverObjectId,
+                            declaration));
+            if (candidates == null || candidates.isEmpty()) {
+                return Collections.emptyMap();
+            }
+
+            RuntimeRegionPlanner.FieldAccessEvent latest = null;
+            int latestCount = 0;
+            for (RuntimeRegionPlanner.FieldAccessEvent candidate : candidates) {
+                if (candidate.seq >= producer.boundaryEventSeq) break;
+                if (latest == null || candidate.seq > latest.seq) {
+                    latest = candidate;
+                    latestCount = 1;
+                } else if (candidate.seq == latest.seq) {
+                    latestCount++;
+                }
+            }
+            if (latest == null || latestCount != 1
+                    || latest.valueObjectId != 0
+                    || !producer.primitiveValue.equals(latest.primitiveValue)) {
+                return Collections.emptyMap();
+            }
+
+            boolean noCoveringWrite = true;
+            for (RuntimeRegionPlanner.FieldAccessEvent candidate : candidates) {
+                if (candidate.seq > latest.seq
+                        && candidate.seq < producer.boundaryEventSeq) {
+                    noCoveringWrite = false;
+                    break;
+                }
+            }
+            Set<Long> selectedCalls = selectedCallsByProcess.get(process);
+            if (!noCoveringWrite || selectedCalls == null
+                    || selectedCalls.contains(latest.callId)
+                    || latest.seq >= producerRootEventSeq
+                    || producerRootEventSeq >= producer.boundaryEventSeq) {
+                return Collections.emptyMap();
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("authority", EXTERNAL_PRESTATE_AUTHORITY);
+            result.put("process", process);
+            result.put("producerRegionId", producerRegion);
+            result.put("receiverObjectId", producer.leafReceiverObjectId);
+            result.put("declaration", declaration);
+            result.put("latestWriteEventSeq", latest.seq);
+            result.put("producerRootCallId", producerRootCallId);
+            result.put("producerRootEventSeq", producerRootEventSeq);
+            result.put("beforeProducerRoot", true);
+            result.put("noCoveringWrite", true);
+            return result;
+        }
+
+        private static String lastBoundaryDeclaration(List<String> path) {
+            for (int index = path == null ? -1 : path.size() - 1;
+                 index >= 0; index--) {
+                String declaration = path.get(index);
+                if (FieldPathSpec.declaredField(declaration) != null) {
+                    return declaration;
+                }
+            }
+            return "";
+        }
+
+        private static boolean primitiveScalarType(String javaType) {
+            return "boolean".equals(javaType) || "byte".equals(javaType)
+                    || "char".equals(javaType) || "short".equals(javaType)
+                    || "int".equals(javaType) || "long".equals(javaType)
+                    || "float".equals(javaType)
+                    || "double".equals(javaType);
+        }
+
+        private static String methodCallKey(long callId, String method) {
+            return callId + "\n" + string(method);
+        }
+
+        private static String writeKey(String process, int receiver,
+                                       String declaration) {
+            return process + "\n" + receiver + "\n" + declaration;
+        }
+
+        private static String receiverDeclarationKey(int receiver,
+                                                     String declaration) {
+            return receiver + "\n" + declaration;
+        }
+
     }
 
     private static final class ProtocolCallsiteIndex {

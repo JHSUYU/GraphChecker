@@ -264,12 +264,12 @@ public final class OutputCaptureSpec {
             }
             return;
         }
-        if (fieldPath.size() < 2
+        if (fieldPath.size() != 2
                 || !referenceFieldType(definition.type())
                 || !primitiveFieldType(leaf.type())) {
             throw new IllegalArgumentException(
-                    "nested field-write projection requires a reference "
-                            + "definition and primitive leaf");
+                    "nested field-write projection requires exactly one "
+                            + "reference carrier and one primitive leaf");
         }
     }
 

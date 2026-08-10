@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
-import edu.uva.liftlab.graphchecker.causynth.ProtocolCarrierReconstruction;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 
@@ -473,287 +472,8 @@ public class RuntimeRegionPlannerTest {
                 "REGION.1@owner99", "REGION.1@owner100")), logical);
     }
 
-    @Test
-    public void carrierReconstructionOutputDemandsItsResponsePort()
-            throws Exception {
-        String field = "<example.State: int value>";
-        Map<String, Object> reader = fullRegion();
-        reader.put("symbolicInputs", Collections.singletonList(object(
-                "portId", "REGION.1.in.value", "cell", "reader",
-                "rootCallId", 1, "rootMethod", TARGET,
-                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
-                "rootKind", "OBSERVED_FIELD_RECEIVER",
-                "rootObjectId", 77, "fieldReceiverObjectId", 77,
-                "siteId", TARGET + "#u1",
-                "fieldPath", Collections.singletonList("value"),
-                "fieldPathDeclarations", Collections.singletonList(field))));
-        // The write at event 5 happens between the request send and the
-        // caller's own result, so it only rebuilt the decoded reply.
-        Map<String, Object> writer = object(
-                "schemaVersion", 3, "kind", "SYMBOLIC_REGION",
-                "graphKind", "RUNTIME_REFINED_DATAFLOW",
-                "regionId", "REGION.2", "rootMethod", WRITER,
-                "anchorMethod", WRITER,
-                "selection", "STATE_CONTEXT",
-                "runtimeRootCallIds", Collections.singletonList(3),
-                "methods", Collections.singletonList(WRITER),
-                "symbolicInputs", Arrays.asList(
-                        object("portId", "REGION.2.in.seed",
-                                "cell", "writer-input",
-                                "rootCallId", 3, "rootMethod", WRITER,
-                                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
-                                "rootKind", "OBSERVED_FIELD_RECEIVER",
-                                "rootObjectId", 78,
-                                "fieldReceiverObjectId", 78,
-                                "siteId", WRITER + "#u1",
-                                "fieldPath",
-                                Collections.singletonList("seed"),
-                                "fieldPathDeclarations",
-                                Collections.singletonList(
-                                        "<example.Other: int seed>")),
-                        object("portId", "REGION.2.in.response",
-                                "cell", WRITER + "::$decoded",
-                                "sourceKind", "PROTOCOL_INPUT",
-                                "protocolDirection", "RESPONSE",
-                                "authority",
-                                "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
-                                "mappingId", "example.response",
-                                "port", "response",
-                                "transportKind", "RPC",
-                                "dependencyRole", "VALUE_FRONTIER",
-                                "fromRegionId", "REGION.P",
-                                "toRegionId", "REGION.2",
-                                "fromRootCallId", 9, "toRootCallId", 3,
-                                "callerSiteEventSeq", 1,
-                                "sendEventSeq", 2, "receiveEventSeq", 3,
-                                "callerResultEventSeq", 8)),
-                "outputs", Collections.singletonList(object(
-                        "portId", "REGION.2.out.value", "cell", "writer",
-                        "rootCallId", 3, "rootMethod", WRITER,
-                        "bindingKind", "DECLARED_FIELD_ACCESS",
-                        "rootObjectId", 77,
-                        "fieldReceiverObjectId", 77,
-                        "siteId", WRITER + "#u2",
-                        "fieldPath", Collections.singletonList("value"),
-                        "fieldPathDeclarations",
-                        Collections.singletonList(field),
-                        "runtimeAccesses", Collections.singletonList(object(
-                                "rootCallId", 3, "eventSeq", 5,
-                                "staticAccessSiteId", WRITER + "#u2",
-                                "activationLocalStaticSiteOccurrence", 1,
-                                "bindingKind", "DECLARED_FIELD_ACCESS",
-                                "fieldReceiverObjectId", 77,
-                                "fieldPathDeclarations",
-                                Collections.singletonList(field))))),
-                "branchPolicies", Collections.emptyList());
-        File regions = jsonl("carrier-regions.jsonl", reader, writer);
-        File edges = jsonl("carrier-edges.jsonl", object(
-                "schemaVersion", 3, "kind", "RUNTIME_FIELD_FLOW",
-                "transportKind", "HEAP", "edgeId", "RF.1",
-                "fromRegion", "REGION.2", "toRegion", "REGION.1",
-                "fromPort", "REGION.2.out.value",
-                "toPort", "REGION.1.in.value",
-                "fromRootCallId", 3, "toRootCallId", 1,
-                "fromLaneId", 8, "toLaneId", 7,
-                "receiverObjectId", 77,
-                "writerEventSeq", 5, "readerEventSeq", 6,
-                "fieldPathDeclarations",
-                Collections.singletonList(field)));
-        Map<String, Object> refined = candidateEdge();
-        refined.put("refinementSchemaVersion", 1);
-        refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
-        File refinedFile = jsonl("carrier-refined.jsonl", refined);
-        List<RuntimeRegionPlanner.MethodEvent> events = new ArrayList<>();
-        events.add(new RuntimeRegionPlanner.MethodEvent(0, "test", "p", "w",
-                8, WRITER, 30, "example.Writer", 3, 0, 0));
-        events.addAll(methods());
 
-        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                regions, edges, refinedFile, Arrays.asList(
-                        activation("REGION.2", 3, WRITER,
-                                Collections.singletonList(3L)),
-                        activation("REGION.1", 1, ROOT,
-                                Arrays.asList(1L, 2L))),
-                events, runtime(), Collections.emptyList());
 
-        Map<String, Object> writerPlan = null;
-        for (Map<String, Object> candidate : result.regionPlans) {
-            if ("REGION.2".equals(candidate.get("regionId"))) {
-                writerPlan = candidate;
-            }
-        }
-        assertTrue(writerPlan != null);
-        String closure = String.valueOf(rows(
-                writerPlan.get("closureGoals")).get(0).get("outputClosure"));
-        assertTrue(closure.contains("inputPorts=[REGION.2.in.response]"));
-    }
-
-    @Test
-    public void selectedCarrierLeafPullsInItsResponsePort() throws Exception {
-        String field = "<example.State: int value>";
-        Map<String, Object> reader = fullRegion();
-        reader.put("symbolicInputs", Collections.singletonList(object(
-                "portId", "REGION.1.in.value", "cell", "reader",
-                "rootCallId", 1, "rootMethod", TARGET,
-                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
-                "rootKind", "OBSERVED_FIELD_RECEIVER",
-                "rootObjectId", 77, "fieldReceiverObjectId", 77,
-                "siteId", TARGET + "#u1",
-                "fieldPath", Collections.singletonList("value"),
-                "fieldPathDeclarations", Collections.singletonList(field))));
-        // The write itself is local production, but the prior state it reads
-        // back was rebuilt from a decoded reply.
-        Map<String, Object> writer = object(
-                "schemaVersion", 3, "kind", "SYMBOLIC_REGION",
-                "graphKind", "RUNTIME_REFINED_DATAFLOW",
-                "regionId", "REGION.2", "rootMethod", WRITER,
-                "anchorMethod", WRITER,
-                "selection", "STATE_CONTEXT",
-                "runtimeRootCallIds", Collections.singletonList(3),
-                "methods", Collections.singletonList(WRITER),
-                "symbolicInputs", Arrays.asList(
-                        object("portId", "REGION.2.in.value",
-                                "cell", "writer-input",
-                                "rootCallId", 3, "rootMethod", WRITER,
-                                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
-                                "rootKind", "OBSERVED_FIELD_RECEIVER",
-                                "rootObjectId", 77,
-                                "fieldReceiverObjectId", 77,
-                                "eventSeq", 4,
-                                "siteId", WRITER + "#u1",
-                                "fieldPath",
-                                Collections.singletonList("value"),
-                                "fieldPathDeclarations",
-                                Collections.singletonList(field),
-                                "protocolCarrierResponsePort",
-                                "REGION.2.in.response",
-                                "protocolCarrierMappingId",
-                                "example.response",
-                                "protocolCarrierAuthority",
-                                "TRUSTED_CONFIGURED_RPC_MAPPING_V1"),
-                        object("portId", "REGION.2.in.response",
-                                "cell", WRITER + "::$decoded",
-                                "sourceKind", "PROTOCOL_INPUT",
-                                "protocolDirection", "RESPONSE",
-                                "authority",
-                                "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
-                                "mappingId", "example.response",
-                                "port", "response",
-                                "transportKind", "RPC",
-                                "dependencyRole", "VALUE_FRONTIER",
-                                "fromRegionId", "REGION.P",
-                                "toRegionId", "REGION.2",
-                                "fromRootCallId", 9, "toRootCallId", 3,
-                                "callerSiteEventSeq", 1,
-                                "sendEventSeq", 2, "receiveEventSeq", 3,
-                                "callerResultEventSeq", 8)),
-                "outputs", Collections.singletonList(object(
-                        "portId", "REGION.2.out.value", "cell", "writer",
-                        "rootCallId", 3, "rootMethod", WRITER,
-                        "bindingKind", "DECLARED_FIELD_ACCESS",
-                        "rootObjectId", 77,
-                        "fieldReceiverObjectId", 77,
-                        "siteId", WRITER + "#u2",
-                        "fieldPath", Collections.singletonList("value"),
-                        "fieldPathDeclarations",
-                        Collections.singletonList(field),
-                        "runtimeAccesses", Collections.singletonList(object(
-                                "rootCallId", 3, "eventSeq", 20,
-                                "staticAccessSiteId", WRITER + "#u2",
-                                "activationLocalStaticSiteOccurrence", 1,
-                                "bindingKind", "DECLARED_FIELD_ACCESS",
-                                "fieldReceiverObjectId", 77,
-                                "fieldPathDeclarations",
-                                Collections.singletonList(field))))),
-                "branchPolicies", Collections.emptyList());
-        File regions = jsonl("carrier-leaf-regions.jsonl", reader, writer);
-        File edges = jsonl("carrier-leaf-edges.jsonl", object(
-                "schemaVersion", 3, "kind", "RUNTIME_FIELD_FLOW",
-                "transportKind", "HEAP", "edgeId", "RF.1",
-                "fromRegion", "REGION.2", "toRegion", "REGION.1",
-                "fromPort", "REGION.2.out.value",
-                "toPort", "REGION.1.in.value",
-                "fromRootCallId", 3, "toRootCallId", 1,
-                "fromLaneId", 8, "toLaneId", 7,
-                "receiverObjectId", 77,
-                "writerEventSeq", 20, "readerEventSeq", 21,
-                "fieldPathDeclarations",
-                Collections.singletonList(field)));
-        Map<String, Object> refined = candidateEdge();
-        refined.put("refinementSchemaVersion", 1);
-        refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
-        File refinedFile = jsonl("carrier-leaf-refined.jsonl", refined);
-        List<RuntimeRegionPlanner.MethodEvent> events = new ArrayList<>();
-        events.add(new RuntimeRegionPlanner.MethodEvent(0, "test", "p", "w",
-                8, WRITER, 30, "example.Writer", 3, 0, 0));
-        events.addAll(methods());
-
-        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                regions, edges, refinedFile, Arrays.asList(
-                        activation("REGION.2", 3, WRITER,
-                                Collections.singletonList(3L)),
-                        activation("REGION.1", 1, ROOT,
-                                Arrays.asList(1L, 2L))),
-                events, runtime(), Collections.emptyList());
-
-        Map<String, Object> writerPlan = null;
-        for (Map<String, Object> candidate : result.regionPlans) {
-            if ("REGION.2".equals(candidate.get("regionId"))) {
-                writerPlan = candidate;
-            }
-        }
-        assertTrue(writerPlan != null);
-        String closure = String.valueOf(rows(
-                writerPlan.get("closureGoals")).get(0).get("outputClosure"));
-        assertTrue(closure.contains(
-                "inputPorts=[REGION.2.in.value, REGION.2.in.response]"));
-    }
-
-    @Test
-    public void exactScalarProjectionDoesNotDemandWholeResponseCarrier() {
-        Map<String, Object> projected = projectedCarrierInput(
-                "REGION.2.in.value",
-                "STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1");
-        List<String> selected = new ArrayList<>(
-                Collections.singletonList("REGION.2.in.value"));
-
-        RuntimeRegionPlanner.addProtocolCarrierPorts(selected,
-                Collections.singletonList(projected), 3L);
-
-        assertEquals(Collections.singletonList("REGION.2.in.value"),
-                selected);
-
-        projected.put(ProtocolCarrierReconstruction.PROJECTION_GAP,
-                "MISSING_EXACT_PROTOCOL_CARRIER_PROJECTION");
-        selected = new ArrayList<>(
-                Collections.singletonList("REGION.2.in.value"));
-        RuntimeRegionPlanner.addProtocolCarrierPorts(selected,
-                Collections.singletonList(projected), 3L);
-        assertEquals(Arrays.asList("REGION.2.in.value",
-                "REGION.2.in.response"), selected);
-    }
-
-    @Test
-    public void carrierSuppressionIsPerSelectedProjectedInput() {
-        Map<String, Object> projected = projectedCarrierInput(
-                "REGION.2.in.keys",
-                "STATIC_DEF_USE_CONTAINER_PROJECTION_V1");
-        projected.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
-        Map<String, Object> unprojected = object(
-                "portId", "REGION.2.in.version", "rootCallId", 3,
-                "protocolCarrierResponsePort", "REGION.2.in.response",
-                "protocolCarrierMappingId", "example.response",
-                "protocolCarrierAuthority",
-                "TRUSTED_CONFIGURED_RPC_MAPPING_V1");
-        List<String> selected = new ArrayList<>(Arrays.asList(
-                "REGION.2.in.keys", "REGION.2.in.version"));
-
-        RuntimeRegionPlanner.addProtocolCarrierPorts(selected,
-                Arrays.asList(projected, unprojected), 3L);
-
-        assertEquals(Arrays.asList("REGION.2.in.keys",
-                "REGION.2.in.version", "REGION.2.in.response"), selected);
-    }
 
     @Test
     public void fieldFlowIsBoundToExactRegionActivations() throws Exception {
@@ -838,8 +558,12 @@ public class RuntimeRegionPlannerTest {
                                 Collections.singletonList(3L)),
                         activation("REGION.1", 1, ROOT,
                                 Arrays.asList(1L, 2L))),
-                events, runtime(),
-                Collections.emptyList());
+                events, runtime(), Collections.singletonList(
+                        new RuntimeRegionPlanner.FieldAccessEvent(5,
+                                "FIELD_WRITE", WRITER, 3, 2,
+                                WRITER + "#u2",
+                                "<example.State: int value>", 77, 0,
+                                "")));
 
         assertEquals(2, result.regionPlans.size());
         assertEquals(1, result.edgeValidations.size());
@@ -1005,6 +729,7 @@ public class RuntimeRegionPlannerTest {
                                 "dependencyRole",
                                 "CONCRETE_STRUCTURE_CARRIER",
                                 "toRootCallId", 3, "receiveEventSeq", 10,
+                                "callerResultEventSeq", 10,
                                 "protocolDirection", "RESPONSE",
                                 "mappingId", "example.keys"),
                         object("portId", "REGION.P.in.prestate",
@@ -1239,6 +964,9 @@ public class RuntimeRegionPlannerTest {
         RuntimeRegionPlanner.addReachingAccessorMaterializations(
                 ports, inputs, 3, Collections.singleton(STATE_UPDATE), 5);
 
+        assertEquals("latest", RuntimeRegionPlanner
+                .latestAccessorInputPort(ports, inputs));
+
         assertEquals(Arrays.asList("already-sliced", "latest", "other"),
                 ports);
     }
@@ -1284,7 +1012,6 @@ public class RuntimeRegionPlannerTest {
                         "runtimeAccesses", Collections.singletonList(object(
                                 "rootCallId", 3, "eventSeq", 5,
                                 "staticAccessSiteId", STATE_UPDATE + "#u2",
-                                "activationLocalStaticSiteOccurrence", 1,
                                 "bindingKind", "ACTIVATION_FIELD_ACCESS",
                                 "fieldReceiverObjectId", 88,
                                 "valueObjectId", 200,
@@ -1355,190 +1082,6 @@ public class RuntimeRegionPlannerTest {
         assertTrue(!capture.containsKey("accessRootInputPort"));
     }
 
-    @Test
-    public void trustedRpcContainerProjectionCapturesExactFieldWriteAndInput()
-            throws Exception {
-        String producerRoot = "<example.Producer: void run()>";
-        String definition =
-                "<example.Response: void <init>(example.Key[])>";
-        String arrayField = "<example.Response: example.Key[] keys>";
-        String producerInput = definition + ".param0:example.Key[]";
-        String producerLocal = definition + "::$keys";
-        String consumerLocal = TARGET + "::$keys";
-        String producerPort = "REGION.P.out.projected-keys";
-        String consumerPort = "REGION.1.in.projected-keys";
-        String mapping = "example.fetch.response";
-
-        Map<String, Object> producer = object(
-                "schemaVersion", 3, "kind", "SYMBOLIC_REGION",
-                "graphKind", "RUNTIME_REFINED_DATAFLOW",
-                "regionId", "REGION.P", "rootMethod", producerRoot,
-                "anchorMethod", definition, "selection", "STATE_CONTEXT",
-                "runtimeRootCallIds", Collections.singletonList(3),
-                "methods", Arrays.asList(producerRoot, definition),
-                "symbolicInputs", Collections.singletonList(object(
-                        "portId", "REGION.P.in.keys", "cell", producerInput,
-                        "rootCallId", 3, "rootMethod", definition,
-                        "sourceKind", "PARAMETER", "rootKind", "PARAMETER",
-                        "rootParameterIndex", 0,
-                        "javaType", "example.Key[]",
-                        "symbolicDemand", "BOUNDED_CONTAINER_STATE",
-                        "containerCapacity", LoopBoundPolicy
-                                .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY)),
-                "outputs", Collections.singletonList(object(
-                        "portId", producerPort, "cell",
-                        definition + "#u2.fieldReceiver",
-                        "rootCallId", 3, "rootMethod", producerRoot,
-                        "sourceKind", "ACTIVATION_FIELD_RECEIVER",
-                        "rootKind", "OBSERVED_FIELD_RECEIVER",
-                        "rootObjectId", 100, "fieldReceiverObjectId", 100,
-                        "valueObjectId", 200,
-                        "bindingKind", "ACTIVATION_FIELD_ACCESS",
-                        "fieldPath", Collections.singletonList("keys"),
-                        "fieldPathDeclarations",
-                        Collections.singletonList(arrayField),
-                        "javaType", "example.Key[]",
-                        "symbolicDemand", "BOUNDED_CONTAINER_STATE",
-                        "rpcDescendantProjectionOutput", true,
-                        "rpcProjectionAuthority",
-                        "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
-                        "rpcProjectionSelectionAuthority",
-                        "STATIC_DEF_USE_CONTAINER_PROJECTION_V1",
-                        "rpcProjectionMappingId", mapping,
-                        "rpcProjectionFieldDeclaration", arrayField,
-                        "rpcProjectionStaticAccessSiteId",
-                        definition + "#u2",
-                        "runtimeAccesses", Collections.singletonList(object(
-                                "rootCallId", 3, "eventSeq", 5,
-                                "staticAccessSiteId", definition + "#u2",
-                                "activationLocalStaticSiteOccurrence", 1,
-                                "bindingKind", "ACTIVATION_FIELD_ACCESS",
-                                "fieldReceiverObjectId", 100,
-                                "valueObjectId", 200,
-                                "fieldPathDeclarations",
-                                Collections.singletonList(arrayField))))),
-                "branchPolicies", Collections.emptyList());
-        Map<String, Object> consumer = fullRegion();
-        consumer.put("symbolicInputs", Collections.singletonList(object(
-                "portId", consumerPort, "cell",
-                TARGET + "#u1.fieldReceiver",
-                "rootCallId", 1, "rootMethod", TARGET,
-                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
-                "rootKind", "OBSERVED_FIELD_RECEIVER",
-                "rootObjectId", 300, "fieldReceiverObjectId", 300,
-                "valueObjectId", 400,
-                "fieldPath", Collections.singletonList("keys"),
-                "fieldPathDeclarations", Collections.singletonList(
-                        arrayField), "javaType", "example.Key[]",
-                "symbolicDemand", "BOUNDED_CONTAINER_STATE",
-                "containerCapacity", LoopBoundPolicy
-                        .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY,
-                "rpcDescendantProjectionInput", true,
-                "rpcProjectionAuthority",
-                "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
-                "rpcProjectionSelectionAuthority",
-                "STATIC_DEF_USE_CONTAINER_PROJECTION_V1",
-                "rpcProjectionMappingId", mapping)));
-
-        File regions = jsonl("projected-container-regions.jsonl",
-                producer, consumer);
-        File regionEdges = jsonl("projected-container-edges.jsonl", object(
-                "schemaVersion", 3, "kind", "RUNTIME_PROTOCOL_FLOW",
-                "transportKind", "RPC", "edgeId", "RP.projected-keys",
-                "fromRegion", "REGION.P", "toRegion", "REGION.1",
-                "fromPort", producerPort, "toPort", consumerPort,
-                "fromRootCallId", 3, "toRootCallId", 1,
-                "direction", "RESPONSE", "mappingId", mapping,
-                "authority", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
-                "callerSiteEventSeq", 10, "sendEventSeq", 11,
-                "receiveEventSeq", 12,
-                "dependencyRole", "VALUE_FRONTIER",
-                "projectionKind", "BOUNDED_CONTAINER_STATE",
-                "rpcDescendantProjection", true,
-                "projectionSelectionAuthority",
-                "STATIC_DEF_USE_CONTAINER_PROJECTION_V1",
-                "producerProjectionSiteId", definition + "#u2",
-                "consumerProjectionSiteId", TARGET + "#u1",
-                "fieldPathDeclarations",
-                Collections.singletonList(arrayField),
-                "javaType", "example.Key[]"));
-        Map<String, Object> failure = targetRefinedEdge(
-                "DF.target.failure", "GUARD", consumerLocal, "exception",
-                TARGET, TARGET + "#u4", 4);
-        failure.put("kind", "exception_guard");
-        File refined = jsonl("projected-container-refined.jsonl",
-                refinedEdge("DF.producer.value", "VALUE_PASS",
-                        producerInput, producerLocal, definition,
-                        definition + "#u1", 1),
-                refinedEdge("DF.producer.write", "HEAP_WRITE",
-                        producerLocal, arrayField, definition,
-                        definition + "#u2", 2),
-                targetRefinedEdge("DF.target.read", "HEAP_READ",
-                        arrayField, consumerLocal, TARGET,
-                        TARGET + "#u1", 1),
-                failure);
-        List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
-                new RuntimeRegionPlanner.MethodEvent(0, "test", "p", "w",
-                        8, producerRoot, 30, "example.Producer", 3, 0, 0),
-                new RuntimeRegionPlanner.MethodEvent(1, "test", "p", "w",
-                        8, definition, 31, "example.Response", 4, 3, 0),
-                new RuntimeRegionPlanner.MethodEvent(2, "test", "p", "r",
-                        9, ROOT, 40, "example.Root", 1, 0, 0),
-                new RuntimeRegionPlanner.MethodEvent(3, "test", "p", "r",
-                        9, TARGET, 41, "example.Target", 2, 1, 0));
-        Map<String, Object> producerActivation = activation(
-                "REGION.P", 3, producerRoot, Arrays.asList(3L, 4L));
-        producerActivation.put("observedMethods",
-                Arrays.asList(producerRoot, definition));
-
-        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                regions, regionEdges, refined, Arrays.asList(
-                        producerActivation,
-                        activation("REGION.1", 1, ROOT,
-                                Arrays.asList(1L, 2L))),
-                methods, Collections.singletonList(branchEvent(
-                        20, TARGET, 2, TARGET + "#u4", false)),
-                Collections.singletonList(
-                        new RuntimeRegionPlanner.FieldAccessEvent(5,
-                                "FIELD_WRITE", definition, 4, 2,
-                                definition + "#u2", arrayField, 100, 200,
-                                "")));
-
-        Map<String, Object> producerPlan = result.regionPlans.stream()
-                .filter(row -> "REGION.P".equals(row.get("regionId")))
-                .findFirst().get();
-        Map<String, Object> producerGoal = rows(
-                producerPlan.get("closureGoals")).get(0);
-        assertEquals("READY", ((Map<?, ?>) producerGoal.get("admission"))
-                .get("state"));
-        Map<String, Object> closure = (Map<String, Object>) producerGoal.get(
-                "outputClosure");
-        Map<String, Object> member = rows(closure.get("members")).get(0);
-        Map<String, Object> slice = (Map<String, Object>) member.get("slice");
-        Map<String, Object> capture = rows(slice.get("captureBindings")).get(0);
-        assertEquals("FIELD_WRITE_STATE", capture.get("captureKind"));
-        assertEquals(definition, capture.get("definitionMethod"));
-        assertEquals(2, ((Number) capture.get("definitionUnitIndex"))
-                .intValue());
-        assertEquals("example.Key[]", capture.get("javaType"));
-        assertEquals(Collections.singletonList("REGION.P.in.keys"),
-                slice.get("inputPorts"));
-        assertEquals(Boolean.TRUE, rows(closure.get("causalEdges")).get(0)
-                .get("rpcDescendantProjection"));
-
-        Map<String, Object> consumerPlan = result.regionPlans.stream()
-                .filter(row -> "REGION.1".equals(row.get("regionId")))
-                .findFirst().get();
-        Map<String, Object> consumerGoal = rows(
-                consumerPlan.get("closureGoals")).get(0);
-        Map<String, Object> action = rows(consumerGoal.get("symbolize")).get(0);
-        assertEquals(consumerPort, action.get("symbol"));
-        assertEquals("BOUNDED_CONTAINER_STATE",
-                action.get("symbolicDemand"));
-        assertEquals("example.Key[]", action.get("javaType"));
-        assertEquals(LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY,
-                ((Number) action.get("containerCapacity")).intValue());
-    }
 
     @Test
     public void trustedRpcScalarLeafProjectionClosesItsProducerWrite()
@@ -1584,9 +1127,9 @@ public class RuntimeRegionPlannerTest {
                         "javaType", "int",
                         "rpcDescendantProjectionOutput", true,
                         "rpcProjectionAuthority",
-                        "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
+                        "TRUSTED_CONFIGURED_RPC_BOUNDARY_SCALAR_V1",
                         "rpcProjectionSelectionAuthority",
-                        "STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1",
+                        "CONFIGURED_RPC_BOUNDARY_SCALAR_PATH_V1",
                         "rpcProjectionMappingId", mapping,
                         "rpcProjectionFieldDeclaration", leafField,
                         "rpcProjectionStaticAccessSiteId",
@@ -1615,9 +1158,9 @@ public class RuntimeRegionPlannerTest {
                         leafField), "javaType", "int",
                 "rpcDescendantProjectionInput", true,
                 "rpcProjectionAuthority",
-                "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
+                "TRUSTED_CONFIGURED_RPC_BOUNDARY_SCALAR_V1",
                 "rpcProjectionSelectionAuthority",
-                "STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1",
+                "CONFIGURED_RPC_BOUNDARY_SCALAR_PATH_V1",
                 "rpcProjectionMappingId", mapping)));
 
         File regions = jsonl("projected-scalar-regions.jsonl",
@@ -1635,10 +1178,11 @@ public class RuntimeRegionPlannerTest {
                 "dependencyRole", "VALUE_FRONTIER",
                 "projectionKind", "SCALAR_LEAF_VALUE",
                 "rpcDescendantProjection", true,
+                "rpcProjectionAuthority",
+                "TRUSTED_CONFIGURED_RPC_BOUNDARY_SCALAR_V1",
                 "projectionSelectionAuthority",
-                "STATIC_DEF_USE_SCALAR_LEAF_PROJECTION_V1",
+                "CONFIGURED_RPC_BOUNDARY_SCALAR_PATH_V1",
                 "producerProjectionSiteId", definition + "#u2",
-                "consumerProjectionSiteId", TARGET + "#u1",
                 "fieldPathDeclarations",
                 Arrays.asList(wireCarrierField, leafField),
                 "javaType", "int"));
@@ -1682,6 +1226,10 @@ public class RuntimeRegionPlannerTest {
                 methods, Collections.singletonList(branchEvent(
                         20, TARGET, 2, TARGET + "#u4", false)),
                 Arrays.asList(
+                        new RuntimeRegionPlanner.FieldAccessEvent(4,
+                                "FIELD_WRITE", producerRoot, 3, 3,
+                                producerRoot + "#u3", carrierField, 30,
+                                0, ""),
                         new RuntimeRegionPlanner.FieldAccessEvent(5,
                                 "FIELD_WRITE", definition, 4, 2,
                                 definition + "#u2", leafField, 100, 0,
@@ -1713,6 +1261,10 @@ public class RuntimeRegionPlannerTest {
         assertEquals(Arrays.asList("activeKey", "keyId"),
                 capture.get("fieldPath"));
         assertEquals("int", capture.get("javaType"));
+        assertEquals(1, ((Number) capture.get("outputOccurrence"))
+                .intValue());
+        assertEquals(1, ((Number) capture.get("replayOccurrence"))
+                .intValue());
         assertEquals(Collections.singletonList("REGION.P.in.keyId"),
                 slice.get("inputPorts"));
 
@@ -1760,207 +1312,6 @@ public class RuntimeRegionPlannerTest {
                 30, 100, ""));
         assertEquals(null, RuntimeRegionPlanner
                 .uniqueRpcCarrierPublication(leaf, invocation, fields));
-    }
-
-    @Test
-    public void selectedDecodeWriteUsesItsEventSpecificHelperArgument()
-            throws Exception {
-        String producerRoot = "<example.Decoder: void run()>";
-        String constructor = "<example.Key: void <init>(int)>";
-        String parameter = constructor + ".param0:int";
-        String local = constructor + "::i0";
-        String field = "<example.Key: int keyId>";
-        String producerPort = "REGION.P.out.keyId";
-        String decodePort = "REGION.P.in.decoded-keyId.25";
-        String responsePort = "REGION.P.in.response.4";
-        String consumerPort = "REGION.1.in.keyId";
-
-        Map<String, Object> producer = object(
-                "schemaVersion", 3, "kind", "SYMBOLIC_REGION",
-                "graphKind", "RUNTIME_REFINED_DATAFLOW",
-                "regionId", "REGION.P", "rootMethod", producerRoot,
-                "anchorMethod", constructor, "selection", "STATE_CONTEXT",
-                "runtimeRootCallIds", Collections.singletonList(3),
-                "methods", Arrays.asList(producerRoot, constructor),
-                "symbolicInputs", Arrays.asList(object(
-                        "portId", decodePort, "cell", parameter,
-                        "rootCallId", 3, "sourceKind", "RPC_DECODE_VALUE",
-                        "rootKind", "ACTIVATION_LOCAL",
-                        "dependencyRole", "VALUE_FRONTIER",
-                        "transportKind", "ACTIVATION_LOCAL",
-                        "javaType", "int", "helperMethod", constructor,
-                        "helperArgumentIndex", 0,
-                        "replayOccurrence", 25,
-                        "activationLocalStaticSiteOccurrence", 25,
-                        "fieldPath", Collections.emptyList(),
-                        "fieldPathDeclarations",
-                        Collections.singletonList(field)),
-                        object("portId", responsePort,
-                                "cell", producerRoot + "::$response",
-                                "rootCallId", 3,
-                                "sourceKind", "PROTOCOL_INPUT",
-                                "dependencyRole",
-                                "CONCRETE_STRUCTURE_CARRIER",
-                                "transportKind", "RPC",
-                                "protocolDirection", "RESPONSE",
-                                "direction", "RESPONSE",
-                                "authority",
-                                "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
-                                "mappingId", "example.fetch",
-                                "sendEventSeq", 10,
-                                "callerResultEventSeq", 105)),
-                "outputs", Collections.singletonList(object(
-                        "portId", producerPort, "cell",
-                        constructor + "#u2.fieldReceiver",
-                        "rootCallId", 3, "rootMethod", producerRoot,
-                        "rootKind", "OBSERVED_FIELD_RECEIVER",
-                        "bindingKind", "ACTIVATION_FIELD_ACCESS",
-                        "fieldPath", Collections.singletonList("keyId"),
-                        "fieldPathDeclarations",
-                        Collections.singletonList(field),
-                        "rpcDecodedLeafInputs", Collections.singletonList(
-                                object("writerEventSeq", 100,
-                                        "inputPort", decodePort,
-                                        "protocolCarrierResponsePort",
-                                        responsePort,
-                                        "authority",
-                                        "TRUSTED_DECLARED_CARRIER_PROJECTION_V1")),
-                        "runtimeAccesses", Arrays.asList(
-                                object("rootCallId", 3, "eventSeq", 50,
-                                        "staticAccessSiteId",
-                                        constructor + "#u2",
-                                        "activationLocalStaticSiteOccurrence",
-                                        1, "bindingKind",
-                                        "ACTIVATION_FIELD_ACCESS",
-                                        "fieldReceiverObjectId", 100,
-                                        "valueObjectId", 0,
-                                        "fieldPathDeclarations",
-                                        Collections.singletonList(field)),
-                                object("rootCallId", 3, "eventSeq", 100,
-                                        "staticAccessSiteId",
-                                        constructor + "#u2",
-                                        "activationLocalStaticSiteOccurrence",
-                                        25, "bindingKind",
-                                        "ACTIVATION_FIELD_ACCESS",
-                                        "fieldReceiverObjectId", 200,
-                                        "valueObjectId", 0,
-                                        "fieldPathDeclarations",
-                                        Collections.singletonList(field))))),
-                "branchPolicies", Collections.emptyList());
-        Map<String, Object> consumer = fullRegion();
-        consumer.put("symbolicInputs", Collections.singletonList(object(
-                "portId", consumerPort, "cell", TARGET + "#u1.fieldReceiver",
-                "rootCallId", 1, "rootMethod", TARGET,
-                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
-                "rootKind", "OBSERVED_FIELD_RECEIVER",
-                "rootObjectId", 200, "fieldReceiverObjectId", 200,
-                "eventSeq", 110,
-                "fieldPath", Collections.singletonList("keyId"),
-                "fieldPathDeclarations", Collections.singletonList(field))));
-
-        File regions = jsonl("decoded-leaf-regions.jsonl", producer,
-                consumer);
-        File edges = jsonl("decoded-leaf-edges.jsonl", object(
-                "schemaVersion", 3, "kind", "RUNTIME_FIELD_FLOW",
-                "transportKind", "HEAP", "edgeId", "RF.decoded-keyId",
-                "fromRegion", "REGION.P", "toRegion", "REGION.1",
-                "fromPort", producerPort, "toPort", consumerPort,
-                "fromRootCallId", 3, "toRootCallId", 1,
-                "fromLaneId", 8, "toLaneId", 7,
-                "receiverObjectId", 200, "valueObjectId", 0,
-                "writerEventSeq", 100, "readerEventSeq", 110,
-                "fieldPathDeclarations", Collections.singletonList(field)));
-        Map<String, Object> parameterIdentity = refinedEdge(
-                "DF.parameter", "VALUE_PASS", parameter, local,
-                constructor, constructor + "#u1", 1);
-        parameterIdentity.put("valueFlowAuthority",
-                "SOOT_EXACT_PARAMETER_IDENTITY_BINDING_V1");
-        parameterIdentity.put("directCopyKind", "PARAMETER_IDENTITY");
-        Map<String, Object> failure = targetRefinedEdge(
-                "DF.target.failure", "GUARD", TARGET + "::$keyId",
-                "exception", TARGET, TARGET + "#u4", 4);
-        failure.put("kind", "exception_guard");
-        File refined = jsonl("decoded-leaf-refined.jsonl",
-                parameterIdentity,
-                refinedEdge("DF.write", "HEAP_WRITE", local, field,
-                        constructor, constructor + "#u2", 2),
-                targetRefinedEdge("DF.target.read", "HEAP_READ", field,
-                        TARGET + "::$keyId", TARGET, TARGET + "#u1", 1),
-                failure);
-        List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
-                new RuntimeRegionPlanner.MethodEvent(0, "test", "p", "w",
-                        8, producerRoot, 30, "example.Decoder", 3, 0, 0),
-                new RuntimeRegionPlanner.MethodEvent(1, "test", "p", "w",
-                        8, constructor, 31, "example.Key", 4, 3, 0),
-                new RuntimeRegionPlanner.MethodEvent(2, "test", "p", "r",
-                        7, ROOT, 40, "example.Root", 1, 0, 0),
-                new RuntimeRegionPlanner.MethodEvent(3, "test", "p", "r",
-                        7, TARGET, 41, "example.Target", 2, 1, 0));
-        Map<String, Object> producerActivation = activation(
-                "REGION.P", 3, producerRoot, Arrays.asList(3L, 4L));
-        producerActivation.put("observedMethods",
-                Arrays.asList(producerRoot, constructor));
-
-        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                regions, edges, refined, Arrays.asList(producerActivation,
-                        activation("REGION.1", 1, ROOT,
-                                Arrays.asList(1L, 2L))), methods,
-                Collections.singletonList(branchEvent(
-                        120, TARGET, 2, TARGET + "#u4", false)),
-                Collections.singletonList(
-                        new RuntimeRegionPlanner.FieldAccessEvent(100,
-                                "FIELD_WRITE", constructor, 4, 2,
-                                constructor + "#u2", field, 200, 0,
-                                "7")));
-
-        Map<String, Object> plan = result.regionPlans.stream()
-                .filter(row -> "REGION.P".equals(row.get("regionId")))
-                .findFirst().get();
-        Map<String, Object> goal = rows(plan.get("closureGoals")).get(0);
-        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
-                .get("state"));
-        Map<String, Object> action = rows(goal.get("symbolize")).stream()
-                .filter(row -> decodePort.equals(row.get("symbol")))
-                .findFirst().get();
-        assertEquals(decodePort, action.get("symbol"));
-        assertEquals(parameter, action.get("cell"));
-        assertEquals("PROTOCOL_ARGUMENT", action.get("location"));
-        assertEquals(25, ((Number) action.get("replayOccurrence"))
-                .intValue());
-        Map<String, Object> closure = (Map<String, Object>) goal.get(
-                "outputClosure");
-        Map<String, Object> member = rows(closure.get("members")).get(0);
-        Map<String, Object> slice = (Map<String, Object>) member.get("slice");
-        assertEquals(Arrays.asList(decodePort, responsePort),
-                slice.get("inputPorts"));
-        assertEquals(100L, ((Number) slice.get("selectedRuntimeEventSeq"))
-                .longValue());
-    }
-
-    @Test(expected = IllegalStateException.class)
-    public void decodedLeafLedgerNeverFallsBackToAnotherOccurrence() {
-        Map<String, Object> output = object(
-                "rpcDecodedLeafInputs", Collections.singletonList(object(
-                        "writerEventSeq", 100,
-                        "inputPort", "REGION.P.in.exact",
-                        "protocolCarrierResponsePort",
-                        "REGION.P.in.response",
-                        "authority",
-                        "TRUSTED_DECLARED_CARRIER_PROJECTION_V1")));
-
-        RuntimeRegionPlanner.decodedLeafPortsFor(output, 101);
-    }
-
-    @Test(expected = IllegalStateException.class)
-    public void decodedLeafLedgerRequiresItsProtocolCarrier() {
-        Map<String, Object> output = object(
-                "rpcDecodedLeafInputs", Collections.singletonList(object(
-                        "writerEventSeq", 100,
-                        "inputPort", "REGION.P.in.exact",
-                        "authority",
-                        "TRUSTED_DECLARED_CARRIER_PROJECTION_V1")));
-
-        RuntimeRegionPlanner.decodedLeafPortsFor(output, 100);
     }
 
     @Test
@@ -2091,7 +1442,11 @@ public class RuntimeRegionPlannerTest {
                         producerActivation,
                         activation("REGION.1", 1, ROOT,
                                 Arrays.asList(1L, 2L))),
-                methods, runtime, Collections.emptyList());
+                methods, runtime, Collections.singletonList(
+                        new RuntimeRegionPlanner.FieldAccessEvent(20,
+                                "FIELD_WRITE", update, 5, 4,
+                                update + "#u4", stateField, 77, 0,
+                                "")));
         Map<String, Object> plan = result.regionPlans.stream()
                 .filter(row -> "REGION.P".equals(row.get("regionId")))
                 .findFirst().get();
@@ -2141,6 +1496,7 @@ public class RuntimeRegionPlannerTest {
             throws Exception {
         String stateField = "<example.State: int value>";
         String rpcCell = RPC_RESULT + "::$r0";
+        String futureRpcCell = RPC_RESULT + "::$future";
         String parameter = STATE_UPDATE + ".param0:java.lang.Object";
         String local = STATE_UPDATE + "::r1";
         Map<String, Object> producer = object(
@@ -2169,6 +1525,17 @@ public class RuntimeRegionPlannerTest {
                                 "sourceKind", "PROTOCOL_INPUT",
                                 "toRootCallId", 3,
                                 "receiveEventSeq", 4,
+                                "callerResultEventSeq", 4,
+                                "callerMethod", RPC_RESULT,
+                                "protocolDirection", "RESPONSE",
+                                "mappingId", "example.rpc"),
+                        object("portId", "REGION.P.in.rpc.future",
+                                "cell", futureRpcCell,
+                                "sourceKind", "PROTOCOL_INPUT",
+                                "toRootCallId", 3,
+                                "receiveEventSeq", 5,
+                                "callerResultEventSeq", 6,
+                                "callerMethod", RPC_RESULT,
                                 "protocolDirection", "RESPONSE",
                                 "mappingId", "example.rpc")),
                 "outputs", Collections.singletonList(object(
@@ -2220,7 +1587,10 @@ public class RuntimeRegionPlannerTest {
                 refinedEdge("DF.param", "VALUE_PASS", parameter, local,
                         STATE_UPDATE, STATE_UPDATE + "#u1", 1),
                 refinedEdge("DF.rpc", "IDENTITY_BINDING", rpcCell,
-                        parameter, RPC_RESULT, RPC_RESULT + "#u2", 2));
+                        parameter, RPC_RESULT, RPC_RESULT + "#u2", 2),
+                refinedEdge("DF.rpc.future", "IDENTITY_BINDING",
+                        futureRpcCell, parameter, RPC_RESULT,
+                        RPC_RESULT + "#u2", 2));
         List<RuntimeRegionPlanner.MethodEvent> events = Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "p", "t",
                         7, ROOT, 10, "example.Root", 1, 0, 0),
@@ -2242,7 +1612,11 @@ public class RuntimeRegionPlannerTest {
                         producerActivation,
                         activation("REGION.1", 1, ROOT,
                                 Arrays.asList(1L, 2L))),
-                events, runtime(), Collections.emptyList());
+                events, runtime(), Collections.singletonList(
+                        new RuntimeRegionPlanner.FieldAccessEvent(5,
+                                "FIELD_WRITE", STATE_UPDATE, 5, 4,
+                                STATE_UPDATE + "#u4", stateField, 77, 0,
+                                "")));
 
         Map<String, Object> plan = result.regionPlans.stream()
                 .filter(row -> "REGION.P".equals(row.get("regionId")))
@@ -2254,6 +1628,8 @@ public class RuntimeRegionPlannerTest {
         Map<String, Object> slice = (Map<String, Object>) member.get("slice");
         assertEquals(Arrays.asList("REGION.P.in.state", "REGION.P.in.rpc"),
                 slice.get("inputPorts"));
+        assertTrue(!String.valueOf(slice.get("inputPorts"))
+                .contains("REGION.P.in.rpc.future"));
         assertTrue(String.valueOf(slice.get("methods")).contains(RPC_RESULT));
         assertTrue(String.valueOf(slice.get("staticSites"))
                 .contains(RPC_RESULT + "#u2"));
@@ -2593,6 +1969,351 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
+    public void targetSliceKeepsEachConfiguredBoundaryScalarOccurrence()
+            throws Exception {
+        Map<String, Object> goal = boundaryScalarTargetGoal(false, false);
+
+        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        List<Map<String, Object>> actions = rows(goal.get("symbolize"));
+        assertEquals(2, actions.size());
+        Set<String> symbols = new LinkedHashSet<>();
+        Set<String> identities = new LinkedHashSet<>();
+        Set<Integer> arrayIndices = new LinkedHashSet<>();
+        Set<Integer> occurrences = new LinkedHashSet<>();
+        for (Map<String, Object> action : actions) {
+            symbols.add(String.valueOf(action.get("symbol")));
+            identities.add(String.valueOf(
+                    action.get("rpcBoundaryScalarIdentity")));
+            List<?> indices = (List<?>) action.get(
+                    "rpcBoundaryArrayIndices");
+            assertEquals(1, indices.size());
+            arrayIndices.add(((Number) indices.get(0)).intValue());
+            occurrences.add(((Number) action.get(
+                    "replayOccurrence")).intValue());
+            assertEquals("HEAP_OBJECT_FIELD", action.get("location"));
+            assertEquals(TARGET + "#u2", action.get("siteId"));
+            assertEquals(Collections.singletonList(
+                    "<example.Key: int keyId>"),
+                    action.get("dependencyCells"));
+        }
+        assertEquals(new LinkedHashSet<>(Arrays.asList(
+                "REGION.1.in.key.0", "REGION.1.in.key.1")), symbols);
+        assertEquals(new LinkedHashSet<>(Arrays.asList(
+                "BOUNDARY.KEY.0", "BOUNDARY.KEY.1")), identities);
+        assertEquals(new LinkedHashSet<>(Arrays.asList(0, 1)),
+                arrayIndices);
+        assertEquals(new LinkedHashSet<>(Arrays.asList(1, 2)),
+                occurrences);
+        assertFalse(symbols.contains("REGION.1.in.key.residual"));
+        assertFalse(symbols.contains("REGION.1.in.unrelated.blocked"));
+        assertEquals(Collections.emptyList(), ((Map<?, ?>) goal.get(
+                "admission")).get("blockers"));
+    }
+
+    @Test
+    public void targetSliceAcceptsSameScalarIndexFromDistinctExchanges()
+            throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String value = TARGET + "::i0";
+        Map<String, Object> first = boundaryScalarInput(
+                "REGION.1.in.exchange.1", leaf, "keyId", TARGET + "#u2",
+                TARGET + "#u2.fieldReceiver", 10L, 700L,
+                "BOUNDARY.EXCHANGE.100.200", 0, 1);
+        first.put("rpcBoundaryConsumerEventSeq", 200L);
+        Map<String, Object> second = boundaryScalarInput(
+                "REGION.1.in.exchange.2", leaf, "keyId", TARGET + "#u2",
+                TARGET + "#u2.fieldReceiver", 11L, 701L,
+                "BOUNDARY.EXCHANGE.300.400", 0, 2);
+        second.put("rpcBoundaryConsumerEventSeq", 400L);
+        Map<String, Object> region = targetBoundaryRegion(
+                Arrays.asList(first, second), Collections.emptyList(), value);
+
+        Map<String, Object> goal = planSingleTargetGoal(
+                "boundary-scalar-distinct-exchanges", region, leaf, value);
+
+        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        assertEquals(2, rows(goal.get("symbolize")).size());
+        assertFalse(String.valueOf(((Map<?, ?>) goal.get("admission"))
+                .get("blockers")).contains(
+                "AMBIGUOUS_CONFIGURED_BOUNDARY_SCALAR_CANDIDATES"));
+    }
+
+    @Test
+    public void outputSliceKeepsOnlyBoundaryScalarBeforeExactWrite()
+            throws Exception {
+        Map<String, Object> goal = producerBoundaryScalarCutoffGoal();
+
+        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        Set<String> symbols = rows(goal.get("symbolize")).stream()
+                .map(action -> String.valueOf(action.get("symbol")))
+                .collect(java.util.stream.Collectors.toCollection(
+                        LinkedHashSet::new));
+        assertTrue(symbols.contains("REGION.2.in.key.before"));
+        assertFalse(symbols.contains("REGION.2.in.key.after"));
+    }
+
+    @Test
+    public void targetSliceExcludesBoundaryScalarAfterFatalOccurrence()
+            throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String value = TARGET + "::i0";
+        Map<String, Object> before = boundaryScalarInput(
+                "REGION.1.in.key.before-fatal", leaf, "keyId",
+                TARGET + "#u2", TARGET + "#u2.fieldReceiver", 10L,
+                760L, "BOUNDARY.FATAL.BEFORE", 0, 1);
+        Map<String, Object> after = boundaryScalarInput(
+                "REGION.1.in.key.after-fatal", leaf, "keyId",
+                TARGET + "#u2", TARGET + "#u2.fieldReceiver", 30L,
+                761L, "BOUNDARY.FATAL.AFTER", 1, 2);
+        Map<String, Object> region = targetBoundaryRegion(
+                Arrays.asList(before, after), Collections.emptyList(),
+                value);
+
+        Map<String, Object> goal = planSingleTargetGoal(
+                "boundary-scalar-fatal-cutoff", region, leaf, value);
+
+        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        List<Map<String, Object>> actions = rows(goal.get("symbolize"));
+        assertEquals(1, actions.size());
+        assertEquals("REGION.1.in.key.before-fatal",
+                actions.get(0).get("symbol"));
+    }
+
+    @Test
+    public void selectedConfiguredBoundaryScalarBlockerBlocksTargetOnly()
+            throws Exception {
+        Map<String, Object> goal = boundaryScalarTargetGoal(true, false);
+
+        assertEquals("BLOCKED", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        String blockers = String.valueOf(((Map<?, ?>) goal.get(
+                "admission")).get("blockers"));
+        assertTrue(blockers.contains("REGION.1.in.key.1"));
+        assertTrue(blockers.contains("MISSING_CONFIGURED_BOUNDARY_SCALAR"));
+        assertFalse(blockers.contains("REGION.1.in.unrelated.blocked"));
+    }
+
+    @Test
+    public void blockedResidualAtSelectedBoundaryBlocksWithSuccessfulScalars()
+            throws Exception {
+        Map<String, Object> goal = boundaryScalarTargetGoal(false, true);
+
+        assertEquals("BLOCKED", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        Set<String> symbols = new LinkedHashSet<>();
+        for (Map<String, Object> action : rows(goal.get("symbolize"))) {
+            symbols.add(String.valueOf(action.get("symbol")));
+        }
+        assertEquals(new LinkedHashSet<>(Arrays.asList(
+                "REGION.1.in.key.0", "REGION.1.in.key.1",
+                "REGION.1.in.key.residual")), symbols);
+        Map<String, Object> blockedResidual = rows(goal.get("symbolize"))
+                .stream().filter(row -> "REGION.1.in.key.residual".equals(
+                        row.get("symbol"))).findFirst().get();
+        assertEquals("CONCRETE_UNPROJECTED_BOUNDARY_ACCESS",
+                blockedResidual.get("symbolicDemand"));
+        assertEquals("BLOCKED",
+                blockedResidual.get("rpcProjectionAdmission"));
+        String blockers = String.valueOf(((Map<?, ?>) goal.get(
+                "admission")).get("blockers"));
+        assertTrue(blockers.contains("REGION.1.in.key.residual"));
+        assertTrue(blockers.contains("INCOMPLETE_BOUNDARY_INDEX"));
+        assertFalse(blockers.contains("REGION.1.in.unrelated.blocked"));
+    }
+
+    @Test
+    public void regionBoundaryGapBlocksOnlyDemandedMissingConsumerLeaf()
+            throws Exception {
+        Map<String, Object> unrelatedOnly = missingConsumerGapGoal(false);
+        assertEquals("READY", ((Map<?, ?>) unrelatedOnly.get("admission"))
+                .get("state"));
+        assertEquals(Collections.emptyList(), ((Map<?, ?>) unrelatedOnly
+                .get("admission")).get("blockers"));
+
+        Map<String, Object> demanded = missingConsumerGapGoal(true);
+        assertEquals("BLOCKED", ((Map<?, ?>) demanded.get("admission"))
+                .get("state"));
+        assertEquals(Collections.emptyList(), rows(demanded.get(
+                "symbolize")));
+        String blockers = String.valueOf(((Map<?, ?>) demanded.get(
+                "admission")).get("blockers"));
+        assertTrue(blockers.contains("keyId"));
+        assertTrue(blockers.contains(
+                "MISSING_CONFIGURED_BOUNDARY_SCALAR_CONSUMER"));
+        assertFalse(blockers.contains("ignored"));
+    }
+
+    @Test
+    public void laterCompleteExchangeSupersedesOldEmptyScalarGap()
+            throws Exception {
+        Map<String, Object> goal = successfulExchangeGapGoal(false);
+
+        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        assertEquals(Collections.emptyList(), ((Map<?, ?>) goal.get(
+                "admission")).get("blockers"));
+        assertEquals(1, rows(goal.get("symbolize")).size());
+    }
+
+    @Test
+    public void successfulIndexDoesNotSupersedeSiblingIndexGap()
+            throws Exception {
+        Map<String, Object> goal = successfulExchangeGapGoal(true);
+
+        assertEquals("BLOCKED", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        String blockers = String.valueOf(((Map<?, ?>) goal.get(
+                "admission")).get("blockers"));
+        assertTrue(blockers.contains("MISSING_INDEX_ONE"));
+        assertEquals(1, rows(goal.get("symbolize")).size());
+    }
+
+    @Test
+    public void repeatedReadsStillProveLaterCompleteExchange()
+            throws Exception {
+        Map<String, Object> goal = repeatedSuccessfulExchangeGapGoal();
+
+        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        assertEquals(Collections.emptyList(), ((Map<?, ?>) goal.get(
+                "admission")).get("blockers"));
+        assertEquals(2, rows(goal.get("symbolize")).size());
+    }
+
+    @Test
+    public void postFatalMissingConsumerGapDoesNotBlockTarget()
+            throws Exception {
+        Map<String, Object> goal = postFatalMissingConsumerGapGoal();
+
+        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        assertEquals(Collections.emptyList(), ((Map<?, ?>) goal.get(
+                "admission")).get("blockers"));
+        assertEquals(Collections.emptyList(), rows(goal.get("symbolize")));
+    }
+
+    @Test
+    public void boundaryGapBlocksUniqueTargetGoal() throws Exception {
+        Map<String, Object> goal = betweenFatalSitesBoundaryGapGoal();
+
+        assertEquals("BLOCKED", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        String blockers = String.valueOf(((Map<?, ?>) goal.get(
+                "admission")).get("blockers"));
+        assertTrue(blockers
+                .contains("BETWEEN_FATAL_SITES_BOUNDARY_GAP"));
+    }
+
+    @Test
+    public void fatalGapUsesSelectedStaticSiteOccurrenceNotLastOccurrence()
+            throws Exception {
+        Map<String, Object> ready = multiOccurrenceFatalSiteGapGoal(false);
+        assertEquals("READY", ((Map<?, ?>) ready.get("admission"))
+                .get("state"));
+        Map<String, Object> branch = rows(ready.get("branches")).get(0);
+        assertEquals(1, ((Number) branch.get("selectedOccurrence"))
+                .intValue());
+        assertEquals(10L, ((Number) branch.get(
+                "selectedRuntimeEventSeq")).longValue());
+        assertEquals(2, rows(branch.get("occurrences")).size());
+        assertFalse(String.valueOf(((Map<?, ?>) ready.get(
+                "admission")).get("blockers")).contains(
+                "BETWEEN_SELECTED_AND_LAST"));
+
+        Map<String, Object> blocked = multiOccurrenceFatalSiteGapGoal(true);
+        assertEquals("BLOCKED", ((Map<?, ?>) blocked.get("admission"))
+                .get("state"));
+        String blockers = String.valueOf(((Map<?, ?>) blocked.get(
+                "admission")).get("blockers"));
+        assertTrue(blockers.contains("BEFORE_SELECTED_OCCURRENCE"));
+        assertFalse(blockers.contains("BETWEEN_SELECTED_AND_LAST"));
+    }
+
+    @Test
+    public void producerOutputGapBlocksOnlyDemandedMissingBoundaryLeaf()
+            throws Exception {
+        Map<String, Object> unrelated = producerBoundaryGapGoal(false);
+        assertEquals(String.valueOf(unrelated), "READY",
+                ((Map<?, ?>) unrelated.get("admission")).get("state"));
+
+        Map<String, Object> demanded = producerBoundaryGapGoal(true);
+        assertEquals("BLOCKED", ((Map<?, ?>) demanded.get("admission"))
+                .get("state"));
+        assertTrue(demanded.containsKey("outputClosure"));
+        String blockers = String.valueOf(((Map<?, ?>) demanded.get(
+                "admission")).get("blockers"));
+        assertTrue(blockers.contains("MISSING_PRODUCER_BOUNDARY_SCALAR"));
+        assertFalse(blockers.contains("ignored"));
+    }
+
+    @Test
+    public void regionBoundaryGapIsIsolatedByConsumerRootCall()
+            throws Exception {
+        List<Map<String, Object>> plans = rootIsolatedBoundaryGapPlans();
+
+        Map<String, String> states = new LinkedHashMap<>();
+        for (Map<String, Object> plan : plans) {
+            for (Map<String, Object> goal : rows(
+                    plan.get("closureGoals"))) {
+                if (!"TARGET_REACH_CLOSURE".equals(goal.get("kind"))) {
+                    continue;
+                }
+                Map<?, ?> occurrence = (Map<?, ?>) goal.get(
+                        "executionOccurrence");
+                states.put(String.valueOf(occurrence.get("rootCallId")),
+                        String.valueOf(((Map<?, ?>) goal.get("admission"))
+                                .get("state")));
+            }
+        }
+        assertEquals("BLOCKED", states.get("1"));
+        assertEquals("READY", states.get("3"));
+    }
+
+    @Test
+    public void residualOnlyHeapBoundaryCreatesNoSymbolicDimension()
+            throws Exception {
+        Map<String, Object> goal = residualOnlyTargetGoal();
+
+        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        assertEquals(Collections.emptyList(), rows(goal.get("symbolize")));
+    }
+
+    @Test
+    public void ambiguousConfiguredBoundaryScalarCandidatesBlockTarget()
+            throws Exception {
+        for (boolean duplicateIdentity : new boolean[]{false, true}) {
+            Map<String, Object> goal = ambiguousBoundaryScalarGoal(
+                    duplicateIdentity);
+
+            assertEquals("BLOCKED", ((Map<?, ?>) goal.get("admission"))
+                    .get("state"));
+            assertTrue(String.valueOf(((Map<?, ?>) goal.get("admission"))
+                    .get("blockers")).contains(
+                    "AMBIGUOUS_CONFIGURED_BOUNDARY_SCALAR_CANDIDATES"));
+        }
+    }
+
+    @Test
+    public void precedingExactWriteClosesHeapReadBeforeBoundaryGap()
+            throws Exception {
+        Map<String, Object> goal = precedingWriteBoundaryGapGoal();
+
+        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        assertEquals(Collections.emptyList(), ((Map<?, ?>) goal.get(
+                "admission")).get("blockers"));
+        List<Map<String, Object>> actions = rows(goal.get("symbolize"));
+        assertEquals(1, actions.size());
+        assertEquals("REGION.1.in.writer-value",
+                actions.get(0).get("symbol"));
+    }
+
+    @Test
     public void targetReachClosureKeepsOnlyFailureDependencyFrontier()
             throws Exception {
         String parse = "<example.Protocol: int decode(java.lang.String)>";
@@ -2623,6 +2344,7 @@ public class RuntimeRegionPlannerTest {
                         "cell", protocolInput,
                         "sourceKind", "PROTOCOL_INPUT",
                         "protocolDirection", "REQUEST",
+                        "receiveEventSeq", 4,
                         "toRootCallId", 1),
                 heapPort("REGION.1.in.expiry", 1, expiry,
                         expiry + "#u1", 11, 88, expiryField, "expiry"),
@@ -2899,6 +2621,7 @@ public class RuntimeRegionPlannerTest {
                                 "sourceKind", "PROTOCOL_INPUT",
                                 "toRootCallId", 3,
                                 "receiveEventSeq", 11,
+                                "callerResultEventSeq", 11,
                                 "protocolDirection", "RESPONSE",
                                 "mappingId", "example.rpc"),
                         object("portId", "REGION.P.in.rpc.2",
@@ -2906,6 +2629,7 @@ public class RuntimeRegionPlannerTest {
                                 "sourceKind", "PROTOCOL_INPUT",
                                 "toRootCallId", 3,
                                 "receiveEventSeq", 20,
+                                "callerResultEventSeq", 20,
                                 "protocolDirection", "RESPONSE",
                                 "mappingId", "example.rpc"),
                         object("portId", "REGION.P.in.rpc.3",
@@ -2913,6 +2637,7 @@ public class RuntimeRegionPlannerTest {
                                 "sourceKind", "PROTOCOL_INPUT",
                                 "toRootCallId", 3,
                                 "receiveEventSeq", 29,
+                                "callerResultEventSeq", 29,
                                 "protocolDirection", "RESPONSE",
                                 "mappingId", "example.rpc")),
                 "outputs", Arrays.asList(
@@ -3094,7 +2819,13 @@ public class RuntimeRegionPlannerTest {
                         producerActivation,
                         activation("REGION.1", 1, ROOT,
                                 Arrays.asList(1L, 2L))),
-                events, runtime(), Collections.emptyList());
+                events, runtime(), Arrays.asList(
+                        new RuntimeRegionPlanner.FieldAccessEvent(18,
+                                "FIELD_WRITE", build, 4, 4,
+                                build + "#u4", cacheField, 77, 98, ""),
+                        new RuntimeRegionPlanner.FieldAccessEvent(25,
+                                "FIELD_WRITE", build, 4, 4,
+                                build + "#u4", cacheField, 77, 99, "")));
         Map<String, Object> plan = result.regionPlans.stream()
                 .filter(row -> "REGION.P".equals(row.get("regionId")))
                 .findFirst().get();
@@ -3179,6 +2910,707 @@ public class RuntimeRegionPlannerTest {
                 "fieldPath", Collections.singletonList(field),
                 "fieldPathDeclarations",
                 Collections.singletonList(declaration));
+    }
+
+    private Map<String, Object> boundaryScalarTargetGoal(
+            boolean selectedBlocked, boolean residualBlocked)
+            throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String unrelated = "<example.Key: int ignored>";
+        String readSite = TARGET + "#u2";
+        String value = TARGET + "::i0";
+        String receiverCell = readSite + ".fieldReceiver";
+
+        Map<String, Object> first = boundaryScalarInput(
+                "REGION.1.in.key.0", leaf, "keyId", readSite,
+                receiverCell, 10L, 700L, "BOUNDARY.KEY.0", 0, 1);
+        Map<String, Object> second = boundaryScalarInput(
+                "REGION.1.in.key.1", leaf, "keyId", readSite,
+                receiverCell, 11L, 701L, "BOUNDARY.KEY.1", 1, 2);
+        if (selectedBlocked) {
+            second.put("rpcProjectionAdmission", "BLOCKED");
+            second.put("rpcProjectionBlocker",
+                    "MISSING_CONFIGURED_BOUNDARY_SCALAR");
+        }
+        Map<String, Object> residual = heapPort(
+                "REGION.1.in.key.residual", 1, TARGET, readSite,
+                12, 702, leaf, "keyId");
+        residual.put("cell", receiverCell);
+        residual.put("dependencyCells", Collections.singletonList(leaf));
+        residual.put("symbolicDemand",
+                "CONCRETE_UNPROJECTED_BOUNDARY_ACCESS");
+        residual.put("replayOccurrence", 3);
+        if (residualBlocked) {
+            residual.put("rpcProjectionAdmission", "BLOCKED");
+            residual.put("rpcProjectionBlocker",
+                    "INCOMPLETE_BOUNDARY_INDEX");
+        }
+
+        Map<String, Object> unrelatedBlocked = boundaryScalarInput(
+                "REGION.1.in.unrelated.blocked", unrelated, "ignored",
+                TARGET + "#u3", TARGET + "#u3.fieldReceiver", 13L,
+                703L, "BOUNDARY.UNRELATED", 0, 1);
+        unrelatedBlocked.put("rpcProjectionAdmission", "BLOCKED");
+        unrelatedBlocked.put("rpcProjectionBlocker",
+                "UNRELATED_CONFIGURED_BOUNDARY_SCALAR_GAP");
+
+        Map<String, Object> region = fullRegion();
+        region.put("symbolicInputs", Arrays.asList(first, second, residual,
+                unrelatedBlocked));
+        region.put("branchPolicies", Collections.singletonList(object(
+                "siteId", TARGET + "#u4", "method", TARGET,
+                "unitIndex", 4, "failureTarget", true,
+                "operandCells", Collections.singletonList(value),
+                "requiredOutcome", false, "loopControlGuard", false,
+                "policy", "EXPLORE")));
+
+        String suffix = selectedBlocked ? "selected-blocked"
+                : residualBlocked ? "residual-blocked" : "ready";
+        File regions = jsonl("boundary-scalars-" + suffix
+                + "-regions.jsonl", region);
+        File regionEdges = jsonl("boundary-scalars-" + suffix
+                + "-region-edges.jsonl");
+        File refined = jsonl("boundary-scalars-" + suffix
+                        + "-refined.jsonl",
+                targetRefinedEdge("DF.boundary.key.read", "HEAP_READ",
+                        leaf, value, TARGET, readSite, 2));
+        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
+                regions, regionEdges, refined, seeds(), methods(),
+                Collections.singletonList(branchEvent(20, TARGET, 2,
+                        TARGET + "#u4", false)),
+                Collections.emptyList());
+        return rows(planned.regionPlans.get(0).get("closureGoals")).get(0);
+    }
+
+    private Map<String, Object> missingConsumerGapGoal(
+            boolean includeDemandedGap) throws Exception {
+        String carrier = "<example.Response: example.Key[] keys>";
+        String leaf = "<example.Key: int keyId>";
+        String unrelated = "<example.Key: int ignored>";
+        String value = TARGET + "::i0";
+        List<Map<String, Object>> gaps = new ArrayList<>();
+        gaps.add(boundaryScalarGap("ignored", Arrays.asList(carrier, "[]",
+                unrelated), "UNRELATED_BOUNDARY_GAP"));
+        if (includeDemandedGap) {
+            gaps.add(boundaryScalarGap("keyId", Arrays.asList(carrier, "[]",
+                    leaf), "MISSING_CONFIGURED_BOUNDARY_SCALAR_CONSUMER"));
+        }
+
+        Map<String, Object> region = fullRegion();
+        region.put("symbolicInputs", Collections.emptyList());
+        region.put("rpcBoundaryScalarGaps", gaps);
+        region.put("branchPolicies", Collections.singletonList(object(
+                "siteId", TARGET + "#u4", "method", TARGET,
+                "unitIndex", 4, "failureTarget", true,
+                "operandCells", Collections.singletonList(value),
+                "requiredOutcome", false, "loopControlGuard", false,
+                "policy", "EXPLORE")));
+
+        String suffix = includeDemandedGap ? "demanded" : "unrelated";
+        File regions = jsonl("missing-boundary-consumer-" + suffix
+                + "-regions.jsonl", region);
+        File regionEdges = jsonl("missing-boundary-consumer-" + suffix
+                + "-region-edges.jsonl");
+        File refined = jsonl("missing-boundary-consumer-" + suffix
+                        + "-refined.jsonl",
+                targetRefinedEdge("DF.missing.boundary.key.read",
+                        "HEAP_READ", leaf, value, TARGET, TARGET + "#u2", 2));
+        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
+                regions, regionEdges, refined, seeds(), methods(),
+                Collections.singletonList(branchEvent(20, TARGET, 2,
+                        TARGET + "#u4", false)),
+                Collections.emptyList());
+        return rows(planned.regionPlans.get(0).get("closureGoals")).get(0);
+    }
+
+    private static Map<String, Object> boundaryScalarGap(
+            String leafId, List<String> declaredPath, String reason) {
+        return boundaryScalarGap(leafId, declaredPath, reason,
+                Collections.singletonList(0), 9L, 1L);
+    }
+
+    private static Map<String, Object> boundaryScalarGap(
+            String leafId, List<String> declaredPath, String reason,
+            List<Integer> arrayIndices, long boundaryEventSeq,
+            long consumerRootCallId) {
+        return object("mappingId", "example.fetch", "direction", "RESPONSE",
+                "port", "response", "leafId", leafId,
+                "declaredPath", declaredPath, "arrayIndices", arrayIndices,
+                "javaType", "int",
+                "containerBound", 2, "gap", reason, "authority",
+                "CONFIGURED_RPC_BOUNDARY_SCALAR_GAP_V1", "side", "CLIENT",
+                "boundaryEventSeq", boundaryEventSeq,
+                "consumerBoundaryEventSeq", boundaryEventSeq,
+                "rpcBoundaryConsumerRegionId", "REGION.1",
+                "rpcBoundaryConsumerRootCallId", consumerRootCallId,
+                "rpcBoundaryProducerRootCallId", consumerRootCallId);
+    }
+
+    private Map<String, Object> successfulExchangeGapGoal(
+            boolean missingSiblingIndex) throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String value = TARGET + "::i0";
+        Map<String, Object> success = boundaryScalarInput(
+                "REGION.1.in.exchange.key", leaf, "keyId", TARGET + "#u2",
+                TARGET + "#u2.fieldReceiver", 19L, 710L,
+                "BOUNDARY.EXCHANGE.KEY", 0, 1);
+        List<Integer> successIndices = missingSiblingIndex
+                ? Collections.singletonList(0) : Collections.emptyList();
+        success.put("rpcBoundaryArrayIndices", successIndices);
+        success.put("rpcProjectionMappingId", "example.fetch");
+        success.put("rpcBoundaryDirection", "RESPONSE");
+        success.put("rpcBoundaryPort", "response");
+        success.put("rpcBoundaryLeafId", "keyId");
+        success.put("rpcBoundaryDeclaredPath",
+                Collections.singletonList(leaf));
+        success.put("rpcBoundaryConsumerEventSeq", 19L);
+        success.put("rpcBoundaryConsumerRegionId", "REGION.1");
+        success.put("rpcBoundaryConsumerRootCallId", 1L);
+        success.put("rpcBoundaryLeafObservationComplete", true);
+        success.put("rpcBoundaryLeafValueCount", 1);
+
+        List<Integer> gapIndices = missingSiblingIndex
+                ? Collections.singletonList(1) : Collections.emptyList();
+        String reason = missingSiblingIndex ? "MISSING_INDEX_ONE"
+                : "NO_CONFIGURED_SCALAR_ELEMENTS";
+        long gapEvent = missingSiblingIndex ? 19L : 9L;
+        Map<String, Object> region = targetBoundaryRegion(
+                Collections.singletonList(success),
+                Collections.singletonList(boundaryScalarGap("keyId",
+                        Collections.singletonList(leaf), reason, gapIndices,
+                        gapEvent, 1L)), value);
+        return planSingleTargetGoal("exchange-gap-"
+                        + (missingSiblingIndex ? "sibling" : "superseded"),
+                region, leaf, value);
+    }
+
+    private Map<String, Object> repeatedSuccessfulExchangeGapGoal()
+            throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String value = TARGET + "::i0";
+        List<Map<String, Object>> successes = new ArrayList<>();
+        for (int occurrence = 1; occurrence <= 2; occurrence++) {
+            Map<String, Object> success = boundaryScalarInput(
+                    "REGION.1.in.exchange.repeat." + occurrence,
+                    leaf, "keyId", TARGET + "#u2",
+                    TARGET + "#u2.fieldReceiver", 18L + occurrence,
+                    710L + occurrence, "BOUNDARY.EXCHANGE.REPEAT."
+                            + occurrence, 0, occurrence);
+            success.put("rpcBoundaryArrayIndices", Collections.emptyList());
+            success.put("rpcProjectionMappingId", "example.fetch");
+            success.put("rpcBoundaryDirection", "RESPONSE");
+            success.put("rpcBoundaryPort", "response");
+            success.put("rpcBoundaryLeafId", "keyId");
+            success.put("rpcBoundaryDeclaredPath",
+                    Collections.singletonList(leaf));
+            success.put("rpcBoundaryConsumerEventSeq", 19L);
+            success.put("rpcBoundaryConsumerRegionId", "REGION.1");
+            success.put("rpcBoundaryConsumerRootCallId", 1L);
+            success.put("rpcBoundaryLeafObservationComplete", true);
+            success.put("rpcBoundaryLeafValueCount", 1);
+            successes.add(success);
+        }
+        Map<String, Object> region = targetBoundaryRegion(successes,
+                Collections.singletonList(boundaryScalarGap("keyId",
+                        Collections.singletonList(leaf),
+                        "NO_CONFIGURED_SCALAR_ELEMENTS",
+                        Collections.emptyList(), 9L, 1L)), value);
+        return planSingleTargetGoal("exchange-gap-repeated-read", region,
+                leaf, value);
+    }
+
+    private Map<String, Object> postFatalMissingConsumerGapGoal()
+            throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String value = TARGET + "::i0";
+        Map<String, Object> region = targetBoundaryRegion(
+                Collections.emptyList(), Collections.singletonList(
+                        boundaryScalarGap("keyId",
+                                Collections.singletonList(leaf),
+                                "POST_FATAL_MISSING_CONSUMER",
+                                Collections.emptyList(), 30L, 1L)), value);
+        return planSingleTargetGoal("post-fatal-missing-consumer", region,
+                leaf, value);
+    }
+
+    private Map<String, Object> betweenFatalSitesBoundaryGapGoal()
+            throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String value = TARGET + "::i0";
+        Map<String, Object> region = targetBoundaryRegion(
+                Collections.emptyList(), Collections.singletonList(
+                        boundaryScalarGap("keyId",
+                                Collections.singletonList(leaf),
+                                "BETWEEN_FATAL_SITES_BOUNDARY_GAP",
+                                Collections.emptyList(), 15L, 1L)), value);
+        region.put("branchPolicies", Collections.singletonList(
+                object("siteId", TARGET + "#u5", "method", TARGET,
+                        "unitIndex", 5, "failureTarget", true,
+                        "operandCells", Collections.singletonList(value),
+                        "requiredOutcome", false, "loopControlGuard", false,
+                        "policy", "EXPLORE")));
+
+        File regions = jsonl("between-fatal-gap-regions.jsonl", region);
+        File regionEdges = jsonl("between-fatal-gap-region-edges.jsonl");
+        File refined = jsonl("between-fatal-gap-refined.jsonl",
+                targetRefinedEdge("DF.between-fatal-gap.read", "HEAP_READ",
+                        leaf, value, TARGET, TARGET + "#u2", 2));
+        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
+                regions, regionEdges, refined, seeds(), methods(),
+                Collections.singletonList(
+                        branchEvent(20, TARGET, 2, TARGET + "#u5", false)),
+                Collections.emptyList());
+        return rows(planned.regionPlans.get(0).get("closureGoals")).get(0);
+    }
+
+    private Map<String, Object> multiOccurrenceFatalSiteGapGoal(
+            boolean includePrecedingGap) throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String value = TARGET + "::i0";
+        List<Map<String, Object>> gaps = new ArrayList<>();
+        gaps.add(boundaryScalarGap("keyId", Collections.singletonList(leaf),
+                "BETWEEN_SELECTED_AND_LAST", Collections.emptyList(),
+                15L, 1L));
+        if (includePrecedingGap) {
+            gaps.add(boundaryScalarGap("keyId",
+                    Collections.singletonList(leaf),
+                    "BEFORE_SELECTED_OCCURRENCE", Collections.emptyList(),
+                    9L, 1L));
+        }
+        Map<String, Object> region = targetBoundaryRegion(
+                Collections.emptyList(), gaps, value);
+        String suffix = includePrecedingGap ? "blocked" : "ready";
+        File regions = jsonl("multi-fatal-occurrence-" + suffix
+                + "-regions.jsonl", region);
+        File regionEdges = jsonl("multi-fatal-occurrence-" + suffix
+                + "-region-edges.jsonl");
+        File refined = jsonl("multi-fatal-occurrence-" + suffix
+                        + "-refined.jsonl",
+                targetRefinedEdge("DF.multi-fatal-occurrence.read",
+                        "HEAP_READ", leaf, value, TARGET,
+                        TARGET + "#u2", 2));
+        Map<String, Object> activation = activation("REGION.1", 1, ROOT,
+                Arrays.asList(1L, 2L));
+        activation.put("fatalPrefixContexts", Collections.singletonList(
+                object("siteId", TARGET + "#u4", "occurrence", 1,
+                        "eventSeq", 10L, "authority",
+                        "EXACT_FATAL_BRANCH_OCCURRENCE_PREFIX_V1")));
+        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
+                regions, regionEdges, refined,
+                Collections.singletonList(activation), methods(),
+                Arrays.asList(
+                        branchEvent(10, TARGET, 2, TARGET + "#u4", false),
+                        branchEvent(20, TARGET, 2, TARGET + "#u4", false)),
+                Collections.emptyList());
+        return rows(planned.regionPlans.get(0).get("closureGoals")).get(0);
+    }
+
+    private Map<String, Object> residualOnlyTargetGoal() throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String value = TARGET + "::i0";
+        Map<String, Object> residual = heapPort(
+                "REGION.1.in.key.residual-only", 1, TARGET,
+                TARGET + "#u2", 10, 720, leaf, "keyId");
+        residual.put("cell", TARGET + "#u2.fieldReceiver");
+        residual.put("dependencyCells", Collections.singletonList(leaf));
+        residual.put("symbolicDemand",
+                "CONCRETE_UNPROJECTED_BOUNDARY_ACCESS");
+        Map<String, Object> region = targetBoundaryRegion(
+                Collections.singletonList(residual),
+                Collections.emptyList(), value);
+        return planSingleTargetGoal("residual-only", region, leaf, value);
+    }
+
+    private Map<String, Object> ambiguousBoundaryScalarGoal(
+            boolean duplicateIdentity) throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String value = TARGET + "::i0";
+        String firstIdentity = "BOUNDARY.AMBIGUOUS.0";
+        Map<String, Object> first = boundaryScalarInput(
+                "REGION.1.in.ambiguous.0", leaf, "keyId", TARGET + "#u2",
+                TARGET + "#u2.fieldReceiver", 10L, 740L,
+                firstIdentity, 0, 1);
+        Map<String, Object> second = boundaryScalarInput(
+                "REGION.1.in.ambiguous.1", leaf, "keyId", TARGET + "#u2",
+                TARGET + "#u2.fieldReceiver", 11L, 741L,
+                duplicateIdentity ? firstIdentity : "BOUNDARY.AMBIGUOUS.1",
+                1, duplicateIdentity ? 2 : 1);
+        Map<String, Object> region = targetBoundaryRegion(
+                Arrays.asList(first, second), Collections.emptyList(), value);
+        return planSingleTargetGoal("ambiguous-boundary-"
+                        + (duplicateIdentity ? "identity" : "occurrence"),
+                region, leaf, value);
+    }
+
+    private Map<String, Object> precedingWriteBoundaryGapGoal()
+            throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String source = TARGET + "::i1";
+        String value = TARGET + "::i0";
+        Map<String, Object> writerInput = object(
+                "portId", "REGION.1.in.writer-value", "cell", source,
+                "rootCallId", 1, "rootMethod", TARGET,
+                "sourceKind", "ROOT_ARGUMENT", "rootKind", "PARAMETER",
+                "rootParameterIndex", 0, "javaType", "int",
+                "dependencyRole", "VALUE_FRONTIER");
+        Map<String, Object> read = heapPort("REGION.1.in.key.read", 1,
+                TARGET, TARGET + "#u2", 10, 730, leaf, "keyId");
+        read.put("dependencyRole", "VALUE_FRONTIER");
+        Map<String, Object> region = targetBoundaryRegion(
+                Arrays.asList(writerInput, read), Collections.singletonList(
+                        boundaryScalarGap("keyId",
+                                Collections.singletonList(leaf),
+                                "CLOSED_BY_PRECEDING_WRITE",
+                                Collections.emptyList(), 9L, 1L)), value);
+        region.put("outputs", Collections.singletonList(object(
+                "portId", "REGION.1.out.key.write", "cell", leaf,
+                "rootCallId", 1, "rootMethod", TARGET,
+                "eventSeq", 5, "rootObjectId", 730,
+                "fieldReceiverObjectId", 730,
+                "siteId", TARGET + "#u1", "fieldPath",
+                Collections.singletonList("keyId"),
+                "fieldPathDeclarations", Collections.singletonList(leaf),
+                "javaType", "int", "bindingKind",
+                "DECLARED_FIELD_ACCESS")));
+
+        File regions = jsonl("preceding-write-gap-regions.jsonl", region);
+        File regionEdges = jsonl("preceding-write-gap-edges.jsonl");
+        File refined = jsonl("preceding-write-gap-refined.jsonl",
+                targetRefinedEdge("DF.preceding.write", "HEAP_WRITE",
+                        source, leaf, TARGET, TARGET + "#u1", 1),
+                targetRefinedEdge("DF.preceding.read", "HEAP_READ",
+                        leaf, value, TARGET, TARGET + "#u2", 2));
+        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
+                regions, regionEdges, refined, seeds(), methods(),
+                Collections.singletonList(branchEvent(20, TARGET, 2,
+                        TARGET + "#u4", false)),
+                Collections.emptyList());
+        return rows(planned.regionPlans.get(0).get("closureGoals")).get(0);
+    }
+
+    private Map<String, Object> targetBoundaryRegion(
+            List<Map<String, Object>> inputs,
+            List<Map<String, Object>> gaps, String value) {
+        Map<String, Object> region = fullRegion();
+        region.put("symbolicInputs", inputs);
+        region.put("rpcBoundaryScalarGaps", gaps);
+        region.put("branchPolicies", Collections.singletonList(object(
+                "siteId", TARGET + "#u4", "method", TARGET,
+                "unitIndex", 4, "failureTarget", true,
+                "operandCells", Collections.singletonList(value),
+                "requiredOutcome", false, "loopControlGuard", false,
+                "policy", "EXPLORE")));
+        return region;
+    }
+
+    private Map<String, Object> planSingleTargetGoal(
+            String prefix, Map<String, Object> region,
+            String leaf, String value) throws Exception {
+        File regions = jsonl(prefix + "-regions.jsonl", region);
+        File regionEdges = jsonl(prefix + "-region-edges.jsonl");
+        File refined = jsonl(prefix + "-refined.jsonl",
+                targetRefinedEdge("DF." + prefix + ".read", "HEAP_READ",
+                        leaf, value, TARGET, TARGET + "#u2", 2));
+        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
+                regions, regionEdges, refined, seeds(), methods(),
+                Collections.singletonList(branchEvent(20, TARGET, 2,
+                        TARGET + "#u4", false)),
+                Collections.emptyList());
+        return rows(planned.regionPlans.get(0).get("closureGoals")).get(0);
+    }
+
+    private List<Map<String, Object>> rootIsolatedBoundaryGapPlans()
+            throws Exception {
+        String leaf = "<example.Key: int keyId>";
+        String value = TARGET + "::i0";
+        Map<String, Object> region = targetBoundaryRegion(
+                Collections.emptyList(), Collections.singletonList(
+                        boundaryScalarGap("keyId",
+                                Collections.singletonList(leaf),
+                                "ROOT_ONE_ONLY", Collections.emptyList(),
+                                9L, 1L)), value);
+        region.put("runtimeRootCallIds", Arrays.asList(1, 3));
+        File regions = jsonl("root-isolated-gap-regions.jsonl", region);
+        File regionEdges = jsonl("root-isolated-gap-region-edges.jsonl");
+        File refined = jsonl("root-isolated-gap-refined.jsonl",
+                targetRefinedEdge("DF.root-isolated-gap.read", "HEAP_READ",
+                        leaf, value, TARGET, TARGET + "#u2", 2));
+        List<RuntimeRegionPlanner.MethodEvent> events = Arrays.asList(
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "p", "t",
+                        7, ROOT, 10, "example.Root", 1, 0, 0),
+                new RuntimeRegionPlanner.MethodEvent(2, "test", "p", "t",
+                        7, TARGET, 20, "example.Target", 2, 1, 0),
+                new RuntimeRegionPlanner.MethodEvent(3, "test", "p", "t",
+                        7, ROOT, 30, "example.Root", 3, 0, 0),
+                new RuntimeRegionPlanner.MethodEvent(4, "test", "p", "t",
+                        7, TARGET, 40, "example.Target", 4, 3, 0));
+        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
+                regions, regionEdges, refined, Arrays.asList(
+                        activation("REGION.1", 1, ROOT,
+                                Arrays.asList(1L, 2L)),
+                        activation("REGION.1", 3, ROOT,
+                                Arrays.asList(3L, 4L))),
+                events, Arrays.asList(
+                        branchEvent(10, TARGET, 2, TARGET + "#u4", false),
+                        branchEvent(20, TARGET, 4, TARGET + "#u4", false)),
+                Collections.emptyList());
+        return planned.regionPlans;
+    }
+
+    private Map<String, Object> producerBoundaryScalarCutoffGoal()
+            throws Exception {
+        String resultField = "<example.State: int result>";
+        String leaf = "<example.Key: int keyId>";
+        String leafLocal = WRITER + "::i2";
+        String writerLocal = WRITER + "::i0";
+        Map<String, Object> reader = fullRegion();
+        reader.put("symbolicInputs", Collections.singletonList(object(
+                "portId", "REGION.1.in.result.cutoff", "cell", "reader",
+                "rootCallId", 1, "rootMethod", TARGET,
+                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
+                "rootKind", "OBSERVED_FIELD_RECEIVER",
+                "rootObjectId", 77, "fieldReceiverObjectId", 77,
+                "siteId", TARGET + "#u1", "fieldPath",
+                Collections.singletonList("result"),
+                "fieldPathDeclarations",
+                Collections.singletonList(resultField))));
+        Map<String, Object> before = producerBoundaryScalarInput(
+                "REGION.2.in.key.before", leaf, 4L, 780L,
+                "BOUNDARY.OUTPUT.BEFORE", 0, 1);
+        Map<String, Object> after = producerBoundaryScalarInput(
+                "REGION.2.in.key.after", leaf, 6L, 781L,
+                "BOUNDARY.OUTPUT.AFTER", 1, 2);
+        Map<String, Object> priorResult = heapPort(
+                "REGION.2.in.result-before-cutoff", 3, WRITER,
+                WRITER + "#u0", 3L, 77L, resultField, "result");
+        priorResult.put("dependencyRole", "VALUE_FRONTIER");
+        Map<String, Object> writer = object(
+                "schemaVersion", 3, "kind", "SYMBOLIC_REGION",
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "regionId", "REGION.2", "rootMethod", WRITER,
+                "anchorMethod", WRITER, "selection", "STATE_CONTEXT",
+                "runtimeRootCallIds", Collections.singletonList(3),
+                "methods", Collections.singletonList(WRITER),
+                "symbolicInputs", Arrays.asList(before, after, priorResult),
+                "outputs", Collections.singletonList(object(
+                        "portId", "REGION.2.out.result.cutoff", "cell",
+                        writerLocal, "rootCallId", 3, "rootMethod", WRITER,
+                        "bindingKind", "DECLARED_FIELD_ACCESS",
+                        "rootObjectId", 77, "fieldReceiverObjectId", 77,
+                        "siteId", WRITER + "#u2", "fieldPath",
+                        Collections.singletonList("result"),
+                        "fieldPathDeclarations",
+                        Collections.singletonList(resultField),
+                        "runtimeAccesses", Collections.singletonList(object(
+                                "rootCallId", 3, "eventSeq", 5,
+                                "staticAccessSiteId", WRITER + "#u2",
+                                "activationLocalStaticSiteOccurrence", 1,
+                                "bindingKind", "DECLARED_FIELD_ACCESS",
+                                "fieldReceiverObjectId", 77,
+                                "fieldPathDeclarations",
+                                Collections.singletonList(resultField))))),
+                "branchPolicies", Collections.emptyList());
+        File regions = jsonl("producer-scalar-cutoff-regions.jsonl",
+                reader, writer);
+        File edges = jsonl("producer-scalar-cutoff-edges.jsonl", object(
+                "schemaVersion", 3, "kind", "RUNTIME_FIELD_FLOW",
+                "transportKind", "HEAP", "edgeId", "RF.scalar.cutoff",
+                "fromRegion", "REGION.2", "toRegion", "REGION.1",
+                "fromPort", "REGION.2.out.result.cutoff", "toPort",
+                "REGION.1.in.result.cutoff", "fromRootCallId", 3,
+                "toRootCallId", 1, "fromLaneId", 8, "toLaneId", 7,
+                "receiverObjectId", 77, "writerEventSeq", 5,
+                "readerEventSeq", 6, "fieldPathDeclarations",
+                Collections.singletonList(resultField)));
+        Map<String, Object> read = refinedEdge(
+                "DF.scalar-cutoff.read", "HEAP_READ", leaf, leafLocal,
+                WRITER, WRITER + "#u1", 1);
+        read.put("regionIds", Collections.singletonList("REGION.2"));
+        Map<String, Object> value = refinedEdge(
+                "DF.scalar-cutoff.value", "COMPUTE", leafLocal,
+                writerLocal, WRITER, WRITER + "#u0", 0);
+        value.put("regionIds", Collections.singletonList("REGION.2"));
+        Map<String, Object> write = refinedEdge(
+                "DF.scalar-cutoff.write", "HEAP_WRITE", writerLocal,
+                resultField, WRITER, WRITER + "#u2", 2);
+        write.put("regionIds", Collections.singletonList("REGION.2"));
+        File refined = jsonl("producer-scalar-cutoff-refined.jsonl",
+                read, value, write);
+        List<RuntimeRegionPlanner.MethodEvent> events = new ArrayList<>();
+        events.add(new RuntimeRegionPlanner.MethodEvent(0, "test", "p", "w",
+                8, WRITER, 30, "example.Writer", 3, 0, 0));
+        events.addAll(methods());
+        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
+                regions, edges, refined, Arrays.asList(
+                        activation("REGION.2", 3, WRITER,
+                                Collections.singletonList(3L)),
+                        activation("REGION.1", 1, ROOT,
+                                Arrays.asList(1L, 2L))),
+                events, runtime(), Collections.singletonList(
+                        new RuntimeRegionPlanner.FieldAccessEvent(5,
+                                "FIELD_WRITE", WRITER, 3, 2,
+                                WRITER + "#u2", resultField, 77, 0, "")));
+        Map<String, Object> plan = planned.regionPlans.stream()
+                .filter(row -> "REGION.2".equals(row.get("regionId")))
+                .findFirst().get();
+        return rows(plan.get("closureGoals")).get(0);
+    }
+
+    private static Map<String, Object> producerBoundaryScalarInput(
+            String portId, String declaration, long eventSeq, long receiver,
+            String identity, int arrayIndex, int occurrence) {
+        Map<String, Object> result = boundaryScalarInput(portId,
+                declaration, "keyId", WRITER + "#u1",
+                WRITER + "#u1.fieldReceiver", eventSeq, receiver,
+                identity, arrayIndex, occurrence);
+        result.put("rootCallId", 3);
+        result.put("rootMethod", WRITER);
+        for (Map<String, Object> access : rows(result.get(
+                "runtimeAccesses"))) {
+            access.put("rootCallId", 3);
+        }
+        return result;
+    }
+
+    private Map<String, Object> producerBoundaryGapGoal(
+            boolean demandedGap) throws Exception {
+        String resultField = "<example.State: int result>";
+        String missing = "<example.Key: int keyId>";
+        String unrelated = "<example.Key: int ignored>";
+        String missingLocal = WRITER + "::i2";
+        String writerLocal = WRITER + "::i0";
+        Map<String, Object> reader = fullRegion();
+        reader.put("symbolicInputs", Collections.singletonList(object(
+                "portId", "REGION.1.in.result", "cell", "reader",
+                "rootCallId", 1, "rootMethod", TARGET,
+                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
+                "rootKind", "OBSERVED_FIELD_RECEIVER",
+                "rootObjectId", 77, "fieldReceiverObjectId", 77,
+                "siteId", TARGET + "#u1", "fieldPath",
+                Collections.singletonList("result"),
+                "fieldPathDeclarations",
+                Collections.singletonList(resultField))));
+        String gapLeaf = demandedGap ? missing : unrelated;
+        Map<String, Object> producerGap = boundaryScalarGap(
+                demandedGap ? "keyId" : "ignored",
+                Collections.singletonList(gapLeaf), demandedGap
+                        ? "MISSING_PRODUCER_BOUNDARY_SCALAR"
+                        : "UNRELATED_PRODUCER_GAP",
+                Collections.emptyList(), 4L, 3L);
+        producerGap.put("rpcBoundaryConsumerRegionId", "REGION.2");
+        Map<String, Object> missingInput = heapPort(
+                "REGION.2.in.missing", 3, WRITER, WRITER + "#u1",
+                4L, 78L, missing, "keyId");
+        missingInput.put("dependencyRole", "VALUE_FRONTIER");
+        Map<String, Object> priorResult = heapPort(
+                "REGION.2.in.result-before", 3, WRITER,
+                WRITER + "#u0", 3L, 77L, resultField, "result");
+        priorResult.put("dependencyRole", "VALUE_FRONTIER");
+        Map<String, Object> writer = object(
+                "schemaVersion", 3, "kind", "SYMBOLIC_REGION",
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "regionId", "REGION.2", "rootMethod", WRITER,
+                "anchorMethod", WRITER, "selection", "STATE_CONTEXT",
+                "runtimeRootCallIds", Collections.singletonList(3),
+                "methods", Collections.singletonList(WRITER),
+                "symbolicInputs", Arrays.asList(missingInput, priorResult),
+                "rpcBoundaryScalarGaps",
+                Collections.singletonList(producerGap),
+                "outputs", Collections.singletonList(object(
+                        "portId", "REGION.2.out.result", "cell", writerLocal,
+                        "rootCallId", 3, "rootMethod", WRITER,
+                        "bindingKind", "DECLARED_FIELD_ACCESS",
+                        "rootObjectId", 77, "fieldReceiverObjectId", 77,
+                        "siteId", WRITER + "#u2", "fieldPath",
+                        Collections.singletonList("result"),
+                        "fieldPathDeclarations",
+                        Collections.singletonList(resultField),
+                        "runtimeAccesses", Collections.singletonList(object(
+                                "rootCallId", 3, "eventSeq", 5,
+                                "staticAccessSiteId", WRITER + "#u2",
+                                "activationLocalStaticSiteOccurrence", 1,
+                                "bindingKind", "DECLARED_FIELD_ACCESS",
+                                "fieldReceiverObjectId", 77,
+                                "fieldPathDeclarations",
+                                Collections.singletonList(resultField))))),
+                "branchPolicies", Collections.emptyList());
+        String suffix = demandedGap ? "demanded" : "unrelated";
+        File regions = jsonl("producer-gap-" + suffix + "-regions.jsonl",
+                reader, writer);
+        File edges = jsonl("producer-gap-" + suffix + "-edges.jsonl",
+                object("schemaVersion", 3, "kind", "RUNTIME_FIELD_FLOW",
+                        "transportKind", "HEAP", "edgeId", "RF.gap.out",
+                        "fromRegion", "REGION.2", "toRegion", "REGION.1",
+                        "fromPort", "REGION.2.out.result", "toPort",
+                        "REGION.1.in.result", "fromRootCallId", 3,
+                        "toRootCallId", 1, "fromLaneId", 8,
+                        "toLaneId", 7, "receiverObjectId", 77,
+                        "writerEventSeq", 5, "readerEventSeq", 6,
+                        "fieldPathDeclarations",
+                        Collections.singletonList(resultField)));
+        Map<String, Object> producerRead = refinedEdge(
+                "DF.producer-gap.read", "HEAP_READ", missing,
+                missingLocal, WRITER, WRITER + "#u1", 1);
+        producerRead.put("regionIds", Collections.singletonList("REGION.2"));
+        Map<String, Object> producerValue = refinedEdge(
+                "DF.producer-gap.value", "COMPUTE", missingLocal,
+                writerLocal, WRITER, WRITER + "#u0", 0);
+        producerValue.put("regionIds",
+                Collections.singletonList("REGION.2"));
+        Map<String, Object> producerWrite = refinedEdge(
+                "DF.producer-gap.write", "HEAP_WRITE", writerLocal,
+                resultField, WRITER, WRITER + "#u2", 2);
+        producerWrite.put("regionIds",
+                Collections.singletonList("REGION.2"));
+        File refined = jsonl("producer-gap-" + suffix + "-refined.jsonl",
+                producerRead, producerValue, producerWrite);
+        List<RuntimeRegionPlanner.MethodEvent> events = new ArrayList<>();
+        events.add(new RuntimeRegionPlanner.MethodEvent(0, "test", "p", "w",
+                8, WRITER, 30, "example.Writer", 3, 0, 0));
+        events.addAll(methods());
+        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
+                regions, edges, refined, Arrays.asList(
+                        activation("REGION.2", 3, WRITER,
+                                Collections.singletonList(3L)),
+                        activation("REGION.1", 1, ROOT,
+                                Arrays.asList(1L, 2L))),
+                events, runtime(), Collections.singletonList(
+                        new RuntimeRegionPlanner.FieldAccessEvent(5,
+                                "FIELD_WRITE", WRITER, 3, 2,
+                                WRITER + "#u2", resultField, 77, 0, "")));
+        Map<String, Object> plan = planned.regionPlans.stream()
+                .filter(row -> "REGION.2".equals(row.get("regionId")))
+                .findFirst().get();
+        return rows(plan.get("closureGoals")).get(0);
+    }
+
+    private static Map<String, Object> boundaryScalarInput(
+            String portId, String declaration, String field, String site,
+            String cell, long eventSeq, long receiver,
+            String boundaryIdentity, int arrayIndex, int occurrence) {
+        Map<String, Object> port = heapPort(portId, 1, TARGET, site,
+                eventSeq, receiver, declaration, field);
+        port.put("cell", cell);
+        port.put("dependencyCells", Collections.singletonList(declaration));
+        port.put("javaType", "int");
+        port.put("dependencyRole", "VALUE_FRONTIER");
+        port.put("rpcDescendantProjectionInput", true);
+        port.put("rpcProjectionAuthority",
+                "TRUSTED_CONFIGURED_RPC_BOUNDARY_SCALAR_V1");
+        port.put("rpcBoundaryScalarIdentity", boundaryIdentity);
+        port.put("rpcBoundaryArrayIndices",
+                Collections.singletonList(arrayIndex));
+        port.put("staticAccessSiteId", site);
+        port.put("activationLocalStaticSiteOccurrence", occurrence);
+        port.put("replayOccurrence", occurrence);
+        port.put("runtimeAccesses", Collections.singletonList(object(
+                "eventSeq", eventSeq, "rootCallId", 1,
+                "fieldReceiverObjectId", receiver,
+                "staticAccessSiteId", site,
+                "activationLocalStaticSiteOccurrence", occurrence,
+                "fieldPathDeclarations",
+                Collections.singletonList(declaration))));
+        return port;
     }
 
     private static Map<String, Object> accessorPort(
@@ -3317,20 +3749,6 @@ public class RuntimeRegionPlannerTest {
         return result;
     }
 
-    private static Map<String, Object> projectedCarrierInput(
-            String portId, String selectionAuthority) {
-        return object(
-                "portId", portId, "rootCallId", 3,
-                "protocolCarrierResponsePort", "REGION.2.in.response",
-                "protocolCarrierMappingId", "example.response",
-                "protocolCarrierAuthority",
-                "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
-                "rpcDescendantProjectionInput", true,
-                "rpcProjectionAuthority",
-                "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
-                "rpcProjectionSelectionAuthority", selectionAuthority,
-                "rpcProjectionMappingId", "example.response");
-    }
 
     private static Map<String, Object> boundedGuardInput(
             String portId, String guardSite, List<String> outputPorts,
