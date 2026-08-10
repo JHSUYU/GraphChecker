@@ -92,30 +92,40 @@ task carries the union of their real outputs and edges. Versions emitted at the
 same semantic boundary share one version choice; they are not combined as an
 independent Cartesian product.
 
-## Current patched-run TODO
+## Current patched-run result
 
-The files presently under the patched candidate campaign predate the current
-schedule and are not reusable evidence.  In particular, their Z3 report has a
-vacuous `true` reach condition and no fatal mutation clause.  The sole current
-completion queue is:
+The CLOSED-trace completion queue is finished.  The current commit record
+selects target `call3191805` and eight producer tasks.  All nine seed/path sets
+closed; composition resolves 20 selected edges with zero gaps and writes a
+`CANDIDATE_READY`, closed-path-set `candidate.smt2`.  The cold and cached
+Dispatcher occurrences are `3180179 -> 3186426`; the joint NameNode relation is
+`call2454593`; the exact later key construction is `call3079981` and contributes
+the trace-grounded constant `keyId=11746`.
 
-1. rebuild the region plan from the existing CLOSED pass-1/pass-2 traces;
-2. publish a new exact target-first schedule and treat its index as the commit
-   record;
-3. replay its task set, requiring the joint `call2454593` relation to publish
-   all demanded outputs from one activation while retaining the final VM path
-   condition;
-4. compose a zero-gap candidate bound to the selected edge set;
-5. run Z3 plus `solver_binding_audit.py`, and verify target `call3191805`, the
-   cold-to-cached Dispatcher heap lineage, both configured RPC reader chains,
-   and a load-bearing fatal mutation witness.
+The canonical campaign is:
 
-Internally written accessor values are observation anchors, not new free
-solver inputs.  Do not restore output-occurrence/version ranking, hand-written
-HDFS lifetime constraints, or cross-invocation singleton-summary products to
-make this queue pass.  Once the five checks complete, replace this section
-with the new campaign-local hashes and result; until then, any older `SAT` file
-is explicitly non-authoritative.
+```text
+experiments-output/hdfs-11741-patched/candidates/
+  REGION.61e62f41-34c6-3a5d-b610-b639dc3f4838-call3191805-c5b0d5ca/
+```
+
+`/usr/bin/z3` returns `SAT / REACHABLE` for the broad automatic query.  Its
+reach formula is `true` with four unenumerated existential roots, and the
+generic binding audit remains `INCONCLUSIVE` for one fatal integer operand, so
+the result is intentionally published as `CANDIDATE_ONLY`.  The companion
+solver-only HDFS semantic probes under `manual-hdfs11741-probe/` give the
+stronger experiment-specific result: the stale/expired `11746` shape is `sat`,
+while adding the patched cached-key guard is `unsat`.  Their SHA-256 digests
+are respectively
+`bc171af13f1a3c87aa057af9864d9366d5c342f4675323f94d72433125d2a0ea`
+and
+`f13ace60674a5990808734722440f8d973d1134daa089fc815f22d5acd162c0b`.
+
+The key correction is deliberately small: a primitive output with no symbolic
+inputs uses its exact recorded value; symbolic producer outputs continue to
+use their real VM expression and exact invocation grouping.  No HDFS method
+name, call id, lifetime formula, output-version rank, or producer Cartesian
+product was added to the engine.
 
 `full` does not hard-code thread ids, object ids, call ids, or HDFS region
 names. Each selected task is instrumented and run by the bounded execution

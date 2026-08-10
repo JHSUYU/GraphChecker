@@ -1480,9 +1480,15 @@ public final class ConcolicRegionRuntime {
         JsonObject row = outputCaptureRow(request, occurrence);
         try {
             EngineApi api = engine();
-            JsonElement expression;
+            JsonElement expression = active.activation
+                    .recordedPrimitiveOutput(request);
             DeclaredField field = null;
-            if (containerValue(fieldValue)) {
+            if (expression != null) {
+                // A closed primitive relation with no symbolic inputs is the
+                // exact recorded constant. Replaying a long-lived service
+                // root is not a stable way to rediscover which repetition
+                // produced it.
+            } else if (containerValue(fieldValue)) {
                 if (!snapshotOutputContainer(fieldValue, api)) {
                     throw new IllegalStateException(
                             "field-write value is not a supported container");
@@ -1993,6 +1999,14 @@ public final class ConcolicRegionRuntime {
             }
         }
         return active.captureEligible(task.outputCapture(captureBindingId));
+    }
+
+    /** Test seam for a trace-grounded primitive output with no inputs. */
+    static JsonObject recordedPrimitiveOutputForTests(
+            JsonObject encodedTask, String captureBindingId) {
+        RuntimeTask task = new RuntimeTask(ExecutionTask.decode(encodedTask));
+        return task.recordedPrimitiveOutput(
+                task.outputCapture(captureBindingId));
     }
 
     /** Test seam for per-port resource-cut completion. */
@@ -6631,6 +6645,7 @@ public final class ConcolicRegionRuntime {
         private final List<OutputCaptureSpec> outputCaptures;
         private final boolean capturesOutputRelation;
         private final Map<String, Set<String>> capturePrerequisites;
+        private final Map<String, JsonObject> recordedPrimitiveOutputs;
         private final Set<String> executionScopeMethods;
         private final BranchReplayContract replayContract;
         private final Map<String, Set<Boolean>> seedOutcomes;
@@ -6658,6 +6673,7 @@ public final class ConcolicRegionRuntime {
             this.capturesOutputRelation =
                     task.goalKind().capturesOutputRelation();
             this.capturePrerequisites = new LinkedHashMap<>();
+            this.recordedPrimitiveOutputs = new LinkedHashMap<>();
             this.executionScopeMethods = new LinkedHashSet<>();
             if (task.outputClosure() != null) {
                 this.executionScopeMethods.addAll(
@@ -6724,6 +6740,7 @@ public final class ConcolicRegionRuntime {
         private void indexCapturePrerequisites(
                 OutputClosureContract closure) {
             if (closure == null) return;
+            boolean singletonRelation = closure.members().size() == 1;
             Set<String> symbolicPorts = new LinkedHashSet<>();
             Set<String> declaredPorts = new LinkedHashSet<>();
             for (SymbolizeAction action : symbolize) {
@@ -6745,7 +6762,22 @@ public final class ConcolicRegionRuntime {
                 }
                 String anchor = string(member.slice(),
                         "captureAnchorPort");
-                if (!anchor.isEmpty()) {
+                boolean semanticExitSnapshot = singletonRelation
+                        && member.captures().size() > 0;
+                for (JsonElement element : member.captures()) {
+                    if (!OutputCaptureSpec.MUTATION_STATE.equals(string(
+                            element.getAsJsonObject(), "captureKind"))) {
+                        semanticExitSnapshot = false;
+                    }
+                }
+                if (semanticExitSnapshot) {
+                    // A singleton mutation summary denotes the state at the
+                    // mutator's normal-exit boundary.  It may legitimately
+                    // observe only a subset of the planner's potential leaf
+                    // inputs on this replay; the VM expression records the
+                    // inputs that actually reached the boundary.
+                    required.clear();
+                } else if (!anchor.isEmpty()) {
                     if (!memberInputs.contains(anchor)
                             || !declaredPorts.contains(anchor)) {
                         throw new IllegalArgumentException(
@@ -6756,7 +6788,8 @@ public final class ConcolicRegionRuntime {
                     required.add(anchor);
                 }
                 for (JsonElement element : member.captures()) {
-                    String binding = string(element.getAsJsonObject(),
+                    JsonObject encodedCapture = element.getAsJsonObject();
+                    String binding = string(encodedCapture,
                             "captureBindingId");
                     if (binding.isEmpty()
                             || capturePrerequisites.put(binding,
@@ -6765,8 +6798,32 @@ public final class ConcolicRegionRuntime {
                         throw new IllegalArgumentException(
                                 "duplicate or missing output capture binding");
                     }
+                    JsonObject recorded = recordedPrimitiveExpression(
+                            encodedCapture);
+                    if (required.isEmpty() && recorded != null) {
+                        recordedPrimitiveOutputs.put(binding, recorded);
+                    }
                 }
             }
+        }
+
+        private static JsonObject recordedPrimitiveExpression(
+                JsonObject capture) {
+            if (!OutputCaptureSpec.FIELD_WRITE_STATE.equals(
+                    string(capture, "captureKind"))) return null;
+            String value = string(capture, "recordedPrimitiveValue");
+            String descriptor = javaTypeDescriptor(string(capture,
+                    "javaType"));
+            if (!("I".equals(descriptor) || "J".equals(descriptor))
+                    || !value.matches("-?(?:0|[1-9][0-9]*)")) {
+                return null;
+            }
+            JsonObject expression = new JsonObject();
+            expression.addProperty("_type", "ConstExpr");
+            expression.addProperty("_java_type", descriptor);
+            expression.addProperty("_exp", "Y_" + descriptor + "_"
+                    + value);
+            return expression;
         }
 
         private boolean capturePrerequisitesSatisfied(
@@ -6788,6 +6845,19 @@ public final class ConcolicRegionRuntime {
                 if (!present) return false;
             }
             return true;
+        }
+
+        private JsonObject recordedPrimitiveOutput(
+                OutputCaptureSpec request) {
+            if (request == null || !request.capturesFieldWriteState()) {
+                return null;
+            }
+            Set<String> required = capturePrerequisites.get(
+                    request.captureBindingId());
+            JsonObject expression = recordedPrimitiveOutputs.get(
+                    request.captureBindingId());
+            return required != null && required.isEmpty()
+                    && expression != null ? expression.deepCopy() : null;
         }
 
         /**

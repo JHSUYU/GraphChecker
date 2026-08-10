@@ -1982,6 +1982,12 @@ final class RuntimeRegionPlanner {
         capture.addProperty("javaType", javaType);
         capture.addProperty("definitionMethod", captureMethod);
         capture.addProperty("definitionUnitIndex", captureUnit);
+        String recordedPrimitiveValue = text(output.get("primitiveValue"));
+        if (!mutation && inputPorts.isEmpty()
+                && !recordedPrimitiveValue.isEmpty()) {
+            capture.addProperty("recordedPrimitiveValue",
+                    recordedPrimitiveValue);
+        }
         if (mutation) {
             capture.addProperty("declaredCallee", declaredCallee);
         }

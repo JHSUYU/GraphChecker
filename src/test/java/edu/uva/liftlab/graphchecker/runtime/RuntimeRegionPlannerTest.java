@@ -1015,6 +1015,7 @@ public class RuntimeRegionPlannerTest {
                                 "bindingKind", "ACTIVATION_FIELD_ACCESS",
                                 "fieldReceiverObjectId", 88,
                                 "valueObjectId", 200,
+                                "primitiveValue", "7",
                                 "fieldPathDeclarations", declarations)))),
                 "branchPolicies", Collections.emptyList());
         File regions = jsonl("assignment-flow-regions.jsonl", reader, writer);
@@ -1079,6 +1080,7 @@ public class RuntimeRegionPlannerTest {
         assertEquals(STATE_UPDATE, capture.get("definitionMethod"));
         assertEquals(2, ((Number) capture.get(
                 "definitionUnitIndex")).intValue());
+        assertEquals("7", capture.get("recordedPrimitiveValue"));
         assertTrue(!capture.containsKey("accessRootInputPort"));
     }
 

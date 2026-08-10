@@ -2173,6 +2173,27 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void vmLocalArrayListIdentityIsAFirstClassIndexedState()
+            throws Exception {
+        JsonObject identity = reference(
+                "M_L'java/util/ArrayList'_24", "java/util/ArrayList");
+        JsonObject state = indexedOperation("STATE", identity);
+        JsonObject appended = indexedOperation("APPEND", state,
+                reference("M_L'example/Node'_22", "example/Node"));
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(indexedSize(appended), ">=", integer(1)));
+
+        ConcolicSmtComposer.Result result = composeWithConstraints(
+                constraints);
+
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains(
+                        "MODEL_SEMANTICS_MISSING"));
+        assertFalse(result.manifest.toString(),
+                result.manifest.toString().contains("BinarySortConflict"));
+    }
+
+    @Test
     public void undecidableIndexedReadKeepsEveryStoredElement()
             throws Exception {
         // A read whose index is not an exact literal decides nothing, so the

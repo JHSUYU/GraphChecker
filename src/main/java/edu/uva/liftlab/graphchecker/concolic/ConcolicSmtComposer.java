@@ -2542,6 +2542,18 @@ public final class ConcolicSmtComposer {
                                 return encoded;
                             }
                         }
+                        if (port.isEmpty()) {
+                            // VM-local collection identities need not be
+                            // canonical region ports.  Preserve them as
+                            // typed, unconstrained container state instead
+                            // of rejecting every size/read derived from the
+                            // collection.
+                            ContainerSmtCodec.Term encoded = toContainerTerm(
+                                    term(identity, required));
+                            if (encoded != null && encoded.sort == shape) {
+                                return encoded;
+                            }
+                        }
                     }
                     Term reference = term(identity, Sort.REF);
                     if (reference == null || reference.sort != Sort.REF) {

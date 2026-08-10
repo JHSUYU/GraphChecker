@@ -111,46 +111,55 @@ removed member key is constrained to that lookup key.  The general
 root-enumeration degeneracy probe does not enumerate all 54 existential roots;
 the semantic acceptance gate is instead the pinned mutation witness above.
 
-### Patched HDFS-11741 checkpoint and remaining work
+### Patched HDFS-11741 result (2026-08-10)
 
-The patched run is **not yet accepted**.  The campaign-local candidate currently
-on disk was composed at 01:00 on 2026-08-10, while the current schedule commit
-record was published later, at 10:13.  That candidate therefore belongs to an
-older task contract.  Its Z3 report also reduces reachability to `true` and its
-fatal mutation witness is `NOT_APPLICABLE` with zero clauses.  It is useful as
-a debugging artifact only; neither its `SAT` result nor its SMT hash is a
-current project result.
+The CLOSED-trace rebuild and the completion queue above are finished.  The
+current schedule contains one exact target plus eight producer tasks across
+seven region templates.  It selects target `call3191805`, the cold-to-cached
+Dispatcher chain `3180179 -> 3186426`, the atomic NameNode `updateKeys`
+invocation `call2454593`, both configured block-key RPC reader chains, and the
+exact key construction at `call3079981`.  The schedule commit record binds a
+29-row region plan (`217,382,550` bytes, SHA-256
+`1da5fd322854b48b0fd2441c12d9008ab444a8b382548dd0f37fa5420d8b8528`)
+to a 9-row task plan (`2,112,856` bytes, SHA-256
+`becbd8d2bd537688ef0646500ab6c022419265759faec2b997511c95c3230cde`).
 
-The current source checkpoint keeps the exact target occurrence
-`rootCallId=3191805`, the first and cached Dispatcher occurrences
-`3180179 -> 3186426`, and one atomic `updateKeys` producer rooted at
-`call2454593`.  The remaining defect is local to that atomic producer: values
-written earlier in the same long-lived region must remain derived symbolic
-state, not become new free inputs.  Each demanded output now carries one exact
-causal accessor anchor; observing that slot selects the output boundary without
-re-symbolizing an internally written field or imposing a trace ordinal/version
-as replay semantics.
+All nine bounded replays and path sets closed.  The canonical composition is
+`CANDIDATE_READY`, `pathSetComplete=true`, has zero gaps, resolves all 20
+selected edges, and reports `droppedEdgeEvidenceAudit=AUDITED`.  The exact
+trace-grounded `DelegationKey.keyId` write at event `3157904` is encoded as
+`11746`; the selected-state edge carries it into the cold Dispatcher relation
+instead of replaying an unstable service-loop occurrence.
 
-The authoritative TODO, in order, is:
+The canonical four artifacts are under
+`experiments-output/hdfs-11741-patched/candidates/REGION.61e62f41-34c6-3a5d-b610-b639dc3f4838-call3191805-c5b0d5ca/`:
 
-1. Finish the in-progress CLOSED-trace refinement/plan rebuild and publish a
-   new target-first schedule.  Do not reuse a candidate whose composition is
-   not bound to that schedule's region-plan and task-plan hashes.
-2. Replay the current indexed tasks.  The atomic `call2454593` summary must
-   contain every demanded output from one compatible activation, preserve the
-   full final VM path condition, and expose internally derived values only
-   through their real expressions—not as extra `symbolicInputs`.
-3. Compose a fresh campaign-local `candidate.smt2` with zero gaps and complete
-   selected-edge coverage.  The exact target must remain `call3191805`, and
-   the producer lineage must include `3180179 -> 3186426 -> 3191805` plus both
-   configured block-key RPC reader chains.
-4. Run the real Z3 binary and the solver-native binding audit.  Accept either
-   `SAT` or `UNSAT`, but reject a vacuous `true` reach formula, an unbound fatal
-   operand, a non-load-bearing selected edge, or a missing fatal mutation
-   witness.
-5. Only after those checks pass, replace this checkpoint with the hashes,
-   sizes, reachability, trust state, path-set authority, and lineage copied
-   from the new campaign-local four-artifact result.
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| `candidate.smt2` | 5,671,051 | `39439e52ccc64cd1876d193fafb81656379cca66b652d750de736bc179df0408` |
+| `composition.json` | 78,661 | `fd22d22add3c1a95d8d0a3de2a3acdb4867b8ede07ca5eda5fc18d3adb943b07` |
+| `z3-result.json` | 5,278 | `b9ce0d1aa8b543189da06d7efece0b93cf16e5dde5289c85e1c878edc2c9e6d3` |
+| `result.json` | 889 | `497c706e17706e7658ab911ac816ff404630b18d941691d1f963c6de46c5fcc7` |
+
+The real `/usr/bin/z3` returns `SAT / REACHABLE`.  The automatic reach formula
+is intentionally broad (`true` with four unenumerated existential roots), so
+that result alone is not claimed as the HDFS-11741 witness.  A solver-only
+semantic probe derived from the same fresh SMT adds the observed stale-key
+conditions: cached key `11746` is expired, SASL sends `11746`, and the DataNode
+table lacks `11746`.  That query is `sat` (SHA-256
+`bc171af13f1a3c87aa057af9864d9366d5c342f4675323f94d72433125d2a0ea`).
+Adding the patched cached-key guard makes the same query `unsat` (SHA-256
+`f13ace60674a5990808734722440f8d973d1134daa089fc815f22d5acd162c0b`).
+Thus the composed relations can express the bug and distinguish the patched
+path without editing or replacing a producer relation.
+
+One audit limitation remains explicit rather than hidden: the generic
+solver-binding audit is `INCONCLUSIVE` because one fatal integer operand has no
+exact producer-lineage record; the state operand is bound to recorded producer
+versions and has a load-bearing edge.  Likewise the generic
+`fatalAbsenceMutationWitness` is `NOT_APPLICABLE`.  These facts explain why the
+canonical result retains `trustState=CANDIDATE_ONLY`; they do not invalidate
+the zero-gap composition or the two solver-only HDFS semantic probes above.
 
 The patched checkout and reusable evidence are:
 

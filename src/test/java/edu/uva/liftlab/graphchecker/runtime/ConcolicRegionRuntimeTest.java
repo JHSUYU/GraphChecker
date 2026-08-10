@@ -387,6 +387,55 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void fieldWriteWithoutCausalInputUsesItsRecordedPrimitive() {
+        JsonObject task = exactOutputTask(1);
+        JsonObject member = task.getAsJsonObject("outputClosure")
+                .getAsJsonArray("members").get(0).getAsJsonObject();
+        JsonObject capture = member.getAsJsonObject("slice")
+                .getAsJsonArray("captureBindings").get(0).getAsJsonObject();
+        capture.addProperty("recordedPrimitiveValue", "11746");
+
+        JsonObject expression = ConcolicRegionRuntime
+                .recordedPrimitiveOutputForTests(task, "CAPTURE.0");
+        assertEquals("I", expression.get("_java_type").getAsString());
+        assertEquals("Y_I_11746", expression.get("_exp").getAsString());
+    }
+
+    @Test
+    public void singletonMutationSnapshotUsesItsSemanticExitBoundary() {
+        JsonObject task = exactOutputTask(1);
+        String input = "REGION.BOUNDARY.in.planned";
+        JsonObject action = new JsonObject();
+        action.addProperty("mode", "SYMBOLIC");
+        action.addProperty("symbol", input);
+        action.addProperty("bindingMode", "FIELD_ACCESS");
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        action.addProperty("sourceKind", "ACCESSOR_RETURN");
+        JsonArray actions = new JsonArray();
+        actions.add(action);
+        task.add("inputActions", actions);
+
+        JsonObject slice = task.getAsJsonObject("outputClosure")
+                .getAsJsonArray("members").get(0).getAsJsonObject()
+                .getAsJsonObject("slice");
+        slice.getAsJsonArray("inputPorts").add(input);
+        slice.addProperty("captureAnchorPort", input);
+        JsonObject capture = slice.getAsJsonArray("captureBindings")
+                .get(0).getAsJsonObject();
+        capture.addProperty("captureKind",
+                OutputCaptureSpec.MUTATION_STATE);
+        capture.addProperty("declaredCallee",
+                "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>");
+        capture.addProperty("occurrenceScope",
+                OutputCaptureSpec.DEFINITION_INVOCATION_SCOPE);
+
+        // The relation is the complete container expression at normal exit,
+        // even when this concrete case did not visit every planned leaf.
+        assertTrue(ConcolicRegionRuntime.outputCaptureEligibleForTests(
+                task, "CAPTURE.0", new JsonArray(), new JsonArray()));
+    }
+
+    @Test
     public void resourceCutCompletionIsPerCapturedDemandedPort() {
         JsonObject task = exactOutputTask(2);
         JsonArray captures = new JsonArray();
