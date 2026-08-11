@@ -1893,6 +1893,21 @@ final class RuntimeRegionPlanner {
         slice.addProperty("activationLocalOccurrence", replayOccurrence);
         slice.addProperty("selectedRuntimeEventSeq", longNumber(
                 output.get("eventSeq"), -1L));
+        long selectedFieldReceiver = longNumber(
+                output.get("fieldReceiverObjectId"), 0L);
+        if (!mutation && selectedFieldReceiver != 0L) {
+            // Exact trace identity used later to connect a field value
+            // produced by one helper invocation to a read of that same
+            // object in a later helper invocation of this region.  This is
+            // not a replay selector: it only publishes the observed
+            // write/read relation for atomic task construction.
+            slice.addProperty("selectedFieldReceiverObjectId",
+                    selectedFieldReceiver);
+            String selectedProcess = text(output.get("process"));
+            if (!selectedProcess.isEmpty()) {
+                slice.addProperty("selectedProcess", selectedProcess);
+            }
+        }
         if (mutationFold != null) {
             slice.addProperty("outputBoundaryKind",
                     "DEFINITION_INVOCATION_NORMAL_EXIT");

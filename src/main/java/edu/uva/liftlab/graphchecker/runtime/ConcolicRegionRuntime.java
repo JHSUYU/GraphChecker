@@ -1123,14 +1123,28 @@ public final class ConcolicRegionRuntime {
                 active.observedInputSlots.add(action.symbol);
             }
         }
-        if (active.writtenFields.contains(owner, fieldSignature)) {
-            return;
+        boolean writtenInThisRegion = active.writtenFields.contains(
+                owner, fieldSignature);
+        if (writtenInThisRegion) {
+            boolean composedInput = false;
+            for (SymbolizeAction action : active.activation.symbolize) {
+                if (action.intraRegionComposedInput()
+                        && action.matchesField(method, unitIndex, owner,
+                        fieldSignature, fieldName)
+                        && action.acceptsDirectFieldOccurrence(occurrence)) {
+                    composedInput = true;
+                    break;
+                }
+            }
+            if (!composedInput) return;
         }
         active.snapshotReferenceAliasSources(owner);
         for (SymbolizeAction action : active.activation.symbolize) {
             if (!action.matchesField(method, unitIndex, owner, fieldSignature,
                     fieldName)
-                    || !action.acceptsDirectFieldOccurrence(occurrence)) {
+                    || !action.acceptsDirectFieldOccurrence(occurrence)
+                    || writtenInThisRegion
+                    && !action.intraRegionComposedInput()) {
                 continue;
             }
             Object leafOwner = action.leafOwner(owner);
@@ -1145,8 +1159,9 @@ public final class ConcolicRegionRuntime {
             try {
                 boolean assignmentFailed = false;
                 Object materializedContainer = null;
-                for (ModelAssignment assignment
-                        : active.fieldAssignments(action)) {
+                List<ModelAssignment> fieldAssignments =
+                        active.fieldAssignments(action);
+                for (ModelAssignment assignment : fieldAssignments) {
                     List<String> path = assignment.path.isEmpty()
                             ? action.fieldPath : assignment.path;
                     Object modeledOwner = path.equals(action.fieldPath)
@@ -1189,6 +1204,24 @@ public final class ConcolicRegionRuntime {
                 }
                 if (assignmentFailed) continue;
 
+                // An intra-region read-from input names the value written by
+                // an earlier selected output.  A replay may reach the same
+                // static accessor with a different concrete pre-state; seed
+                // the observed primitive before creating the symbolic leaf
+                // so this replay represents the selected trace case.  A
+                // solver assignment, when present, remains authoritative.
+                if (fieldAssignments.isEmpty()
+                        && action.intraRegionComposedInput()
+                        && !action.observedPrimitiveValue.isEmpty()
+                        && !writeObservedPrimitiveField(leafOwner,
+                        action.exactLeafFieldSignature(),
+                        action.observedPrimitiveValue)) {
+                    active.addUnresolvedOnce(action.symbol
+                            + ": observed intra-region primitive could not "
+                            + "be seeded");
+                    continue;
+                }
+
                 EngineApi api = engine();
                 Field exactField = declaredInstanceField(leafOwner,
                         action.exactLeafFieldSignature());
@@ -1228,6 +1261,24 @@ public final class ConcolicRegionRuntime {
                         + safe(method) + "#u" + unitIndex + " failed: "
                         + rootCause(throwable));
             }
+        }
+    }
+
+    static boolean writeObservedPrimitiveField(
+            Object owner, String fieldSignature, String primitiveValue) {
+        Field field = declaredInstanceField(owner, fieldSignature);
+        if (field == null || !field.getType().isPrimitive()
+                || safe(primitiveValue).isEmpty()) {
+            return false;
+        }
+        Object modeled = coerceModelValue("INT", primitiveValue,
+                field.getType());
+        if (modeled == UnsupportedReplayValue.INSTANCE) return false;
+        try {
+            field.set(owner, modeled);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
@@ -5795,6 +5846,8 @@ public final class ConcolicRegionRuntime {
         private final int accessorCallUnitIndex;
         private final String accessorDeclaredCallee;
         private final String accessorImplementationMethod;
+        private final String intraRegionSourceOutputPort;
+        private final String intraRegionReadFromAuthority;
         private final List<String> fieldPath;
         private final String javaType;
         private final boolean observedEntryState;
@@ -5849,6 +5902,10 @@ public final class ConcolicRegionRuntime {
                     "accessorDeclaredCallee");
             this.accessorImplementationMethod = string(json,
                     "accessorImplementationMethod");
+            this.intraRegionSourceOutputPort = string(json,
+                    "intraRegionSourceOutputPort");
+            this.intraRegionReadFromAuthority = string(json,
+                    "intraRegionReadFromAuthority");
             String explicitLeafSignature = string(json,
                     "leafFieldSignature");
             this.fieldPaths = new ArrayList<>(
@@ -5911,6 +5968,12 @@ public final class ConcolicRegionRuntime {
             this.observedNullLeaf = json.has("valueObjectId")
                     && !json.get("valueObjectId").isJsonNull()
                     && integer(json, "valueObjectId", -1) == 0;
+        }
+
+        private boolean intraRegionComposedInput() {
+            return !intraRegionSourceOutputPort.isEmpty()
+                    && "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1".equals(
+                    intraRegionReadFromAuthority);
         }
 
         /**

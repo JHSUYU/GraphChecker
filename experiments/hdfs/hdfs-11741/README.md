@@ -89,14 +89,70 @@ When several selected scalar goals come from the same exact producer
 invocation and path seed, the scheduler emits one atomic producer task. Its
 `selectedGoals` ledger retains every original goal and projection, while the
 task carries the union of their real outputs and edges. Versions emitted at the
-same semantic boundary share one version choice; they are not combined as an
-independent Cartesian product.
+same invocation are captured in one relation rather than combined as an
+independent Cartesian product.  An earlier field write and a later accessor
+read on the same runtime object are connected by an ordinary exact field
+read-from edge; accessors such as `getKeyId()` have no HDFS-specific rule.
+
+### End-to-end model used by the current run
+
+The current implementation turns the recorded passing workload into the SMT
+in the following order:
+
+1. `target.yaml` and the static graph provide candidate fatal/control sites,
+   RPC mappings, fields, and region boundaries. Static reachability alone does
+   not choose a symbolic variable.
+2. The runtime trace selects exact activations and accesses. Schema-4 boundary
+   rows flatten configured RPC object/array leaves such as
+   `allKeys[i].keyId` and `allKeys[i].expiryDate`; each row retains its RPC
+   occurrence, producer/consumer root, boundary sequence, array path, receiver,
+   process, and declaration. The concrete array shape chooses which observed
+   element leaves exist in this bounded case; the array reference itself is not
+   replaced by an unconstrained symbolic array.
+3. Target-first discovery follows the selected fatal input closure through the
+   two RPC reader chains and the cold-to-cached `KeyManager` state chain. An
+   exact heap handoff between two selected occurrences of the same logical
+   producer outranks unrelated guard count, which selects the cached-key target
+   without a Balancer/DataStreamer name heuristic.
+4. Goals from the same exact `updateKeys` invocation and path seed are scheduled
+   as one atomic relation. Its `selectedGoals` ledger preserves the individual
+   projections, while its closure contains their joint output set. This keeps
+   correlated Map/key outputs from one invocation together.
+5. Concolic replay symbolizes only the exact selected scalar/accessor inputs.
+   It executes the bounded loops and container operations and captures the
+   resulting relation at the semantic output boundary. Branch flipping changes
+   the path through that bounded invocation; it does not cause the engine to
+   synthesize an unobserved RPC interleaving or silently substitute a different
+   heartbeat snapshot.
+6. For state propagated inside the atomic invocation, the scheduler matches an
+   earlier selected field write to a later accessor read using exact receiver
+   identity, full declaration, and `writerEventSeq < readerEventSeq`. Replay
+   seeds the recorded primitive only when no solver assignment exists. The
+   importer removes just that seed equality when the exact producer edge owns
+   the symbol, preserving every subsequent guard/container predicate.
+7. The composer binds RPC, shared-state, and intra-invocation read-from edges,
+   emits the fatal prefix, and follows exact equalities (including proved
+   split/parse aliases) back to canonical target ports. It fails on a missing
+   confirmed edge, but does not require unrelated summaries or manufacture a
+   producer for an honest pre-state root.
+8. Z3 checks the composed candidate. Boolean roots are exhaustively projected;
+   integral existential roots are audited by fixing the complete SAT witness
+   and perturbing one coordinate. One `unsat` neighbor proves the root space is
+   constrained, while a finite set of `sat` neighbors would remain explicitly
+   inconclusive rather than being called exhaustive.
+
+This is bounded observed-path semantics. Replay preserves the selected causal
+case; it does not claim systematic exploration of all NameNode/heartbeat/
+Balancer interleavings. If an exact RPC occurrence, array shape, or selected
+boundary cannot be reproduced, that replay produces no relation for the case
+instead of being alpha-renamed into a different occurrence.
 
 ## Current patched-run result
 
 The CLOSED-trace completion queue is finished.  The current commit record
 selects target `call3191805` and eight producer tasks.  All nine seed/path sets
-closed; composition resolves 20 selected edges with zero gaps and writes a
+closed; composition resolves 20 selected transport/state edges plus two exact
+same-invocation field read-from edges (22 total) with zero gaps and writes a
 `CANDIDATE_READY`, closed-path-set `candidate.smt2`.  The cold and cached
 Dispatcher occurrences are `3180179 -> 3186426`; the joint NameNode relation is
 `call2454593`; the exact later key construction is `call3079981` and contributes
@@ -109,23 +165,29 @@ experiments-output/hdfs-11741-patched/candidates/
   REGION.61e62f41-34c6-3a5d-b610-b639dc3f4838-call3191805-c5b0d5ca/
 ```
 
-`/usr/bin/z3` returns `SAT / REACHABLE` for the broad automatic query.  Its
-reach formula is `true` with four unenumerated existential roots, and the
-generic binding audit remains `INCONCLUSIVE` for one fatal integer operand, so
-the result is intentionally published as `CANDIDATE_ONLY`.  The companion
-solver-only HDFS semantic probes under `manual-hdfs11741-probe/` give the
-stronger experiment-specific result: the stale/expired `11746` shape is `sat`,
-while adding the patched cached-key guard is `unsat`.  Their SHA-256 digests
-are respectively
-`bc171af13f1a3c87aa057af9864d9366d5c342f4675323f94d72433125d2a0ea`
-and
-`f13ace60674a5990808734722440f8d973d1134daa089fc815f22d5acd162c0b`.
+`/usr/bin/z3` returns `SAT / REACHABLE` for the automatic query in about 0.62
+seconds.  Its Boolean projection is `true` because the closure has no free
+Boolean root, and is explicitly labelled
+`BOOLEAN_PROJECTION_EXISTS_NON_BOOLEAN_ROOTS`.  The scalar-root audit perturbs
+the complete satisfying witness one integral coordinate at a time; changing
+the first `expiryDate` from `Long.MAX_VALUE` to `Long.MAX_VALUE-1` is `unsat`,
+so the published verdict is `CONSTRAINED_ROOT_SPACE`.  The result remains
+`CANDIDATE_ONLY`, not a complete real-world HDFS witness, because this finite
+counterexample proves non-degeneracy without exhaustively projecting the
+infinite scalar domain.  The solver-native binding audit is `AUDITED`: the
+relation-only baseline is `sat`, the vacuity guard passes, and both fatal
+operands are exact target-port occurrences bound to recorded producer versions
+with load-bearing edges.
 
 The key correction is deliberately small: a primitive output with no symbolic
 inputs uses its exact recorded value; symbolic producer outputs continue to
-use their real VM expression and exact invocation grouping.  No HDFS method
-name, call id, lifetime formula, output-version rank, or producer Cartesian
-product was added to the engine.
+use their real VM expression and exact invocation grouping.  When an exact
+same-invocation producer edge supplies a field input, the importer drops only
+the VM's replay-heap initialization equality for that symbol and retains every
+later branch and container predicate.  This prevents a drifted replay Map key
+from being joined to a trace-exact field relation.  No HDFS method name, call
+id, lifetime formula, output-version rank, or producer Cartesian product was
+added to the engine.
 
 `full` does not hard-code thread ids, object ids, call ids, or HDFS region
 names. Each selected task is instrumented and run by the bounded execution

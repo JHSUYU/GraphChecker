@@ -68,6 +68,52 @@ failure; a different story is a result to report, not a deviation to correct.
 An auditor must be able to tell them apart; that is why the configured scalar
 projection carries its own authority rather than reusing the transport's.
 
+### Current bounded composition design
+
+The implementation is deliberately mechanical and case-agnostic:
+
+1. **Trace exact occurrences.** Static control/data-flow supplies candidate
+   regions and ports. Runtime activations, field accesses, RPC boundaries, and
+   schema-4 scalar rows select exact producer/consumer occurrences, array
+   indices, field declarations, and program-order coordinates.
+2. **Build one target-first closure.** Discovery starts at an observed fatal
+   target, follows only trusted exact edges, and retains the cold/warm state
+   occurrences needed by that target. Ranking prefers an observed
+   inter-occurrence state handoff before raw guard count; it contains no HDFS
+   method-name or call-id heuristic.
+3. **Keep one invocation atomic.** Scalar goals selected from the same exact
+   producer invocation and path seed become one task with a `selectedGoals`
+   provenance ledger and the union of their real outputs and edges. The
+   composer never substitutes a Cartesian product of singleton summaries for
+   one multi-output invocation.
+4. **Replay relations, not guessed formulas.** The runtime symbolizes the
+   selected exact input hooks and captures outputs at their semantic region or
+   definition boundary. The importer keeps the complete relation-boundary path
+   condition. When a selected producer edge defines a field input, it removes
+   only the VM equality used to seed that replay heap; later branch and
+   container predicates remain in the relation.
+5. **Treat accessors as ordinary field flow.** Within one exact atomic region,
+   an earlier selected field output and a later symbolic accessor input are
+   joined only when receiver identity and full field declaration match and the
+   write precedes the read. `getKeyId()` has no special rule. The resulting
+   trusted read-from edge is validated and composed like any other heap edge.
+6. **Compose and audit exact lineage.** RPC/state/read-from edges bind producer
+   outputs to consumer inputs. Fatal-prefix equalities, including structurally
+   proven `String.split`/`Integer.parseInt` aliases, carry engine temporaries
+   back to exact target-port occurrences; the binding audit then checks that
+   those edges are load-bearing in Z3.
+7. **State the remaining freedom honestly.** Boolean roots are exhaustively
+   enumerated. Non-Boolean roots stay existential; the report labels that
+   projection explicitly and perturbs one integral coordinate of a satisfying
+   witness. A rejected neighbor proves `CONSTRAINED_ROOT_SPACE` without
+   pretending to enumerate an infinite scalar domain.
+
+The soundness boundary is correspondingly small: never invent a producer,
+never merge different exact invocations, never discard a confirmed edge, and
+never interpret a finite scalar probe as exhaustive. Bounds restrict the
+observed/replayed path and container state; they do not grant authority to
+relations that were not recorded or symbolically executed.
+
 ### Three mechanical acceptance checks, none of them case knowledge
 
 1. **Per-symbol binding.** For each operand of the fatal condition, find the
@@ -119,14 +165,15 @@ seven region templates.  It selects target `call3191805`, the cold-to-cached
 Dispatcher chain `3180179 -> 3186426`, the atomic NameNode `updateKeys`
 invocation `call2454593`, both configured block-key RPC reader chains, and the
 exact key construction at `call3079981`.  The schedule commit record binds a
-29-row region plan (`217,382,550` bytes, SHA-256
-`1da5fd322854b48b0fd2441c12d9008ab444a8b382548dd0f37fa5420d8b8528`)
-to a 9-row task plan (`2,112,856` bytes, SHA-256
-`becbd8d2bd537688ef0646500ab6c022419265759faec2b997511c95c3230cde`).
+29-row region plan (`217,414,890` bytes, SHA-256
+`d8236a112980bce34ee55276d7ba3c458d27734c19a70e12fe55ccbb56fba0e1`)
+to a 9-row task plan (`2,116,700` bytes, SHA-256
+`3e21255bb6002d65a32e2f103cd48df50efc67e878a2a854d04c2e7d22f94548`).
 
 All nine bounded replays and path sets closed.  The canonical composition is
 `CANDIDATE_READY`, `pathSetComplete=true`, has zero gaps, resolves all 20
-selected edges, and reports `droppedEdgeEvidenceAudit=AUDITED`.  The exact
+selected edges plus two exact same-invocation field read-from edges (22 total),
+and reports `droppedEdgeEvidenceAudit=AUDITED`.  The exact
 trace-grounded `DelegationKey.keyId` write at event `3157904` is encoded as
 `11746`; the selected-state edge carries it into the cold Dispatcher relation
 instead of replaying an unstable service-loop occurrence.
@@ -136,30 +183,28 @@ The canonical four artifacts are under
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `candidate.smt2` | 5,671,051 | `39439e52ccc64cd1876d193fafb81656379cca66b652d750de736bc179df0408` |
-| `composition.json` | 78,661 | `fd22d22add3c1a95d8d0a3de2a3acdb4867b8ede07ca5eda5fc18d3adb943b07` |
-| `z3-result.json` | 5,278 | `b9ce0d1aa8b543189da06d7efece0b93cf16e5dde5289c85e1c878edc2c9e6d3` |
-| `result.json` | 889 | `497c706e17706e7658ab911ac816ff404630b18d941691d1f963c6de46c5fcc7` |
+| `candidate.smt2` | 2,146,869 | `37f3dbb1aea5069b9a6a6fa7c5a25846a9b8f4820315afa2faf1a53ed3c4ea94` |
+| `composition.json` | 83,245 | `92df12fa68e634b5887635415311a829a9bf980dd79fcce824a323b5b7604403` |
+| `z3-result.json` | 6,115 | `efff53b9074ac7d825354a279ba85dcbbfac77dba3e4d046284fd86cf76fafaa` |
+| `result.json` | 833 | `b0d58e384d8c0c55a076665ac532179b7a94a10aa533de8e58d039c2eb94ee60` |
 
-The real `/usr/bin/z3` returns `SAT / REACHABLE`.  The automatic reach formula
-is intentionally broad (`true` with four unenumerated existential roots), so
-that result alone is not claimed as the HDFS-11741 witness.  A solver-only
-semantic probe derived from the same fresh SMT adds the observed stale-key
-conditions: cached key `11746` is expired, SASL sends `11746`, and the DataNode
-table lacks `11746`.  That query is `sat` (SHA-256
-`bc171af13f1a3c87aa057af9864d9366d5c342f4675323f94d72433125d2a0ea`).
-Adding the patched cached-key guard makes the same query `unsat` (SHA-256
-`f13ace60674a5990808734722440f8d973d1134daa089fc815f22d5acd162c0b`).
-Thus the composed relations can express the bug and distinguish the patched
-path without editing or replacing a producer relation.
-
-One audit limitation remains explicit rather than hidden: the generic
-solver-binding audit is `INCONCLUSIVE` because one fatal integer operand has no
-exact producer-lineage record; the state operand is bound to recorded producer
-versions and has a load-bearing edge.  Likewise the generic
-`fatalAbsenceMutationWitness` is `NOT_APPLICABLE`.  These facts explain why the
-canonical result retains `trustState=CANDIDATE_ONLY`; they do not invalidate
-the zero-gap composition or the two solver-only HDFS semantic probes above.
+The real `/usr/bin/z3` returns `SAT / REACHABLE` in about 0.62 seconds.  The
+automatic Boolean projection is `true` because this exact closure has no free
+Boolean root; it is explicitly labelled
+`BOOLEAN_PROJECTION_EXISTS_NON_BOOLEAN_ROOTS` rather than presented as the
+whole input condition.  The extractor fixes the complete satisfying scalar
+tuple and perturbs one integral root at a time.  Changing the first
+`expiryDate` witness from `Long.MAX_VALUE` to `Long.MAX_VALUE-1` makes the
+query `unsat`, so the solver-backed degeneracy verdict is
+`CONSTRAINED_ROOT_SPACE`.  This is still a bounded observed-path candidate,
+not by itself a real-world HDFS-11741 counterexample.  The independent
+solver-binding audit is `AUDITED`: its relation-only baseline is `sat`, its
+vacuity guard passes, and both fatal operands are exact target-port
+occurrences bound to recorded producer versions with load-bearing edges.  The
+canonical result retains `trustState=CANDIDATE_ONLY`: the neighbor rejection
+proves the scalar root space is constrained, but does not exhaustively project
+that infinite space.  There is no missing producer lineage or composition
+gap.
 
 The patched checkout and reusable evidence are:
 

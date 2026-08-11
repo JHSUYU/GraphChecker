@@ -195,6 +195,9 @@ public final class ConcolicSmtComposer {
                         pathTerms.add(constraintTerm);
                         if (!fatalCondition) {
                             prefixTerms.add(constraintTerm);
+                            emitter.recordFatalPrefixEquality(
+                                    selectedPathOrdinal,
+                                    constraints.get(constraintIndex));
                         }
                     } finally {
                         if (fatalCondition) {
@@ -2063,6 +2066,13 @@ public final class ConcolicSmtComposer {
          */
         private final Map<String, FatalOperand> fatalOperands =
                 new LinkedHashMap<>();
+        /**
+         * Exact, top-level equalities asserted by each selected fatal path
+         * prefix.  They let the audit follow an engine-local temporary back
+         * to a dynamic input port without guessing from names or values.
+         */
+        private final Map<Integer, List<FatalPrefixEquality>>
+                fatalPrefixEqualities = new LinkedHashMap<>();
         /** Exact value-carrying named assertions, indexed by runtime edge. */
         private final List<ProducerVersionBinding> producerVersionBindings =
                 new ArrayList<>();
@@ -2211,6 +2221,139 @@ public final class ConcolicSmtComposer {
             fatalOperands.put(key, new FatalOperand(operandId,
                     capturedFatalPathOrdinal,
                     term.text, term.sort, pin.text, pin.sort, occurrence));
+        }
+
+        private void recordFatalPrefixEquality(
+                int pathOrdinal, JsonElement expression) {
+            if (expression == null || !expression.isJsonObject()) return;
+            JsonObject object = expression.getAsJsonObject();
+            if ("MethodExpression".equals(string(object, "_type"))
+                    && isJavaParseInt(string(object, "_name"))) {
+                SplitPiece source = exactParseIntIntegerSource(object);
+                PortOccurrence sourceOccurrence =
+                        exactIntegerPieceOccurrence(source);
+                if (sourceOccurrence == null) return;
+                Term result = term(object.get("_res_exp"), Sort.INT);
+                Term value = integerPieceTerm(source);
+                if (result.sort != value.sort) return;
+                fatalPrefixEqualities.computeIfAbsent(pathOrdinal,
+                        ignored -> new ArrayList<>()).add(
+                        new FatalPrefixEquality(result.text, result.sort,
+                                null, value.text, value.sort,
+                                sourceOccurrence));
+                return;
+            }
+            if (!"BinaryExpression".equals(string(object, "_type"))
+                    || !"==".equals(string(object, "_op"))) {
+                return;
+            }
+            JsonElement leftExpression = object.get("_left");
+            JsonElement rightExpression = object.get("_right");
+            PortOccurrence leftOccurrence = directPortOccurrence(
+                    leftExpression);
+            PortOccurrence rightOccurrence = directPortOccurrence(
+                    rightExpression);
+            if (leftOccurrence == null && rightOccurrence == null) return;
+
+            Term left = term(leftExpression, null);
+            Term right = term(rightExpression, left.sort);
+            if (left.sort != right.sort) return;
+            fatalPrefixEqualities.computeIfAbsent(pathOrdinal,
+                    ignored -> new ArrayList<>()).add(
+                    new FatalPrefixEquality(left.text, left.sort,
+                            leftOccurrence, right.text, right.sort,
+                            rightOccurrence));
+        }
+
+        /**
+         * Returns the exact integer witness recognized by the parse/split
+         * codec.  This is the same structural proof used to lower parseInt;
+         * it does not infer lineage from a concrete value or a symbol name.
+         */
+        private SplitPiece exactParseIntIntegerSource(JsonObject expression) {
+            JsonArray params = array(expression, "_param_list");
+            if (params.size() != 1 && params.size() != 2) return null;
+            if (params.size() == 2) {
+                Integer radix = exactIntLiteral(params.get(1));
+                if (radix == null || radix != 10) return null;
+            }
+            SplitSegment segment = exactSplitSegment(params.get(0));
+            return segment.complete() ? segment.singleIntegerPiece() : null;
+        }
+
+        private PortOccurrence exactIntegerPieceOccurrence(
+                SplitPiece piece) {
+            if (piece == null || piece.integerSource == null
+                    || !piece.integerSource.isJsonObject()) {
+                return null;
+            }
+            JsonObject source = piece.integerSource.getAsJsonObject();
+            if (!"SymbolExpression".equals(string(source, "_type"))) {
+                return null;
+            }
+            String port = findPort(string(source, "_exp"));
+            if (port.isEmpty()) return null;
+            InvocationKey invocation = piece.integerInvocation == null
+                    ? currentInvocation : piece.integerInvocation;
+            return occurrence(invocation.instanceId, port);
+        }
+
+        private PortOccurrence directPortOccurrence(JsonElement expression) {
+            if (expression == null || !expression.isJsonObject()) return null;
+            JsonObject object = expression.getAsJsonObject();
+            if (!"SymbolExpression".equals(string(object, "_type"))) {
+                return null;
+            }
+            String port = findPort(string(object, "_exp"));
+            return port.isEmpty() ? null : currentOccurrence(port);
+        }
+
+        private PortOccurrence exactFatalOperandOccurrence(
+                FatalOperand operand) {
+            if (operand.occurrence != null) return operand.occurrence;
+            List<FatalPrefixEquality> equalities = fatalPrefixEqualities.get(
+                    operand.pathOrdinal);
+            if (equalities == null || equalities.isEmpty()) return null;
+
+            Set<String> pending = new LinkedHashSet<>();
+            Set<String> visited = new LinkedHashSet<>();
+            Set<PortOccurrence> occurrences = new LinkedHashSet<>();
+            pending.add(fatalEqualityTerm(operand.solverTerm,
+                    operand.solverSort));
+            while (!pending.isEmpty()) {
+                String current = pending.iterator().next();
+                pending.remove(current);
+                if (!visited.add(current)) continue;
+                for (FatalPrefixEquality equality : equalities) {
+                    String left = fatalEqualityTerm(equality.leftTerm,
+                            equality.leftSort);
+                    String right = fatalEqualityTerm(equality.rightTerm,
+                            equality.rightSort);
+                    if (current.equals(left)) {
+                        if (equality.leftOccurrence != null) {
+                            occurrences.add(equality.leftOccurrence);
+                        }
+                        if (equality.rightOccurrence != null) {
+                            occurrences.add(equality.rightOccurrence);
+                        }
+                        pending.add(right);
+                    } else if (current.equals(right)) {
+                        if (equality.leftOccurrence != null) {
+                            occurrences.add(equality.leftOccurrence);
+                        }
+                        if (equality.rightOccurrence != null) {
+                            occurrences.add(equality.rightOccurrence);
+                        }
+                        pending.add(left);
+                    }
+                }
+            }
+            return occurrences.size() == 1
+                    ? occurrences.iterator().next() : null;
+        }
+
+        private String fatalEqualityTerm(String term, Sort sort) {
+            return sort.name() + "\u0000" + term;
         }
 
         /**
@@ -2982,22 +3125,34 @@ public final class ConcolicSmtComposer {
                 JsonObject row = new JsonObject();
                 row.addProperty("operandId", operand.operandId);
                 row.addProperty("pathOrdinal", operand.pathOrdinal);
-                row.addProperty("solverTerm", operand.solverTerm);
-                row.addProperty("solverSort", operand.solverSort.smt);
-                boolean exactOccurrence = operand.occurrence != null;
+                PortOccurrence exactLineage =
+                        exactFatalOperandOccurrence(operand);
+                boolean exactOccurrence = exactLineage != null;
+                Term exactLedgerTerm = exactOccurrence
+                        ? exactFatalLedgerTerm(operand, exactLineage)
+                        : null;
+                row.addProperty("solverTerm", exactOccurrence
+                        ? exactLedgerTerm.text : operand.solverTerm);
+                row.addProperty("solverSort", exactOccurrence
+                        ? exactLedgerTerm.sort.smt
+                        : operand.solverSort.smt);
                 row.addProperty("pinTerm", exactOccurrence
-                        ? operand.solverTerm : operand.pinTerm);
+                        ? exactLedgerTerm.text : operand.pinTerm);
                 row.addProperty("pinSort", exactOccurrence
-                        ? operand.solverSort.smt : operand.pinSort.smt);
+                        ? exactLedgerTerm.sort.smt : operand.pinSort.smt);
                 row.addProperty("pathPrefixTerm",
                         fatalPathPrefixes.getOrDefault(
                                 operand.pathOrdinal, "true"));
-                if (operand.occurrence != null) {
-                    row.addProperty("portId", operand.occurrence.portId);
+                if (exactOccurrence) {
+                    row.addProperty("portId", exactLineage.portId);
                     row.addProperty("regionInstanceId",
-                            operand.occurrence.invocation.instanceId);
+                            exactLineage.invocation.instanceId);
                     row.addProperty("producerLineageStatus",
                             "EXACT_TARGET_PORT_OCCURRENCE");
+                    row.addProperty("producerLineageAuthority",
+                            operand.occurrence != null
+                                    ? "DIRECT_FATAL_PORT_REFERENCE_V1"
+                                    : "EXACT_FATAL_PREFIX_EQUALITY_ALIAS_V1");
                 } else {
                     row.addProperty("producerLineageStatus",
                             "UNAUDITABLE_NO_EXACT_PRODUCER_LINEAGE");
@@ -3012,8 +3167,8 @@ public final class ConcolicSmtComposer {
                     // workflow is not lineage evidence for an engine-local
                     // temporary, even when both happen to take the same value.
                     if (!exactOccurrence
-                            || !operand.occurrence.equals(binding.target)
-                            || operand.solverSort != binding.solverSort) {
+                            || !exactLineage.equals(binding.target)
+                            || exactLedgerTerm.sort != binding.solverSort) {
                         continue;
                     }
                     String key = binding.edgeId + "\u0000"
@@ -3045,6 +3200,30 @@ public final class ConcolicSmtComposer {
             }
             result.add("edgeAssertions", edges);
             return result;
+        }
+
+        /**
+         * Uses the operand's native sort when the incoming edge carries it
+         * directly.  State edges carry primitive fields through the ordinary
+         * {@code Value} port, so in that one case the audit term is merely
+         * the corresponding JVM box (for example {@code VInt(temp)}).  The
+         * path prefix and the canonical port binding already assert the two
+         * representations equal; no new program constraint is introduced.
+         */
+        private Term exactFatalLedgerTerm(FatalOperand operand,
+                                          PortOccurrence occurrence) {
+            boolean nativeSort = false;
+            boolean valueSort = false;
+            for (ProducerVersionBinding binding : producerVersionBindings) {
+                if (!occurrence.equals(binding.target)) continue;
+                nativeSort |= binding.solverSort == operand.solverSort;
+                valueSort |= binding.solverSort == Sort.VALUE;
+            }
+            Term nativeTerm = new Term(operand.solverTerm,
+                    operand.solverSort);
+            if (nativeSort || !valueSort) return nativeTerm;
+            Term boxed = asValue(nativeTerm);
+            return boxed.sort == Sort.VALUE ? boxed : nativeTerm;
         }
 
         /**
@@ -5351,6 +5530,28 @@ public final class ConcolicSmtComposer {
                 this.pinTerm = pinTerm;
                 this.pinSort = pinSort;
                 this.occurrence = occurrence;
+            }
+        }
+
+        private static final class FatalPrefixEquality {
+            private final String leftTerm;
+            private final Sort leftSort;
+            private final PortOccurrence leftOccurrence;
+            private final String rightTerm;
+            private final Sort rightSort;
+            private final PortOccurrence rightOccurrence;
+
+            private FatalPrefixEquality(
+                    String leftTerm, Sort leftSort,
+                    PortOccurrence leftOccurrence,
+                    String rightTerm, Sort rightSort,
+                    PortOccurrence rightOccurrence) {
+                this.leftTerm = leftTerm;
+                this.leftSort = leftSort;
+                this.leftOccurrence = leftOccurrence;
+                this.rightTerm = rightTerm;
+                this.rightSort = rightSort;
+                this.rightOccurrence = rightOccurrence;
             }
         }
 

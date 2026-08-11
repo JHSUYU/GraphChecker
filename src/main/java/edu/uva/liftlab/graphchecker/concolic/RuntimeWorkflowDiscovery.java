@@ -801,12 +801,53 @@ public final class RuntimeWorkflowDiscovery {
                 group.inputPorts())
                 || !new LinkedHashSet<>(
                 selected.canonicalOutputByExact.values()).equals(outputs)
-                || !selected.bindingIds.equals(edges)) {
+                || !selected.bindingIds.containsAll(edges)
+                || !trustedAtomicInternalBindings(task, group, edges,
+                selected.bindingIds)) {
             throw new IOException("scheduled atomic producer occurrence "
                     + "does not exactly cover grouped ports/edges; instance="
                     + group.regionInstanceId);
         }
         return task;
+    }
+
+    private static boolean trustedAtomicInternalBindings(
+            ExecutionTask task, ProducerGroup group,
+            Set<String> projectedEdges, Set<String> occurrenceEdges)
+            throws IOException {
+        Set<String> internal = new LinkedHashSet<>(occurrenceEdges);
+        internal.removeAll(projectedEdges);
+        if (internal.isEmpty()) return true;
+        Map<String, JsonObject> byId = new LinkedHashMap<>();
+        for (JsonElement element : task.edgeBindings()) {
+            if (!element.isJsonObject()) continue;
+            JsonObject binding = element.getAsJsonObject();
+            String id = string(binding, "edgeId");
+            if (!internal.contains(id)) continue;
+            if (byId.putIfAbsent(id, binding) != null) return false;
+        }
+        if (!byId.keySet().equals(internal)) return false;
+        for (JsonObject binding : byId.values()) {
+            if (!AutomaticRegionEdge.trustedRuntimeReadFromBinding(binding)
+                    || !group.regionId.equals(string(binding,
+                    "fromRegion"))
+                    || !group.regionId.equals(string(binding, "toRegion"))
+                    || !group.regionInstanceId.equals(string(binding,
+                    "fromRegionInstance"))
+                    || !group.regionInstanceId.equals(string(binding,
+                    "toRegionInstance"))
+                    || longInteger(binding, "fromRootCallId", -1L)
+                    != group.rootCallId
+                    || longInteger(binding, "toRootCallId", -1L)
+                    != group.rootCallId
+                    || !group.outputPorts().contains(string(binding,
+                    "fromOutputPort"))
+                    || !group.inputPorts().contains(string(binding,
+                    "toInputPort"))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean projectionContains(

@@ -1388,16 +1388,23 @@ public class ConcolicSmtComposerTest {
         assertEquals(ledger.toString(), 1, operands.size());
         JsonObject operand = operands.get(0).getAsJsonObject();
         assertEquals("Int", operand.get("solverSort").getAsString());
-        assertEquals("Value", operand.get("pinSort").getAsString());
-        assertFalse(operand.has("portId"));
-        assertEquals("UNAUDITABLE_NO_EXACT_PRODUCER_LINEAGE",
+        assertEquals("Int", operand.get("pinSort").getAsString());
+        assertEquals("REGION.0.in.0",
+                operand.get("portId").getAsString());
+        assertEquals(fatalInstance,
+                operand.get("regionInstanceId").getAsString());
+        assertEquals("EXACT_TARGET_PORT_OCCURRENCE",
                 operand.get("producerLineageStatus").getAsString());
-        assertTrue(operand.get("pinTerm").getAsString(),
-                operand.get("pinTerm").getAsString().startsWith("(VInt "));
+        assertEquals("EXACT_FATAL_PREFIX_EQUALITY_ALIAS_V1",
+                operand.get("producerLineageAuthority").getAsString());
+        assertEquals(operand.get("solverTerm").getAsString(),
+                operand.get("pinTerm").getAsString());
         assertFalse(operand.get("pathPrefixTerm").getAsString().isEmpty());
 
         JsonArray versions = operand.getAsJsonArray("producerVersions");
-        assertEquals(operand.toString(), 0, versions.size());
+        assertEquals(operand.toString(), 1, versions.size());
+        assertEquals("EDGE.PIN", versions.get(0).getAsJsonObject()
+                .get("edgeId").getAsString());
     }
 
     @Test

@@ -254,6 +254,52 @@ public class BooleanReachConditionExtractorTest {
     }
 
     /**
+     * One rejected neighboring scalar assignment is a finite proof that the
+     * existential root space is constrained; it does not require pretending
+     * to enumerate every Java long value.
+     */
+    @Test
+    public void rejectedExistentialNeighborProvesRootSpaceIsConstrained()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String instance = "REGION.3@Test#call8";
+        String solverTerm =
+                "sym__port__REGION_3_Test_call8_REGION_3_in_0__int";
+        String portTerm =
+                "port__REGION_3_in_0__instance__REGION_3_Test_call8";
+        JsonObject manifest = manifest(instance, portTerm, solverTerm);
+        manifest.getAsJsonArray("canonicalPortOccurrences").get(0)
+                .getAsJsonObject().addProperty("sort", "INT");
+        JsonObject input = region().getAsJsonArray("symbolicInputs").get(0)
+                .getAsJsonObject();
+        input.addProperty("javaType", "long");
+        String smt = "(set-logic ALL)\n"
+                + "(declare-datatypes () ((Value"
+                + " (VLong (valueLong Int)))))\n"
+                + "(declare-const " + solverTerm + " Int)\n"
+                + "(declare-const " + portTerm + " Value)\n"
+                + "(assert (= " + portTerm + " (VLong "
+                + solverTerm + ")))\n"
+                + "(assert (= " + solverTerm + " 7))\n";
+
+        JsonObject report = BooleanReachConditionExtractor.extract(
+                smt, manifest, Collections.singletonList(regionWith(input)),
+                new BooleanReachConditionExtractor.Z3Solver("z3", 5_000L),
+                4, 16);
+
+        assertEquals(report.toString(), "CONSTRAINED_ROOT_SPACE",
+                degeneracyCheck(report));
+        JsonObject probe = report.getAsJsonObject("existentialRootProbe");
+        assertEquals(report.toString(),
+                "SOLVER_WITNESS_NEIGHBOR_PERTURBATION_V1",
+                probe.get("authority").getAsString());
+        assertTrue(report.toString(),
+                probe.get("constrainsRootSpace").getAsBoolean());
+        assertTrue(report.toString(), probe.getAsJsonArray("perturbations")
+                .toString().contains("\"status\":\"unsat\""));
+    }
+
+    /**
      * The verdict is read off the table the report already computed, so the
      * SMT it was computed from is untouched and every field that existed
      * before still reads the same.

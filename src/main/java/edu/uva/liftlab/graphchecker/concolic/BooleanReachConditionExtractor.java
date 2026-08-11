@@ -20,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 
 import java.io.File;
 import java.io.IOException;
+import java.math.BigInteger;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -42,9 +43,13 @@ import java.util.regex.Pattern;
  * removes inputs supplied by composed producer outputs, and asks
  * Z3 about every remaining Boolean valuation.  The resulting truth table and
  * canonical DNF are therefore derived candidate artifacts of the composed
- * SMT. This class never promotes them to a trusted final result.</p>
+ * SMT. For integral non-Boolean roots it may additionally perturb one value
+ * in a satisfying witness; a rejected neighboring tuple proves the complete
+ * root space is constrained without pretending to enumerate it. This class
+ * never promotes either result to a trusted final result.</p>
  */
 public final class BooleanReachConditionExtractor {
+    private static final int MAX_EXISTENTIAL_PERTURBATIONS = 32;
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
     private BooleanReachConditionExtractor() {
@@ -118,6 +123,9 @@ public final class BooleanReachConditionExtractor {
                 discovery.booleanDomainInputs);
         List<boolean[]> satisfyingValuations = new ArrayList<>();
         JsonArray valuationRows = new JsonArray();
+        JsonArray existentialPerturbations = new JsonArray();
+        boolean rejectedExistentialPerturbation = false;
+        boolean existentialProbeAttempted = false;
         int solverErrors = 0;
         int count = (int) valuationCount;
         for (int ordinal = 0; ordinal < count; ordinal++) {
@@ -133,6 +141,21 @@ public final class BooleanReachConditionExtractor {
                         discovery.existentialNonBooleanRootInputs);
                 if (witness.size() > 0) {
                     row.add("existentialWitness", witness);
+                    if (!existentialProbeAttempted) {
+                        existentialProbeAttempted = true;
+                        JsonArray perturbations = existentialPerturbations(
+                                solver, query,
+                                discovery.existentialNonBooleanRootInputs,
+                                witness);
+                        for (JsonElement perturbation : perturbations) {
+                            existentialPerturbations.add(perturbation);
+                            if ("unsat".equals(string(
+                                    perturbation.getAsJsonObject(),
+                                    "status"))) {
+                                rejectedExistentialPerturbation = true;
+                            }
+                        }
+                    }
                 }
             } else if (!"unsat".equals(status)) {
                 row.addProperty("solverOutput", result.diagnostic());
@@ -142,6 +165,15 @@ public final class BooleanReachConditionExtractor {
         }
 
         report.add("valuations", valuationRows);
+        if (existentialPerturbations.size() > 0) {
+            JsonObject probe = new JsonObject();
+            probe.addProperty("authority",
+                    "SOLVER_WITNESS_NEIGHBOR_PERTURBATION_V1");
+            probe.addProperty("constrainsRootSpace",
+                    rejectedExistentialPerturbation);
+            probe.add("perturbations", existentialPerturbations);
+            report.add("existentialRootProbe", probe);
+        }
 
         // Every Boolean assignment was queried above; the DNF is built from
         // exactly the SAT rows.  A second "base implies DNF" solver call only
@@ -153,11 +185,16 @@ public final class BooleanReachConditionExtractor {
         JsonObject reachCondition = new JsonObject();
         String formula = dnf(inputs, satisfyingValuations, count);
         reachCondition.addProperty("formula", formula);
+        if (!discovery.existentialNonBooleanRootInputs.isEmpty()) {
+            reachCondition.addProperty("formulaDomain",
+                    "BOOLEAN_PROJECTION_EXISTS_NON_BOOLEAN_ROOTS");
+        }
         reachCondition.addProperty("reachability", reachability);
         reachCondition.addProperty("degeneracyCheck", degeneracyCheck(
                 formula, reachability, inputs.size(),
                 discovery.existentialNonBooleanRootInputs.size(),
-                discovery.undecodedFreeInputCount));
+                discovery.undecodedFreeInputCount,
+                rejectedExistentialPerturbation));
         report.add("reachCondition", reachCondition);
         JsonArray resultGaps = new JsonArray();
         if (solverErrors > 0) {
@@ -188,10 +225,12 @@ public final class BooleanReachConditionExtractor {
      * some enumerated valuation is refused, so the condition demonstrably
      * cuts the root space; or that space is non-empty, was enumerated whole,
      * and every point of it reaches.  A surviving existential root makes the
-     * space infinite and unenumerated, so neither proof is available and the
-     * check reports itself undecided rather than passing.  Undecided is not a
-     * degeneracy finding: it is the absence of one, and reading it as either
-     * verdict would report a result that was never computed.</p>
+     * space infinite and unenumerated, so an exhaustive verdict is not
+     * available.  A rejected scalar tuple adjacent to a satisfying witness is
+     * nevertheless a complete counterexample to the claim that every root
+     * assignment reaches, and therefore proves the space is constrained.  If
+     * no such counterexample is found, the check remains undecided rather
+     * than treating a finite probe as an exhaustive pass.</p>
      *
      * <p>A root is an input no composed producer supplies - a freedom.  Where
      * there is none the condition has nothing it could be a tautology over,
@@ -206,11 +245,15 @@ public final class BooleanReachConditionExtractor {
                                           String reachability,
                                           int booleanRootCount,
                                           int existentialRootCount,
-                                          int undecodedFreeInputCount) {
+                                          int undecodedFreeInputCount,
+                                          boolean rejectedExistentialProbe) {
         if (!"REACHABLE".equals(reachability)) {
             return "NOT_APPLICABLE_NO_MODEL";
         }
         if (!"true".equals(formula)) {
+            return "CONSTRAINED_ROOT_SPACE";
+        }
+        if (rejectedExistentialProbe) {
             return "CONSTRAINED_ROOT_SPACE";
         }
         if (existentialRootCount > 0) {
@@ -508,6 +551,12 @@ public final class BooleanReachConditionExtractor {
             return "true";
         }
 
+        private List<String> neighboringLiterals(String value) {
+            ScalarEncoding encoding = ScalarEncoding.of(port.descriptor);
+            return encoding == null ? Collections.<String>emptyList()
+                    : encoding.neighboringLiterals(value);
+        }
+
         private JsonObject toJson() {
             JsonObject result = new JsonObject();
             result.addProperty("portId", port.id);
@@ -560,6 +609,65 @@ public final class BooleanReachConditionExtractor {
             if ("Ljava/lang/String;".equals(value)) return STRING;
             return null;
         }
+
+        private List<String> neighboringLiterals(String literal) {
+            BigInteger value = parseSmtInteger(literal);
+            if (value == null) return Collections.emptyList();
+            BigInteger minimum;
+            BigInteger maximum;
+            switch (this) {
+                case BYTE:
+                    minimum = BigInteger.valueOf(Byte.MIN_VALUE);
+                    maximum = BigInteger.valueOf(Byte.MAX_VALUE);
+                    break;
+                case CHAR:
+                    minimum = BigInteger.ZERO;
+                    maximum = BigInteger.valueOf(Character.MAX_VALUE);
+                    break;
+                case SHORT:
+                    minimum = BigInteger.valueOf(Short.MIN_VALUE);
+                    maximum = BigInteger.valueOf(Short.MAX_VALUE);
+                    break;
+                case INT:
+                    minimum = BigInteger.valueOf(Integer.MIN_VALUE);
+                    maximum = BigInteger.valueOf(Integer.MAX_VALUE);
+                    break;
+                case LONG:
+                    minimum = BigInteger.valueOf(Long.MIN_VALUE);
+                    maximum = BigInteger.valueOf(Long.MAX_VALUE);
+                    break;
+                default:
+                    return Collections.emptyList();
+            }
+            List<String> result = new ArrayList<>();
+            if (value.compareTo(minimum) > 0) {
+                result.add(formatSmtInteger(
+                        value.subtract(BigInteger.ONE)));
+            }
+            if (value.compareTo(maximum) < 0) {
+                result.add(formatSmtInteger(
+                        value.add(BigInteger.ONE)));
+            }
+            return result;
+        }
+
+        private static BigInteger parseSmtInteger(String literal) {
+            String value = firstNonBlank(literal);
+            try {
+                if (value.startsWith("(- ") && value.endsWith(")")) {
+                    return new BigInteger(value.substring(3,
+                            value.length() - 1).trim()).negate();
+                }
+                return new BigInteger(value);
+            } catch (NumberFormatException invalid) {
+                return null;
+            }
+        }
+
+        private static String formatSmtInteger(BigInteger value) {
+            return value.signum() < 0
+                    ? "(- " + value.negate() + ")" : value.toString();
+        }
     }
 
     /**
@@ -606,6 +714,86 @@ public final class BooleanReachConditionExtractor {
             return new JsonArray();
         }
         return witness;
+    }
+
+    /**
+     * Looks for a rejected point adjacent to an already satisfying scalar
+     * root assignment.
+     *
+     * <p>This does not pretend to enumerate an infinite Java scalar domain.
+     * Each query fixes the complete non-boolean root tuple to the solver's
+     * witnessed values and changes exactly one integral root by one.  One
+     * UNSAT result is enough to disprove that the composed candidate admits
+     * the whole root space.  SAT results prove nothing about the rest of the
+     * domain and are never treated as exhaustive.</p>
+     */
+    private static JsonArray existentialPerturbations(
+            Z3Solver solver, String query, List<RootInput> roots,
+            JsonArray witness) {
+        JsonArray result = new JsonArray();
+        Map<String, String> values = new LinkedHashMap<>();
+        for (JsonElement element : witness) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            String solverTerm = string(row, "solverTerm");
+            String value = string(row, "value");
+            if (!solverTerm.isEmpty() && !value.isEmpty()) {
+                values.put(solverTerm, value);
+            }
+        }
+        if (values.size() != roots.size()) return result;
+
+        String base = SmtLibQueries.stripSolverCommands(query);
+        for (RootInput changed : roots) {
+            for (String alternative : changed.neighboringLiterals(
+                    values.get(changed.solverTerm))) {
+                if (result.size() >= MAX_EXISTENTIAL_PERTURBATIONS) {
+                    return result;
+                }
+                StringBuilder candidate = new StringBuilder(base);
+                for (RootInput root : roots) {
+                    String value = root == changed ? alternative
+                            : values.get(root.solverTerm);
+                    candidate.append("(assert (= ")
+                            .append(root.solverTerm).append(' ')
+                            .append(value).append("))")
+                            .append(System.lineSeparator());
+                }
+                candidate.append("(check-sat)")
+                        .append(System.lineSeparator());
+                JsonObject row = changed.toJson();
+                row.addProperty("witnessValue",
+                        values.get(changed.solverTerm));
+                row.addProperty("perturbedValue", alternative);
+                boolean rejected = false;
+                try {
+                    ConcolicConstraintSolver.SolverOutput answer =
+                            solver.check(candidate.toString());
+                    row.addProperty("status", answer.status());
+                    rejected = "unsat".equals(answer.status());
+                    if (!"sat".equals(answer.status())
+                            && !"unsat".equals(answer.status())) {
+                        row.addProperty("solverOutput",
+                                answer.diagnostic());
+                    }
+                } catch (IOException | InterruptedException unanswered) {
+                    if (unanswered instanceof InterruptedException) {
+                        Thread.currentThread().interrupt();
+                        row.addProperty("status", "unknown");
+                        row.addProperty("solverOutput",
+                                unanswered.getClass().getSimpleName());
+                        result.add(row);
+                        return result;
+                    }
+                    row.addProperty("status", "unknown");
+                    row.addProperty("solverOutput",
+                            unanswered.getClass().getSimpleName());
+                }
+                result.add(row);
+                if (rejected) return result;
+            }
+        }
+        return result;
     }
 
     private static JsonObject valuationRow(boolean[] values, String status) {

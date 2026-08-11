@@ -113,9 +113,28 @@ public class RuntimeWorkflowDiscoveryTest {
             assertEquals(expectedOccurrence,
                     capture.get("replayOccurrence").getAsInt());
         }
-        assertEquals(5, task.getAsJsonArray("edgeBindings").size());
-        JsonObject mergedEdge = task.getAsJsonArray("edgeBindings").get(0)
-                .getAsJsonObject();
+        assertEquals(7, task.getAsJsonArray("edgeBindings").size());
+        JsonObject mergedEdge = null;
+        int internalReadFrom = 0;
+        for (JsonElement edgeElement : task.getAsJsonArray(
+                "edgeBindings")) {
+            JsonObject edge = edgeElement.getAsJsonObject();
+            if ("EDGE.P.0".equals(edge.get("edgeId").getAsString())) {
+                mergedEdge = edge;
+            }
+            if (edge.get("edgeId").getAsString().startsWith(
+                    "RF.INTERNAL.")) {
+                internalReadFrom++;
+                assertEquals("FIELD_ASSIGNMENT_READ_FROM_V1",
+                        edge.get("evidenceKind").getAsString());
+                assertEquals("REGION.P@test#call3",
+                        edge.get("fromRegionInstance").getAsString());
+                assertEquals("REGION.P@test#call3",
+                        edge.get("toRegionInstance").getAsString());
+            }
+        }
+        assertEquals(2, internalReadFrom);
+        assertTrue(mergedEdge != null);
         assertEquals("rpc.p.0", mergedEdge.get("mappingId").getAsString());
         assertEquals("value0", mergedEdge.get("fromOutputCell")
                 .getAsString());
@@ -132,6 +151,22 @@ public class RuntimeWorkflowDiscoveryTest {
                 "occurrenceInstantiationCatalog")
                 .getAsJsonArray("occurrences").get(0).getAsJsonObject()
                 .getAsJsonArray("inputPortMap").size());
+        assertEquals(7, task.getAsJsonObject(
+                "occurrenceInstantiationCatalog")
+                .getAsJsonArray("occurrences").get(0).getAsJsonObject()
+                .getAsJsonArray("bindingIds").size());
+        int composedInputs = 0;
+        for (JsonElement actionElement : task.getAsJsonArray(
+                "inputActions")) {
+            JsonObject action = actionElement.getAsJsonObject();
+            if (action.has("intraRegionSourceOutputPort")) {
+                composedInputs++;
+                assertEquals("EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1",
+                        action.get("intraRegionReadFromAuthority")
+                                .getAsString());
+            }
+        }
+        assertEquals(2, composedInputs);
 
         Map<String, JsonObject> conflicting = producerComponents(producer,
                 ranked);
@@ -1156,6 +1191,11 @@ public class RuntimeWorkflowDiscoveryTest {
                     "dependencyRole", "VALUE_FRONTIER",
                     "bindingMode", "FIELD_ACCESS",
                     "accessFieldSignature", "<example.Key: int keyId>",
+                    "declaredFieldSignature",
+                    "<example.Key: int keyId>",
+                    "fieldReceiverObjectId", 900L + inputOrdinal,
+                    "eventSeq", 1000L + inputOrdinal,
+                    "rootCallId", 3,
                     "fieldPath", Collections.singletonList("keyId"),
                     "accessSites", Collections.singletonList(
                             "<P: void run()>#u7"),
@@ -1191,7 +1231,7 @@ public class RuntimeWorkflowDiscoveryTest {
                     "captureBindingId", "CAPTURE.P." + index,
                     "captureKind", "CALL_ARGUMENT",
                     "outputPort", output,
-                    "outputCell", "value" + index,
+                    "outputCell", "<example.Key: int keyId>",
                     "javaType", "int",
                     "definitionMethod", "<P: void run()>",
                     "definitionUnitIndex", index % 2 == 0 ? 10 : 20,
@@ -1203,14 +1243,14 @@ public class RuntimeWorkflowDiscoveryTest {
                     "occurrenceScope", "REGION_ACTIVATION");
             Map<String, Object> member = object(
                     "output", object("portId", output,
-                            "cell", "value" + index,
+                            "cell", "<example.Key: int keyId>",
                             "kind", "REGION_OUTPUT",
                             "javaTypeDescriptor", "I",
                             "outputSiteId", captureSite,
                             "outputOccurrence", outputOccurrence,
                             "replayOccurrence", outputOccurrence),
                     "slice", object("outputPort", output,
-                            "outputCell", "value" + index,
+                            "outputCell", "<example.Key: int keyId>",
                             "inputPorts", Collections.singletonList(input),
                             "sites", Collections.emptyList(),
                             "staticSites", Collections.emptyList(),
@@ -1222,6 +1262,8 @@ public class RuntimeWorkflowDiscoveryTest {
                             index % 2 == 0
                                     ? 100L * (index / 2 + 1)
                                     : 100L * ((index + 1) / 2) + 10L,
+                            "selectedFieldReceiverObjectId",
+                            index == 0 ? 901L : index == 1 ? 902L : 0L,
                             "captureBindings",
                             Collections.singletonList(capture),
                             "captureBindingIssues",
@@ -1305,6 +1347,7 @@ public class RuntimeWorkflowDiscoveryTest {
                     "logicalRegionId", logical,
                     "summaryReuseKey", logical,
                     "rootCallId", 2,
+                    "laneId", "lane.1",
                     "rootSelector", producerPlan.get("rootSelector"),
                     "pathSeedKey",
                     edu.uva.liftlab.graphchecker.contract.BoundedPathSeed

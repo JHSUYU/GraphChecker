@@ -421,6 +421,8 @@ public final class ConcolicScheduler {
         }
         OutputClosureContract closure = OutputClosureCodec.merge(closures);
         JsonObject catalog = mergeOccurrenceCatalogs(components);
+        addObservedIntraRegionFieldHandoffs(group, merged, inputs,
+                closure, edges, catalog);
         String atomicIdentity = String.join("\n", componentIds);
         String taskId = "TASK.SEED." + ArtifactIO.sha256(
                 "ATOMIC_PROJECTED_PRODUCER_TASK_V1\n" + atomicIdentity);
@@ -448,6 +450,160 @@ public final class ConcolicScheduler {
                     + "match grouped demand");
         }
         return verified.json().deepCopy();
+    }
+
+    /**
+     * Connects a leaf written by one helper invocation to an exact accessor
+     * of the same runtime object in a later helper invocation of this atomic
+     * region.  The trace object id is used only to discover the observed
+     * relation; replay materializes the later accessor as a normal symbolic
+     * port and the composer enforces this read-from equality.
+     */
+    private static void addObservedIntraRegionFieldHandoffs(
+            RuntimeWorkflowDiscovery.ProducerGroup group,
+            JsonObject envelope, JsonArray inputs,
+            OutputClosureContract closure, JsonArray edges,
+            JsonObject catalog) throws IOException {
+        List<JsonObject> outputs = new ArrayList<>();
+        for (OutputClosureContract.Member member : closure.members()) {
+            JsonObject slice = member.slice();
+            long receiver = longInteger(slice,
+                    "selectedFieldReceiverObjectId", 0L);
+            long writer = longInteger(slice,
+                    "selectedRuntimeEventSeq", -1L);
+            String declaration = member.cell();
+            if (receiver == 0L || writer < 0L || declaration.isEmpty()) {
+                continue;
+            }
+            JsonObject output = new JsonObject();
+            output.addProperty("portId", member.portId());
+            output.addProperty("receiverObjectId", receiver);
+            output.addProperty("eventSeq", writer);
+            output.addProperty("declaration", declaration);
+            outputs.add(output);
+        }
+        if (outputs.isEmpty()) return;
+
+        Set<String> closureInputs = closure.executionScope().inputPorts();
+        String lane = string(envelope, "laneId");
+        if (lane.isEmpty()) lane = String.valueOf(
+                longInteger(envelope, "laneId", -1L));
+        for (JsonElement element : inputs) {
+            if (!element.isJsonObject()) continue;
+            JsonObject action = element.getAsJsonObject();
+            String input = firstNonBlank(string(action, "portId"),
+                    string(action, "symbol"));
+            if (!closureInputs.contains(input)
+                    || !InputActionCatalog.Mode.SYMBOLIC.name().equals(
+                    string(action, "mode"))
+                    || !"FIELD_ACCESS".equals(
+                    string(action, "bindingMode"))
+                    || longInteger(action, "rootCallId", -1L)
+                    != group.rootCallId) {
+                continue;
+            }
+            long receiver = longInteger(action,
+                    "fieldReceiverObjectId", 0L);
+            long reader = longInteger(action, "eventSeq", -1L);
+            String declaration = firstNonBlank(
+                    string(action, "declaredFieldSignature"),
+                    string(action, "accessFieldSignature"));
+            if (receiver == 0L || reader < 0L || declaration.isEmpty()) {
+                continue;
+            }
+            JsonObject selected = null;
+            long latest = -1L;
+            for (JsonObject output : outputs) {
+                long writer = longInteger(output, "eventSeq", -1L);
+                if (receiver != longInteger(output,
+                        "receiverObjectId", 0L)
+                        || !declaration.equals(string(output,
+                        "declaration"))
+                        || writer >= reader || writer < latest) {
+                    continue;
+                }
+                if (writer == latest && selected != null
+                        && !string(selected, "portId").equals(
+                        string(output, "portId"))) {
+                    throw new IOException("ambiguous intra-region field "
+                            + "handoff for " + input);
+                }
+                selected = output;
+                latest = writer;
+            }
+            if (selected == null) continue;
+
+            String output = string(selected, "portId");
+            String edgeId = "RF.INTERNAL." + ArtifactIO.sha256(
+                    group.regionInstanceId + "\n" + output + "\n"
+                            + input + "\n" + latest + "\n" + reader);
+            action.addProperty("intraRegionSourceOutputPort", output);
+            action.addProperty("intraRegionReadFromAuthority",
+                    "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
+
+            JsonObject binding = new JsonObject();
+            binding.addProperty("schemaVersion", 3);
+            binding.addProperty("edgeId", edgeId);
+            binding.addProperty("fromRegion", group.regionId);
+            binding.addProperty("toRegion", group.regionId);
+            binding.addProperty("transportKind", "HEAP");
+            binding.addProperty("evidenceKind",
+                    AutomaticRegionEdge.FIELD_ASSIGNMENT_READ_FROM);
+            binding.addProperty("fromRegionInstance",
+                    group.regionInstanceId);
+            binding.addProperty("toRegionInstance",
+                    group.regionInstanceId);
+            binding.addProperty("fromRootCallId", group.rootCallId);
+            binding.addProperty("toRootCallId", group.rootCallId);
+            binding.addProperty("fromOutputPort", output);
+            binding.addProperty("toInputPort", input);
+            binding.addProperty("receiverObjectId", receiver);
+            binding.addProperty("writerReceiverObjectId", receiver);
+            binding.addProperty("readerReceiverObjectId", receiver);
+            binding.addProperty("writerEventSeq", latest);
+            binding.addProperty("readerEventSeq", reader);
+            binding.addProperty("programOrderRequired", true);
+            binding.addProperty("writerLaneId", lane);
+            binding.addProperty("readerLaneId", lane);
+            binding.addProperty("correlationAuthority",
+                    "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
+            JsonArray declarations = new JsonArray();
+            declarations.add(declaration);
+            binding.add("fieldPathDeclarations", declarations);
+            edges.add(binding);
+            addOccurrenceBinding(catalog, group.regionInstanceId, edgeId);
+        }
+    }
+
+    private static void addOccurrenceBinding(JsonObject catalog,
+                                             String instance,
+                                             String edgeId)
+            throws IOException {
+        JsonObject selected = null;
+        for (JsonElement element : array(catalog, "occurrences")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject occurrence = element.getAsJsonObject();
+            if (!instance.equals(string(occurrence,
+                    "regionInstanceId"))) continue;
+            if (selected != null) {
+                throw new IOException("duplicate exact occurrence "
+                        + instance);
+            }
+            selected = occurrence;
+        }
+        if (selected == null) {
+            throw new IOException("missing exact occurrence " + instance);
+        }
+        Set<String> ids = new LinkedHashSet<>();
+        for (JsonElement id : array(selected, "bindingIds")) {
+            if (id.isJsonPrimitive()) ids.add(id.getAsString());
+        }
+        ids.add(edgeId);
+        List<String> ordered = new ArrayList<>(ids);
+        Collections.sort(ordered);
+        JsonArray encoded = new JsonArray();
+        for (String id : ordered) encoded.add(id);
+        selected.add("bindingIds", encoded);
     }
 
     private static JsonObject requireExactProducerOccurrence(

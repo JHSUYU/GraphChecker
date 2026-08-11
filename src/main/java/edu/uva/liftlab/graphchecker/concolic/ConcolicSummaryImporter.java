@@ -173,7 +173,7 @@ public final class ConcolicSummaryImporter {
                     && task.replayContract() == null;
             SemanticPath path = relationOnlySeed
                     ? SemanticPath.atRelationBoundary(
-                    array(engine, "pathCondition"))
+                    array(engine, "pathCondition"), task)
                     : SemanticPath.from(array(engine, "pathCondition"),
                     array(raw, "branchMappings"));
             JsonArray mappings = relationOnlySeed
@@ -1456,15 +1456,71 @@ public final class ConcolicSummaryImporter {
          * in that mode, so filtering predicates by mapping ownership would
          * erase the guard of the exported input/output relation.
          */
-        private static SemanticPath atRelationBoundary(JsonArray raw) {
+        private static SemanticPath atRelationBoundary(
+                JsonArray raw, ExecutionTask task) {
             JsonArray original = raw == null
                     ? new JsonArray() : raw.deepCopy();
-            JsonArray expressions = original.deepCopy();
+            JsonArray expressions = new JsonArray();
             int[] indices = new int[original.size()];
+            Set<String> composedFieldInputs = new LinkedHashSet<>();
+            for (JsonElement element : task.inputActions().all()) {
+                if (!element.isJsonObject()) continue;
+                JsonObject action = element.getAsJsonObject();
+                if (!string(action, "intraRegionSourceOutputPort").isEmpty()
+                        && "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1".equals(
+                        string(action, "intraRegionReadFromAuthority"))) {
+                    String symbol = firstNonBlank(string(action, "symbol"),
+                            string(action, "portId"));
+                    if (!symbol.isEmpty()) composedFieldInputs.add(symbol);
+                }
+            }
             for (int index = 0; index < indices.length; index++) {
-                indices[index] = index;
+                JsonElement expression = original.get(index);
+                if (composedFieldMaterialization(
+                        expression, composedFieldInputs)) {
+                    indices[index] = -1;
+                } else {
+                    indices[index] = expressions.size();
+                    expressions.add(expression.deepCopy());
+                }
             }
             return new SemanticPath(original, expressions, indices);
+        }
+
+        /**
+         * A composed field input is defined by its exact producer edge.  The
+         * VM equality emitted while installing that symbol only describes the
+         * replay heap used to seed this run; retaining it would join the exact
+         * producer relation to an unrelated replay pre-state.  All later
+         * predicates that use the symbol remain part of the relation case.
+         */
+        private static boolean composedFieldMaterialization(
+                JsonElement expression, Set<String> composedInputs) {
+            if (composedInputs.isEmpty() || expression == null
+                    || !expression.isJsonObject()) {
+                return false;
+            }
+            JsonObject object = expression.getAsJsonObject();
+            if (!"BinaryExpression".equals(string(object, "_type"))
+                    || !string(object, "_code_position").contains(
+                    "java.lang.System.symbolizeExactField(")) {
+                return false;
+            }
+            String left = symbolExpression(object.get("_left"));
+            String right = symbolExpression(object.get("_right"));
+            for (String input : composedInputs) {
+                if (left.contains(input) || right.contains(input)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static String symbolExpression(JsonElement expression) {
+            if (expression == null || !expression.isJsonObject()) return "";
+            JsonObject object = expression.getAsJsonObject();
+            return "SymbolExpression".equals(string(object, "_type"))
+                    ? string(object, "_exp") : "";
         }
 
         private static Set<Integer> witnessedVmPcIndices(

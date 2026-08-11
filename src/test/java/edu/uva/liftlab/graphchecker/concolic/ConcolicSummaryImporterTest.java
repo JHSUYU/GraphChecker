@@ -262,6 +262,54 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void composedFieldInputDropsOnlyItsReplayMaterialization()
+            throws Exception {
+        JsonObject task = outputBoundaryTask(1);
+        task.addProperty("pathSeedKey", "PATH.SEED.COMPOSED.FIELD");
+        JsonObject action = new JsonObject();
+        action.addProperty("portId", "REGION.BOUNDARY.in.key");
+        action.addProperty("symbol", "REGION.BOUNDARY.in.key");
+        action.addProperty("mode", "SYMBOLIC");
+        action.addProperty("intraRegionSourceOutputPort",
+                "REGION.BOUNDARY.out.previous-key");
+        action.addProperty("intraRegionReadFromAuthority",
+                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
+        JsonArray actions = new JsonArray();
+        actions.add(action);
+        task.add("inputActions", actions);
+
+        JsonObject raw = outputBoundaryResult(1);
+        JsonArray path = raw.getAsJsonObject("engineSummary")
+                .getAsJsonArray("pathCondition");
+        JsonObject definition = new JsonObject();
+        definition.addProperty("_type", "BinaryExpression");
+        definition.addProperty("_op", "==");
+        definition.addProperty("_code_position",
+                "static void java.lang.System.symbolizeExactField("
+                        + "jobject,jobject,jobject,jobject,jobject):-1");
+        JsonObject field = new JsonObject();
+        field.addProperty("_type", "FieldAccessExpression");
+        definition.add("_left", field);
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_exp",
+                "M_I_field_REGION.BOUNDARY.in.key_test/Key");
+        definition.add("_right", symbol);
+        path.add(definition);
+        path.add(branchPredicate(true));
+
+        PathImport imported = importOutputPath(
+                "composed-field-materialization", task, raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        JsonArray semanticPath = ArtifactIO.readJsonl(imported.output).get(0)
+                .getAsJsonArray("pathCondition");
+        assertEquals(1, semanticPath.size());
+        assertEquals(branchPredicate(true), semanticPath.get(0));
+    }
+
+    @Test
     public void anObservationAtAnotherOccurrenceIsImported() throws Exception {
         // The goal states the relation without an invocation ordinal, so a
         // bounded replay that reached the site a different number of times

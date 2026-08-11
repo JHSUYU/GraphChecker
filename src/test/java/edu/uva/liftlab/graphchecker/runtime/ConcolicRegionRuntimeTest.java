@@ -1205,6 +1205,18 @@ public class ConcolicRegionRuntimeTest {
         assertEquals(2, owner.value);
     }
 
+    @Test
+    public void intraRegionSeedRestoresTheObservedPrimitive() {
+        HiddenDerived owner = new HiddenDerived();
+        String baseField = "<" + HiddenBase.class.getName()
+                + ": int value>";
+
+        assertTrue(ConcolicRegionRuntime.writeObservedPrimitiveField(
+                owner, baseField, "11745"));
+        assertEquals(11745, ((HiddenBase) owner).value);
+        assertEquals(2, owner.value);
+    }
+
     private static class HiddenBase {
         int value = 1;
     }
