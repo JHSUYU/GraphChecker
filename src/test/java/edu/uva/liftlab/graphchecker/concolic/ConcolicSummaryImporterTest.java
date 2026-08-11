@@ -262,6 +262,54 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void explicitFaultProducerKeepsReplayableBranchWitness()
+            throws Exception {
+        String fault = "REGION.BOUNDARY.in.rpcFails";
+        JsonObject task = outputBoundaryTask(1);
+        task.add("branches", pathTask(false).get("branches").deepCopy());
+        JsonObject action = new JsonObject();
+        action.addProperty("portId", fault);
+        action.addProperty("symbol", fault);
+        action.addProperty("mode", "SYMBOLIC");
+        action.addProperty("javaType", "boolean");
+        action.addProperty("authority",
+                "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1");
+        JsonArray actions = new JsonArray();
+        actions.add(action);
+        task.add("inputActions", actions);
+
+        JsonObject predicate = branchPredicate(true);
+        predicate.getAsJsonObject("_left").addProperty("_exp", fault);
+        JsonObject raw = outputBoundaryResult(1);
+        raw.getAsJsonObject("engineSummary").getAsJsonArray("pathCondition")
+                .add(predicate);
+        raw.getAsJsonArray("symbolizedInputs").add(fault);
+        JsonObject event = new JsonObject();
+        event.addProperty("eventId", 1L);
+        event.addProperty("contextId", 1L);
+        event.addProperty("predicateNormalization", "IDENTITY");
+        JsonObject mapping = new JsonObject();
+        mapping.addProperty("siteId", seedSite());
+        mapping.addProperty("method", seedMethod());
+        mapping.addProperty("unitIndex", 3);
+        mapping.addProperty("occurrence", 1);
+        mapping.addProperty("rawPathConditionBaseline", 0);
+        mapping.addProperty("rawPathConditionSize", 1);
+        mapping.add("witness", BranchWitness.vmPc(seedSite(), seedMethod(),
+                3, 1, true, predicate, 0, event).toJson());
+        raw.getAsJsonArray("branchMappings").add(mapping);
+
+        PathImport imported = importOutputPath("explicit-fault-guard",
+                task, raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertEquals(1, summary.getAsJsonArray("pathCondition").size());
+        assertEquals(1, summary.getAsJsonArray("branchMappings").size());
+    }
+
+    @Test
     public void composedFieldInputDropsOnlyItsReplayMaterialization()
             throws Exception {
         JsonObject task = outputBoundaryTask(1);

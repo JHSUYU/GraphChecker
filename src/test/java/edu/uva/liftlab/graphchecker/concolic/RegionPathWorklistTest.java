@@ -19,6 +19,40 @@ import static org.junit.Assert.assertTrue;
 
 public class RegionPathWorklistTest {
     @Test
+    public void explicitFaultTaskFlipsOnlyTheFaultDependentBranch() {
+        String fault = "REGION.3.in.rpcFails";
+        JsonObject summary = summary("ACT.FAULT",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject predicate = summary.getAsJsonArray("pathCondition")
+                .get(0).getAsJsonObject();
+        predicate.getAsJsonObject("_left").addProperty("_exp", fault);
+        summary.getAsJsonArray("branchMappings").get(0).getAsJsonObject()
+                .getAsJsonObject("witness").add(
+                "sourceSatisfiedPredicate", predicate.deepCopy());
+
+        JsonObject task = executionTask("ACT.FAULT",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject action = new JsonObject();
+        action.addProperty("portId", fault);
+        action.addProperty("symbol", fault);
+        action.addProperty("mode", "SYMBOLIC");
+        action.addProperty("authority",
+                "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1");
+        JsonArray actions = new JsonArray();
+        actions.add(action);
+        task.add("inputActions", actions);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(1, result.tasks.size());
+        assertEquals("SITE.0", sourceSite(result.tasks.get(0)));
+    }
+
+    @Test
     public void outputCaptureFlipsLatestBranchAndDropsOldSuffix() {
         JsonObject summary = summary("ACT.NEW",
                 ClosureGoalKind.OUTPUT_RELATION_CLOSURE);

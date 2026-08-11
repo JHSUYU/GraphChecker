@@ -302,6 +302,44 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void completeRelationMayRemainOneWitnessedConstantCase() {
+        JsonObject task = exactOutputTask(1);
+        JsonObject action = new JsonObject();
+        action.addProperty("mode", "SYMBOLIC");
+        action.addProperty("symbol", "REGION.BOUNDARY.in.guard");
+        action.addProperty("javaType", "boolean");
+        JsonArray actions = new JsonArray();
+        actions.add(action);
+        task.add("inputActions", actions);
+        JsonArray captures = new JsonArray();
+
+        assertTrue(ConcolicRegionRuntime
+                .missingSelectedInputIsUnresolvedForTests(task, captures));
+        captures.add(exactOutputCapture(0));
+        assertFalse(ConcolicRegionRuntime
+                .missingSelectedInputIsUnresolvedForTests(task, captures));
+    }
+
+    @Test
+    public void explicitFaultProducerRetainsBranchReplay() {
+        JsonObject ordinary = exactOutputTask(1);
+        assertTrue(ConcolicRegionRuntime.relationOnlySeedForTests(ordinary));
+
+        JsonObject fault = ordinary.deepCopy();
+        JsonObject action = new JsonObject();
+        action.addProperty("mode", "SYMBOLIC");
+        action.addProperty("symbol", "REGION.BOUNDARY.in.rpcFails");
+        action.addProperty("javaType", "boolean");
+        action.addProperty("authority",
+                "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1");
+        JsonArray actions = new JsonArray();
+        actions.add(action);
+        fault.add("inputActions", actions);
+
+        assertFalse(ConcolicRegionRuntime.relationOnlySeedForTests(fault));
+    }
+
+    @Test
     public void multipleExactOutputsWaitForTheLastBinding() {
         JsonObject task = exactOutputTask(2);
         JsonArray captures = new JsonArray();
@@ -384,6 +422,28 @@ public class ConcolicRegionRuntimeTest {
         assertTrue(ConcolicRegionRuntime.outputCaptureEligibleForTests(
                 task, "CAPTURE.1", strings("REGION.BOUNDARY.in.0"),
                 strings("REGION.BOUNDARY.in.1"), captured));
+    }
+
+    @Test
+    public void boundedContainerMaterializationDoesNotBlockScalarOutput() {
+        JsonObject task = exactOutputTask(1);
+        String container = "REGION.BOUNDARY.in.container";
+        JsonObject action = new JsonObject();
+        action.addProperty("mode", "SYMBOLIC");
+        action.addProperty("symbol", container);
+        action.addProperty("javaType", "java.util.Map");
+        action.addProperty("symbolicDemand", "BOUNDED_CONTAINER_STATE");
+        action.addProperty("bindingMode", "ROOT_ENTRY");
+        action.addProperty("location", "RECEIVER_FIELD");
+        JsonArray actions = new JsonArray();
+        actions.add(action);
+        task.add("inputActions", actions);
+        task.getAsJsonObject("outputClosure").getAsJsonArray("members")
+                .get(0).getAsJsonObject().getAsJsonObject("slice")
+                .getAsJsonArray("inputPorts").add(container);
+
+        assertTrue(ConcolicRegionRuntime.outputCaptureEligibleForTests(
+                task, "CAPTURE.0", new JsonArray(), new JsonArray()));
     }
 
     @Test

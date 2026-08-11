@@ -241,6 +241,7 @@ public final class RegionPathWorklist {
         private void planSummary(PathObservation path) {
             List<SummaryBranchMapping> candidates = new ArrayList<>();
             JsonObject task = taskById.get(path.sourceTaskId());
+            Set<String> explicitFaultSymbols = explicitFaultSymbols(task);
             for (SummaryBranchMapping mapping : path.branchMappings()) {
                 String site = mapping.siteId();
                 if (!path.scope().branchSites().contains(site)) {
@@ -250,6 +251,12 @@ public final class RegionPathWorklist {
                     continue;
                 }
                 if (!mapping.isExplore()) continue;
+                if (!explicitFaultSymbols.isEmpty()
+                        && !dependsOnAny(mapping.witness()
+                        .sourceSatisfiedPredicate(),
+                        explicitFaultSymbols)) {
+                    continue;
+                }
                 if (abandonsDemandedOutputSite(path, task, mapping)) {
                     continue;
                 }
@@ -280,6 +287,38 @@ public final class RegionPathWorklist {
                 }
                 emitTask(path, candidates.get(index));
             }
+        }
+
+        /**
+         * A task with a named fault input explores that controlled fault and
+         * keeps the rest of the producer path at its witnessed values.  This
+         * is the experiment's explicit degree of freedom; flipping unrelated
+         * service/configuration guards would create alternative causes that
+         * hide whether the requested RPC failure is load-bearing.
+         */
+        private Set<String> explicitFaultSymbols(JsonObject task) {
+            Set<String> result = new LinkedHashSet<>();
+            for (JsonElement element : array(task, "inputActions")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject action = element.getAsJsonObject();
+                if (!"SYMBOLIC".equals(string(action, "mode"))
+                        || !"EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1".equals(
+                        string(action, "authority"))) {
+                    continue;
+                }
+                String symbol = string(action, "symbol");
+                if (!symbol.isEmpty()) result.add(symbol);
+            }
+            return result;
+        }
+
+        private boolean dependsOnAny(JsonElement predicate,
+                                     Set<String> symbols) {
+            String encoded = CanonicalJson.render(predicate);
+            for (String symbol : symbols) {
+                if (encoded.contains(symbol)) return true;
+            }
+            return false;
         }
 
         /**

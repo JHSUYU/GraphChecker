@@ -189,6 +189,7 @@ public class CausynthPipelineTest {
         service.setSuperclass(Scene.v().getSootClass("java.lang.Object"));
         service.setApplicationClass();
         Scene.v().addClass(service);
+        service.setApplicationClass();
         SootMethod offer = staticVoidMethod(service, "offer");
         SootMethod target = staticVoidMethod(service, "target");
         Stmt targetCall = Jimple.v().newInvokeStmt(Jimple.v()
@@ -210,6 +211,34 @@ public class CausynthPipelineTest {
                 CausynthPipeline.selectDelayedReplayArmCall(offer,
                         target.getSignature(), Collections.emptySet(),
                         false, true));
+        assertEquals(targetCall,
+                CausynthPipeline.selectPreTargetReplayArmCall(offer,
+                        target.getSignature(),
+                        Collections.singleton(target.getSignature()),
+                        true, true));
+        assertEquals(null,
+                CausynthPipeline.selectPreTargetReplayArmCall(offer,
+                        target.getSignature(),
+                        Collections.singleton(offer.getSignature()),
+                        true, true));
+
+        SootMethod output = staticVoidMethod(service, "output");
+        target.getActiveBody().getUnits().insertBefore(Jimple.v()
+                        .newInvokeStmt(Jimple.v().newStaticInvokeExpr(
+                                output.makeRef())),
+                target.getActiveBody().getUnits().getLast());
+        assertTrue(CausynthPipeline.directApplicationCallees(target)
+                .contains(output));
+        assertEquals(null,
+                CausynthPipeline.selectDelayedReplayArmCall(offer,
+                        target.getSignature(),
+                        Collections.singleton(output.getSignature()),
+                        true, true));
+        assertEquals(targetCall,
+                CausynthPipeline.selectPreTargetReplayArmCall(offer,
+                        target.getSignature(),
+                        Collections.singleton(output.getSignature()),
+                        true, true));
 
         offer.getActiveBody().getUnits().insertBefore(Jimple.v()
                         .newInvokeStmt(Jimple.v().newStaticInvokeExpr(
@@ -218,6 +247,11 @@ public class CausynthPipelineTest {
         assertEquals(null,
                 CausynthPipeline.selectDelayedReplayArmCall(offer,
                         target.getSignature(), Collections.emptySet(),
+                        true, true));
+        assertEquals(null,
+                CausynthPipeline.selectPreTargetReplayArmCall(offer,
+                        target.getSignature(),
+                        Collections.singleton(output.getSignature()),
                         true, true));
     }
 

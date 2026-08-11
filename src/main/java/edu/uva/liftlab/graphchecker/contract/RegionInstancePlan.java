@@ -676,6 +676,7 @@ public final class RegionInstancePlan {
             copyIfPresent(value, shape, "materialization");
             if (output) {
                 JsonObject slice = object(port, "slice");
+                copyIfPresent(slice, shape, "containerMemberOrdinal");
                 copyIfPresent(slice, shape, "methods");
                 copyIfPresent(slice, shape, "sites");
                 copyIfPresent(slice, shape, "staticSites");

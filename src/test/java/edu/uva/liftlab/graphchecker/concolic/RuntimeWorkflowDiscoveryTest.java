@@ -77,6 +77,11 @@ public class RuntimeWorkflowDiscoveryTest {
         assertTrue(ranked.closureBindings().get(1).contains("#call3"));
         Map<String, JsonObject> components = producerComponents(producer,
                 ranked);
+        // Projected slices may intentionally share one replay-stable task id
+        // even though their exact output/edge provenance differs.
+        for (JsonObject component : components.values()) {
+            component.addProperty("taskId", "TASK.SEED.shared-shape");
+        }
         JsonObject complementaryEdge = new JsonObject();
         complementaryEdge.addProperty("edgeId", "EDGE.P.0");
         complementaryEdge.addProperty("fromOutputCell", "value0");
@@ -394,6 +399,22 @@ public class RuntimeWorkflowDiscoveryTest {
                 "REGION.P.in.registry", true);
         File plans = writePlans("projected-carrier.jsonl",
                 readyCarrierProducerPlan(target), projected,
+                targetPlanWithInput(target));
+
+        String discovery = run(plans, "discover");
+
+        assertTrue(discovery.contains("\tREGION.P\t"));
+        assertTrue(discovery.contains("\tREGION.N\t"));
+    }
+
+    @Test
+    public void exactObservedReferenceFieldExtendsConcreteCarrier()
+            throws Exception {
+        String target = "REGION.T@test#call2";
+        File plans = writePlans("reference-carrier.jsonl",
+                readyCarrierProducerPlan(target),
+                exactReferenceCarrierProducerPlan("REGION.N", 3,
+                        "REGION.P@test#call1", "REGION.P.in.registry"),
                 targetPlanWithInput(target));
 
         String discovery = run(plans, "discover");
@@ -1911,6 +1932,36 @@ public class RuntimeWorkflowDiscoveryTest {
         if (!trusted) {
             edge.put("correlationAuthority", "UNTRUSTED");
         }
+        return plan;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> exactReferenceCarrierProducerPlan(
+            String region, long call, String targetInstance,
+            String targetPort) {
+        Map<String, Object> plan = leafProducerPlan(region, call,
+                targetInstance, targetPort);
+        Map<String, Object> goal = ((List<Map<String, Object>>)
+                plan.get("closureGoals")).get(0);
+        Map<String, Object> edge = ((List<Map<String, Object>>)
+                goal.get("edgeBindings")).get(0);
+        edge.remove("mappingId");
+        edge.remove("callerSiteEventSeq");
+        edge.remove("sendEventSeq");
+        edge.remove("receiveEventSeq");
+        edge.put("fromRegion", region);
+        edge.put("toRegion", "REGION.P");
+        edge.put("transportKind", "HEAP");
+        edge.put("evidenceKind", "FIELD_ASSIGNMENT_READ_FROM_V1");
+        edge.put("correlationAuthority",
+                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
+        edge.put("receiverObjectId", 41);
+        edge.put("valueObjectId", 99);
+        edge.put("writerEventSeq", 100);
+        edge.put("readerEventSeq", 200);
+        edge.put("writerLaneId", 1);
+        edge.put("readerLaneId", 2);
+        edge.put("programOrderRequired", false);
         return plan;
     }
 

@@ -549,6 +549,19 @@ public final class RuntimeWorkflowDiscovery {
                         .trustedRuntimeCompositionBinding(edge)) {
                     return true;
                 }
+                // A reference-valued shared field is also an exact conduit
+                // when the runtime edge identifies the object actually read.
+                // The finalizer has already rejected historical writes whose
+                // stored object differs, so following this carrier does not
+                // reopen an unconstrained whole-object dependency search.
+                if ("HEAP".equals(string(edge, "transportKind"))
+                        && AutomaticRegionEdge.FIELD_ASSIGNMENT_READ_FROM
+                        .equals(string(edge, "evidenceKind"))
+                        && longInteger(edge, "valueObjectId", 0L) != 0L
+                        && AutomaticRegionEdge
+                        .trustedRuntimeReadFromBinding(edge)) {
+                    return true;
+                }
             }
         }
         return false;

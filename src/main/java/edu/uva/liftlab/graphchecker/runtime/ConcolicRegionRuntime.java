@@ -1971,6 +1971,11 @@ public final class ConcolicRegionRuntime {
                 .maxLoopBodies(loopId);
     }
 
+    static boolean relationOnlySeedForTests(JsonObject encodedTask) {
+        return new RuntimeTask(ExecutionTask.decode(encodedTask))
+                .relationOnlySeed();
+    }
+
     /** Test seam for exact-output boundary completion without a custom VM. */
     static boolean exactOutputBoundaryReachedForTests(
             JsonObject encodedTask, JsonArray encodedCaptures) {
@@ -1985,6 +1990,20 @@ public final class ConcolicRegionRuntime {
         return completeExactOutputBoundary(
                 task.goalKind().capturesOutputRelation(),
                 task.outputCaptures(), captures);
+    }
+
+    static boolean missingSelectedInputIsUnresolvedForTests(
+            JsonObject encodedTask, JsonArray encodedCaptures) {
+        RuntimeTask task = new RuntimeTask(ExecutionTask.decode(encodedTask));
+        ActiveRegion active = new ActiveRegion(1L, task, null,
+                Thread.currentThread());
+        if (encodedCaptures != null) {
+            for (JsonElement element : encodedCaptures) {
+                if (!element.isJsonObject()) return true;
+                active.outputCaptures.add(element.getAsJsonObject());
+            }
+        }
+        return active.missingSelectedInputIsUnresolved();
     }
 
     static boolean incompleteRelationOnlyBoundaryForTests(
@@ -3041,8 +3060,7 @@ public final class ConcolicRegionRuntime {
             // recording before any null checks, Gson work, or string building
             // can reuse a symbolic value and manufacture a false condition.
             api.pausePathCondition();
-            if (!active.activation.symbolize.isEmpty()
-                    && !active.pathRecordingStarted) {
+            if (active.missingSelectedInputIsUnresolved()) {
                 active.addUnresolvedOnce(
                         "NO_SELECTED_INPUT_MATERIALIZED");
             }
@@ -3228,7 +3246,10 @@ public final class ConcolicRegionRuntime {
                     action.exactLeafFieldSignature(exactFieldPath));
             if (value != null && value != MissingValue.INSTANCE
                     && containerValue(value)) {
-                requireTrackedContainer(api, value, action.symbol);
+                if (!trackContainerOrObserveConcrete(active, api, value,
+                        action)) {
+                    return;
+                }
                 ensurePathRecordingStarted(active);
                 active.recordSymbolizedObject(action.symbol, value);
                 active.symbolized.add(action.symbol);
@@ -3777,7 +3798,10 @@ public final class ConcolicRegionRuntime {
                     Collections.<String>emptyList());
             if (declaredArray && !liveArray) return;
             if (containerValue(value)) {
-                requireTrackedContainer(api, value, action.symbol);
+                if (!trackContainerOrObserveConcrete(active, api, value,
+                        action)) {
+                    return;
+                }
             } else {
                 api.symbolize(value, action.symbol);
             }
@@ -3806,6 +3830,24 @@ public final class ConcolicRegionRuntime {
                     "custom VM has no symbolic model for container "
                             + value.getClass().getName());
         }
+    }
+
+    /**
+     * A bounded container port describes the concrete receiver/cardinality
+     * that scopes separately symbolized leaves.  If the VM has a native
+     * container model we retain it; otherwise the exact observed container is
+     * a concrete slot, not an unresolved scalar input.
+     */
+    private static boolean trackContainerOrObserveConcrete(
+            ActiveRegion active, EngineApi api, Object value,
+            SymbolizeAction action) throws Exception {
+        if (api.trackContainer(value, action.symbol)) return true;
+        if (!"BOUNDED_CONTAINER_STATE".equals(action.symbolicDemand)) {
+            requireTrackedContainer(api, value, action.symbol);
+        }
+        active.observedInputSlots.add(action.symbol);
+        active.recordSymbolizedObject(action.symbol, value);
+        return false;
     }
 
     private static Object readField(Object receiver, String name) {
@@ -5438,6 +5480,19 @@ public final class ConcolicRegionRuntime {
             return sites && relation;
         }
 
+        /**
+         * A relation-only seed that reached every demanded semantic output
+         * is still a valid witnessed constant relation when none of its
+         * optional solver dimensions materialized on this replay.  Other
+         * tasks retain the strict missing-input diagnostic.
+         */
+        private boolean missingSelectedInputIsUnresolved() {
+            return !activation.symbolize.isEmpty()
+                    && !pathRecordingStarted
+                    && !(activation.relationOnlySeed()
+                    && hasCompleteExactOutputBoundary());
+        }
+
         private void recordFieldAccessOwner(String symbol, Object owner) {
             if (safe(symbol).isEmpty() || owner == null) return;
             if (ambiguousFieldAccessOwners.contains(symbol)) return;
@@ -5848,6 +5903,7 @@ public final class ConcolicRegionRuntime {
         private final String accessorImplementationMethod;
         private final String intraRegionSourceOutputPort;
         private final String intraRegionReadFromAuthority;
+        private final String symbolicDemand;
         private final List<String> fieldPath;
         private final String javaType;
         private final boolean observedEntryState;
@@ -5906,6 +5962,7 @@ public final class ConcolicRegionRuntime {
                     "intraRegionSourceOutputPort");
             this.intraRegionReadFromAuthority = string(json,
                     "intraRegionReadFromAuthority");
+            this.symbolicDemand = string(json, "symbolicDemand");
             String explicitLeafSignature = string(json,
                     "leafFieldSignature");
             this.fieldPaths = new ArrayList<>(
@@ -6707,6 +6764,7 @@ public final class ConcolicRegionRuntime {
         private final List<ModelAssignment> modelAssignments;
         private final List<OutputCaptureSpec> outputCaptures;
         private final boolean capturesOutputRelation;
+        private final boolean hasExplicitFaultInput;
         private final Map<String, Set<String>> capturePrerequisites;
         private final Map<String, JsonObject> recordedPrimitiveOutputs;
         private final Set<String> executionScopeMethods;
@@ -6728,6 +6786,7 @@ public final class ConcolicRegionRuntime {
                     rootSelector);
             this.declaredSymbolize = new ArrayList<>();
             this.symbolize = new ArrayList<>();
+            boolean explicitFaultInput = false;
             this.branchPolicies = new LinkedHashMap<>();
             this.seedOutcomes = new LinkedHashMap<>();
             this.loopBound = task.loopBound();
@@ -6759,6 +6818,9 @@ public final class ConcolicRegionRuntime {
                     "occurrence", -1);
             for (JsonElement element : task.inputActions().all()) {
                 JsonObject encoded = element.getAsJsonObject();
+                explicitFaultInput |=
+                        "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1".equals(
+                                string(encoded, "authority"));
                 SymbolizeAction action = new SymbolizeAction(encoded);
                 this.declaredSymbolize.add(action);
                 if (InputActionCatalog.Mode.SYMBOLIC.name().equals(
@@ -6766,6 +6828,7 @@ public final class ConcolicRegionRuntime {
                     this.symbolize.add(action);
                 }
             }
+            this.hasExplicitFaultInput = explicitFaultInput;
             indexCapturePrerequisites(task.outputClosure());
             boolean seedTask = this.replayContract == null
                     && !task.pathSeedKey().isEmpty()
@@ -6797,7 +6860,13 @@ public final class ConcolicRegionRuntime {
         }
 
         private boolean relationOnlySeed() {
-            return capturesOutputRelation && replayContract == null;
+            // An ordinary producer can publish the one relation observed at
+            // its semantic output boundary without stopping at every branch.
+            // A named explicit fault is different: its alternate outcome is
+            // the experiment input we must replay and merge, not incidental
+            // producer control flow that may be projected away.
+            return capturesOutputRelation && replayContract == null
+                    && !hasExplicitFaultInput;
         }
 
         private void indexCapturePrerequisites(
@@ -6807,7 +6876,16 @@ public final class ConcolicRegionRuntime {
             Set<String> symbolicPorts = new LinkedHashSet<>();
             Set<String> declaredPorts = new LinkedHashSet<>();
             for (SymbolizeAction action : symbolize) {
-                symbolicPorts.add(action.symbol);
+                // A bounded container action materializes a concrete
+                // receiver/container snapshot.  It does not necessarily
+                // publish a VM scalar symbol, and therefore cannot be a
+                // prerequisite for capturing a scalar relation derived from
+                // values subsequently read from that container.  The scalar
+                // leaf actions below it remain ordinary prerequisites.
+                if (!"BOUNDED_CONTAINER_STATE".equals(
+                        action.symbolicDemand)) {
+                    symbolicPorts.add(action.symbol);
+                }
             }
             for (SymbolizeAction action : declaredSymbolize) {
                 declaredPorts.add(action.symbol);

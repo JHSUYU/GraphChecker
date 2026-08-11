@@ -168,9 +168,7 @@ public final class ConcolicSummaryImporter {
                 issues.add("UNRESOLVED_INPUT:" + unresolved);
             }
 
-            boolean relationOnlySeed =
-                    task.goalKind().capturesOutputRelation()
-                    && task.replayContract() == null;
+            boolean relationOnlySeed = relationOnlySeed(task);
             SemanticPath path = relationOnlySeed
                     ? SemanticPath.atRelationBoundary(
                     array(engine, "pathCondition"), task)
@@ -1411,6 +1409,21 @@ public final class ConcolicSummaryImporter {
         result.addProperty("taskId", string(raw, "taskId"));
         result.addProperty("line", index + 1);
         return result;
+    }
+
+    private static boolean relationOnlySeed(ExecutionTask task) {
+        if (!task.goalKind().capturesOutputRelation()
+                || task.replayContract() != null) {
+            return false;
+        }
+        for (JsonElement element : task.inputActions().all()) {
+            if (element.isJsonObject()
+                    && "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1".equals(
+                    string(element.getAsJsonObject(), "authority"))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** Removes replay-only container observations and remaps PC ownership. */

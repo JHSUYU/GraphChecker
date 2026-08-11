@@ -380,7 +380,7 @@ public final class ConcolicScheduler {
             throw new IOException("atomic producer group has no tasks");
         }
         List<ExecutionTask> components = new ArrayList<>();
-        Map<String, JsonObject> componentByTaskId = new LinkedHashMap<>();
+        Set<String> encodedIdentities = new LinkedHashSet<>();
         for (JsonObject encoded : encodedComponents) {
             ExecutionTask task = ExecutionTask.decode(encoded);
             if (!group.regionId.equals(task.regionId())
@@ -392,15 +392,20 @@ public final class ConcolicScheduler {
             }
             requireExactProducerOccurrence(task
                     .occurrenceInstantiationCatalog(), group);
-            JsonObject prior = componentByTaskId.putIfAbsent(task.taskId(),
-                    encoded);
-            if (prior != null && !prior.equals(encoded)) {
-                throw new IOException("conflicting atomic producer taskId "
-                        + task.taskId());
+            // seedTaskId deliberately ignores exact projection provenance.
+            // Two output slices of one invocation can therefore have the
+            // same replay-stable id while carrying different demanded ports
+            // or edges.  They are atomic components, not an id conflict.
+            // Only byte-identical duplicate components are redundant.
+            if (encodedIdentities.add(CanonicalJson.render(encoded))) {
+                components.add(task);
             }
-            if (prior == null) components.add(task);
         }
-        components.sort(Comparator.comparing(ExecutionTask::taskId));
+        components.sort(Comparator
+                .comparing(ExecutionTask::taskId)
+                .thenComparing(task -> CanonicalJson.render(
+                        task.producerProjection()))
+                .thenComparing(ExecutionTask::goalId));
         if (components.size() == 1) {
             return components.get(0).json().deepCopy();
         }
@@ -423,7 +428,11 @@ public final class ConcolicScheduler {
         JsonObject catalog = mergeOccurrenceCatalogs(components);
         addObservedIntraRegionFieldHandoffs(group, merged, inputs,
                 closure, edges, catalog);
-        String atomicIdentity = String.join("\n", componentIds);
+        // The group goal digest includes every constituent projection.  It
+        // disambiguates colliding replay-stable component ids without making
+        // the VM task depend on component enumeration order.
+        String atomicIdentity = group.goalId() + "\n"
+                + String.join("\n", componentIds);
         String taskId = "TASK.SEED." + ArtifactIO.sha256(
                 "ATOMIC_PROJECTED_PRODUCER_TASK_V1\n" + atomicIdentity);
         ProducerOutputProjection projection = group.projection();

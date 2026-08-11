@@ -1536,6 +1536,19 @@ final class RuntimeRegionPlanner {
             for (Map<String, Object> member : members) {
                 Map<String, Object> output = row(member.get("output"));
                 Map<String, Object> slice = row(member.get("slice"));
+                List<Map<String, Object>> captures = rows(
+                        slice.get("captureBindings"));
+                boolean regionExitField = !captures.isEmpty()
+                        && captures.stream().allMatch(capture -> text(
+                        capture.get("captureKind")).isEmpty());
+                if (regionExitField) {
+                    // A region-exit field snapshot is selected by its binding
+                    // and tracked owner, not by a dynamic write occurrence.
+                    // Adding an occurrence here would turn it back into an
+                    // exact-write request and make the retained-state side of
+                    // a fault-controlled merge impossible to observe.
+                    continue;
+                }
                 String siteId = staticOutputSiteId(output, slice);
                 String shape = text(output.get("cell")) + "\n"
                         + text(output.get("kind")) + "\n"
@@ -1553,8 +1566,7 @@ final class RuntimeRegionPlanner {
                                     ? 1 : prior + 1);
                 }
                 putOutputOccurrence(output, siteId, occurrence);
-                for (Map<String, Object> capture
-                        : rows(slice.get("captureBindings"))) {
+                for (Map<String, Object> capture : captures) {
                     putOutputOccurrence(capture, siteId, occurrence);
                 }
             }
@@ -1692,12 +1704,23 @@ final class RuntimeRegionPlanner {
         long outputEventSeq = longNumber(output.get("eventSeq"), -1L);
         Set<Long> invocationCalls = trace.exactOutputInvocationCalls(
                 rootCallId, outputEventSeq);
+        boolean exactAssociativeMember = exactAssociativeMember(output)
+                || exactAssociativeMember(outputPortRow);
+        int associativeMemberOrdinal = exactAssociativeMember
+                ? exactAssociativeMemberOrdinal(regionOutputs,
+                outputPortRow)
+                : -1;
+        if (exactAssociativeMember && associativeMemberOrdinal < 1) {
+            return null;
+        }
         FieldAccessEvent carrierWrite = allRpcContainerProjection
+                && !exactAssociativeMember
                 ? trace.exactRpcCarrierWrite(outputEventSeq,
                 invocationCalls) : null;
         boolean declaredNestedCarrier = allRpcContainerProjection
                 && trusted.stream().anyMatch(binding -> strings(
-                binding.get("fieldPathDeclarations")).size() > 1);
+                binding.get("fieldPathDeclarations")).size() > 1)
+                && !exactAssociativeMember;
         // A projected leaf below a declared carrier must be captured at the
         // unique write that publishes that carrier.  Capturing every write at
         // the leaf's shared constructor site would mix sibling objects (for
@@ -1845,6 +1868,12 @@ final class RuntimeRegionPlanner {
                 trace, invocationCalls, relationBoundarySeq,
                 rejectionReasons, outputPort);
         if (exactBranches == null) return null;
+        boolean explicitFaultExitSnapshot = !mutation
+                && carrierWrite == null
+                && priorStateInput != null
+                && explicitFaultControlsStateTransition(inputPorts,
+                regionInputs, exactBranches, rootCallId, priorStateInput,
+                outputEventSeq);
         removeGuardOnlyPathEnablers(inputPorts,
                 stateSlice.guardOnlyInputPorts, regionInputs, rootCallId,
                 outputPort, declaration, stateSlice.branchSites,
@@ -1890,9 +1919,20 @@ final class RuntimeRegionPlanner {
         // compatibility.  It is descriptive metadata, so a trace that omits
         // the label falls back to one instead of losing the relation.
         replayOccurrence = Math.max(1, replayOccurrence);
-        slice.addProperty("activationLocalOccurrence", replayOccurrence);
+        if (!explicitFaultExitSnapshot) {
+            slice.addProperty("activationLocalOccurrence", replayOccurrence);
+        }
         slice.addProperty("selectedRuntimeEventSeq", longNumber(
                 output.get("eventSeq"), -1L));
+        if (associativeMemberOrdinal >= 1) {
+            // The exact Map.put token is trace-local.  Its order within one
+            // producer root and configured RPC relation is the reusable
+            // semantic slot (allKeys[0], allKeys[1], ...).  This separates
+            // sibling members in the catalog without turning the slot into
+            // a replay hook/version constraint.
+            slice.addProperty("containerMemberOrdinal",
+                    associativeMemberOrdinal);
+        }
         long selectedFieldReceiver = longNumber(
                 output.get("fieldReceiverObjectId"), 0L);
         if (!mutation && selectedFieldReceiver != 0L) {
@@ -1934,6 +1974,9 @@ final class RuntimeRegionPlanner {
                 slice.addProperty("containerPreStateAuthority",
                         "EARLIEST_READ_IN_EXACT_DEFINITION_INVOCATION_V1");
             }
+        } else if (explicitFaultExitSnapshot) {
+            slice.addProperty("outputBoundaryKind",
+                    "REGION_EXIT_FIELD_SNAPSHOT");
         } else {
             slice.addProperty("outputBoundaryKind",
                     "EXACT_FIELD_WRITE_AFTER_ASSIGNMENT");
@@ -1964,7 +2007,8 @@ final class RuntimeRegionPlanner {
                         + "\n" + staticAccessSiteId)
                 .getBytes(StandardCharsets.UTF_8));
         capture.addProperty("captureBindingId", captureId);
-        capture.addProperty("captureKind", mutation
+        capture.addProperty("captureKind", explicitFaultExitSnapshot
+                ? "" : mutation
                 ? OutputCaptureSpec.MUTATION_STATE
                 : OutputCaptureSpec.FIELD_WRITE_STATE);
         capture.addProperty("outputPort", outputPort);
@@ -1991,10 +2035,19 @@ final class RuntimeRegionPlanner {
             capture.addProperty("leafFieldSignature", declaration);
         } else {
             capturePath.add(path.get(path.size() - 1));
+            if (exactAssociativeMember) {
+                capture.addProperty("definitionFieldSignature",
+                        declaration);
+                capture.addProperty("leafFieldSignature", declaration);
+            }
         }
         capture.add("fieldPath", stringsJson(capturePath));
         capture.addProperty("fieldSignature", declaration);
         capture.addProperty("javaType", javaType);
+        if (explicitFaultExitSnapshot) {
+            capture.addProperty("accessRootInputPort",
+                    text(priorStateInput.get("portId")));
+        }
         capture.addProperty("definitionMethod", captureMethod);
         capture.addProperty("definitionUnitIndex", captureUnit);
         String recordedPrimitiveValue = text(output.get("primitiveValue"));
@@ -2014,9 +2067,11 @@ final class RuntimeRegionPlanner {
                 + captureStaticSite + ":"
                 + captureDefinition + (carrierWrite == null ? ""
                 : "=>" + declaration);
-        capture.addProperty("outputSiteId", captureSiteId);
-        capture.addProperty("outputOccurrence", replayOccurrence);
-        capture.addProperty("replayOccurrence", replayOccurrence);
+        if (!explicitFaultExitSnapshot) {
+            capture.addProperty("outputSiteId", captureSiteId);
+            capture.addProperty("outputOccurrence", replayOccurrence);
+            capture.addProperty("replayOccurrence", replayOccurrence);
+        }
         if (mutationFold != null) {
             capture.addProperty("occurrenceScope",
                     "DEFINITION_INVOCATION");
@@ -2026,6 +2081,9 @@ final class RuntimeRegionPlanner {
                     mutationFold.normalExitSeq);
             capture.addProperty("foldedMutationCount",
                     mutationFold.completions.size());
+        } else if (explicitFaultExitSnapshot) {
+            capture.addProperty("outputBoundaryKind",
+                    "REGION_EXIT_FIELD_SNAPSHOT");
         } else {
             capture.addProperty("occurrenceScope",
                     OutputCaptureSpec.REGION_ACTIVATION_SCOPE);
@@ -2056,6 +2114,82 @@ final class RuntimeRegionPlanner {
 
     static final String BOUNDARY_SCALAR_SELECTION =
             "CONFIGURED_RPC_BOUNDARY_SCALAR_PATH_V1";
+
+    private static boolean exactAssociativeMember(
+            Map<String, Object> value) {
+        return value != null
+                && !text(value.get("containerMemberToken")).isEmpty()
+                && !text(value.get("rpcProjectionMappingId")).isEmpty()
+                && "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1".equals(
+                text(value.get("containerMemberIdentityAuthority")));
+    }
+
+    /**
+     * Returns the one-based associative-member slot observed in this exact
+     * producer root and configured RPC mapping.
+     *
+     * <p>One member normally contributes several projected leaves.  They all
+     * share the same trace-local member token, so the earliest leaf event
+     * orders the token once.  Object ids, concrete key values and UUID tokens
+     * never enter the returned semantic identity.</p>
+     */
+    static int exactAssociativeMemberOrdinal(
+            List<Map<String, Object>> outputs,
+            Map<String, Object> selected) {
+        if (!exactAssociativeMember(selected)) return -1;
+        String selectedToken = text(selected.get("containerMemberToken"));
+        String mapping = text(selected.get("rpcProjectionMappingId"));
+        String process = text(selected.get("process"));
+        long root = longNumber(selected.get("rootCallId"), -1L);
+        if (selectedToken.isEmpty() || mapping.isEmpty() || root < 0L) {
+            return -1;
+        }
+        Map<String, Long> firstEventByToken = new LinkedHashMap<>();
+        for (Map<String, Object> candidate : outputs) {
+            if (!exactAssociativeMember(candidate)
+                    || root != longNumber(candidate.get("rootCallId"), -1L)
+                    || !mapping.equals(text(candidate.get(
+                    "rpcProjectionMappingId")))
+                    || !process.equals(text(candidate.get("process")))) {
+                continue;
+            }
+            String token = text(candidate.get("containerMemberToken"));
+            long event = associativeMemberFirstEvent(candidate, token);
+            if (token.isEmpty() || event < 0L) return -1;
+            Long prior = firstEventByToken.get(token);
+            if (prior == null || event < prior) {
+                firstEventByToken.put(token, event);
+            }
+        }
+        List<Map.Entry<String, Long>> ordered = new ArrayList<>(
+                firstEventByToken.entrySet());
+        ordered.sort(Comparator.comparingLong(Map.Entry::getValue));
+        long priorEvent = Long.MIN_VALUE;
+        for (int index = 0; index < ordered.size(); index++) {
+            Map.Entry<String, Long> member = ordered.get(index);
+            if (index > 0 && member.getValue() == priorEvent) return -1;
+            if (selectedToken.equals(member.getKey())) return index + 1;
+            priorEvent = member.getValue();
+        }
+        return -1;
+    }
+
+    private static long associativeMemberFirstEvent(
+            Map<String, Object> output, String token) {
+        long selected = longNumber(output.get("eventSeq"), -1L);
+        for (Map<String, Object> access : rows(output.get(
+                "runtimeAccesses"))) {
+            String accessToken = text(access.get("containerMemberToken"));
+            if (!accessToken.isEmpty() && !token.equals(accessToken)) {
+                continue;
+            }
+            long event = longNumber(access.get("eventSeq"), -1L);
+            if (event >= 0L && (selected < 0L || event < selected)) {
+                selected = event;
+            }
+        }
+        return selected;
+    }
 
     private static boolean trustedRpcContainerProjectionBinding(
             JsonObject binding) {
@@ -2781,6 +2915,44 @@ final class RuntimeRegionPlanner {
             }
         }
         return match;
+    }
+
+    /**
+     * Proves the minimal state-merge shape used by modeled RPC failure:
+     * the exact field pre-state is read, an explicit symbolic fault decides
+     * whether the update runs, and the recorded write follows that decision.
+     * Such a relation is observed once at normal region exit so both the
+     * refreshed and retained-state paths expose the same output endpoint.
+     */
+    private static boolean explicitFaultControlsStateTransition(
+            List<String> inputPorts, List<Map<String, Object>> inputs,
+            List<Map<String, Object>> branches, long rootCallId,
+            Map<String, Object> preState, long outputEventSeq) {
+        long preStateSeq = longNumber(preState.get("eventSeq"), -1L);
+        if (preStateSeq < 0L || outputEventSeq <= preStateSeq) return false;
+        Set<String> selected = new LinkedHashSet<>(inputPorts);
+        long faultSeq = Long.MAX_VALUE;
+        for (Map<String, Object> input : inputs) {
+            long seq = longNumber(input.get("eventSeq"), -1L);
+            if (rootCallId == longNumber(input.get("rootCallId"), -1L)
+                    && selected.contains(text(input.get("portId")))
+                    && RuntimeSelectedRegionFinalizer
+                    .EXPLICIT_SYMBOLIC_FAULT.equals(
+                    text(input.get("sourceKind")))
+                    && seq > preStateSeq && seq < outputEventSeq) {
+                faultSeq = Math.min(faultSeq, seq);
+            }
+        }
+        if (faultSeq == Long.MAX_VALUE) return false;
+        for (Map<String, Object> branch : branches) {
+            long seq = longNumber(branch.get("selectedRuntimeEventSeq"),
+                    -1L);
+            if ("PATH_ASSUMPTION".equals(text(branch.get("policy")))
+                    && seq > faultSeq && seq < outputEventSeq) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void addIfAllowed(List<String> methods,
@@ -3802,38 +3974,71 @@ final class RuntimeRegionPlanner {
                     String site = text(branch.get("siteId"));
                     List<String> operands = strings(
                             branch.get("operandCells"));
+                    String policy = text(branch.get("policy"));
                     boolean legacySiteOnly = !requireGuardProof
                             && operands.isEmpty()
                             && selectedMethods.contains(method);
                     if ((!selectedMethods.contains(method)
                             && !allowedMethods.contains(method))
-                            || !"EXPLORE".equals(text(branch.get("policy")))
+                            || !"EXPLORE".equals(policy)
+                            && !"PATH_ASSUMPTION".equals(policy)
                             || Boolean.TRUE.equals(
                             branch.get("loopControlGuard"))
                             || site.isEmpty()
                             || !legacySiteOnly
                             && !controlsSelectedCell(regionId, method, site,
-                            result.cells)
-                            || !result.branchSites.add(site)) {
+                            result.cells, result.methods)) {
                         continue;
                     }
+                    ReturnSlice guardSlice = new ReturnSlice();
+                    for (String operand : operands) {
+                        guardSlice.merge(backwardSlice(regionId, rootCallId,
+                                operand, null, allowedMethods, inputs,
+                                outputs, boundaryUpperSeq));
+                    }
+                    // A path assumption is outside the original failure
+                    // frontier, but it is still part of an output relation
+                    // when static GUARD evidence proves that it controls the
+                    // selected write and its operand reaches a real runtime
+                    // explicit-fault input.  This is the generic shape of an
+                    // rpcFails value deciding whether addKeys executes,
+                    // without promoting ordinary queue/configuration path
+                    // assumptions into producer variables.
+                    if ("PATH_ASSUMPTION".equals(policy)
+                            && !reachesExplicitSymbolicFault(
+                            guardSlice.inputPorts, inputs, rootCallId)) {
+                        continue;
+                    }
+                    if (!result.branchSites.add(site)) continue;
                     // A retained guard executes in its helper method even if
                     // all value-flow predecessors terminate at an input
                     // boundary.  Omitting the method leaves a branch site in
                     // the task that Soot is not allowed to instrument.
                     result.methods.add(method);
                     int before = result.cells.size();
-                    for (String operand : operands) {
-                        result.merge(backwardSlice(regionId, rootCallId,
-                                operand, null, allowedMethods, inputs,
-                                outputs, boundaryUpperSeq));
-                    }
+                    result.merge(guardSlice);
                     changed |= result.cells.size() != before;
                 }
             } while (changed);
             result.guardOnlyInputPorts.addAll(result.inputPorts);
             result.guardOnlyInputPorts.removeAll(valueInputPorts);
             return result;
+        }
+
+        private static boolean reachesExplicitSymbolicFault(
+                Set<String> ports, List<Map<String, Object>> inputs,
+                long rootCallId) {
+            if (ports.isEmpty()) return false;
+            for (Map<String, Object> input : inputs) {
+                if (rootCallId == longNumber(input.get("rootCallId"), -1L)
+                        && ports.contains(text(input.get("portId")))
+                        && RuntimeSelectedRegionFinalizer
+                        .EXPLICIT_SYMBOLIC_FAULT.equals(
+                        text(input.get("sourceKind")))) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /**
@@ -3880,12 +4085,24 @@ final class RuntimeRegionPlanner {
 
         private boolean controlsSelectedCell(String regionId, String method,
                                              String site,
-                                             Set<String> selectedCells) {
+                                             Set<String> selectedCells,
+                                             Set<String> selectedMethods) {
             // Index form of: exists GUARD edge at (regionId, method, site)
             // whose guarded cell is currently selected.
             Set<String> guarded = guardedCellsBySite.get(regionId + "\n"
                     + method + "\n" + site);
             if (guarded == null) return false;
+            // A control dependency can guard the call that creates a
+            // selected helper activation rather than one of the helper's
+            // internal value cells.  That guard is part of the relation's
+            // existence condition.  In particular, an explicit rpcFails
+            // marker controlling whether addKeys is invoked must remain a
+            // symbolic input of the produced state relation.
+            for (String selectedMethod : selectedMethods) {
+                if (guarded.contains(selectedMethod + ".activation")) {
+                    return true;
+                }
+            }
             if (guarded.size() <= selectedCells.size()) {
                 for (String cell : guarded) {
                     if (selectedCells.contains(cell)) return true;

@@ -3286,6 +3286,7 @@ public final class RuntimeSelectedRegionFinalizer {
                         || write.receiver == 0
                         || write.receiver != read.receiver
                         || !writeField.equals(readField)
+                        || !sameObservedFieldValue(write, read)
                         || sameLane(write, read, laneByInstance)
                         && write.seq >= read.seq
                         || DependencyRole.CONCRETE_STRUCTURE_CARRIER.equals(
@@ -3394,6 +3395,7 @@ public final class RuntimeSelectedRegionFinalizer {
                         || write.receiver == 0
                         || write.receiver != read.receiver
                         || !write.leafDeclaration().equals(readField)
+                        || !sameObservedFieldValue(write, read)
                         || sameLane(write, read, laneByInstance)
                         && write.seq >= read.seq) {
                     continue;
@@ -3411,6 +3413,24 @@ public final class RuntimeSelectedRegionFinalizer {
                     "RF.LEAF."));
         }
         return result;
+    }
+
+    /**
+     * A field edge denotes the value observed by this exact read, not merely
+     * some historical write to the same owner/declaration.  Reference
+     * identity is the decisive evidence for carriers such as currentKey;
+     * primitive leaves use their recorded scalar value.
+     */
+    private static boolean sameObservedFieldValue(BoundPort write,
+                                                  BoundPort read) {
+        DeclaredFieldCell field = DeclaredFieldCell.parse(
+                read.leafDeclaration());
+        if (field == null) return false;
+        if (field.primitive()) {
+            return !write.primitiveValue.isEmpty()
+                    && write.primitiveValue.equals(read.primitiveValue);
+        }
+        return write.valueObject == read.valueObject;
     }
 
     /**

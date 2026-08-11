@@ -1069,6 +1069,7 @@ public class RuntimeSelectedRegionFinalizerTest {
     public void failureSliceCrossesObservedProtocolBeforeExactHeapReadFrom()
             throws Exception {
         String updater = "<example.Updater: void run()>";
+        String staleUpdater = "<example.StaleUpdater: void run()>";
         String dispatcher = "<example.Dispatcher: void run()>";
         String target = "<example.Server: void run()>";
         String field = "<example.SecretManager: example.Key currentKey>";
@@ -1084,6 +1085,12 @@ public class RuntimeSelectedRegionFinalizerTest {
                         "methods", Collections.singletonList(updater),
                         "selection", "STATE_CONTEXT"),
                 object("schemaVersion", 3, "kind", "REGION_SKELETON",
+                        "regionId", "REGION.stale",
+                        "rootMethod", staleUpdater,
+                        "anchorMethod", staleUpdater,
+                        "methods", Collections.singletonList(staleUpdater),
+                        "selection", "STATE_CONTEXT"),
+                object("schemaVersion", 3, "kind", "REGION_SKELETON",
                         "regionId", "REGION.dispatcher",
                         "rootMethod", dispatcher,
                         "anchorMethod", dispatcher,
@@ -1097,6 +1104,9 @@ public class RuntimeSelectedRegionFinalizerTest {
         Map<String, Object> write = fieldBinding(
                 "REGION.updater", 1, updater, 5, field, "", 100);
         write.put("valueObjectId", 200);
+        Map<String, Object> staleWrite = fieldBinding(
+                "REGION.stale", 4, staleUpdater, 6, field, "", 100);
+        staleWrite.put("valueObjectId", 300);
         Map<String, Object> read = fieldBinding(
                 "REGION.dispatcher", 2, dispatcher, 10, field, "", 100);
         read.put("valueObjectId", 200);
@@ -1120,6 +1130,16 @@ public class RuntimeSelectedRegionFinalizerTest {
                         "fromCell", updater + "::$rpcKey",
                         "toCell", field, "runtimeFieldBindings",
                         Collections.singletonList(write)),
+                object("schemaVersion", 3, "refinementSchemaVersion", 1,
+                        "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                        "id", "DF.stale.write", "kind", "field_write",
+                        "transferKind", "HEAP_WRITE",
+                        "method", staleUpdater,
+                        "regionIds", Collections.singletonList(
+                                "REGION.stale"),
+                        "fromCell", staleUpdater + "::$rpcKey",
+                        "toCell", field, "runtimeFieldBindings",
+                        Collections.singletonList(staleWrite)),
                 object("schemaVersion", 3, "refinementSchemaVersion", 1,
                         "graphKind", "RUNTIME_REFINED_DATAFLOW",
                         "id", "DF.read", "kind", "field_read",
@@ -1161,10 +1181,13 @@ public class RuntimeSelectedRegionFinalizerTest {
         RuntimeSelectedRegionFinalizer.Result result =
                 RuntimeSelectedRegionFinalizer.finalizeRegions(
                         refined, skeleton, regions, edges,
-                        Arrays.asList(updater, dispatcher, target),
+                        Arrays.asList(updater, staleUpdater, dispatcher,
+                                target),
                         Arrays.asList(
                                 activation("REGION.updater", 1,
                                         "STATE_CONTEXT", updater),
+                                activation("REGION.stale", 4,
+                                        "STATE_CONTEXT", staleUpdater),
                                 activation("REGION.dispatcher", 2,
                                         "PROTOCOL_CONTEXT", dispatcher),
                                 activation("REGION.target", 3,
@@ -1177,6 +1200,7 @@ public class RuntimeSelectedRegionFinalizerTest {
         assertTrue(edgeRows.toString().contains("RUNTIME_FIELD_FLOW"));
         assertTrue(edgeRows.toString().contains("RUNTIME_PROTOCOL_FLOW"));
         assertTrue(edgeRows.toString().contains("REGION.updater"));
+        assertTrue(!edgeRows.toString().contains("REGION.stale"));
         assertTrue(edgeRows.toString().contains("REGION.dispatcher"));
     }
 
@@ -1512,9 +1536,9 @@ public class RuntimeSelectedRegionFinalizerTest {
         Map<String, Object> firstWrite = fieldBinding(
                 "REGION.writer", 1, WRITER, 5, declaration, "7");
         Map<String, Object> latestWrite = fieldBinding(
-                "REGION.writer", 2, WRITER, 15, declaration, "9");
+                "REGION.writer", 2, WRITER, 15, declaration, "7");
         Map<String, Object> reversedSameLaneWrite = fieldBinding(
-                "REGION.writer", 5, WRITER, 20, declaration, "11");
+                "REGION.writer", 5, WRITER, 20, declaration, "7");
         List<Map<String, Object>> reads = new ArrayList<>();
         for (long seq : Arrays.asList(10L, 12L, 14L, 16L, 18L)) {
             Map<String, Object> read = fieldBinding(
@@ -2980,7 +3004,8 @@ public class RuntimeSelectedRegionFinalizerTest {
             String portId, long rootCallId, int receiver, long seq) {
         return object("portId", portId, "transportKind", "HEAP",
                 "process", "p", "rootCallId", rootCallId,
-                "fieldReceiverObjectId", receiver, "eventSeq", seq,
+                "fieldReceiverObjectId", receiver, "valueObjectId", 0,
+                "primitiveValue", "7", "eventSeq", seq,
                 "dependencyRole", DependencyRole.VALUE_FRONTIER,
                 "fieldPath", Collections.singletonList("keyId"),
                 "fieldPathDeclarations", Collections.singletonList(LEAF));
@@ -3096,6 +3121,7 @@ public class RuntimeSelectedRegionFinalizerTest {
                     "process", "p", "rootCallId", rootCallId,
                     "fieldReceiverObjectId",
                     index == demandedIndex ? receiver : 90000 + index,
+                    "valueObjectId", 0, "primitiveValue", "7",
                     "fieldPathDeclarations",
                     Collections.singletonList(LEAF),
                     "staticAccessSiteId", "SITE"));

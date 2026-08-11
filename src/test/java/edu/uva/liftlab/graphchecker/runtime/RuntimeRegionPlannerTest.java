@@ -798,6 +798,12 @@ public class RuntimeRegionPlannerTest {
                         "symbolicDemand", "BOUNDED_CONTAINER_STATE",
                         "containerCapacity", LoopBoundPolicy
                                 .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY,
+                        // A local bounded container mutation also carries
+                        // exact Map.put provenance.  It is not an RPC member
+                        // projection and must remain a whole-state relation.
+                        "containerMemberToken", "MEMBER.local-put",
+                        "containerMemberIdentityAuthority",
+                        "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1",
                         "boundedContainerStateAdmission", "PROVED",
                         "boundedContainerPreStatePorts",
                         Collections.singletonList(
@@ -1086,7 +1092,7 @@ public class RuntimeRegionPlannerTest {
 
 
     @Test
-    public void trustedRpcScalarLeafProjectionClosesItsProducerWrite()
+    public void trustedRpcAssociativeLeafProjectionClosesItsProducerWrite()
             throws Exception {
         String producerRoot = "<example.Producer: void run()>";
         String definition = "<example.Response: void <init>(int)>";
@@ -1136,6 +1142,9 @@ public class RuntimeRegionPlannerTest {
                         "rpcProjectionFieldDeclaration", leafField,
                         "rpcProjectionStaticAccessSiteId",
                         definition + "#u2",
+                        "containerMemberToken", "MEMBER.exact",
+                        "containerMemberIdentityAuthority",
+                        "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1",
                         "runtimeAccesses", Collections.singletonList(object(
                                 "rootCallId", 3, "eventSeq", 5,
                                 "staticAccessSiteId", definition + "#u2",
@@ -1143,6 +1152,9 @@ public class RuntimeRegionPlannerTest {
                                 "bindingKind", "ACTIVATION_FIELD_ACCESS",
                                 "fieldReceiverObjectId", 100,
                                 "valueObjectId", 0,
+                                "containerMemberToken", "MEMBER.exact",
+                                "containerMemberIdentityAuthority",
+                                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1",
                                 "fieldPathDeclarations",
                                 Collections.singletonList(leafField))))),
                 "branchPolicies", Collections.emptyList());
@@ -1254,13 +1266,13 @@ public class RuntimeRegionPlannerTest {
         Map<String, Object> slice = (Map<String, Object>) member.get("slice");
         Map<String, Object> capture = rows(slice.get("captureBindings")).get(0);
         assertEquals("FIELD_WRITE_STATE", capture.get("captureKind"));
-        assertEquals(producerRoot, capture.get("definitionMethod"));
-        assertEquals(3, ((Number) capture.get("definitionUnitIndex"))
+        assertEquals(definition, capture.get("definitionMethod"));
+        assertEquals(2, ((Number) capture.get("definitionUnitIndex"))
                 .intValue());
-        assertEquals(carrierField,
+        assertEquals(leafField,
                 capture.get("definitionFieldSignature"));
         assertEquals(leafField, capture.get("leafFieldSignature"));
-        assertEquals(Arrays.asList("activeKey", "keyId"),
+        assertEquals(Collections.singletonList("keyId"),
                 capture.get("fieldPath"));
         assertEquals("int", capture.get("javaType"));
         assertEquals(1, ((Number) capture.get("outputOccurrence"))
@@ -1280,6 +1292,38 @@ public class RuntimeRegionPlannerTest {
         assertEquals("int", action.get("javaType"));
         assertEquals(null, action.get("symbolicDemand"));
         assertEquals(null, action.get("containerCapacity"));
+    }
+
+    @Test
+    public void associativeMemberOrdinalUsesExactMemberOrderNotLeafOrder() {
+        String authority =
+                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1";
+        List<Map<String, Object>> outputs = Arrays.asList(
+                object("containerMemberToken", "MEMBER.2",
+                        "containerMemberIdentityAuthority", authority,
+                        "rpcProjectionMappingId", "example.fetch",
+                        "process", "p", "rootCallId", 7,
+                        "eventSeq", 30),
+                object("containerMemberToken", "MEMBER.1",
+                        "containerMemberIdentityAuthority", authority,
+                        "rpcProjectionMappingId", "example.fetch",
+                        "process", "p", "rootCallId", 7,
+                        "eventSeq", 10),
+                object("containerMemberToken", "MEMBER.2",
+                        "containerMemberIdentityAuthority", authority,
+                        "rpcProjectionMappingId", "example.fetch",
+                        "process", "p", "rootCallId", 7,
+                        "eventSeq", 20),
+                object("containerMemberToken", "MEMBER.other-root",
+                        "containerMemberIdentityAuthority", authority,
+                        "rpcProjectionMappingId", "example.fetch",
+                        "process", "p", "rootCallId", 8,
+                        "eventSeq", 1));
+
+        assertEquals(1, RuntimeRegionPlanner
+                .exactAssociativeMemberOrdinal(outputs, outputs.get(1)));
+        assertEquals(2, RuntimeRegionPlanner
+                .exactAssociativeMemberOrdinal(outputs, outputs.get(0)));
     }
 
     @Test
@@ -1326,6 +1370,8 @@ public class RuntimeRegionPlannerTest {
         String stateField = "<example.State: int value>";
         String expiryField = "<example.Key: long expiry>";
         String noiseField = "<example.Registry: boolean enabled>";
+        String faultReturn = "<example.Fault: boolean symbolic()>.return";
+        String faultLocal = update + "::$z2";
         String updated = update + "::i0";
         String expired = expiry + "::z0";
         String noise = sibling + "::z0";
@@ -1361,7 +1407,25 @@ public class RuntimeRegionPlannerTest {
                                 "expiry"),
                         heapPort("REGION.P.in.noise", 3, sibling,
                                 sibling + "#u1", 8, 99, noiseField,
-                                "enabled")),
+                                "enabled"),
+                        heapPort("REGION.P.in.state-before", 3, update,
+                                update + "#u1", 17, 77, stateField,
+                                "value"),
+                        object("portId", "REGION.P.in.rpcFails",
+                                "cell", faultReturn, "rootCallId", 3,
+                                "rootMethod", update,
+                                "sourceKind", "EXPLICIT_SYMBOLIC_FAULT",
+                                "dependencyRole", "VALUE_FRONTIER",
+                                "rootKind", "ACTIVATION_LOCAL",
+                                "siteId", update + "#u2",
+                                "unitIndex", 2,
+                                "callId", 5, "eventSeq", 18,
+                                "accessorOccurrence", 1,
+                                "replayOccurrence", 1,
+                                "declaredCallee",
+                                "<example.Fault: boolean symbolic()>",
+                                "javaType", "boolean",
+                                "symbolicName", "rpcFails")),
                 "outputs", Collections.singletonList(object(
                         "portId", "REGION.P.out.value", "cell", "writer",
                         "rootCallId", 3, "rootMethod", update,
@@ -1389,7 +1453,13 @@ public class RuntimeRegionPlannerTest {
                                 "method", sibling, "unitIndex", 2,
                                 "operandCells",
                                 Collections.singletonList(noise),
-                                "policy", "EXPLORE")));
+                                "policy", "EXPLORE"),
+                        object("siteId", update + "#u3",
+                                "method", update, "unitIndex", 3,
+                                "operandCells",
+                                Collections.singletonList(faultLocal),
+                                "requiredOutcome", true,
+                                "policy", "PATH_ASSUMPTION")));
         File regions = jsonl("corridor-regions.jsonl", producer, consumer);
         File regionEdges = jsonl("corridor-region-edges.jsonl", object(
                 "schemaVersion", 3, "kind", "RUNTIME_FIELD_FLOW",
@@ -1413,7 +1483,11 @@ public class RuntimeRegionPlannerTest {
                 refinedEdge("DF.sibling-control", "GUARD", noise,
                         updated, sibling, sibling + "#u2", 2),
                 refinedEdge("DF.sibling-read", "HEAP_READ", noiseField,
-                        noise, sibling, sibling + "#u1", 1));
+                        noise, sibling, sibling + "#u1", 1),
+                refinedEdge("DF.fault-return", "FUNCTION_RETURN",
+                        faultReturn, faultLocal, update, update + "#u2", 2),
+                refinedEdge("DF.fault-control", "GUARD", faultLocal,
+                        update + ".activation", update, update + "#u3", 3));
         List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "p", "w",
                         8, producerRoot, 30, "example.Service", 3, 0, 0),
@@ -1430,6 +1504,7 @@ public class RuntimeRegionPlannerTest {
         List<RuntimeRegionPlanner.RuntimeEvent> runtime = Arrays.asList(
                 branchEvent(8, sibling, 4, sibling + "#u2", true),
                 branchEvent(12, expiry, 6, expiry + "#u2", true),
+                branchEvent(19, update, 5, update + "#u3", true),
                 new RuntimeRegionPlanner.RuntimeEvent(20,
                         "CALL_SITE_RETURN", update, 5, 20, 0,
                         update + "#u4", -1, "", 0, "", false, false));
@@ -1461,22 +1536,45 @@ public class RuntimeRegionPlannerTest {
         assertTrue(definitions.contains(update));
         assertTrue(definitions.contains(expiry));
         assertTrue(!definitions.contains(sibling));
+        assertTrue(rows(goal.get("symbolize")).stream().anyMatch(
+                action -> "REGION.P.in.rpcFails".equals(
+                        action.get("symbol"))));
         Map<String, Object> closure = (Map<String, Object>) goal.get(
                 "outputClosure");
         Map<String, Object> member = rows(closure.get("members")).get(0);
         Map<String, Object> slice = (Map<String, Object>) member.get("slice");
+        assertEquals("REGION_EXIT_FIELD_SNAPSHOT",
+                slice.get("outputBoundaryKind"));
+        Map<String, Object> capture = rows(
+                slice.get("captureBindings")).get(0);
+        assertEquals("", capture.get("captureKind"));
+        assertEquals("REGION.P.in.state-before",
+                capture.get("accessRootInputPort"));
+        assertEquals(null, capture.get("outputSiteId"));
         String ports = String.valueOf(slice.get("inputPorts"));
         assertTrue(ports.contains("REGION.P.in.base"));
         assertTrue(ports.contains("REGION.P.in.expiry"));
+        assertTrue(ports.contains("REGION.P.in.state-before"));
+        assertTrue(ports.contains("REGION.P.in.rpcFails"));
         assertTrue(!ports.contains("REGION.P.in.noise"));
         String sites = String.valueOf(slice.get("sites"));
         assertTrue(sites.contains(expiry + "#u2"));
+        assertTrue(sites.contains(update + "#u3"));
         assertTrue(!sites.contains(sibling + "#u2"));
         assertTrue(String.valueOf(slice.get("methods")).contains(expiry));
         List<Map<String, Object>> exactBranches = rows(
                 slice.get("branchReplay"));
-        assertEquals(1, exactBranches.size());
-        Map<String, Object> exactExpiry = exactBranches.get(0);
+        assertEquals(2, exactBranches.size());
+        Map<String, Object> exactExpiry = exactBranches.stream()
+                .filter(branch -> (expiry + "#u2").equals(
+                        branch.get("siteId")))
+                .findFirst().get();
+        Map<String, Object> exactFault = exactBranches.stream()
+                .filter(branch -> (update + "#u3").equals(
+                        branch.get("siteId")))
+                .findFirst().get();
+        assertEquals(19L, ((Number) exactFault.get(
+                "selectedRuntimeEventSeq")).longValue());
         assertEquals(expiry + "#u2", exactExpiry.get("siteId"));
         assertEquals(1, ((Number) exactExpiry.get(
                 "selectedOccurrence")).intValue());

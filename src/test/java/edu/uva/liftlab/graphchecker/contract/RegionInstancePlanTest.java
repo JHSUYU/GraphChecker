@@ -135,6 +135,31 @@ public class RegionInstancePlanTest {
     }
 
     @Test
+    public void occurrenceCatalogSeparatesAssociativeMemberSlots() {
+        String instance = "REGION.1@test#call1";
+        JsonObject canonical = outputGoal(
+                "GOAL.LOGICAL", instance, 1L, "canonical", 1);
+        JsonObject selected = outputGoal(
+                "GOAL.EXACT.1", instance, 1L, "selected", 1);
+        JsonObject other = outputGoal(
+                "GOAL.EXACT.2", instance, 1L, "other", 1);
+        memberSlice(canonical).addProperty("containerMemberOrdinal", 1);
+        memberSlice(selected).addProperty("containerMemberOrdinal", 1);
+        memberSlice(other).addProperty("containerMemberOrdinal", 2);
+
+        JsonObject plan = plan(instance, canonical,
+                occurrence(instance, 1L, selected, other));
+
+        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+                .occurrenceInstantiationCatalog()
+                .getAsJsonArray("occurrences");
+        assertEquals(1, catalog.size());
+        assertEquals("REGION.1.out.selected.1", catalog.get(0)
+                .getAsJsonObject().getAsJsonArray("outputPortMap").get(0)
+                .getAsJsonObject().get("exactPort").getAsString());
+    }
+
+    @Test
     public void occurrenceCatalogIgnoresExcludedOutputDiagnostics() {
         String instance = "REGION.1@test#call1";
         JsonObject canonical = outputGoal(
@@ -348,6 +373,12 @@ public class RegionInstancePlanTest {
                 .getAsJsonArray("members").get(0).getAsJsonObject()
                 .getAsJsonObject("slice").getAsJsonArray("causalEdgeIds")
                 .add(edgeId);
+    }
+
+    private static JsonObject memberSlice(JsonObject goal) {
+        return goal.getAsJsonObject(OutputClosureContract.FIELD)
+                .getAsJsonArray("members").get(0).getAsJsonObject()
+                .getAsJsonObject("slice");
     }
 
     private static JsonObject outputGoal(

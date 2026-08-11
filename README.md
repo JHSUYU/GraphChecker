@@ -17,6 +17,18 @@ build/run entry points, witness acceptance criteria, current state, and queue.
 
 ---
 
+## Active HDFS-17897/HDFS-17899 handoff
+
+The four-case key-rotation/RPC-failure campaign is in progress.  Its complete
+case matrix, implemented design, current bug-3 artifacts, rejected false-only
+Z3 result, dirty Hadoop worktree locations, exact remaining TODOs, and
+acceptance commands are maintained in
+[`experiments/hdfs/hdfs-key-rotation/README.md`](experiments/hdfs/hdfs-key-rotation/README.md).
+That document is authoritative for the next agent; no HDFS-17897/17899 case is
+yet marked accepted.
+
+---
+
 ## What a correct witness looks like
 
 The fault is two readers of one rolling table disagreeing. The heartbeat chain

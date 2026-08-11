@@ -326,9 +326,13 @@ public final class CausynthPipeline {
         for (ExactHeapOutputCapture capture : exactHeapOutputs) {
             taggedMethods.add(capture.method());
         }
-        Stmt delayedReplayArm = selectDelayedReplayArmCall(
+        Stmt preTargetReplayArm = selectPreTargetReplayArmCall(
                 replayEntry, plan.targetMethod(), taggedMethods,
                 plan.outputRelation(), plan.replayAnchorAllowed());
+        Stmt delayedReplayArm = preTargetReplayArm == null
+                ? selectDelayedReplayArmCall(
+                replayEntry, plan.targetMethod(), taggedMethods,
+                plan.outputRelation(), plan.replayAnchorAllowed()) : null;
         for (String methodSignature : taggedMethods) {
             try {
                 SootMethod method = Scene.v().getMethod(methodSignature);
@@ -394,7 +398,7 @@ public final class CausynthPipeline {
             entry.add(tokenInitialization);
             List<Unit> activation = entry;
             Unit delayedInactive = null;
-            if (delayedReplayArm != null) {
+            if (preTargetReplayArm != null || delayedReplayArm != null) {
                 Local attempted = newTraceLocal(body, IntType.v(),
                         "$causynthRegionAttempted");
                 entry.add(Jimple.v().newAssignStmt(attempted,
@@ -493,14 +497,24 @@ public final class CausynthPipeline {
                                     refs.ref(Hook.RESUME_OBSERVATION))));
                 }
             }
-            if (delayedReplayArm == null) {
+            if (preTargetReplayArm == null && delayedReplayArm == null) {
                 insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
             } else {
                 activation.add(delayedInactive);
                 insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
-                // The arm is on the normal fall-through edge.  If the exact
-                // target throws, neither attempted nor enterRegionFrame runs.
-                insertAfterSequence(body, delayedReplayArm, activation);
+                if (preTargetReplayArm != null) {
+                    // Demanded effects execute inside the exact target call,
+                    // so arm immediately before its unique invocation.  This
+                    // retains those effects without recording the unrelated
+                    // connection/setup prefix of a long-lived service root.
+                    insertBeforeSequence(body, preTargetReplayArm,
+                            activation);
+                } else {
+                    // The arm is on the normal fall-through edge.  If the
+                    // exact target throws, neither attempted nor
+                    // enterRegionFrame runs.
+                    insertAfterSequence(body, delayedReplayArm, activation);
+                }
             }
 
             for (Unit unit : originalUnits) {
@@ -548,7 +562,8 @@ public final class CausynthPipeline {
                         + "bounded {} CFG backedges at {} loop-body "
                         + "iterations each",
                 signature, replayEntrySignature,
-                delayedReplayArm == null ? ""
+                preTargetReplayArm != null ? " with pre-target engine arm"
+                        : delayedReplayArm == null ? ""
                         : " with post-target engine arm",
                 boundedBackedges,
                 plan.loopBound().maxBackedgeTraversals());
@@ -572,15 +587,51 @@ public final class CausynthPipeline {
                 || targetSignature == null
                 || targetSignature.trim().isEmpty()
                 || replayDemandSignatures == null
-                || replayDemandSignatures.contains(targetSignature)) {
+                || replayDemandSignatures.contains(targetSignature)
+                || targetReachesReplayDemand(targetSignature,
+                replayDemandSignatures)) {
             return null;
         }
-        Body body;
+        Body body = activeBody(replayEntry);
+        if (body == null) return null;
+        Stmt selected = uniqueInvocation(body, targetSignature);
+        return selected != null && body.getUnits().getSuccOf(selected) != null
+                ? selected : null;
+    }
+
+    /**
+     * Arms immediately before a unique target whose body contains demanded
+     * replay effects.  This is the causal counterpart of the post-target arm:
+     * it excludes a long concrete prefix without skipping output writes that
+     * occur inside the target call itself.
+     */
+    static Stmt selectPreTargetReplayArmCall(
+            SootMethod replayEntry, String targetSignature,
+            Collection<String> replayDemandSignatures,
+            boolean outputRelation, boolean replayAnchorAllowed) {
+        if (!outputRelation || !replayAnchorAllowed
+                || replayEntry == null || !replayEntry.isConcrete()
+                || targetSignature == null
+                || targetSignature.trim().isEmpty()
+                || replayDemandSignatures == null
+                || !(replayDemandSignatures.contains(targetSignature)
+                || targetReachesReplayDemand(targetSignature,
+                replayDemandSignatures))) {
+            return null;
+        }
+        Body body = activeBody(replayEntry);
+        return body == null ? null : uniqueInvocation(body, targetSignature);
+    }
+
+    private static Body activeBody(SootMethod method) {
         try {
-            body = replayEntry.retrieveActiveBody();
+            return method.retrieveActiveBody();
         } catch (RuntimeException unavailable) {
             return null;
         }
+    }
+
+    private static Stmt uniqueInvocation(Body body, String targetSignature) {
         Stmt selected = null;
         for (Unit unit : body.getUnits()) {
             if (!(unit instanceof Stmt)
@@ -592,8 +643,39 @@ public final class CausynthPipeline {
             if (selected != null) return null;
             selected = (Stmt) unit;
         }
-        return selected != null && body.getUnits().getSuccOf(selected) != null
-                ? selected : null;
+        return selected;
+    }
+
+    /**
+     * A target call is not a safe delayed arm when demanded effects execute
+     * inside that call.  Arming after it would silently miss those effects.
+     */
+    private static boolean targetReachesReplayDemand(
+            String targetSignature,
+            Collection<String> replayDemandSignatures) {
+        final SootMethod target;
+        try {
+            target = Scene.v().getMethod(targetSignature);
+        } catch (RuntimeException missing) {
+            return true;
+        }
+        Set<String> remaining = new LinkedHashSet<>(
+                replayDemandSignatures);
+        remaining.remove(targetSignature);
+        if (remaining.isEmpty()) return false;
+        Set<SootMethod> reached = new LinkedHashSet<>();
+        ArrayDeque<SootMethod> pending = new ArrayDeque<>();
+        reached.add(target);
+        pending.add(target);
+        while (!pending.isEmpty() && reached.size() <= 4096) {
+            SootMethod caller = pending.removeFirst();
+            for (SootMethod callee : directApplicationCallees(caller)) {
+                if (!reached.add(callee)) continue;
+                if (remaining.contains(callee.getSignature())) return true;
+                pending.addLast(callee);
+            }
+        }
+        return false;
     }
 
     /**

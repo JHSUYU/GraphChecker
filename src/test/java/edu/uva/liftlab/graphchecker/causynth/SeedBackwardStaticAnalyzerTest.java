@@ -121,6 +121,7 @@ public class SeedBackwardStaticAnalyzerTest {
         assertEquals("rpcFails", edge.get("symbolicName"));
         assertEquals(makeSymbolic.getSignature() + ".return",
                 edge.get("fromCell"));
+        assertEquals("FUNCTION_RETURN", edge.get("transferKind"));
     }
 
     @Test

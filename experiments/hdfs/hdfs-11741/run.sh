@@ -10,10 +10,14 @@ runtime_patch_file="${experiment_dir}/patches/runtime-trace-workload.patch"
 fatal_patch_file="${experiment_dir}/patches/mark-fatal-target.patch"
 expiry_guard_patch_file="${experiment_dir}/patches/expiry-guard.patch"
 symbolic_rpc_fault_patch_file="${experiment_dir}/patches/symbolic-rpc-fault.patch"
-workflow="${experiment_dir}/workflow.properties"
+workflow=${CAUSYNTH_HDFS_WORKFLOW:-${experiment_dir}/workflow.properties}
+external_experiment=${CAUSYNTH_HDFS_EXPERIMENT:-}
 variant=${HDFS11741_VARIANT:-vulnerable}
+if [[ -n "${external_experiment}" ]]; then
+  variant=external
+fi
 case "${variant}" in
-  vulnerable|patched|patched-fault) ;;
+  vulnerable|patched|patched-fault|external) ;;
   *)
     echo "[hdfs-11741] HDFS11741_VARIANT must be vulnerable, patched, or patched-fault" >&2
     exit 1
@@ -51,8 +55,8 @@ key_manager_source="${hadoop_dir}/${key_manager_rel}"
 hdfs_main_classes="${hadoop_dir}/hadoop-hdfs-project/hadoop-hdfs/target/classes"
 hdfs_test_classes="${hadoop_dir}/hadoop-hdfs-project/hadoop-hdfs/target/test-classes"
 protoc_sha256=8b62bcf4d564e08c5bdd5d409c5e8462b07abadba10904946f63870dc9735f45
-test_class=org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer
-test_method=testEncryptedBalancer1
+test_class=${CAUSYNTH_HDFS_TEST_CLASS:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer}
+test_method=${CAUSYNTH_HDFS_TEST_METHOD:-testEncryptedBalancer1}
 test_selector="${test_class}#${test_method}"
 test_report="${hadoop_dir}/hadoop-hdfs-project/hadoop-hdfs/target/surefire-reports/TEST-${test_class}.xml"
 
@@ -67,6 +71,7 @@ partial_probe_target_goal=""
 partial_probe_target_reach=""
 partial_probe_output=""
 declare -a partial_probe_summary_files=()
+declare -a partial_probe_required_true_ports=()
 replay_engine_fingerprint=""
 
 # Concolic exploration has two independent parallelism levels.  Region jobs
@@ -380,6 +385,9 @@ verify_variant_semantics() {
 }
 
 verify_checkout() {
+  if [[ "${variant}" == external ]]; then
+    return
+  fi
   verify_checkout_lineage
   verify_variant_semantics
 }
@@ -470,6 +478,9 @@ marker_is_applied() {
 }
 
 verify_marker() {
+  if [[ "${variant}" == external ]]; then
+    return
+  fi
   patch_is_applied "${runtime_patch_file}" \
     || die "runtime trace/workload patch is not applied; run: $0 prepare"
   marker_is_applied \
@@ -633,6 +644,10 @@ verify_runtime_artifacts() {
     "${runtime}/concolic_region_plan.jsonl"
   require_file "runtime edge validations" \
     "${runtime}/runtime_region_edge_validation.jsonl"
+
+  if [[ "${variant}" == external ]]; then
+    return
+  fi
 
   local root
   local core_roots=(
@@ -1658,6 +1673,31 @@ prepare_observed_seed_relation() {
   cp -f "${planner}/observed_region_summaries.jsonl" "${published}"
 }
 
+reach_satisfies_required_true_ports() {
+  local report=$1
+  local required_json
+  (( ${#partial_probe_required_true_ports[@]} > 0 )) || return 0
+  required_json=$(printf '%s\n' \
+    "${partial_probe_required_true_ports[@]}" \
+    | jq -Rsc 'split("\n")[:-1]')
+  jq -e --argjson required "${required_json}" '
+    . as $report
+    | ($report.roots.booleanInputs // []) as $roots
+    | def rootIndex($port):
+        ([range(0; $roots | length) as $index
+          | select($roots[$index].portId == $port)
+          | $index]
+         | if length == 1 then .[0] else -1 end);
+      ($required | map(rootIndex(.))) as $indices
+    | (all($indices[]; . >= 0)
+       and any($report.valuations[]?;
+         . as $valuation
+         | ($valuation.status == "sat"
+            and all($indices[];
+              . as $index | $valuation.values[$index] == true))))
+  ' "${report}" >/dev/null
+}
+
 probe_observed_candidate() {
   [[ "${partial_probe_enabled:-false}" == true ]] || return 1
   local fingerprint attempt compose_summaries reachability source snapshot
@@ -1725,6 +1765,11 @@ probe_observed_candidate() {
       || ! jq -e 'any(.valuations[]?; .status == "sat")' \
         "${attempt}/z3-result.json" >/dev/null; then
     echo "[hdfs-11741] observed paths are not SAT yet; continuing exploration"
+    return 1
+  fi
+  if ! reach_satisfies_required_true_ports \
+      "${attempt}/z3-result.json"; then
+    echo "[hdfs-11741] observed paths do not yet admit every required explicit fault as true; continuing exploration"
     return 1
   fi
   # A reach condition that admits the whole root space says only that the
@@ -2070,6 +2115,19 @@ run_candidate_for_target() {
   partial_probe_target_reach="${target_campaign}/reach_query.jsonl"
   partial_probe_output=${output}
   partial_probe_summary_files=()
+  partial_probe_required_true_ports=()
+  if [[ "${CAUSYNTH_REQUIRE_EXPLICIT_FAULT_TRUE:-false}" == true ]]; then
+    while IFS= read -r producer_id; do
+      [[ -n "${producer_id}" ]] \
+        && partial_probe_required_true_ports+=("${producer_id}")
+    done < <(jq -r '
+      .inputActions[]?
+      | select(.authority == "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1")
+      | .portId
+    ' "${schedule_plan}" | sort -u)
+    (( ${#partial_probe_required_true_ports[@]} > 0 )) \
+      || die "explicit-fault experiment has no scheduled fault input"
+  fi
   for index in "${!producer_ids[@]}"; do
     producer_campaign=${producer_campaigns[$index]}
     if [[ -z "${probe_seen[${producer_campaign}]+x}" ]]; then
@@ -2114,6 +2172,8 @@ run_candidate_for_target() {
     CAUSYNTH_REACH_REPORT="${output}/z3-result.json" \
     do_engine_config reach
   require_nonempty_file "Z3 candidate result" "${output}/z3-result.json"
+  reach_satisfies_required_true_ports "${output}/z3-result.json" \
+    || die "candidate does not admit every required explicit fault as true"
   reachability=$(jq -er '.reachCondition.reachability' \
     "${output}/z3-result.json")
   # The extractor decides degeneracy and publishes its verdict, because the

@@ -23,6 +23,14 @@ final class StaticDataflowEdgeSchema {
         if (normalizedKind.contains("throw")) return "EXCEPTION";
         if (normalizedKind.contains("rpc")) return "PROTOCOL_TRANSFER";
         if (normalizedKind.contains("dispatch")) return "DYNAMIC_DISPATCH";
+        // The explicit fault marker is a modeled call-return boundary.  Its
+        // result must participate in the ordinary backward value slice just
+        // like any other boolean-returning helper; classifying it UNKNOWN
+        // leaves the marker visible in the region inventory but disconnects
+        // it from the branch and downstream state selected by the planner.
+        if (normalizedKind.contains("explicit_symbolic_fault")) {
+            return "FUNCTION_RETURN";
+        }
         if (normalizedKind.contains("field_write")
                 || normalizedKind.contains("field_mutation")
                 || normalizedKind.contains("field_effect")) {
