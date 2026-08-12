@@ -20,6 +20,7 @@
 #include "concolic/reference/symbolicTimestamp.hpp"
 #include "concolic/reference/symbolicDate.hpp"
 #include "concolic/reference/symbolicMiscObjects.h"
+#include "concolic/reference/symbolicAtomic.hpp"
 #include "concolic/reference/internal/symbolicUnsafe.hpp"
 #include "concolic/jdbc/reference/symbolicHibernateKey.hpp"
 #include "concolic/jdbc/reference/symbolicHibernateMethod.hpp"
@@ -50,6 +51,7 @@ void MethodSymbolizer::init_helper_methods() {
   SymBigDecimal::init_register_class(this);
   SymTimestamp::init_register_class(this);
   SymbolicDate::init_register_class(this);
+  SymbolicAtomic::init_register_class(this);
 //  SymHibernateKey::init_register_class(this);
 //  SymHibernateMethod::init_register_class(this);
   SymbolicUnsafe::init_register_class(this);

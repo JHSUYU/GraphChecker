@@ -19,6 +19,58 @@ import static org.junit.Assert.assertTrue;
 
 public class RegionPathWorklistTest {
     @Test
+    public void witnessedFatalSuccessorNeedsNoSiblingFlip() {
+        JsonObject reached = summary("ACT.TARGET.REACHED",
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        JsonObject task = executionTask("ACT.TARGET.REACHED",
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        reached.remove("outputClosure");
+        task.remove("outputClosure");
+
+        JsonArray oneMapping = new JsonArray();
+        oneMapping.add(reached.getAsJsonArray("branchMappings").get(0));
+        reached.add("branchMappings", oneMapping);
+        JsonObject fatal = new JsonObject();
+        fatal.addProperty("siteId", "SITE.0");
+        fatal.addProperty("policy", "EXPLORE");
+        fatal.addProperty("failureTarget", true);
+        fatal.addProperty("requiredOutcome", true);
+        fatal.addProperty("selectedOccurrence", 1);
+        JsonArray branches = new JsonArray();
+        branches.add(fatal);
+        task.add("branches", branches);
+
+        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
+                Collections.singletonList(reached),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                closed.manifest.get("state").getAsString());
+        assertTrue(closed.tasks.isEmpty());
+
+        fatal.addProperty("requiredOutcome", false);
+        RegionPathWorklist.Result complemented = RegionPathWorklist.plan(
+                Collections.singletonList(reached),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                complemented.manifest.get("state").getAsString());
+        assertTrue(complemented.tasks.isEmpty());
+
+        fatal.addProperty("selectedOccurrence", 2);
+        RegionPathWorklist.Result pending = RegionPathWorklist.plan(
+                Collections.singletonList(reached),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                pending.manifest.get("state").getAsString());
+        assertEquals(1, pending.tasks.size());
+    }
+
+    @Test
     public void explicitFaultTaskFlipsOnlyTheFaultDependentBranch() {
         String fault = "REGION.3.in.rpcFails";
         JsonObject summary = summary("ACT.FAULT",

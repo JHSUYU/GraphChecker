@@ -1,8 +1,10 @@
 import java.util.ArrayDeque;
+import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Map;
 import java.util.Queue;
 
@@ -54,6 +56,27 @@ public final class RegionContainerLiveInApiSmoke {
         Integer iterated = listIterator.next();
         require(relation(iterated, "\"operation\":\"NEXT\""),
                 "List iterator result");
+        ListIterator<Integer> indexedIterator = list.listIterator();
+        require(indexedIterator.nextIndex() == 0,
+                "ListIterator initial index");
+        Integer indexed = indexedIterator.next();
+        require(relation(indexed, "\"operation\":\"NEXT\""),
+                "ListIterator result");
+        require(indexedIterator.nextIndex() == 1,
+                "ListIterator advanced index");
+        indexedIterator.remove();
+        require(indexedIterator.nextIndex() == 0,
+                "ListIterator index after removal");
+        List<Integer> abstractList = new FixedAbstractList();
+        require(System.trackContainerExpression(
+                        abstractList, "REGION.container.in.abstract-list"),
+                "AbstractList live-in rejected");
+        ListIterator<Integer> abstractIterator = abstractList.listIterator();
+        require(abstractIterator.nextIndex() == 0,
+                "AbstractList iterator initial index");
+        require(relation(abstractIterator.next(),
+                        "\"operation\":\"NEXT\""),
+                "AbstractList iterator result");
         Integer peekResult = queue.peek();
         require(read(peekResult), "Queue.peek result");
         Integer pollResult = queue.poll();
@@ -87,6 +110,18 @@ public final class RegionContainerLiveInApiSmoke {
             System.err.println("missing " + operation + " in " + expression);
         }
         return matches;
+    }
+
+    private static final class FixedAbstractList
+            extends AbstractList<Integer> {
+        public Integer get(int index) {
+            if (index != 0) throw new IndexOutOfBoundsException();
+            return Integer.valueOf(239);
+        }
+
+        public int size() {
+            return 1;
+        }
     }
 
     private static void require(boolean condition, String detail) {

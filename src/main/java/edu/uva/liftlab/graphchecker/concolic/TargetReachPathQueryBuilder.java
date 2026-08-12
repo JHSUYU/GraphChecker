@@ -104,7 +104,13 @@ public final class TargetReachPathQueryBuilder {
                     "target replay contract does not match target site");
         }
         int targetOccurrence = targetReplay.source().occurrence();
-        boolean desiredOutcome = targetReplay.requiredTakenOutcome();
+        JsonElement fatalOutcome = seed.get("fatalRequiredTakenOutcome");
+        if (fatalOutcome == null || !fatalOutcome.isJsonPrimitive()
+                || !fatalOutcome.getAsJsonPrimitive().isBoolean()) {
+            throw new IOException(
+                    "target seed query has no fatal branch outcome");
+        }
+        boolean fatalRequiredOutcome = fatalOutcome.getAsBoolean();
 
         Map<String, JsonObject> pathsByKey = new LinkedHashMap<>();
         List<JsonObject> summaries = ArtifactIO.readJsonl(arguments.summaries,
@@ -144,7 +150,7 @@ public final class TargetReachPathQueryBuilder {
             JsonObject path = new JsonObject();
             final JsonArray constraints;
             if (targetMapping.witness().sourceTakenOutcome()
-                    == desiredOutcome) {
+                    == fatalRequiredOutcome) {
                 constraints = array(summary, "pathCondition").deepCopy();
                 path.addProperty("fatalBranchConditionAuthority",
                         "WITNESSED_TARGET_OUTCOME_V1");
@@ -194,7 +200,7 @@ public final class TargetReachPathQueryBuilder {
                 canonicalInstance);
         result.addProperty("targetSiteId", targetSite);
         result.addProperty("targetOccurrence", targetOccurrence);
-        result.addProperty("requiredTakenOutcome", desiredOutcome);
+        result.addProperty("requiredTakenOutcome", fatalRequiredOutcome);
         result.addProperty("targetExceptionType", arguments.exceptionType);
         result.add("paths", encodedPaths);
         result.add("seedReplayContract", remap(

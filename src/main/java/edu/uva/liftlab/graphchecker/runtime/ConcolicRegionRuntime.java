@@ -1453,6 +1453,41 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * Gives a selected arithmetic Atomic RMW a primitive pre-state shadow.
+     * The custom VM then replaces that exact {@code value} shadow with the
+     * post-state expression when the concrete Atomic method returns.
+     */
+    public static void prepareAtomicMutationStateOutput(
+            String captureBindingId, Object receiver) {
+        ActiveRegion active = activeRegion();
+        if (active == null) return;
+        OutputCaptureSpec request = active.activation.outputCapture(
+                captureBindingId);
+        if (request == null || !request.capturesMutationState()
+                || !active.captureEligible(request)) return;
+        String valueField = request.atomicArithmeticValueFieldSignature();
+        if (valueField.isEmpty() || receiver == null
+                || !active.claimAtomicMutationPreparation(
+                request, receiver)) return;
+
+        try {
+            if (declaredInstanceField(receiver, valueField) == null) {
+                throw new IllegalStateException(
+                        "atomic receiver has no exact value field");
+            }
+            EngineApi api = engine();
+            api.observeExactPrimitiveField(receiver, valueField);
+            ensurePathRecordingStarted(active);
+        } catch (Throwable throwable) {
+            active.addGuardedOutputCaptureFailure(
+                    request.captureBindingId(),
+                    request.captureBindingId()
+                    + ": atomic mutation pre-state observation failed: "
+                    + rootCause(throwable));
+        }
+    }
+
+    /**
      * Selects the exact mutator occurrence whose receiver will be captured
      * when the enclosing mutation method completes normally.  Deferring the
      * snapshot prevents a multi-write method from exporting a partial batch.
@@ -1493,12 +1528,18 @@ public final class ConcolicRegionRuntime {
                 pending.versionOrdinal);
         EngineApi api = engine();
         try {
-            if (!snapshotOutputContainer(pending.container, api)) {
-                throw new IllegalStateException(
-                        "mutation receiver is not a supported container");
+            JsonElement expression;
+            if (!request.atomicArithmeticValueFieldSignature().isEmpty()) {
+                expression = atomicMutationValueExpression(
+                        request, pending.container, api);
+            } else {
+                if (!snapshotOutputContainer(pending.container, api)) {
+                    throw new IllegalStateException(
+                            "mutation receiver is not a supported container");
+                }
+                expression = engineExpression(
+                        api.expression(pending.container));
             }
-            JsonElement expression = engineExpression(
-                    api.expression(pending.container));
             if (expression == null || expression.isJsonNull()) {
                 throw new IllegalStateException(
                         "custom VM returned no mutation-state expression");
@@ -2137,6 +2178,33 @@ public final class ConcolicRegionRuntime {
                     "custom VM rejected normal-exit container snapshot");
         }
         return true;
+    }
+
+    /** Reads the exact primitive state written by a supported Atomic RMW. */
+    private static JsonElement atomicMutationValueExpression(
+            OutputCaptureSpec request, Object receiver, EngineApi api)
+            throws Exception {
+        String fieldSignature = request
+                .atomicArithmeticValueFieldSignature();
+        DeclaredField declared = FieldPathSpec.declaredField(fieldSignature);
+        Field field = declaredInstanceField(receiver, fieldSignature);
+        if (declared == null || field == null) {
+            throw new IllegalStateException(
+                    "atomic receiver has no exact value field");
+        }
+        JsonElement encoded = parseJson(api.fieldExpression(
+                receiver, declared.owner(), declared.name(),
+                javaTypeDescriptor(declared.type()), field.get(receiver)));
+        if (!encoded.isJsonObject()
+                || !bool(encoded.getAsJsonObject(), "symbolic", false)
+                || !"VM_EXACT_FIELD_SHADOW_V1".equals(string(
+                encoded.getAsJsonObject(), "expressionAuthority"))) {
+            throw new IllegalStateException(
+                    "custom VM returned no symbolic Atomic value field");
+        }
+        JsonElement expression = encoded.getAsJsonObject().get("expression");
+        return expression == null || expression.isJsonNull()
+                ? null : expression;
     }
 
     /**
@@ -4921,6 +4989,7 @@ public final class ConcolicRegionRuntime {
         private int observed;
         private PendingMutationCapture pending;
         private boolean ambiguousContainer;
+        private Object atomicPreparedReceiver;
 
         /** How this invocation absorbed one selected mutation. */
         enum Selection { ANCHORED, FOLDED, AMBIGUOUS, IGNORED }
@@ -4946,6 +5015,13 @@ public final class ConcolicRegionRuntime {
             pending = null;
             ambiguousContainer = true;
             return Selection.AMBIGUOUS;
+        }
+
+        /** The first selected Atomic call owns this invocation's pre-state. */
+        boolean claimAtomicPreparation(Object receiver) {
+            if (atomicPreparedReceiver != null) return false;
+            atomicPreparedReceiver = receiver;
+            return true;
         }
 
         PendingMutationCapture pendingForTests() {
@@ -5247,6 +5323,22 @@ public final class ConcolicRegionRuntime {
                     request.captureBindingId(), ignored -> new ArrayDeque<>())
                     .push(new MutationMethodScope());
             loopBudgetScopes.push(++loopBudgetScopeSequence);
+        }
+
+        private boolean claimAtomicMutationPreparation(
+                OutputCaptureSpec request, Object receiver) {
+            if (!request.definitionInvocationScoped()) return true;
+            Deque<MutationMethodScope> scopes = mutationMethodScopes.get(
+                    request.captureBindingId());
+            MutationMethodScope scope = scopes == null
+                    ? null : scopes.peek();
+            if (scope == null) {
+                addUnresolvedOnce(request.captureBindingId()
+                        + ": atomic mutation hook executed outside its "
+                        + "definition invocation scope");
+                return false;
+            }
+            return scope.claimAtomicPreparation(receiver);
         }
 
         private MutationCaptureIndex nextMutationOutputCaptureOccurrence(
@@ -7218,6 +7310,7 @@ public final class ConcolicRegionRuntime {
         private final Method symbolizeWithPrefix;
         private final Method symbolizeField;
         private final Method symbolizeExactField;
+        private final Method observeExactPrimitiveField;
         private final Method snapshotContainer;
         private final Method trackContainer;
         private final Method getExpression;
@@ -7233,6 +7326,7 @@ public final class ConcolicRegionRuntime {
         private EngineApi(Method startRegion,
                           Method symbolizeWithPrefix, Method symbolizeField,
                           Method symbolizeExactField,
+                          Method observeExactPrimitiveField,
                           Method snapshotContainer,
                           Method trackContainer,
                           Method getExpression,
@@ -7246,6 +7340,7 @@ public final class ConcolicRegionRuntime {
             this.symbolizeWithPrefix = symbolizeWithPrefix;
             this.symbolizeField = symbolizeField;
             this.symbolizeExactField = symbolizeExactField;
+            this.observeExactPrimitiveField = observeExactPrimitiveField;
             this.snapshotContainer = snapshotContainer;
             this.trackContainer = trackContainer;
             this.getExpression = getExpression;
@@ -7312,6 +7407,23 @@ public final class ConcolicRegionRuntime {
             }
             symbolizeExactField.invoke(null, owner, field.owner(),
                     field.name(), javaTypeDescriptor(field.type()), prefix);
+        }
+
+        private void observeExactPrimitiveField(
+                Object owner, String fieldSignature) throws Exception {
+            DeclaredField field = FieldPathSpec.declaredField(
+                    safe(fieldSignature));
+            if (observeExactPrimitiveField == null) {
+                throw new UnsupportedOperationException(
+                        "custom concolic exact observed-field API is unavailable");
+            }
+            if (field == null) {
+                throw new UnsupportedOperationException(
+                        "no exact declared field for observed leaf: "
+                                + safe(fieldSignature));
+            }
+            observeExactPrimitiveField.invoke(null, owner, field.owner(),
+                    field.name(), javaTypeDescriptor(field.type()));
         }
 
         private boolean snapshotContainer(
@@ -7386,6 +7498,8 @@ public final class ConcolicRegionRuntime {
                     method(system, "symbolizeExactField", Object.class,
                             String.class, String.class, String.class,
                             String.class),
+                    method(system, "observeExactPrimitiveField", Object.class,
+                            String.class, String.class, String.class),
                     method(system, "snapshotContainerExpression",
                             Object.class, Object[].class, Object[].class,
                             int.class),

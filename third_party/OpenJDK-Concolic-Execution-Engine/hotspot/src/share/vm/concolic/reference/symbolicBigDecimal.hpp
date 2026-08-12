@@ -50,6 +50,7 @@ public:
     Expression::gc(_exp);
     _exp = exp;
     _exp->inc_ref();
+    mark_semantic_expression();
   };
 
   /**

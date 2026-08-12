@@ -82,6 +82,18 @@ public class RuntimeWorkflowDiscoveryTest {
         for (JsonObject component : components.values()) {
             component.addProperty("taskId", "TASK.SEED.shared-shape");
         }
+        boolean demotedSharedInput = false;
+        for (JsonObject component : components.values()) {
+            JsonObject input = component.getAsJsonArray("inputActions")
+                    .get(0).getAsJsonObject();
+            if (!demotedSharedInput
+                    && "REGION.P.in.0".equals(
+                    input.get("symbol").getAsString())) {
+                input.addProperty("mode", "CONCRETE");
+                demotedSharedInput = true;
+            }
+        }
+        assertTrue(demotedSharedInput);
         JsonObject complementaryEdge = new JsonObject();
         complementaryEdge.addProperty("edgeId", "EDGE.P.0");
         complementaryEdge.addProperty("fromOutputCell", "value0");
@@ -148,6 +160,13 @@ public class RuntimeWorkflowDiscoveryTest {
         assertEquals(5, task.getAsJsonObject("producerProjection")
                 .getAsJsonArray("edgeIds").size());
         assertEquals(3, task.getAsJsonArray("inputActions").size());
+        for (JsonElement inputElement : task.getAsJsonArray(
+                "inputActions")) {
+            JsonObject input = inputElement.getAsJsonObject();
+            if ("REGION.P.in.0".equals(input.get("symbol").getAsString())) {
+                assertEquals("SYMBOLIC", input.get("mode").getAsString());
+            }
+        }
         assertEquals(5, task.getAsJsonObject(
                 "occurrenceInstantiationCatalog")
                 .getAsJsonArray("occurrences").get(0).getAsJsonObject()

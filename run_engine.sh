@@ -54,7 +54,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|refined_regions|candidate_graph|refined_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|refined_regions|candidate_graph|refined_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|symbolic_selector_command|symbolic_selector_context|symbolic_selector_required|symbolic_selector_timeout_ms|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -94,6 +94,10 @@ reset_config() {
   runtime_edge_validations=""
   schedule_output_dir=""
   schedule_summaries=""
+  symbolic_selector_command=""
+  symbolic_selector_context=""
+  symbolic_selector_required=""
+  symbolic_selector_timeout_ms=""
   raw_concolic_results=""
   import_task_plan=""
   imported_summaries=""
@@ -174,6 +178,14 @@ apply_environment_overrides() {
   apply_env_override runtime_edge_validations CAUSYNTH_EDGE_VALIDATIONS
   apply_env_override schedule_output_dir CAUSYNTH_SCHEDULE_OUTPUT_DIR
   apply_env_override schedule_summaries CAUSYNTH_SCHEDULE_SUMMARIES
+  apply_env_override symbolic_selector_command \
+    CAUSYNTH_SYMBOLIC_SELECTOR_COMMAND
+  apply_env_override symbolic_selector_context \
+    CAUSYNTH_SYMBOLIC_SELECTOR_CONTEXT
+  apply_env_override symbolic_selector_required \
+    CAUSYNTH_SYMBOLIC_SELECTOR_REQUIRED
+  apply_env_override symbolic_selector_timeout_ms \
+    CAUSYNTH_SYMBOLIC_SELECTOR_TIMEOUT_MS
   apply_env_override raw_concolic_results CAUSYNTH_RAW_RESULTS
   apply_env_override import_task_plan CAUSYNTH_IMPORT_TASK_PLAN
   apply_env_override imported_summaries CAUSYNTH_IMPORTED_SUMMARIES
@@ -300,6 +312,8 @@ initialize_config() {
   solver_timeout_ms=${solver_timeout_ms:-20000}
   reach_max_inputs=${reach_max_inputs:-12}
   reach_max_valuations=${reach_max_valuations:-4096}
+  symbolic_selector_required=${symbolic_selector_required:-false}
+  symbolic_selector_timeout_ms=${symbolic_selector_timeout_ms:-120000}
 
   graphchecker_jar=$(resolve_path "${graphchecker_jar}")
   graphchecker_pom=$(resolve_path "${graphchecker_pom}")
@@ -315,6 +329,12 @@ initialize_config() {
   java_bin=$(resolve_executable "${java_bin}")
   maven_bin=$(resolve_executable "${maven_bin}")
   z3_bin=$(resolve_executable "${z3_bin}")
+  if [[ -n "${symbolic_selector_command}" ]]; then
+    symbolic_selector_command=$(resolve_path "${symbolic_selector_command}")
+  fi
+  if [[ -n "${symbolic_selector_context}" ]]; then
+    symbolic_selector_context=$(resolve_path "${symbolic_selector_context}")
+  fi
 
   if [[ -z "${project_classpath}" ]]; then
     project_classpath="${project_classes_dir}:${project_test_classes_dir}"
@@ -425,7 +445,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs causynth_protocol_stubs custom_jdk_home z3_bin workload_work_dir workload_command trace_test refined_regions candidate_graph refined_graph runtime_region_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_task_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs causynth_protocol_stubs custom_jdk_home z3_bin workload_work_dir workload_command trace_test refined_regions candidate_graph refined_graph runtime_region_plan runtime_edge_validations schedule_output_dir symbolic_selector_command symbolic_selector_context symbolic_selector_required symbolic_selector_timeout_ms raw_concolic_results import_task_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -455,6 +475,25 @@ validate_config() {
     ''|*[!0-9]*) die "reach_max_valuations must be a positive integer" ;;
     0) die "reach_max_valuations must be greater than zero" ;;
   esac
+  case "${symbolic_selector_timeout_ms}" in
+    ''|*[!0-9]*) die "symbolic_selector_timeout_ms must be a positive integer" ;;
+    0) die "symbolic_selector_timeout_ms must be greater than zero" ;;
+  esac
+  case "${symbolic_selector_required}" in
+    true|false) ;;
+    *) die "symbolic_selector_required must be true or false" ;;
+  esac
+  if [[ "${symbolic_selector_required}" == true \
+      && -z "${symbolic_selector_command}" ]]; then
+    die "symbolic_selector_required=true needs symbolic_selector_command"
+  fi
+  if [[ -n "${symbolic_selector_command}" \
+      && ! -x "${symbolic_selector_command}" ]]; then
+    die "symbolic selector command is not executable: ${symbolic_selector_command}"
+  fi
+  if [[ -n "${symbolic_selector_context}" ]]; then
+    require_file "symbolic selector context" "${symbolic_selector_context}"
+  fi
   echo "Workflow configuration is valid."
 }
 
@@ -484,6 +523,9 @@ do_analyze() {
     "-Dcausynth.output.dir=${causynth_output_dir}"
     "-Dcausynth.target.spec=${causynth_target_spec}"
   )
+  if [[ -n "${trace_test}" ]]; then
+    system_properties+=("-Dcausynth.trace.test=${trace_test}")
+  fi
   if [[ -n "${causynth_analysis_scope}" ]]; then
     system_properties+=("-Dcausynth.analysis.scope=${causynth_analysis_scope}")
   fi
@@ -546,6 +588,14 @@ do_schedule() {
     require_file "scheduler summaries" "${schedule_summaries}"
     args+=(--summaries "${schedule_summaries}")
   fi
+  if [[ -n "${symbolic_selector_command}" ]]; then
+    args+=(--symbolic-selector-command "${symbolic_selector_command}")
+  fi
+  if [[ -n "${symbolic_selector_context}" ]]; then
+    args+=(--symbolic-selector-context "${symbolic_selector_context}")
+  fi
+  args+=(--symbolic-selector-required "${symbolic_selector_required}")
+  args+=(--symbolic-selector-timeout-ms "${symbolic_selector_timeout_ms}")
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
     "${args[@]}" "$@"
 }

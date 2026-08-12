@@ -2311,7 +2311,8 @@ public class RuntimeRegionPlannerTest {
     @Test
     public void fatalGapUsesSelectedStaticSiteOccurrenceNotLastOccurrence()
             throws Exception {
-        Map<String, Object> ready = multiOccurrenceFatalSiteGapGoal(false);
+        Map<String, Object> ready = multiOccurrenceFatalSiteGapGoal(
+                false, false);
         assertEquals("READY", ((Map<?, ?>) ready.get("admission"))
                 .get("state"));
         Map<String, Object> branch = rows(ready.get("branches")).get(0);
@@ -2324,13 +2325,26 @@ public class RuntimeRegionPlannerTest {
                 "admission")).get("blockers")).contains(
                 "BETWEEN_SELECTED_AND_LAST"));
 
-        Map<String, Object> blocked = multiOccurrenceFatalSiteGapGoal(true);
+        Map<String, Object> blocked = multiOccurrenceFatalSiteGapGoal(
+                true, false);
         assertEquals("BLOCKED", ((Map<?, ?>) blocked.get("admission"))
                 .get("state"));
         String blockers = String.valueOf(((Map<?, ?>) blocked.get(
                 "admission")).get("blockers"));
         assertTrue(blockers.contains("BEFORE_SELECTED_OCCURRENCE"));
         assertFalse(blockers.contains("BETWEEN_SELECTED_AND_LAST"));
+    }
+
+    @Test
+    public void fatalPrefixSelectsContextForEligibleStaticSite()
+            throws Exception {
+        Map<String, Object> goal = multiOccurrenceFatalSiteGapGoal(
+                false, true);
+
+        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        assertEquals(Collections.emptyList(), ((Map<?, ?>) goal.get(
+                "admission")).get("blockers"));
     }
 
     @Test
@@ -3264,7 +3278,8 @@ public class RuntimeRegionPlannerTest {
     }
 
     private Map<String, Object> multiOccurrenceFatalSiteGapGoal(
-            boolean includePrecedingGap) throws Exception {
+            boolean includePrecedingGap, boolean includeUnrelatedContext)
+            throws Exception {
         String leaf = "<example.Key: int keyId>";
         String value = TARGET + "::i0";
         List<Map<String, Object>> gaps = new ArrayList<>();
@@ -3291,10 +3306,16 @@ public class RuntimeRegionPlannerTest {
                         TARGET + "#u2", 2));
         Map<String, Object> activation = activation("REGION.1", 1, ROOT,
                 Arrays.asList(1L, 2L));
-        activation.put("fatalPrefixContexts", Collections.singletonList(
-                object("siteId", TARGET + "#u4", "occurrence", 1,
-                        "eventSeq", 10L, "authority",
-                        "EXACT_FATAL_BRANCH_OCCURRENCE_PREFIX_V1")));
+        Map<String, Object> selectedContext = object(
+                "siteId", TARGET + "#u4", "occurrence", 1,
+                "eventSeq", 10L, "authority",
+                "EXACT_FATAL_BRANCH_OCCURRENCE_PREFIX_V1");
+        activation.put("fatalPrefixContexts", includeUnrelatedContext
+                ? Arrays.asList(object("siteId", TARGET + "#u3",
+                        "occurrence", 1, "eventSeq", 5L, "authority",
+                        "EXACT_FATAL_BRANCH_OCCURRENCE_PREFIX_V1"),
+                        selectedContext)
+                : Collections.singletonList(selectedContext));
         RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
                 regions, regionEdges, refined,
                 Collections.singletonList(activation), methods(),

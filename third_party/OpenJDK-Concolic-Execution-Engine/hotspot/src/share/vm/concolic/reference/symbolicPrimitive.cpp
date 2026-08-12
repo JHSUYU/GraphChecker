@@ -190,6 +190,7 @@ template <> Expression *SymPrimitive<jchar>::finish_method_helper(MethodSymboliz
         vmSymbols::char_signature(),
         handle
     );
+    return handle.get_param_list()[0];
   }
   return NULL;
 }
@@ -205,8 +206,9 @@ template <> Expression *SymPrimitive<jboolean>::finish_method_helper(MethodSymbo
         vmSymbols::bool_signature(),
         handle
     );
+    return handle.get_param_list()[0];
   }
-    return NULL;
+  return NULL;
 }
 template <> Expression *SymPrimitive<jbyte>::finish_method_helper(MethodSymbolizerHandle &handle) {
   ResourceMark rm;
@@ -219,8 +221,9 @@ template <> Expression *SymPrimitive<jbyte>::finish_method_helper(MethodSymboliz
         vmSymbols::byte_signature(),
         handle
     );
+    return handle.get_param_list()[0];
   }
-    return NULL;
+  return NULL;
 }
 
 template <> Expression * SymPrimitive<jint>::finish_method_helper(MethodSymbolizerHandle &handle) {
@@ -245,6 +248,7 @@ template <> Expression * SymPrimitive<jint>::finish_method_helper(MethodSymboliz
         vmSymbols::int_signature(),
         handle
     );
+    return handle.get_param_list()[0];
   }
 
   return NULL;
@@ -261,8 +265,9 @@ template <> Expression * SymPrimitive<jshort>::finish_method_helper(MethodSymbol
         vmSymbols::short_signature(),
         handle
     );
+    return handle.get_param_list()[0];
   }
-    return NULL;
+  return NULL;
 }
 
 template <> Expression * SymPrimitive<jlong>::finish_method_helper(MethodSymbolizerHandle &handle) {
@@ -283,7 +288,7 @@ template <> Expression * SymPrimitive<jlong>::finish_method_helper(MethodSymboli
         vmSymbols::long_signature(),
         handle
     );
-    return NULL;
+    return handle.get_param_list()[0];
   }
 
   return NULL;
@@ -308,6 +313,7 @@ SymPrimitive<T>::set_symbolic_field(oop obj, Symbol *fld_name, Symbol *fld_tp_si
       &fd
   );
   sym_inst->set_sym_exp(fd.offset(), exp);
+  sym_inst->mark_semantic_expression();
 }
 
 template<class T>

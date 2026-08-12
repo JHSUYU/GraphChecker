@@ -1012,6 +1012,8 @@ schedule_target_first_closure() {
     "${staging}/execution_task_plan.jsonl"
   require_file "target-first branch query plan" \
     "${staging}/branch_queries.jsonl"
+  require_file "symbolic input selection audit" \
+    "${staging}/symbolic_input_selections.jsonl"
   require_nonempty_file "target-first workflow index" \
     "${staging}/runtime_workflow_schedule_index.json"
   require_nonempty_file "selected target binding" \
@@ -1031,6 +1033,8 @@ schedule_target_first_closure() {
     "${schedule}/execution_task_plan.jsonl"
   publish_file_atomically "${staging}/branch_queries.jsonl" \
     "${schedule}/branch_queries.jsonl"
+  publish_file_atomically "${staging}/symbolic_input_selections.jsonl" \
+    "${schedule}/symbolic_input_selections.jsonl"
   publish_file_atomically "${staging}/selected_target_binding.tsv" \
     "${schedule}/selected_target_binding.tsv"
   publish_file_atomically "${staging}/selected_closure_bindings.tsv" \
@@ -1445,11 +1449,20 @@ prepare_target_branch_query() {
   local instance=$3
   local goal=$4
   local query_dir="${campaign}/target-query"
+  local target_edge_ids
+  target_edge_ids=$(jq -er '
+    [.edgeBindings[]?.edgeId
+      | select(type == "string" and length > 0)]
+    | unique
+    | if length > 0 then join(",")
+      else error("selected target task has no exact edge binding") end
+  ' "${campaign}/execution_task_plan.jsonl")
   mkdir -p "${query_dir}"
   CAUSYNTH_SCHEDULE_OUTPUT_DIR="${query_dir}" \
     CAUSYNTH_SCHEDULE_SUMMARIES="${campaign}/seed-summaries.jsonl" \
     do_engine_config schedule --region-id "${region}" \
-      --region-instance-id "${instance}" --goal-id "${goal}"
+      --region-instance-id "${instance}" --goal-id "${goal}" \
+      --target-edge-ids "${target_edge_ids}"
   require_nonempty_file "target branch query" \
     "${query_dir}/branch_queries.jsonl"
 }
@@ -1700,6 +1713,8 @@ reach_satisfies_required_true_ports() {
 
 probe_observed_candidate() {
   [[ "${partial_probe_enabled:-false}" == true ]] || return 1
+  [[ "${CAUSYNTH_REQUIRE_COMPLETE_CANDIDATE:-false}" != true ]] \
+    || return 1
   local fingerprint attempt compose_summaries reachability source snapshot
   local degeneracy
   local index=0
@@ -2167,6 +2182,14 @@ run_candidate_for_target() {
     CAUSYNTH_FATAL_REGION_INSTANCE_ID="${target_instance}" \
     do_engine_config compose
   require_nonempty_file "composed candidate SMT" "${output}/candidate.smt2"
+  if [[ "${CAUSYNTH_REQUIRE_COMPLETE_CANDIDATE:-false}" == true ]]; then
+    jq -e '.state == "CANDIDATE_READY" and
+      .trustState == "CANDIDATE_ONLY" and
+      .pathSetComplete == true and
+      ((.gaps // []) | length == 0)' \
+      "${output}/composition.json" >/dev/null \
+      || die "candidate is not a gap-free complete path set: ${output}"
+  fi
   CAUSYNTH_COMPOSED_SMT="${output}/candidate.smt2" \
     CAUSYNTH_COMPOSITION_MANIFEST="${output}/composition.json" \
     CAUSYNTH_REACH_REPORT="${output}/z3-result.json" \
@@ -2184,6 +2207,10 @@ run_candidate_for_target() {
   # found nothing.
   degeneracy=$(jq -er '.reachCondition.degeneracyCheck
     // "UNDECIDED_VERDICT_NOT_PUBLISHED"' "${output}/z3-result.json")
+  if [[ "${CAUSYNTH_REQUIRE_COMPLETE_CANDIDATE:-false}" == true \
+      && "${degeneracy}" != CONSTRAINED_* ]]; then
+    die "candidate reach condition is not proven constrained (${degeneracy}): ${output}"
+  fi
   jq -n --arg campaign "${target_campaign_id}" \
     --arg region "${target_region}" --arg instance "${target_instance}" \
     --arg goal "${target_goal}" --arg reachability "${reachability}" \

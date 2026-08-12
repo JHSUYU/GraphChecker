@@ -17,6 +17,8 @@ std::set<std::string> SymList::init_target_class_names() {
   set.insert("java/util/Deque");
   set.insert("java/util/ArrayList");
   set.insert("java/util/AbstractList");
+  set.insert("java/util/AbstractList$Itr");
+  set.insert("java/util/AbstractList$ListItr");
   set.insert("java/util/ArrayList$Itr");
   set.insert("java/util/ArrayList$ListItr");
   set.insert("java/util/ArrayDeque");
@@ -38,8 +40,10 @@ std::set<std::string> SymList::init_handle_method_names() {
   set.insert("size");
   set.insert("toArray");
   set.insert("iterator");
+  set.insert("listIterator");
   set.insert("hasNext");
   set.insert("next");
+  set.insert("nextIndex");
   set.insert("offer");
   set.insert("poll");
   set.insert("peek");
@@ -56,6 +60,24 @@ void SymList::init_register_class(MethodSymbolizer *m_symbolizer) {
 
 bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &callee_name = handle.get_callee_name();
+  if (ContainerSupport::claims_state(handle)) {
+    // Reject cursor contracts before their bodies can throw and bypass the
+    // finish hook that maintains the modeled container state.
+    Method *callee = handle.get_callee_method();
+    oop receiver = handle.get_param<oop>(0);
+    if (callee_name == "listIterator"
+        && callee->size_of_parameters() != 1) {
+      ConcolicMngr::ctx->abort_symbolic_execution(
+          "INDEXED_LIST_ITERATOR_OFFSET_UNSUPPORTED");
+      return false;
+    }
+    if ((callee_name == "add" || callee_name == "set")
+        && !ContainerSupport::indexed(receiver)) {
+      ConcolicMngr::ctx->abort_symbolic_execution(
+          "INDEXED_LIST_ITERATOR_MUTATOR_UNSUPPORTED");
+      return false;
+    }
+  }
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
     bool recording = handle.general_check_param_symbolized();
     if (recording) {
@@ -152,7 +174,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
       || method == "contains" || method == "isEmpty"
       || method == "clear" || method == "size"
       || method == "toArray"
-      || method == "iterator");
+      || method == "iterator" || method == "listIterator");
   if (list_operation) {
     receiver = ConcolicMngr::ctx->container_state(
         receiver_object, "INDEXED");
@@ -162,6 +184,11 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
   exp_list_t arguments;
   for (size_t index = 1; index < parameters.size(); ++index) {
     arguments.push_back(parameters[index]);
+  }
+  if (!root_container && (method == "add" || method == "set")) {
+    ConcolicMngr::ctx->abort_symbolic_execution(
+        "INDEXED_LIST_ITERATOR_MUTATOR_UNSUPPORTED");
+    return NULL;
   }
   if (method == "toArray") {
     return published_array(handle, root_container ? receiver : NULL,
@@ -302,12 +329,23 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     ContainerSupport::constrain_result(handle, result);
     return result;
   }
+  if (method == "nextIndex" && arguments.empty()) {
+    Expression *result = new ConExpression((jint)
+        ConcolicMngr::ctx->current_container_index(receiver_object));
+    ContainerSupport::constrain_result(handle, result);
+    return result;
+  }
+  if (method == "listIterator" && !arguments.empty()) {
+    ConcolicMngr::ctx->abort_symbolic_execution(
+        "INDEXED_LIST_ITERATOR_OFFSET_UNSUPPORTED");
+    return NULL;
+  }
   const char *operation = method == "get"
           || method == "peek" || method == "element" ? "READ"
       : method == "contains" ? "CONTAINS"
       : method == "size" ? "SIZE"
       : method == "isEmpty" ? "IS_EMPTY"
-      : method == "iterator" ? "ITERATOR"
+      : method == "iterator" || method == "listIterator" ? "ITERATOR"
       : method == "next" ? "NEXT" : NULL;
   if (operation == NULL) return NULL;
   if (method == "next") {
@@ -328,12 +366,13 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
       "INDEXED", operation, receiver, arguments, result_type,
       ContainerSupport::java_type(result_object,
                                   handle.get_result_type()));
-  if (method != "iterator") {
+  if (method != "iterator" && method != "listIterator") {
     ContainerSupport::constrain_result(handle, result);
   }
   if (result_object != NULL) {
     ContainerSupport::attach_result(result_object, result,
-        method == "iterator" ? receiver_object : NULL);
+        method == "iterator" || method == "listIterator"
+            ? receiver_object : NULL);
   }
   return result;
 }

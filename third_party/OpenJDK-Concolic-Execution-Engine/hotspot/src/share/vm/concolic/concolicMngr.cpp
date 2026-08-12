@@ -179,6 +179,13 @@ jlong ConcolicMngr::startConcolicRegion(JavaThread *thread,
   jlong result = startConcolic(thread);
   if (result == 0 && ctx != NULL) {
     ctx->set_region_metadata(region_id, task_id);
+    // A selected region can begin long before its first materialized input.
+    // Keep shadow frames tracking across that concrete prefix, but do not
+    // admit ambient library predicates into the path condition.  The first
+    // explicit symbolize/track/observe operation below opens this gate before
+    // installing its input expression.  Legacy startConcolic() retains its
+    // eager recording behavior.
+    ctx->set_pc_admitted(false);
   }
   return result;
 }
@@ -375,8 +382,12 @@ bool ConcolicMngr::trackContainerExpression(
   }
   oop target = container();
   const char *shape = ContainerSupport::shape(target);
-  return shape != NULL
-      && ctx->track_container(target, shape, std::string(prefix)) != NULL;
+  if (shape == NULL) return false;
+  Expression *tracked =
+      ctx->track_container(target, shape, std::string(prefix));
+  if (tracked == NULL) return false;
+  ctx->set_pc_admitted(true);
+  return true;
 }
 
 bool ConcolicMngr::snapshotContainerExpression(
@@ -601,6 +612,7 @@ void ConcolicMngr::printSymExp(Handle handle) {
 void ConcolicMngr::symbolize(Handle handle) {
   if (can_explicitly_symbolize()) {
     tty->print("Symbolize!\n");
+    ctx->set_pc_admitted(true);
     int pause_depth = ctx->path_condition_pause_depth();
     while (ctx->path_condition_pause_depth() > 0) {
       ctx->resume_path_condition_recording();
@@ -618,6 +630,7 @@ void ConcolicMngr::symbolize(Handle handle) {
 void ConcolicMngr::symbolize(Handle handle, const char* prefix) {
   if (can_explicitly_symbolize()) {
     tty->print("Symbolize!\n");
+    ctx->set_pc_admitted(true);
     int pause_depth = ctx->path_condition_pause_depth();
     while (ctx->path_condition_pause_depth() > 0) {
       ctx->resume_path_condition_recording();
@@ -636,6 +649,7 @@ void ConcolicMngr::symbolizeField(Handle handle, const char* field_name,
                                   const char* prefix) {
   if (can_explicitly_symbolize()) {
     tty->print("Symbolize field!\n");
+    ctx->set_pc_admitted(true);
     int pause_depth = ctx->path_condition_pause_depth();
     while (ctx->path_condition_pause_depth() > 0) {
       ctx->resume_path_condition_recording();
@@ -661,6 +675,7 @@ void ConcolicMngr::symbolizeExactField(
       && descriptor != NULL && descriptor[0] != '\0'
       && prefix != NULL && prefix[0] != '\0') {
     tty->print("Symbolize exact field!\n");
+    ctx->set_pc_admitted(true);
     int pause_depth = ctx->path_condition_pause_depth();
     while (ctx->path_condition_pause_depth() > 0) {
       ctx->resume_path_condition_recording();
@@ -675,6 +690,42 @@ void ConcolicMngr::symbolizeExactField(
     tty->print_cr(
         "Warning: symbolizeExactField called without an eligible field");
   }
+}
+
+void ConcolicMngr::observeExactPrimitiveField(
+    Handle owner, const char *declaring_class, const char *field_name,
+    const char *descriptor) {
+  if (!can_explicitly_symbolize() || owner.is_null()
+      || declaring_class == NULL || declaring_class[0] == '\0'
+      || field_name == NULL || field_name[0] == '\0'
+      || descriptor == NULL || descriptor[0] == '\0') {
+    tty->print_cr(
+        "Warning: observeExactPrimitiveField called without an eligible field");
+    return;
+  }
+
+  ResourceMark rm;
+  fieldDescriptor field;
+  Klass *declaring = OopUtils::get_local_fd_by_name(
+      owner(), std::string(declaring_class), std::string(field_name),
+      std::string(descriptor), field);
+  if (declaring == NULL || field.is_static()
+      || (strcmp(descriptor, "I") != 0
+          && strcmp(descriptor, "J") != 0)) {
+    tty->print_cr(
+        "Warning: observeExactPrimitiveField supports only exact int/long fields");
+    return;
+  }
+
+  SymInstance *instance = ctx->get_or_alloc_sym_inst(owner());
+  if (instance == NULL) return;
+  Expression *observed = strcmp(descriptor, "I") == 0
+      ? static_cast<Expression *>(
+          new ConExpression(owner()->int_field(field.offset())))
+      : static_cast<Expression *>(
+          new ConExpression(owner()->long_field(field.offset())));
+  instance->set_sym_exp(field.offset(), observed);
+  ctx->set_pc_admitted(true);
 }
 
 void ConcolicMngr::symbolizeMethod(Handle holder_name_handle,

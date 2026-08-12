@@ -528,6 +528,15 @@ public final class System {
             String descriptor, String prefix);
 
     /**
+     * Attaches the currently observed int or long value to one exact field.
+     * This creates a concrete expression leaf for a selected state mutation;
+     * it does not add a symbolic input.
+     */
+    public static native void observeExactPrimitiveField(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor);
+
+    /**
      * make an method symbolic
      */
     public static native void symbolizeMethod(Object holder_name, Object callee_name);

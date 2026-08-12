@@ -17,11 +17,13 @@
 class SymInstance : public SymRef {
 private:
   bool _demand_symbolic_fields;
+  bool _semantic_expression;
   std::set<int> _written_fields;
 
 public:
   SymInstance(sym_rid_t sym_rid)
-      : SymRef(sym_rid), _demand_symbolic_fields(false) {}
+      : SymRef(sym_rid), _demand_symbolic_fields(false),
+        _semantic_expression(false) {}
   ~SymInstance() {}
 
   inline void enable_demand_symbolic_fields() {
@@ -30,6 +32,22 @@ public:
 
   inline bool demand_symbolic_fields_enabled() const {
     return _demand_symbolic_fields;
+  }
+
+  // An allocated shadow only gives the VM a place to store identity and
+  // field metadata.  It does not by itself make every call receiving that
+  // object symbolic.  Explicit inputs and derived results mark the attached
+  // expression as semantic; default InstanceSymbolExp identities do not.
+  inline void mark_semantic_expression() {
+    _semantic_expression = true;
+  }
+
+  inline void clear_semantic_expression() {
+    _semantic_expression = false;
+  }
+
+  inline bool has_semantic_expression() const {
+    return _semantic_expression;
   }
 
   inline void mark_field_written(int field_offset) {
@@ -47,8 +65,10 @@ public:
   virtual Expression *get_or_create_ref_exp(oop obj) {
     Expression *exp = get_ref_exp();
     if (exp == NULL) {
+      bool was_semantic = has_semantic_expression();
       exp = create_ref_exp(obj);
       set_ref_exp(exp);
+      if (!was_semantic) clear_semantic_expression();
     }
     return exp;
   }

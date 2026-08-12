@@ -53,7 +53,8 @@ public:
 
 ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
     : _thread(jt), _s_stack(jt), _sym_rid_counter(), _sym_tmp_id_counter(),
-      _path_condition_enabled(true), _path_condition_pause_depth(0),
+      _path_condition_enabled(true), _path_condition_admitted(true),
+      _path_condition_pause_depth(0),
       _aborted(false),
       _context_id(context_id),
       _owner_java_thread_id(jt == NULL || jt->threadObj() == NULL
@@ -77,6 +78,7 @@ void ThreadContext::abort_symbolic_execution(const char *reason) {
   _aborted = true;
   _abort_reason = reason == NULL ? "UNSPECIFIED" : reason;
   _path_condition_enabled = false;
+  _path_condition_admitted = false;
   cancel_pending_branch();
 }
 
@@ -124,7 +126,7 @@ void ThreadContext::record_branch_condition(Expression *expression,
 
 void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
                                               bool outcome, int opcode) {
-  if (_aborted || !_path_condition_enabled
+  if (_aborted || !_path_condition_enabled || !_path_condition_admitted
       || _path_condition_pause_depth > 0) {
     // A marker identifies one concrete branch execution, not the next branch
     // after recording happens to resume.
@@ -422,6 +424,14 @@ int ThreadContext::current_container_position(oop cursor) {
   return _container_positions[instance->get_sym_rid()];
 }
 
+int ThreadContext::current_container_index(oop cursor) {
+  if (cursor == NULL || cursor->is_array()) return 0;
+  SymInstance *instance = get_or_alloc_sym_inst(cursor);
+  if (instance == NULL) return 0;
+  sym_rid_t id = instance->get_sym_rid();
+  return _container_positions[id] - _container_removals[id];
+}
+
 int ThreadContext::next_container_removal_position(oop cursor) {
   if (cursor == NULL || cursor->is_array()) return -1;
   SymInstance *instance = get_or_alloc_sym_inst(cursor);
@@ -619,6 +629,13 @@ void ThreadContext::symbolize_recursive(oop obj) {
 
   FieldSymbolizer field_symbolzier(obj, *this);
   field_symbolzier.do_recursive();
+  if (obj != NULL && obj->is_array()) {
+    SymArr *array = find_sym_array((arrayOop)obj);
+    if (array != NULL) array->mark_semantic_expression();
+  } else if (obj != NULL) {
+    SymInstance *instance = find_sym_inst(obj);
+    if (instance != NULL) instance->mark_semantic_expression();
+  }
   // OopTraverser oop_traverser;
   // tty->print_cr(CL_CYAN"================================================================="CNONE);
   // obj->oop_iterate(&oop_traverser);
@@ -638,9 +655,11 @@ void ThreadContext::symbolize_recursive(oop obj, std::string prefix) {
     if (array != NULL) {
       array->set_ref_exp(new FieldSymbolExp(
           array->get_sym_rid(), prefix, T_ARRAY));
+      array->mark_semantic_expression();
     }
   } else if (obj != NULL) {
     SymInstance *instance = find_sym_inst(obj);
+    if (instance != NULL) instance->mark_semantic_expression();
     ResourceMark rm;
     BasicType boxed_type = primitive_target(
         std::string(obj->klass()->name()->as_C_string()));
@@ -666,6 +685,8 @@ void ThreadContext::symbolize_field(Handle handle, std::string field_name,
                                     std::string prefix) {
   FieldSymbolizer field_symbolizer(handle(), *this, prefix, field_name);
   field_symbolizer.do_once();
+  SymInstance *owner = find_sym_inst(handle());
+  if (owner != NULL) owner->mark_semantic_expression();
 }
 
 void ThreadContext::symbolize_exact_field(
@@ -674,6 +695,8 @@ void ThreadContext::symbolize_exact_field(
   FieldSymbolizer field_symbolizer(
       owner(), *this, prefix, declaring_class, field_name, descriptor);
   field_symbolizer.do_once();
+  SymInstance *instance = find_sym_inst(owner());
+  if (instance != NULL) instance->mark_semantic_expression();
 }
 
 sym_tmp_id_t ThreadContext::get_next_sym_tmp_id(Expression *sym_exp) {
@@ -809,6 +832,12 @@ PathCondition &ThreadContext::get_path_condition() {
 void ThreadContext::set_pc_enabled(bool pathConditionEnabled) {
   if (!_aborted) {
     _path_condition_enabled = pathConditionEnabled;
+  }
+}
+
+void ThreadContext::set_pc_admitted(bool pathConditionAdmitted) {
+  if (!_aborted) {
+    _path_condition_admitted = pathConditionAdmitted;
   }
 }
 

@@ -462,6 +462,32 @@ JVM_ENTRY(void, JVM_SymbolizeExactField(
 #endif
 JVM_END
 
+JVM_ENTRY(void, JVM_ObserveExactPrimitiveField(
+    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
+    jstring field_name, jstring descriptor))
+  JVMWrapper("JVM_ObserveExactPrimitiveField");
+#ifdef ENABLE_CONCOLIC
+  if (owner == NULL || declaring_class == NULL || field_name == NULL
+      || descriptor == NULL) {
+    guarantee(false,
+        "JVM_ObserveExactPrimitiveField: arguments must be non-null");
+  }
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle field_owner(THREAD, JNIHandles::resolve_non_null(owner));
+  const char *holder = java_lang_String::as_utf8_string(
+      JNIHandles::resolve_non_null(declaring_class));
+  const char *name = java_lang_String::as_utf8_string(
+      JNIHandles::resolve_non_null(field_name));
+  const char *type = java_lang_String::as_utf8_string(
+      JNIHandles::resolve_non_null(descriptor));
+  ConcolicMngr::observeExactPrimitiveField(
+      field_owner, holder, name, type);
+#else
+  return;
+#endif
+JVM_END
+
 JVM_ENTRY(void, JVM_PrintSymExp(JNIEnv *env, jclass ignored, jobject obj))
   JVMWrapper("JVM_PrintSymExp");
 #ifdef ENABLE_CONCOLIC

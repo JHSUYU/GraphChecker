@@ -41,11 +41,13 @@ public class SeedBackwardStaticAnalyzerTest {
     public void resetBefore() {
         soot.G.reset();
         System.clearProperty("causynth.protocol.stubs");
+        System.clearProperty("causynth.trace.test");
     }
 
     @After
     public void resetAfter() {
         System.clearProperty("causynth.protocol.stubs");
+        System.clearProperty("causynth.trace.test");
         soot.G.reset();
     }
 
@@ -109,6 +111,7 @@ public class SeedBackwardStaticAnalyzerTest {
         ExceptionTargetSite site = new ExceptionTargetSite(
                 "explicit-fault", owner.getName(), run.getName(), "()V",
                 run.getSignature(), failure.getName(), 0, -1);
+        System.setProperty("causynth.trace.test", "FaultCaller.run");
         StaticProgram program = new SeedBackwardStaticAnalyzer(
                 new CausynthTargetContext(null, null, site.id, site,
                         "TEST")).analyze();
@@ -122,6 +125,8 @@ public class SeedBackwardStaticAnalyzerTest {
         assertEquals(makeSymbolic.getSignature() + ".return",
                 edge.get("fromCell"));
         assertEquals("FUNCTION_RETURN", edge.get("transferKind"));
+        assertEquals("WORKLOAD_ENTRY",
+                program.executionContextAuthorities.get(run.getSignature()));
     }
 
     @Test
@@ -424,6 +429,51 @@ public class SeedBackwardStaticAnalyzerTest {
         assertEquals(expiry.getSignature(), edge.get("fromCell"));
         assertEquals(getter.getSignature(),
                 edge.get("accessorImplementationMethod"));
+    }
+
+    @Test
+    public void atomicGetAndDecrementIsAnApplicationFieldMutation()
+            throws Exception {
+        AtomicMutationFixture fixture = atomicMutationFixture(
+                "java.util.concurrent.atomic.AtomicInteger", false);
+
+        assertTrue(hasEdge(fixture.program, "accessor_field_return",
+                fixture.value.getSignature(),
+                fixture.check.getSignature() + "::observed"));
+        Map<String, Object> mutation = fixture.program.edges.stream()
+                .filter(edge -> "field_mutation".equals(edge.get("kind")))
+                .filter(edge -> fixture.decrement.getSignature().equals(
+                        edge.get("method")))
+                .filter(edge -> fixture.holderField.getSignature().equals(
+                        edge.get("toCell")))
+                .filter(edge -> fixture.mutator.getSignature().equals(
+                        edge.get("invoke")))
+                .findFirst().orElse(null);
+        assertNotNull(mutation);
+        assertEquals("HEAP_WRITE", mutation.get("transferKind"));
+        assertEquals(fixture.decrement.getSignature() + "#u1",
+                mutation.get("fromCell"));
+        assertTrue(fixture.program.traceMethods.contains(
+                fixture.decrement.getSignature()));
+    }
+
+    @Test
+    public void ordinaryGetAndDecrementNameIsNotAFieldMutation()
+            throws Exception {
+        AtomicMutationFixture fixture = atomicMutationFixture(
+                "example.OrdinaryCounter", true);
+
+        assertTrue(hasEdge(fixture.program, "accessor_field_return",
+                fixture.value.getSignature(),
+                fixture.check.getSignature() + "::observed"));
+        assertFalse(fixture.program.edges.stream().anyMatch(edge ->
+                "field_mutation".equals(edge.get("kind"))
+                        && fixture.decrement.getSignature().equals(
+                        edge.get("method"))
+                        && fixture.holderField.getSignature().equals(
+                        edge.get("toCell"))));
+        assertFalse(fixture.program.traceMethods.contains(
+                fixture.decrement.getSignature()));
     }
 
     @Test
@@ -891,6 +941,111 @@ public class SeedBackwardStaticAnalyzerTest {
         return method;
     }
 
+    private static AtomicMutationFixture atomicMutationFixture(
+            String counterName, boolean applicationCounter) throws Exception {
+        SootClass object = libraryClass("java.lang.Object");
+        SootClass runtimeException = libraryClass(
+                "java.lang.RuntimeException");
+        runtimeException.setSuperclass(object);
+        SootMethod runtimeConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        runtimeException.addMethod(runtimeConstructor);
+
+        SootClass counter = applicationCounter
+                ? applicationClass(counterName, object)
+                : libraryClass(counterName);
+        if (!applicationCounter) counter.setSuperclass(object);
+        SootField value = new SootField("value", IntType.v(),
+                Modifier.PRIVATE);
+        counter.addField(value);
+        SootMethod getter = primitiveCounterAccessor(counter, value, "get");
+        SootMethod mutator = primitiveCounterAccessor(counter, value,
+                "getAndDecrement");
+
+        SootClass failure = applicationClass(
+                "example.AtomicCounterFailure", runtimeException);
+        SootMethod failureConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        failure.addMethod(failureConstructor);
+        constructorBody(failureConstructor, runtimeConstructor);
+
+        SootClass holder = applicationClass("example.AtomicCounterHolder",
+                object);
+        SootField holderField = new SootField("counter",
+                RefType.v(counter.getName()), Modifier.PUBLIC | Modifier.STATIC);
+        holder.addField(holderField);
+
+        SootMethod decrement = new SootMethod("decrement",
+                Collections.emptyList(), VoidType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        holder.addMethod(decrement);
+        Body decrementBody = Jimple.v().newBody(decrement);
+        decrement.setActiveBody(decrementBody);
+        Local decrementCounter = local(decrementBody, "counter",
+                RefType.v(counter.getName()));
+        Local old = local(decrementBody, "old", IntType.v());
+        decrementBody.getUnits().add(Jimple.v().newAssignStmt(
+                decrementCounter,
+                Jimple.v().newStaticFieldRef(holderField.makeRef())));
+        decrementBody.getUnits().add(Jimple.v().newAssignStmt(old,
+                Jimple.v().newVirtualInvokeExpr(decrementCounter,
+                        mutator.makeRef())));
+        decrementBody.getUnits().add(Jimple.v().newReturnVoidStmt());
+
+        SootMethod check = new SootMethod("check",
+                Collections.emptyList(), VoidType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        holder.addMethod(check);
+        Body checkBody = Jimple.v().newBody(check);
+        check.setActiveBody(checkBody);
+        Local checkCounter = local(checkBody, "counter",
+                RefType.v(counter.getName()));
+        Local observed = local(checkBody, "observed", IntType.v());
+        Local exception = local(checkBody, "failure",
+                RefType.v(failure.getName()));
+        checkBody.getUnits().add(Jimple.v().newAssignStmt(checkCounter,
+                Jimple.v().newStaticFieldRef(holderField.makeRef())));
+        checkBody.getUnits().add(Jimple.v().newAssignStmt(observed,
+                Jimple.v().newVirtualInvokeExpr(checkCounter,
+                        getter.makeRef())));
+        Unit normal = Jimple.v().newReturnVoidStmt();
+        checkBody.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newEqExpr(observed, IntConstant.v(0)), normal));
+        checkBody.getUnits().add(Jimple.v().newAssignStmt(exception,
+                Jimple.v().newNewExpr(RefType.v(failure.getName()))));
+        checkBody.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newSpecialInvokeExpr(exception,
+                        failureConstructor.makeRef())));
+        checkBody.getUnits().add(Jimple.v().newThrowStmt(exception));
+        checkBody.getUnits().add(normal);
+
+        ExceptionTargetSite site = new ExceptionTargetSite(
+                "atomic-mutation", holder.getName(), check.getName(),
+                "()V", check.getSignature(), failure.getName(), 0, -1);
+        StaticProgram program = new SeedBackwardStaticAnalyzer(
+                new CausynthTargetContext(null, null, site.id, site,
+                        "TEST")).analyze();
+        return new AtomicMutationFixture(program, value, holderField,
+                mutator, decrement, check);
+    }
+
+    private static SootMethod primitiveCounterAccessor(
+            SootClass owner, SootField value, String name) {
+        SootMethod method = new SootMethod(name, Collections.emptyList(),
+                IntType.v(), Modifier.PUBLIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local receiver = local(body, "this", RefType.v(owner.getName()));
+        Local current = local(body, "current", IntType.v());
+        body.getUnits().add(Jimple.v().newIdentityStmt(receiver,
+                Jimple.v().newThisRef((RefType) receiver.getType())));
+        body.getUnits().add(Jimple.v().newAssignStmt(current,
+                Jimple.v().newInstanceFieldRef(receiver, value.makeRef())));
+        body.getUnits().add(Jimple.v().newReturnStmt(current));
+        return method;
+    }
+
     private static SootMethod buildNestedReceiverCaller(
             SootClass owner, SootMethod consume, SootClass rootType,
             SootField rootField) {
@@ -1338,6 +1493,29 @@ public class SeedBackwardStaticAnalyzerTest {
             this.clientImplementation = clientImplementation;
             this.server = server;
             this.failure = failure;
+        }
+    }
+
+    private static final class AtomicMutationFixture {
+        private final StaticProgram program;
+        private final SootField value;
+        private final SootField holderField;
+        private final SootMethod mutator;
+        private final SootMethod decrement;
+        private final SootMethod check;
+
+        private AtomicMutationFixture(StaticProgram program,
+                                      SootField value,
+                                      SootField holderField,
+                                      SootMethod mutator,
+                                      SootMethod decrement,
+                                      SootMethod check) {
+            this.program = program;
+            this.value = value;
+            this.holderField = holderField;
+            this.mutator = mutator;
+            this.decrement = decrement;
+            this.check = check;
         }
     }
 }

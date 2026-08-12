@@ -281,6 +281,11 @@ public final class PathObservation {
                 }
             }
         }
+        for (int index = 0; index < full.size(); index++) {
+            if (referencesSelectedInput(full.get(index), alpha)) {
+                selected.add(index);
+            }
+        }
 
         // The execution task fixes non-selected inputs (including loop
         // cardinality) to their witnessed concrete values.  A relation guard
@@ -339,6 +344,23 @@ public final class PathObservation {
             }
         }
         return projected;
+    }
+
+    /**
+     * Keeps constraints over inputs the replay actually materialized as
+     * symbolic, even when the output itself is a concrete expression and the
+     * controlling VM branch has no explicit branch-mapping hook.
+     */
+    private static boolean referencesSelectedInput(
+            JsonElement expression, AlphaNormalizer alpha) {
+        for (String token : dependencyTokens(expression)) {
+            if (token.startsWith("SYMBOL:")
+                    && alpha.containsCanonicalInput(
+                            token.substring("SYMBOL:".length()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -490,15 +512,30 @@ public final class PathObservation {
 
     private static final class AlphaNormalizer {
         private final Set<String> canonicalPorts = new LinkedHashSet<>();
+        private final Set<String> canonicalInputs = new LinkedHashSet<>();
         private final Map<String, String> symbols = new LinkedHashMap<>();
         private final Map<String, String> placeholders = new LinkedHashMap<>();
 
         private AlphaNormalizer(JsonObject summary) {
-            collectPortArray(summary.get("symbolicInputs"));
+            collectInputPortArray(summary.get("symbolicInputs"));
             JsonElement outputs = summary.get("outputExpressions");
             if (outputs != null && outputs.isJsonObject()) {
                 for (String port : outputs.getAsJsonObject().keySet()) {
                     addPort(port);
+                }
+            }
+        }
+
+        private void collectInputPortArray(JsonElement value) {
+            collectPortArray(value);
+            if (value == null || !value.isJsonArray()) return;
+            for (JsonElement element : value.getAsJsonArray()) {
+                if (element.isJsonPrimitive()) {
+                    addInputPort(element.getAsString());
+                } else if (element.isJsonObject()) {
+                    JsonObject object = element.getAsJsonObject();
+                    addInputPort(string(object, "portId"));
+                    addInputPort(string(object, "inputPort"));
                 }
             }
         }
@@ -527,6 +564,12 @@ public final class PathObservation {
             }
         }
 
+        private void addInputPort(String candidate) {
+            if (looksLikeCanonicalPort(candidate)) {
+                canonicalInputs.add(candidate);
+            }
+        }
+
         private String symbol(String raw) {
             if (containsCanonicalPort(raw)) return raw;
             return alpha(symbols, raw, "@symbol.");
@@ -540,7 +583,16 @@ public final class PathObservation {
 
         private boolean containsCanonicalPort(String raw) {
             if (looksLikeCanonicalPort(raw)) return true;
-            for (String port : canonicalPorts) {
+            return containsCanonicalPort(raw, canonicalPorts);
+        }
+
+        private boolean containsCanonicalInput(String raw) {
+            return containsCanonicalPort(raw, canonicalInputs);
+        }
+
+        private static boolean containsCanonicalPort(
+                String raw, Set<String> ports) {
+            for (String port : ports) {
                 int start = raw.indexOf(port);
                 while (start >= 0) {
                     int end = start + port.length();

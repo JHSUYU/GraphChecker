@@ -46,6 +46,9 @@ public:
   static void symbolizeExactField(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor, const char *prefix);
+  static void observeExactPrimitiveField(
+      Handle owner, const char *declaring_class, const char *field_name,
+      const char *descriptor);
   static void symbolizeMethod(Handle holder_name_handle,
                               Handle callee_name_handle);
   static void printSymExp(Handle handle);

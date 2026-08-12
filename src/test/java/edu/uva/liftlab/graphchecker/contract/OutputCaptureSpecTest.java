@@ -76,6 +76,42 @@ public class OutputCaptureSpecTest {
         assertEquals(LEAF, spec.leafFieldSignature());
     }
 
+    @Test
+    public void atomicMutationSupportIsExactAndArithmeticOnly() {
+        JsonObject capture = atomicMutationCapture(
+                "<java.util.concurrent.atomic.AtomicInteger: int getAndDecrement()>");
+        OutputCaptureSpec spec = OutputCaptureSpec.decodeValidated(capture);
+
+        assertEquals("<java.util.concurrent.atomic.AtomicInteger: int value>",
+                spec.atomicArithmeticValueFieldSignature());
+
+        capture.addProperty("declaredCallee",
+                "<java.util.concurrent.atomic.AtomicInteger: boolean compareAndSet(int,int)>");
+        assertEquals("", OutputCaptureSpec.decodeValidated(capture)
+                .atomicArithmeticValueFieldSignature());
+    }
+
+    private static JsonObject atomicMutationCapture(String declaredCallee) {
+        JsonObject capture = new JsonObject();
+        String state = "<example.Owner: java.util.concurrent.atomic.AtomicInteger state>";
+        capture.addProperty("captureBindingId", "CAPTURE.atomic-state");
+        capture.addProperty("captureKind", OutputCaptureSpec.MUTATION_STATE);
+        capture.addProperty("outputPort", "REGION.P.out.atomic-state");
+        capture.addProperty("outputCell", state);
+        capture.addProperty("fieldSignature", state);
+        capture.addProperty("javaType",
+                "java.util.concurrent.atomic.AtomicInteger");
+        capture.addProperty("definitionMethod", "<example.Owner: void run()>");
+        capture.addProperty("definitionUnitIndex", 1);
+        capture.addProperty("declaredCallee", declaredCallee);
+        capture.addProperty("occurrenceScope",
+                OutputCaptureSpec.DEFINITION_INVOCATION_SCOPE);
+        capture.addProperty("outputSiteId", "<example.Owner: void run()>#u1");
+        capture.addProperty("outputOccurrence", 1);
+        capture.addProperty("replayOccurrence", 1);
+        return capture;
+    }
+
     private static JsonObject nestedCapture() {
         JsonObject capture = new JsonObject();
         capture.addProperty("captureBindingId", "CAPTURE.current-key-id");

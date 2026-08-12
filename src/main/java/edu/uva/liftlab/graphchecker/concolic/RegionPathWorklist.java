@@ -19,6 +19,8 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Builds bounded branch-flip work for one region closure. */
@@ -251,6 +253,9 @@ public final class RegionPathWorklist {
                     continue;
                 }
                 if (!mapping.isExplore()) continue;
+                if (isSelectedTargetDecision(path, task, mapping)) {
+                    continue;
+                }
                 if (!explicitFaultSymbols.isEmpty()
                         && !dependsOnAny(mapping.witness()
                         .sourceSatisfiedPredicate(),
@@ -287,6 +292,36 @@ public final class RegionPathWorklist {
                 }
                 emitTask(path, candidates.get(index));
             }
+        }
+
+        /**
+         * The exact selected target decision is kept symbolic by the fatal
+         * reach query.  A witnessed required successor is used directly; an
+         * opposite witness contributes its decided prefix plus the symbolic
+         * complement.  Replaying this sibling therefore adds no target path
+         * and may mutate an earlier activation before its prefix is known.
+         */
+        private boolean isSelectedTargetDecision(
+                PathObservation path, JsonObject task,
+                SummaryBranchMapping mapping) {
+            if (!path.scope().goalKind().capturesTargetReach()
+                    || task == null) {
+                return false;
+            }
+            for (JsonElement element : array(task, "branches")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (!mapping.siteId().equals(string(branch, "siteId"))
+                        || !bool(branch, "failureTarget", false)
+                        || integer(branch, "selectedOccurrence", -1)
+                        != mapping.occurrence()) {
+                    continue;
+                }
+                JsonElement required = branch.get("requiredOutcome");
+                return required != null && required.isJsonPrimitive()
+                        && required.getAsJsonPrimitive().isBoolean();
+            }
+            return false;
         }
 
         /**

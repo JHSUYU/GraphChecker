@@ -133,6 +133,11 @@ JVM_SymbolizeExactField(JNIEnv *env, jclass ignored, jobject owner,
                         jstring descriptor, jstring prefix);
 
 JNIEXPORT void JNICALL
+JVM_ObserveExactPrimitiveField(JNIEnv *env, jclass ignored, jobject owner,
+                               jstring declaring_class, jstring field_name,
+                               jstring descriptor);
+
+JNIEXPORT void JNICALL
 JVM_SymbolizeMethod(JNIEnv *env, jclass ignored, jobject holder_name, jobject callee_name);
 
 JNIEXPORT void JNICALL

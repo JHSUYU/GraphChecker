@@ -147,10 +147,25 @@ bool MethodSymbolizerHandle::general_check_param_symbolized_helper(BasicType typ
     }
   } else if (type == T_OBJECT || type == T_ARRAY) {
     oop obj = this->get_param<oop>(locals_offset);
-    Expression *exp = this->get_reference_exp(locals_offset, obj);
+    // Admission must use an expression carried by this invocation, not the
+    // mere existence of a SymInstance.  General parameter preparation and
+    // identity observation may allocate an instance shadow for an otherwise
+    // concrete object; get_reference_exp() would turn that bookkeeping into
+    // a fresh InstanceSymbolExp and make unrelated library calls symbolic.
+    // A tracked container remains authoritative even when its identity is
+    // not present in the current operand-stack slot.
+    Expression *exp = ConcolicMngr::ctx->find_stack_slot(
+        this->get_caller_stack_begin_offset() + locals_offset);
+    SymInstance *instance = obj == NULL || obj->is_array()
+        ? NULL : ConcolicMngr::ctx->find_sym_inst(obj);
+    SymArr *array = obj != NULL && obj->is_array()
+        ? ConcolicMngr::ctx->find_sym_array((arrayOop)obj) : NULL;
     if (exp != NULL || (obj != NULL
-        && (obj->is_symbolic()
-            || ConcolicMngr::ctx->find_container_state(obj) != NULL))) {
+        && (ConcolicMngr::ctx->find_container_state(obj) != NULL
+            || (instance != NULL
+                && instance->has_semantic_expression())
+            || (array != NULL
+                && array->has_semantic_expression())))) {
       recording = true;
     }
   } else {

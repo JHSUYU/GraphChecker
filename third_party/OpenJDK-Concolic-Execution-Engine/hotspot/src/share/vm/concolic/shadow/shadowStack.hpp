@@ -8,17 +8,30 @@
 #include <vector>
 
 class JavaThread;
+class Method;
 
 class ShadowStack {
   typedef std::vector<ShadowFrame *> ShadowFrames;
   static const int DEFAULT_MAX_STACK_DEPTH = 1024;
 
 private:
+  struct PendingReflection {
+    jlong token;
+    Method *target;
+    int entry_words;
+    ShadowTable carrier;
+
+    PendingReflection(jlong call_token, Method *method, int parameter_words)
+        : token(call_token), target(method), entry_words(parameter_words) {}
+  };
+
   ShadowFrames _s_frames;
   /**
-   * Used to handle special parameter passing of Java reflection,
+   * Reflection can nest while a target is being prepared.  Each argument
+   * table is therefore paired with its exact target and consumed LIFO.
    */
-  ShadowTable _reflection_stack;
+  std::vector<PendingReflection *> _pending_reflections;
+  jlong _next_reflection_token;
   Expression *_reflection_ret_exp;
 
 public:
@@ -26,9 +39,11 @@ public:
 
   ~ShadowStack();
 
-  ShadowTable *init_reflection_stack(int max_slot_size);
-
-  inline ShadowTable &get_reflection_stack() { return _reflection_stack; }
+  jlong register_reflection_call(Method *target, int entry_words,
+                                 ShadowTable &carrier);
+  bool take_reflection_stack(Method *target, int entry_words,
+                             ShadowTable &destination);
+  bool cancel_reflection_call(jlong token);
 
   void set_reflection_ret_exp(Expression *exp) {
     assert(_reflection_ret_exp == NULL, "should be");

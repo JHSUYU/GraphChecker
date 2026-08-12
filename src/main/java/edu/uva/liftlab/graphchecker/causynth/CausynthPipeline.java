@@ -1032,6 +1032,23 @@ public final class CausynthPipeline {
         }
         Value receiver = ((InstanceInvokeExpr) selected.getInvokeExpr())
                 .getBase();
+        if (capture.atomicArithmeticMutationState()) {
+            List<Unit> before = new ArrayList<>();
+            Value atomicReceiver = objectArg(body, receiver, before);
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.PAUSE_OBSERVATION))));
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(
+                                    Hook.PREPARE_ATOMIC_MUTATION_STATE_OUTPUT),
+                            StringConstant.v(capture.captureBindingId()),
+                            atomicReceiver)));
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RESUME_OBSERVATION))));
+            insertBeforeSequence(body, selected, before);
+        }
         List<Unit> after = new ArrayList<>();
         after.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(
@@ -3414,6 +3431,7 @@ public final class CausynthPipeline {
         RECORD_REGION_EXIT_FIELD_OUTPUT,
         RECORD_CALL_ARGUMENT_OUTPUT,
         BEGIN_MUTATION_METHOD_STATE_OUTPUT,
+        PREPARE_ATOMIC_MUTATION_STATE_OUTPUT,
         RECORD_MUTATION_STATE_OUTPUT,
         RECORD_MUTATION_METHOD_EXIT_STATE_OUTPUT,
         RECORD_FIELD_WRITE_STATE_OUTPUT,
@@ -3551,6 +3569,9 @@ public final class CausynthPipeline {
                     .add(Hook.BEGIN_MUTATION_METHOD_STATE_OUTPUT, runtime,
                             "beginMutationMethodStateOutput", VoidType.v(),
                             string)
+                    .add(Hook.PREPARE_ATOMIC_MUTATION_STATE_OUTPUT, runtime,
+                            "prepareAtomicMutationStateOutput",
+                            VoidType.v(), string, object)
                     .add(Hook.RECORD_MUTATION_STATE_OUTPUT, runtime,
                             "recordMutationStateOutput", VoidType.v(),
                             string, object)

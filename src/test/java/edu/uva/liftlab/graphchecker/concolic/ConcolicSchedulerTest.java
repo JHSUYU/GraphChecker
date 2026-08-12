@@ -61,6 +61,109 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    public void exactAtomicReadFromProjectsPrimitiveTargetState()
+            throws Exception {
+        String symbol = "REGION.1.in.snapshotCount";
+        String root = "<example.Manager: "
+                + "java.util.concurrent.atomic.AtomicInteger count>";
+        Map<String, Object> action = object(
+                "symbol", symbol,
+                "cell", "<example.Manager: int count()>#u1.fieldReceiver",
+                "location", "HEAP_OBJECT_FIELD",
+                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
+                "javaType", "java.util.concurrent.atomic.AtomicInteger",
+                "observed", true,
+                "dependencyRole", "CONCRETE_STRUCTURE_CARRIER",
+                "fieldPath", Collections.singletonList("count"),
+                "fieldPaths", Collections.singletonList(
+                        Collections.singletonList("count")),
+                "fieldPathDeclarations", Collections.singletonList(root),
+                "runtimeAccesses", Collections.singletonList(object(
+                        "eventSeq", 20,
+                        "activationLocalStaticSiteOccurrence", 2)),
+                "accessFieldSignature", root,
+                "leafFieldSignature", root,
+                "accessSites", Collections.singletonList(
+                        "<example.Manager: int count()>#u1"));
+        Map<String, Object> targetPlan = targetPlanWithActions(action);
+        Map<String, Object> goal = ((java.util.List<Map<String, Object>>)
+                targetPlan.get("closureGoals")).get(0);
+        Map<String, Object> selectedEdge = object(
+                "schemaVersion", 3,
+                "edgeId", "EDGE.ATOMIC",
+                "evidenceKind", "CONTAINER_MUTATION_READ_FROM_V1",
+                "correlationAuthority",
+                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1",
+                "fromRegionInstance", "REGION.P@test#call9",
+                "toRegionInstance", "REGION.1@test#call1",
+                "fromOutputPort", "REGION.P.out.snapshotCount",
+                "toInputPort", symbol,
+                "receiverObjectId", 70,
+                "valueObjectId", 71,
+                "readerValueObjectId", 71,
+                "writerFieldReadSeq", 10,
+                "mutatorEnterSeq", 11,
+                "mutationCompletionSeq", 12,
+                "mutationInvocationId", 11,
+                "mutatorDeclaredCallee",
+                "<java.util.concurrent.atomic.AtomicInteger: "
+                        + "int getAndDecrement()>",
+                "writerEventSeq", 12,
+                "readerEventSeq", 20,
+                "writerLaneId", "lane.writer",
+                "readerLaneId", "lane.reader",
+                "programOrderRequired", false,
+                "fieldPathDeclarations", Collections.singletonList(root));
+        Map<String, Object> unrelatedEdge = GSON.fromJson(
+                GSON.toJson(selectedEdge), Map.class);
+        unrelatedEdge.put("edgeId", "EDGE.UNRELATED");
+        goal.put("edgeBindings", java.util.Arrays.asList(
+                selectedEdge, unrelatedEdge));
+
+        File regions = write("atomic-target-regions.jsonl", region());
+        File plans = write("atomic-target-plans.jsonl", targetPlan);
+        File edges = writeEmpty("atomic-target-edges.jsonl");
+        File refined = write("atomic-target-refined.jsonl", refinedEdge());
+        File output = folder.newFolder("atomic-target-schedule");
+
+        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                ConcolicScheduler.Arguments.parse(new String[]{
+                        "--regions", regions.getPath(),
+                        "--region-plan", plans.getPath(),
+                        "--edge-validations", edges.getPath(),
+                        "--refined-graph", refined.getPath(),
+                        "--output-dir", output.getPath(),
+                        "--target-edge-ids", "EDGE.ATOMIC",
+                        "--max-jobs", "16",
+                        "--max-loop-iterations", "8"}));
+
+        JsonObject projected = inputAction(result.executionTasks.get(0)
+                .getAsJsonArray("inputActions"), symbol);
+        assertEquals("SYMBOLIC", projected.get("mode").getAsString());
+        assertEquals("FIELD_ACCESS",
+                projected.get("bindingMode").getAsString());
+        assertEquals("int", projected.get("javaType").getAsString());
+        assertEquals("EXACT_INCOMING_COMPOSITION",
+                projected.get("symbolicDemand").getAsString());
+        assertEquals("<java.util.concurrent.atomic.AtomicInteger: int value>",
+                projected.get("leafFieldSignature").getAsString());
+        assertEquals(2, projected.get("replayOccurrence").getAsInt());
+        assertEquals("EDGE.ATOMIC",
+                projected.get("selectedIncomingEdgeId").getAsString());
+        assertEquals(java.util.Arrays.asList("count", "value"),
+                GSON.fromJson(projected.get("fieldPath"), java.util.List.class));
+        assertEquals(1, result.executionTasks.get(0)
+                .getAsJsonArray("edgeBindings").size());
+        JsonObject occurrence = result.executionTasks.get(0)
+                .getAsJsonObject("occurrenceInstantiationCatalog")
+                .getAsJsonArray("occurrences").get(0).getAsJsonObject();
+        assertEquals(1, occurrence.getAsJsonArray("inputPortMap").size());
+        assertEquals("EDGE.ATOMIC", occurrence
+                .getAsJsonArray("bindingIds").get(0).getAsString());
+    }
+
+    @Test
     public void loopControlOnlyInputIsNotAnInputAction() throws Exception {
         File regions = write("loop-input-regions.jsonl", region());
         File plans = write("loop-input-plans.jsonl", loopInputTargetPlan());
@@ -678,6 +781,8 @@ public class ConcolicSchedulerTest {
         assertEquals(second, result.queries.get(0)
                 .getAsJsonObject("selectedTargetOccurrence")
                 .get("regionInstanceId").getAsString());
+        assertFalse(result.queries.get(0)
+                .get("fatalRequiredTakenOutcome").getAsBoolean());
     }
 
     @Test
@@ -842,6 +947,47 @@ public class ConcolicSchedulerTest {
         assertEquals("EXACT_INCOMING_COMPOSITION", inputAction(
                 actions, "REGION.1.in.keyId").get("symbolicDemand")
                 .getAsString());
+    }
+
+    @Test
+    public void outputCaptureAnchorIsPositiveSymbolicDemand()
+            throws Exception {
+        String method = "<T: void publish()>";
+        Map<String, Object> plan = positiveDemandOutputPlan(method);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> goal = ((java.util.List<Map<String, Object>>)
+                plan.get("closureGoals")).get(0);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> closure = (Map<String, Object>) goal.get(
+                "outputClosure");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> member = ((java.util.List<Map<String, Object>>)
+                closure.get("members")).get(0);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> slice = (Map<String, Object>) member.get("slice");
+        slice.put("captureAnchorPort", "REGION.1.in.count");
+
+        File regions = write("capture-anchor-regions.jsonl",
+                positiveDemandOutputRegion());
+        File plans = write("capture-anchor-plans.jsonl", plan);
+        File edges = writeEmpty("capture-anchor-edges.jsonl");
+        File refined = writeRows("capture-anchor-refined.jsonl",
+                refinedEdge(), transferEdgeInMethod("DF.enabled", method,
+                        "<example.Owner: boolean enabled>",
+                        method + "::$z0"));
+        File output = folder.newFolder("capture-anchor-schedule");
+
+        ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                arguments(regions, plans, edges, refined, output));
+
+        JsonArray actions = result.executionTasks.get(0)
+                .getAsJsonArray("inputActions");
+        assertEquals("SYMBOLIC", mode(actions, "REGION.1.in.count"));
+        assertEquals("EXACT_OUTPUT_CAPTURE_ANCHOR", inputAction(
+                actions, "REGION.1.in.count").get("symbolicDemand")
+                .getAsString());
+        assertEquals("CONCRETE", mode(actions,
+                "REGION.1.in.algorithm"));
     }
 
     @Test

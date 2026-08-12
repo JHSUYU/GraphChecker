@@ -49,7 +49,8 @@ public final class JavaContainerTypes {
                     "java.lang.Object remove()",
                     "java.lang.Object remove(int)",
                     "java.lang.Object set(int,java.lang.Object)",
-                    "java.util.Iterator iterator()")));
+                    "java.util.Iterator iterator()",
+                    "java.util.ListIterator listIterator()")));
     private static final Set<String> MAP_RESULTS =
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
                     "boolean containsKey(java.lang.Object)",
@@ -84,7 +85,8 @@ public final class JavaContainerTypes {
                     "boolean remove(java.lang.Object)")));
     private static final Set<String> ITERATOR_RESULTS =
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
-                    "boolean hasNext()", "java.lang.Object next()")));
+                    "boolean hasNext()", "java.lang.Object next()",
+                    "int nextIndex()")));
     private static final Set<String> ENTRY_RESULTS =
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
                     "java.lang.Object getKey()",

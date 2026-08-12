@@ -200,6 +200,31 @@ public class RelationSummaryTest {
         assertTrue(rendered.contains(outputInput));
     }
 
+    @Test
+    public void constantOutputKeepsSelectedInputGuardWithoutBranchMapping() {
+        JsonObject summary = versionedSummary(1);
+        String input = "REGION.V.in.orderedDeletion";
+        String field = "M_Z_field_" + input + "_test/Config";
+        summary.getAsJsonArray("symbolicInputs").add(input);
+
+        JsonArray path = new JsonArray();
+        path.add(exactFieldBinding("M_L_test_Config_1", field, 40, "Z"));
+        path.add(binary(symbol("M_L_java_lang_ThreadLocal_1", "L"), "!=",
+                symbol("N", "")));
+        path.add(binary(symbol(field, "Z"), "==", booleanConstant(false)));
+        summary.add("pathCondition", path);
+
+        PathObservation observation = PathObservation.decode(summary, null);
+        JsonArray projected = observation.relationPathCondition();
+
+        assertEquals(2, projected.size());
+        String rendered = CanonicalJson.render(projected);
+        assertTrue(rendered.contains(input));
+        assertTrue(rendered.contains("symbolizeExactField"));
+        assertTrue(rendered.contains("Y_Z_0"));
+        assertFalse(rendered.contains("ThreadLocal"));
+    }
+
     private static String port() {
         return "REGION.V.out.0";
     }
@@ -263,6 +288,14 @@ public class RelationSummaryTest {
         return expression;
     }
 
+    private static JsonObject booleanConstant(boolean value) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "ConstExpr");
+        expression.addProperty("_java_type", "Z");
+        expression.addProperty("_exp", value ? "Y_Z_1" : "Y_Z_0");
+        return expression;
+    }
+
     private static JsonObject symbol(String name, String javaType) {
         JsonObject expression = new JsonObject();
         expression.addProperty("_type", "SymbolExpression");
@@ -283,6 +316,12 @@ public class RelationSummaryTest {
 
     private static JsonObject exactFieldBinding(
             String map, String value, int fieldOffset) {
+        return exactFieldBinding(map, value, fieldOffset,
+                fieldOffset == 24 ? "J" : "I");
+    }
+
+    private static JsonObject exactFieldBinding(
+            String map, String value, int fieldOffset, String javaType) {
         JsonObject state = new JsonObject();
         state.addProperty("_type", "ContainerRelation");
         state.addProperty("shape", "ASSOCIATIVE");
@@ -293,13 +332,12 @@ public class RelationSummaryTest {
 
         JsonObject field = new JsonObject();
         field.addProperty("_type", "FieldAccessExpression");
-        field.addProperty("_java_type", fieldOffset == 24 ? "J" : "I");
+        field.addProperty("_java_type", javaType);
         field.addProperty("ownerClass", "test/Member");
         field.addProperty("fieldOffset", fieldOffset);
         field.add("owner", state);
 
-        JsonObject binding = binary(field, "==", symbol(value,
-                fieldOffset == 24 ? "J" : "I"));
+        JsonObject binding = binary(field, "==", symbol(value, javaType));
         binding.addProperty("_code_position",
                 "static void java.lang.System.symbolizeExactField("
                         + "jobject,jobject,jobject,jobject,jobject):-1");

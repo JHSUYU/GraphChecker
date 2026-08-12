@@ -181,6 +181,41 @@ public final class OutputCaptureSpec {
         return declaredCallee;
     }
 
+    /**
+     * Exact primitive state updated by the arithmetic Atomic RMW summaries.
+     *
+     * <p>This deliberately names only the small API surface implemented by
+     * the custom VM.  In particular, compare-and-set and functional update
+     * methods must continue through their ordinary concrete/native path.</p>
+     */
+    public String atomicArithmeticValueFieldSignature() {
+        if (!capturesMutationState()) return "";
+        return atomicArithmeticValueFieldSignature(declaredCallee);
+    }
+
+    /** Exact primitive state updated by one supported Atomic RMW call. */
+    public static String atomicArithmeticValueFieldSignature(
+            String declaredCallee) {
+        switch (declaredCallee == null ? "" : declaredCallee.trim()) {
+            case "<java.util.concurrent.atomic.AtomicInteger: int getAndIncrement()>":
+            case "<java.util.concurrent.atomic.AtomicInteger: int getAndDecrement()>":
+            case "<java.util.concurrent.atomic.AtomicInteger: int getAndAdd(int)>":
+            case "<java.util.concurrent.atomic.AtomicInteger: int incrementAndGet()>":
+            case "<java.util.concurrent.atomic.AtomicInteger: int decrementAndGet()>":
+            case "<java.util.concurrent.atomic.AtomicInteger: int addAndGet(int)>":
+                return "<java.util.concurrent.atomic.AtomicInteger: int value>";
+            case "<java.util.concurrent.atomic.AtomicLong: long getAndIncrement()>":
+            case "<java.util.concurrent.atomic.AtomicLong: long getAndDecrement()>":
+            case "<java.util.concurrent.atomic.AtomicLong: long getAndAdd(long)>":
+            case "<java.util.concurrent.atomic.AtomicLong: long incrementAndGet()>":
+            case "<java.util.concurrent.atomic.AtomicLong: long decrementAndGet()>":
+            case "<java.util.concurrent.atomic.AtomicLong: long addAndGet(long)>":
+                return "<java.util.concurrent.atomic.AtomicLong: long value>";
+            default:
+                return "";
+        }
+    }
+
     public int argumentIndex() {
         return argumentIndex;
     }

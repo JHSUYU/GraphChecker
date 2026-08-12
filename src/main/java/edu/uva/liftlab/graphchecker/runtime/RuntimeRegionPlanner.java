@@ -315,7 +315,8 @@ final class RuntimeRegionPlanner {
         return "THREAD_ENTRY".equals(authority)
                 || "TASK_ENTRY".equals(authority)
                 || "MAIN_ENTRY".equals(authority)
-                || "RPC_HANDLER".equals(authority);
+                || "RPC_HANDLER".equals(authority)
+                || "WORKLOAD_ENTRY".equals(authority);
     }
 
     static Result plan(File regionFile, File regionEdgeFile,
@@ -1698,6 +1699,23 @@ final class RuntimeRegionPlanner {
         if ("java.lang.Object".equals(javaType) || owner.isEmpty()) {
             return null;
         }
+        String semanticDeclaration = declaration;
+        String semanticJavaType = javaType;
+        String atomicValueField = mutation
+                ? OutputCaptureSpec.atomicArithmeticValueFieldSignature(
+                declaredCallee) : "";
+        if (!atomicValueField.isEmpty()) {
+            FieldPathSpec.DeclaredField carrier =
+                    FieldPathSpec.declaredField(declaration);
+            FieldPathSpec.DeclaredField atomicLeaf =
+                    FieldPathSpec.declaredField(atomicValueField);
+            if (carrier == null || atomicLeaf == null
+                    || !carrier.type().equals(atomicLeaf.owner())) {
+                return null;
+            }
+            semanticDeclaration = atomicLeaf.signature();
+            semanticJavaType = atomicLeaf.type();
+        }
 
         Set<String> allowed = new LinkedHashSet<>(
                 strings(goal.get("runtimeDefinitionMethods")));
@@ -1901,7 +1919,7 @@ final class RuntimeRegionPlanner {
 
         JsonObject slice = new JsonObject();
         slice.addProperty("outputPort", outputPort);
-        slice.addProperty("outputCell", declaration);
+        slice.addProperty("outputCell", semanticDeclaration);
         slice.add("inputPorts", stringsJson(inputPorts));
         if (!captureAnchorPort.isEmpty()) {
             slice.addProperty("captureAnchorPort", captureAnchorPort);
@@ -2012,13 +2030,17 @@ final class RuntimeRegionPlanner {
                 ? OutputCaptureSpec.MUTATION_STATE
                 : OutputCaptureSpec.FIELD_WRITE_STATE);
         capture.addProperty("outputPort", outputPort);
-        capture.addProperty("outputCell", declaration);
+        capture.addProperty("outputCell", semanticDeclaration);
         List<String> capturePath = new ArrayList<>();
-        String captureDefinition = declaration;
+        String captureDefinition = semanticDeclaration;
         String captureMethod = definitionMethod;
         int captureUnit = definitionUnitIndex;
         String captureStaticSite = staticAccessSiteId;
-        if (carrierWrite != null) {
+        if (!atomicValueField.isEmpty()) {
+            capturePath.add(path.get(path.size() - 1));
+            capturePath.add(FieldPathSpec.declaredField(
+                    atomicValueField).name());
+        } else if (carrierWrite != null) {
             FieldPathSpec.DeclaredField carrier =
                     FieldPathSpec.declaredField(carrierWrite.field);
             FieldPathSpec.DeclaredField leaf =
@@ -2042,8 +2064,8 @@ final class RuntimeRegionPlanner {
             }
         }
         capture.add("fieldPath", stringsJson(capturePath));
-        capture.addProperty("fieldSignature", declaration);
-        capture.addProperty("javaType", javaType);
+        capture.addProperty("fieldSignature", semanticDeclaration);
+        capture.addProperty("javaType", semanticJavaType);
         if (explicitFaultExitSnapshot) {
             capture.addProperty("accessRootInputPort",
                     text(priorStateInput.get("portId")));
@@ -2062,7 +2084,7 @@ final class RuntimeRegionPlanner {
         String captureSiteId = mutation
                 ? OutputCaptureSpec.MUTATION_STATE + ":"
                 + staticAccessSiteId + ":"
-                + declaredCallee + ":" + declaration
+                + declaredCallee + ":" + semanticDeclaration
                 : OutputCaptureSpec.FIELD_WRITE_STATE + ":"
                 + captureStaticSite + ":"
                 + captureDefinition + (carrierWrite == null ? ""
@@ -2098,7 +2120,8 @@ final class RuntimeRegionPlanner {
         return OutputClosureCodec.singleton(
                 text(plan.get("regionId")),
                 text(plan.get("regionInstanceId")), rootCallId,
-                outputPort, declaration, "HEAP_STATE", javaType, slice);
+                outputPort, semanticDeclaration, "HEAP_STATE",
+                semanticJavaType, slice);
     }
 
     /**
@@ -3240,15 +3263,21 @@ final class RuntimeRegionPlanner {
         List<Map<String, Object>> contexts = rows(
                 seed.get("fatalPrefixContexts"));
         if (!contexts.isEmpty()) {
-            if (contexts.size() != 1) {
+            List<Map<String, Object>> matching = new ArrayList<>();
+            for (Map<String, Object> context : contexts) {
+                if (site.equals(text(context.get("siteId")))) {
+                    matching.add(context);
+                }
+            }
+            if (matching.size() > 1) {
                 throw new IllegalArgumentException(
                         "MULTIPLE_FATAL_PREFIX_CONTEXTS");
             }
-            Map<String, Object> context = contexts.get(0);
-            if (!site.equals(text(context.get("siteId")))) {
+            if (matching.isEmpty()) {
                 throw new IllegalArgumentException(
                         "FATAL_PREFIX_SITE_MISMATCH");
             }
+            Map<String, Object> context = matching.get(0);
             if (!"EXACT_FATAL_BRANCH_OCCURRENCE_PREFIX_V1".equals(
                     text(context.get("authority")))) {
                 throw new IllegalArgumentException(
@@ -3288,6 +3317,7 @@ final class RuntimeRegionPlanner {
 
     private static boolean eligibleTargetSite(Map<String, Object> branch) {
         return Boolean.TRUE.equals(branch.get("failureTarget"))
+                && !Boolean.TRUE.equals(branch.get("loopControlGuard"))
                 && Boolean.TRUE.equals(branch.get("observed"))
                 && branch.get("requiredOutcome") instanceof Boolean
                 && !text(branch.get("siteId")).isEmpty();
@@ -4057,7 +4087,9 @@ final class RuntimeRegionPlanner {
             ReturnSlice result = new ReturnSlice();
             boolean targetFound = false;
             for (Map<String, Object> branch : branchPolicies) {
-                if (!Boolean.TRUE.equals(branch.get("failureTarget"))) {
+                if (!Boolean.TRUE.equals(branch.get("failureTarget"))
+                        || Boolean.TRUE.equals(
+                        branch.get("loopControlGuard"))) {
                     continue;
                 }
                 String site = text(branch.get("siteId"));

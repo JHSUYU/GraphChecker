@@ -15,9 +15,17 @@ const char *ContainerSupport::shape(oop value) {
   if (value->is_array()) return "INDEXED";
   if (value->klass() == NULL || value->klass()->name() == NULL) return NULL;
   Symbol *name = value->klass()->name();
-  if (name->equals("java/util/ArrayList")
-      || name->equals("java/util/AbstractList")
-      || name->equals("java/util/ArrayDeque")) {
+  bool abstract_list = false;
+  for (Klass *current = value->klass(); current != NULL;
+       current = current->super()) {
+    Symbol *current_name = current->name();
+    if (current_name != NULL
+        && current_name->equals("java/util/AbstractList")) {
+      abstract_list = true;
+      break;
+    }
+  }
+  if (abstract_list || name->equals("java/util/ArrayDeque")) {
     return "INDEXED";
   }
   if (name->equals("java/util/HashMap")
@@ -70,8 +78,17 @@ bool ContainerSupport::claims_state(MethodSymbolizerHandle &handle) {
   if (callee == NULL || callee->is_static()) return false;
   oop receiver = handle.get_param<oop>(0);
   if (receiver == NULL) return false;
-  return receiver->is_symbolic()
-      || ConcolicMngr::ctx->find_container_state(receiver) != NULL;
+  if (ConcolicMngr::ctx->find_container_state(receiver) != NULL
+      || ConcolicMngr::ctx->find_stack_slot(
+          handle.get_caller_stack_begin_offset()) != NULL) {
+    return true;
+  }
+  if (receiver->is_array()) {
+    SymArr *array = ConcolicMngr::ctx->find_sym_array((arrayOop)receiver);
+    return array != NULL && array->has_semantic_expression();
+  }
+  SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(receiver);
+  return instance != NULL && instance->has_semantic_expression();
 }
 
 bool ContainerSupport::measures(Expression *length, Expression *state) {

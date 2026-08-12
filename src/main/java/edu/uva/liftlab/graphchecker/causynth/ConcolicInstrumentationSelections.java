@@ -378,6 +378,10 @@ final class ConcolicInstrumentationSelections {
             return capture.capturesMutationState();
         }
 
+        boolean atomicArithmeticMutationState() {
+            return !capture.atomicArithmeticValueFieldSignature().isEmpty();
+        }
+
         boolean definitionInvocationScoped() {
             return capture.definitionInvocationScoped();
         }

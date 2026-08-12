@@ -7,7 +7,8 @@
 
 #include <algorithm>
 
-ShadowStack::ShadowStack(JavaThread *jt) : _reflection_ret_exp(NULL) {
+ShadowStack::ShadowStack(JavaThread *jt)
+    : _next_reflection_token(0), _reflection_ret_exp(NULL) {
   _s_frames.reserve(DEFAULT_MAX_STACK_DEPTH);
 
   if (jt->zero_stack()->sp() && jt->top_zero_frame()) {
@@ -68,6 +69,12 @@ ShadowStack::~ShadowStack() {
     delete *iter;
   }
   _s_frames.clear();
+  for (std::vector<PendingReflection *>::iterator iter =
+           _pending_reflections.begin();
+       iter != _pending_reflections.end(); ++iter) {
+    delete *iter;
+  }
+  _pending_reflections.clear();
 }
 
 void ShadowStack::push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
@@ -142,25 +149,27 @@ void ShadowStack::push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
     } else if (caller_frame->is_entry_frame()) {
       if (last_opr_stack.size() != 0) {
         int begin_offset = 0;
-        int end_offset = (intptr_t *) caller_frame
-            - (intptr_t *) callee_frame - 3;
+        int parameter_slots = callee_method->size_of_parameters();
         if (!callee_method->is_native()) {
           s_frame->get_local_tbl().copy_entries(
               last_opr_stack, begin_offset, 0,
-              end_offset - begin_offset);
+              parameter_slots);
         }
         last_opr_stack.clear_slots(begin_offset,
-                                   end_offset - begin_offset);
+                                   parameter_slots);
       }
     }
   } else if (callee_frame->is_entry_frame()) {
-    ShadowTable &reflection_stack = ConcolicMngr::ctx->get_shadow_stack().get_reflection_stack();
-    if (reflection_stack.size() != 0) {
+    JavaCallWrapper *call_wrapper =
+        *callee_frame->as_entry_frame()->call_wrapper();
+    Method *entry_target = call_wrapper == NULL
+        ? NULL : call_wrapper->callee_method();
+    if (entry_target != NULL) {
       JavaThread *java_thread = ConcolicMngr::ctx->get_thread();
       ZeroStack *zero_stack = java_thread->zero_stack();
       int stack_words = (intptr_t *) callee_frame - zero_stack->sp() - 2;
-      assert(stack_words == reflection_stack.size(), "should be");
-      s_frame->get_opr_stack().swap(reflection_stack);
+      take_reflection_stack(entry_target, stack_words,
+                            s_frame->get_opr_stack());
     }
   }
   _s_frames.push_back(s_frame);
@@ -307,7 +316,8 @@ void ShadowStack::pop(ZeroFrame *callee_frame) {
       JavaCallWrapper* call_wrapper = *callee_frame->as_entry_frame()->call_wrapper();
       Method* callee_method = call_wrapper->callee_method();
       BasicType type = callee_method->result_type();
-      if (is_java_primitive(type)) {
+      if (is_java_primitive(type)
+          && !ConcolicMngr::ctx->get_thread()->has_pending_exception()) {
         this->set_reflection_ret_exp(opr_stack.get_slot(type2size[type] - 1));
       }
     }
@@ -316,10 +326,50 @@ void ShadowStack::pop(ZeroFrame *callee_frame) {
   delete s_frame;
 }
 
-ShadowTable *ShadowStack::init_reflection_stack(int max_slot_size) {
-  assert(_reflection_stack.size() == 0, "should be");
-  _reflection_stack.init(max_slot_size);
-  return &_reflection_stack;
+jlong ShadowStack::register_reflection_call(Method *target, int entry_words,
+                                            ShadowTable &carrier) {
+  guarantee(target != NULL, "reflection target must be present");
+  guarantee(entry_words >= 0 && carrier.size() >= entry_words,
+            "reflection carrier must cover its argument footprint");
+  guarantee(_next_reflection_token < max_jlong,
+            "reflection token overflow");
+  jlong token = ++_next_reflection_token;
+  PendingReflection *pending =
+      new PendingReflection(token, target, entry_words);
+  pending->carrier.swap(carrier);
+  _pending_reflections.push_back(pending);
+  return token;
+}
+
+bool ShadowStack::take_reflection_stack(Method *target, int entry_words,
+                                        ShadowTable &destination) {
+  if (_pending_reflections.empty()
+      || _pending_reflections.back()->target != target) {
+    return false;
+  }
+  PendingReflection *pending = _pending_reflections.back();
+  guarantee(entry_words == pending->entry_words,
+            "reflection argument footprint must match its target entry");
+  destination.swap(pending->carrier);
+  _pending_reflections.pop_back();
+  delete pending;
+  return true;
+}
+
+bool ShadowStack::cancel_reflection_call(jlong token) {
+  guarantee(token != 0, "reflection token must be present");
+  for (int i = (int)_pending_reflections.size() - 1; i >= 0; --i) {
+    PendingReflection *pending = _pending_reflections[i];
+    if (pending->token != token) {
+      continue;
+    }
+    guarantee(i == (int)_pending_reflections.size() - 1,
+              "reflection calls must be cancelled in LIFO order");
+    _pending_reflections.pop_back();
+    delete pending;
+    return true;
+  }
+  return false;
 }
 
 void ShadowStack::print_origin() {

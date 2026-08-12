@@ -69,6 +69,10 @@ private:
   sym_tmp_id_t _sym_tmp_id_counter;
 
   bool _path_condition_enabled;
+  // Region capture begins only after the first selected input is
+  // materialized.  This authority is independent of the Webridge pruner,
+  // which temporarily toggles _path_condition_enabled around library code.
+  bool _path_condition_admitted;
   int _path_condition_pause_depth;
   // Once the Java stack that existed at region start has completely
   // unwound, there is no sound caller frame onto which symbolic values can
@@ -145,6 +149,7 @@ public:
   std::string get_branch_events() const;
 
   void set_pc_enabled(bool pathConditionEnabled);
+  void set_pc_admitted(bool pathConditionAdmitted);
   int pause_path_condition_recording();
   int resume_path_condition_recording();
   inline int path_condition_pause_depth() const {
@@ -220,7 +225,7 @@ public:
   void detach_tmp_exp(sym_tmp_id_t sym_tmp_id);
 
   inline void __attribute__((optimize("O0"))) record_path_condition(Expression *sym_exp) {
-    if (_aborted || !_path_condition_enabled
+    if (_aborted || !_path_condition_enabled || !_path_condition_admitted
         || _path_condition_pause_depth > 0) {
       return;
     }
@@ -238,6 +243,7 @@ public:
   void alias_container(oop derived, oop owner);
   int next_container_position(oop cursor);
   int current_container_position(oop cursor);
+  int current_container_index(oop cursor);
   int next_container_removal_position(oop cursor);
 
   inline ShadowStack &get_shadow_stack() { return _s_stack; }

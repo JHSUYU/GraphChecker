@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -1669,11 +1670,17 @@ public final class RuntimeWorkflowDiscovery {
             this.target = target;
             this.producers = new ArrayList<>(producers);
             List<Selection> materialized = new ArrayList<>();
-            materialized.add(Selection.target(target));
             Map<String, ProducerGroup> grouped = new LinkedHashMap<>();
+            Set<String> targetEdgeIds = new LinkedHashSet<>();
             for (Demand producer : producers) {
                 Selection selection = Selection.producer(producer);
                 materialized.add(selection);
+                for (JsonObject edge : producer.selectedEdges.values()) {
+                    if (target.regionInstanceId.equals(string(edge,
+                            "toRegionInstance"))) {
+                        targetEdgeIds.add(required(edge, "edgeId"));
+                    }
+                }
                 String key = ProducerGroup.key(producer);
                 ProducerGroup group = grouped.get(key);
                 if (group == null) {
@@ -1682,6 +1689,7 @@ public final class RuntimeWorkflowDiscovery {
                 }
                 group.add(producer, selection);
             }
+            materialized.add(0, Selection.target(target, targetEdgeIds));
             selections = java.util.Collections.unmodifiableList(materialized);
             producerGroups = java.util.Collections.unmodifiableList(
                     new ArrayList<>(grouped.values()));
@@ -1906,20 +1914,26 @@ public final class RuntimeWorkflowDiscovery {
         final String regionInstanceId;
         final String goalId;
         final ProducerOutputProjection producerProjection;
+        final Set<String> targetEdgeIds;
 
         private Selection(String campaignId, String regionId,
                           String regionInstanceId, String goalId,
-                          ProducerOutputProjection producerProjection) {
+                          ProducerOutputProjection producerProjection,
+                          Set<String> targetEdgeIds) {
             this.campaignId = campaignId;
             this.regionId = regionId;
             this.regionInstanceId = regionInstanceId;
             this.goalId = goalId;
             this.producerProjection = producerProjection;
+            this.targetEdgeIds = java.util.Collections.unmodifiableSet(
+                    new LinkedHashSet<>(targetEdgeIds));
         }
 
-        private static Selection target(Target target) {
+        private static Selection target(Target target,
+                                        Set<String> targetEdgeIds) {
             return new Selection(target.campaignId, target.regionId,
-                    target.regionInstanceId, target.goalId, null);
+                    target.regionInstanceId, target.goalId, null,
+                    targetEdgeIds);
         }
 
         private static Selection producer(Demand producer)
@@ -1930,7 +1944,8 @@ public final class RuntimeWorkflowDiscovery {
                                     .json())).getAsJsonObject();
             return new Selection(producer.campaignId, producer.regionId,
                     producer.regionInstanceId, producer.goalId,
-                    ProducerOutputProjection.decode(canonicalProjection));
+                    ProducerOutputProjection.decode(canonicalProjection),
+                    Collections.<String>emptySet());
         }
     }
 

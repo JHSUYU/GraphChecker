@@ -92,6 +92,7 @@ void SymString::init_register_class(MethodSymbolizer *m_symbolizer) {
 SymString::SymString(sym_rid_t sym_rid)
     : SymInstance(sym_rid), _exp(NULL), _ref_exp(NULL) {
   this->set_ref_exp(new StringSymbolExp(_sym_rid));
+  this->clear_semantic_expression();
 }
 
 SymString::~SymString() {
@@ -118,17 +119,6 @@ bool SymString::invoke_method_helper(MethodSymbolizerHandle &handle) {
     if (iter != skip_method_names.end()) {
       need_symbolize = iter->second
           && handle.general_check_param_symbolized();
-      if (!need_symbolize) {
-        bool recording = handle.general_check_param_symbolized();
-        handle.get_callee_method()->print_name(tty);
-        tty->print_cr(" skipped by SymString, need recording %c",
-                      recording ? 'Y' : 'N');
-      }
-    } else {
-      bool recording = handle.general_check_param_symbolized();
-      handle.get_callee_method()->print_name(tty);
-      tty->print_cr(" handled by SymString, need recording %c",
-                    recording ? 'Y' : 'N');
     }
   }
 
@@ -330,7 +320,15 @@ Expression *SymString::get_exp_of(oop obj) {
 }
 
 void SymString::set_sym_exp(int field_offset, Expression *exp) {
-  ShouldNotCallThis();
+  // String content is represented atomically by the reference expression
+  // installed at a handled String call boundary.  Constructor execution can
+  // still copy a shadowed char[] into the private value field before such a
+  // boundary is selected.  Treat that implementation write like the
+  // corresponding StringBuilder value/count writes: the concrete JVM field
+  // is authoritative, while a field-level shadow would mix an indexed-array
+  // expression into the String model.
+  (void) field_offset;
+  (void) exp;
 }
 
 bool SymString::get_condition_value(oop s1, oop s2, std::string comp) {

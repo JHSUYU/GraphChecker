@@ -6,6 +6,16 @@ public final class RegionApiSmoke {
         Method pause = System.class.getMethod("pauseConcolicPathCondition");
         Method resume = System.class.getMethod("resumeConcolicPathCondition");
         System.startConcolicRegion("REGION.smoke", "ACT.smoke");
+        Long boxedAmbient = Long.valueOf(7L);
+        String ambient = new StringBuilder().append("ambient-")
+                .append(value).append(boxedAmbient).toString();
+        if (ambient.length() > 0 && boxedAmbient.longValue() == 7L) {
+            // A selected region may have a long concrete prefix.  Its library
+            // expressions are not path inputs until an explicit materializer
+            // opens the recording gate below.
+        }
+        require("[]".equals(System.getPathCondition()),
+                System.getPathCondition());
         System.symbolize(value, "smoke_input");
         if (value.intValue() > 0) {
             // Force one symbolic branch into the path condition.

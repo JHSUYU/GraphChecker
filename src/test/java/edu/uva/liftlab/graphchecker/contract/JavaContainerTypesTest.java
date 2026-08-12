@@ -19,6 +19,10 @@ public class JavaContainerTypesTest {
 
         assertTrue(JavaContainerTypes.symbolicResultOperation(
                 "<java.util.Iterator: java.lang.Object next()>"));
+        assertTrue(JavaContainerTypes.symbolicResultOperation(
+                "<java.util.List: java.util.ListIterator listIterator()>"));
+        assertTrue(JavaContainerTypes.symbolicResultOperation(
+                "<java.util.ListIterator: int nextIndex()>"));
         assertFalse(JavaContainerTypes.symbolicResultOperation(
                 "<java.util.Map: void clear()>"));
         assertFalse(JavaContainerTypes.symbolicResultOperation(

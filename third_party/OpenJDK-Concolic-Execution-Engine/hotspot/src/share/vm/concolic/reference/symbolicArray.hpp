@@ -17,6 +17,7 @@ private:
   int _version;
   Expression *_length_exp;
   Expression *_ref_exp;
+  bool _semantic_expression;
 
 public:
   SymArr(sym_rid_t sym_rid, Expression *length_exp);
@@ -27,6 +28,15 @@ public:
     Expression::gc(_ref_exp);
     _ref_exp = expression;
     if (_ref_exp != NULL) _ref_exp->inc_ref();
+    _semantic_expression = expression != NULL;
+  }
+
+  inline void mark_semantic_expression() {
+    _semantic_expression = true;
+  }
+
+  inline bool has_semantic_expression() const {
+    return _semantic_expression;
   }
 
   inline void store() {

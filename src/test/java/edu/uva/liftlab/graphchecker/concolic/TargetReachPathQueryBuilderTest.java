@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -117,6 +118,39 @@ public class TargetReachPathQueryBuilderTest {
     }
 
     @Test
+    public void fatalOutcomeIsIndependentOfExplorationFlip()
+            throws Exception {
+        JsonObject reached = summary(true);
+        JsonObject condition = reached.getAsJsonArray("pathCondition")
+                .get(0).getAsJsonObject();
+        JsonArray mappings = new JsonArray();
+        mappings.add(SummaryBranchMapping.witnessed(
+                witness(false, condition), 0,
+                SummaryBranchMapping.Policy.EXPLORE).toJson());
+        reached.add("branchMappings", mappings);
+
+        JsonObject query = TargetReachPathQueryBuilder.build(
+                TargetReachPathQueryBuilder.Arguments.parse(new String[]{
+                        "--summaries", jsonl("fatal-summaries.jsonl",
+                                reached).getPath(),
+                        "--path-manifest", json("fatal-manifest.json",
+                                manifest()).getPath(),
+                        "--seed-query", jsonl("fatal-seed.jsonl",
+                                seedQuery(false)).getPath(),
+                        "--target-instance", SELECTED,
+                        "--exception-type", "example.InvalidKey",
+                        "--output", folder.newFile("fatal-reach.jsonl")
+                                .getPath()}));
+
+        assertFalse(query.get("requiredTakenOutcome").getAsBoolean());
+        assertEquals("WITNESSED_TARGET_OUTCOME_V1",
+                query.getAsJsonArray("paths").get(0).getAsJsonObject()
+                        .get("fatalBranchConditionAuthority").getAsString());
+        assertTrue(BranchReplayContract.fromJson(query.getAsJsonObject(
+                "seedReplayContract")).requiredTakenOutcome());
+    }
+
+    @Test
     public void missingSelectedSummaryOccurrenceFailsClosed()
             throws Exception {
         File summaries = jsonl("missing-summaries.jsonl", summary(false));
@@ -167,6 +201,10 @@ public class TargetReachPathQueryBuilderTest {
     }
 
     private static JsonObject seedQuery() {
+        return seedQuery(true);
+    }
+
+    private static JsonObject seedQuery(boolean fatalRequiredOutcome) {
         JsonObject seed = new JsonObject();
         seed.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");
         seed.addProperty("readyForSolver", true);
@@ -175,6 +213,8 @@ public class TargetReachPathQueryBuilderTest {
         seed.addProperty("canonicalRegionInstanceId", CANONICAL);
         seed.addProperty("goalId", "GOAL.TARGET");
         seed.addProperty("targetSiteId", SITE);
+        seed.addProperty("fatalRequiredTakenOutcome",
+                fatalRequiredOutcome);
         seed.add("selectedTargetOccurrence", occurrence(SELECTED, 2,
                 true));
         BranchWitness source = witness(false, predicate(CANONICAL_PORT));

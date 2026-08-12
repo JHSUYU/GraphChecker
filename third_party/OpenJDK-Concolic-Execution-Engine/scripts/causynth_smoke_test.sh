@@ -11,6 +11,7 @@ mkdir -p "$OUT"
 cd "$JDK_ROOT"
 "$JDK_HOME/bin/javac" -d "$OUT" \
   test/causynth/RegionApiSmoke.java \
+  test/causynth/RegionAtomicApiSmoke.java \
   test/causynth/RegionBoxedPrimitiveApiSmoke.java \
   test/causynth/RegionContainerRelationApiSmoke.java \
   test/causynth/RegionBranchEventApiSmoke.java \
@@ -37,6 +38,7 @@ cd "$JDK_ROOT"
 
 for smoke in \
   RegionApiSmoke \
+  RegionAtomicApiSmoke \
   RegionBoxedPrimitiveApiSmoke \
   RegionContainerRelationApiSmoke \
   RegionBranchEventApiSmoke \

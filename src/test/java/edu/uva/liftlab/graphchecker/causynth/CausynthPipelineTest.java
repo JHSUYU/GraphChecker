@@ -317,6 +317,58 @@ public class CausynthPipelineTest {
                 hookName(completionRecord));
         assertEquals("pauseObservation", hookName(
                 body.getUnits().getPredOf(completionRecord)));
+        assertEquals(-1, indexOfHook(new ArrayList<>(body.getUnits()),
+                "prepareAtomicMutationStateOutput"));
+    }
+
+    @Test
+    public void atomicMutationPreparesExactValueBeforeRmwCall()
+            throws Exception {
+        G.reset();
+        addCoreReferenceClasses();
+        SootClass atomic = new SootClass(
+                "java.util.concurrent.atomic.AtomicInteger",
+                Modifier.PUBLIC);
+        atomic.setApplicationClass();
+        Scene.v().addClass(atomic);
+        SootMethod decrement = new SootMethod("getAndDecrement",
+                Collections.emptyList(), IntType.v(), Modifier.PUBLIC);
+        atomic.addMethod(decrement);
+
+        SootClass owner = new SootClass("example.AtomicMutationOwner",
+                Modifier.PUBLIC);
+        owner.setApplicationClass();
+        Scene.v().addClass(owner);
+        SootField state = new SootField("state", atomic.getType(),
+                Modifier.PUBLIC);
+        owner.addField(state);
+        SootMethod method = new SootMethod("run",
+                Collections.singletonList(atomic.getType()),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local value = Jimple.v().newLocal("value", atomic.getType());
+        body.getLocals().add(value);
+        body.getUnits().add(Jimple.v().newIdentityStmt(value,
+                Jimple.v().newParameterRef(atomic.getType(), 0)));
+        Stmt call = Jimple.v().newInvokeStmt(Jimple.v()
+                .newVirtualInvokeExpr(value, decrement.makeRef()));
+        body.getUnits().add(call);
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+
+        instrumentExactHeapCapture(exactCapture(
+                OutputCaptureSpec.MUTATION_STATE,
+                method.getSignature(), 1, decrement.getSignature(),
+                state.getSignature(), atomic.getName()));
+
+        Unit resume = body.getUnits().getPredOf(call);
+        assertEquals("resumeObservation", hookName(resume));
+        Unit prepare = body.getUnits().getPredOf(resume);
+        assertEquals("prepareAtomicMutationStateOutput",
+                hookName(prepare));
+        assertEquals("pauseObservation", hookName(
+                body.getUnits().getPredOf(prepare)));
     }
 
     @Test

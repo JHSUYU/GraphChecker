@@ -4,6 +4,7 @@
 #include "concolic/reference/symbolicStringBuilder.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "concolic/exp/methodExpression.hpp"
+#include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/utils.hpp"
 
@@ -72,17 +73,6 @@ bool SymStrBuilder::invoke_method_helper(MethodSymbolizerHandle &handle) {
         skip_method_names.find(callee_name);
     if (iter != skip_method_names.end()) {
       need_symbolize = iter->second;
-      if (!need_symbolize) {
-        bool recording = handle.general_check_param_symbolized();
-        handle.get_callee_method()->print_name(tty);
-//        tty->print_cr(" skipped by SymStrBuilder, need recording %c",
-//                      recording ? 'Y' : 'N');
-      }
-    } else {
-      bool recording = handle.general_check_param_symbolized();
-      handle.get_callee_method()->print_name(tty);
-//      tty->print_cr(" handled by SymStrBuilder, need recording %c",
-//                    recording ? 'Y' : 'N');
     }
   }
   return need_symbolize;
@@ -127,12 +117,9 @@ int SymStrBuilder::prepare_param_helper(MethodSymbolizerHandle &handle,
     }
 
   } else if (type == T_ARRAY) {
-    tty->print_cr("record string method having a array param: ");
-    handle.get_callee_method()->print_name(tty);
-    tty->cr();
-
     arrayOop arr_obj = handle.get_param<arrayOop>(locals_offset);
     exp = ConcolicMngr::ctx->container_state(arr_obj, "INDEXED");
+    if (exp == NULL) exp = ContainerSupport::concrete_value(arr_obj);
   } else {
     tty->print_cr("unhandled String parameter types!");
     ShouldNotCallThis();
@@ -159,17 +146,24 @@ void __attribute__((optimize("O0"))) SymStrBuilder::add_to_string_for_param_list
   ret.push_back(param_list[0]);
   while (!ss.at_return_type()) {
     BasicType type = ss.type();
-    offset = SymString::prepare_param_helper(handle, ss.type(), offset);
-    oop obj = handle.get_param<oop>(offset);
-    if (obj == NULL && param_list[i] != NULL) {
-      ret.push_back(param_list[i]);
-    } else if (type == T_OBJECT && obj->is_instance() &&
-        (obj->klass()->name()->equals(SymString::TYPE_NAME) || obj->klass()->name()->equals(SymStrBuilder::TYPE_NAME))
-        || (param_list[i]->is_op_str_expression() &&
-            strncmp("toString", ((OpStrExpression *) param_list[i])->get_op_name().c_str(), 8) == 0)) {
-      ret.push_back(param_list[i]);
+    Expression *parameter = param_list[i];
+    guarantee(parameter != NULL,
+              "StringBuilder parameter expression must be materialized");
+    bool string_object = false;
+    if (type == T_OBJECT) {
+      oop obj = handle.get_param<oop>(offset);
+      string_object = obj != NULL && obj->is_instance()
+          && (obj->klass()->name()->equals(SymString::TYPE_NAME)
+              || obj->klass()->name()->equals(SymStrBuilder::TYPE_NAME));
+    }
+    if (string_object
+        || (parameter->is_op_str_expression()
+            && strncmp("toString",
+                       ((OpStrExpression *)parameter)->get_op_name().c_str(),
+                       8) == 0)) {
+      ret.push_back(parameter);
     } else {
-      ret.push_back(new OpStrExpression("toString", param_list[i]));
+      ret.push_back(new OpStrExpression("toString", parameter));
     }
     i++;
     ss.next();
@@ -216,9 +210,10 @@ SymStrBuilder::finish_method_helper(MethodSymbolizerHandle &handle) {
 Expression *SymStrBuilder::get_exp_of(oop obj) {
   if (obj == NULL) return SymbolExpression::get(Sym_NULL);
   SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
-  return sym_inst == NULL
-      ? static_cast<Expression *>(new ConStringSymbolExp(obj))
-      : sym_inst->get_ref_exp();
+  if (sym_inst != NULL && sym_inst->get_ref_exp() != NULL) {
+    return sym_inst->get_ref_exp();
+  }
+  return ContainerSupport::concrete_value(obj);
 }
 
 #endif

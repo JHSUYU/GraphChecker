@@ -341,7 +341,36 @@ final class SeedBackwardStaticAnalyzer {
                 "java.util.concurrent.ForkJoinTask")) {
             return "TASK_ENTRY";
         }
+        if (configuredWorkloadEntry(method,
+                System.getProperty("causynth.trace.test", ""))) {
+            return "WORKLOAD_ENTRY";
+        }
         return "";
+    }
+
+    /**
+     * Makes an explicitly configured unit/workload method an execution
+     * context root.  This is needed when a harness invokes it reflectively,
+     * so no ordinary static caller identifies the activation envelope.
+     */
+    private static boolean configuredWorkloadEntry(
+            SootMethod method, String configured) {
+        String value = configured == null ? "" : configured.trim();
+        int separator = value.lastIndexOf('.');
+        if (method == null || separator <= 0
+                || separator + 1 >= value.length()
+                || !method.isConcrete()
+                || method.getParameterCount() != 0
+                || !method.getName().equals(value.substring(separator + 1))) {
+            return false;
+        }
+        String configuredClass = value.substring(0, separator);
+        String owner = method.getDeclaringClass().getName();
+        int ownerSeparator = owner.lastIndexOf('.');
+        String simpleOwner = ownerSeparator < 0 ? owner
+                : owner.substring(ownerSeparator + 1);
+        return configuredClass.equals(owner)
+                || configuredClass.equals(simpleOwner);
     }
 
     private boolean loadMethod(SootMethod method) {
@@ -1670,7 +1699,8 @@ final class SeedBackwardStaticAnalyzer {
             return false;
         }
         String name = sig.name;
-        return "put".equals(name)
+        return isAtomicNumericMutation(sig)
+                || "put".equals(name)
                 || "putAll".equals(name)
                 || "remove".equals(name)
                 || "clear".equals(name)
@@ -1684,6 +1714,31 @@ final class SeedBackwardStaticAnalyzer {
                 || "merge".equals(name)
                 || "offer".equals(name)
                 || "poll".equals(name);
+    }
+
+    /**
+     * Numeric atomic read-modify-write calls mutate the receiver even though
+     * their Jimple call site contains no ordinary field assignment.  Keep the
+     * contract owner-scoped so an application method with the same spelling
+     * is not treated as a heap mutation.
+     */
+    private static boolean isAtomicNumericMutation(MethodSig sig) {
+        if (!("java.util.concurrent.atomic.AtomicInteger".equals(sig.owner)
+                || "java.util.concurrent.atomic.AtomicLong".equals(
+                sig.owner))) {
+            return false;
+        }
+        String name = sig.name;
+        return "getAndIncrement".equals(name)
+                || "getAndDecrement".equals(name)
+                || "getAndAdd".equals(name)
+                || "incrementAndGet".equals(name)
+                || "decrementAndGet".equals(name)
+                || "addAndGet".equals(name)
+                || "getAndSet".equals(name)
+                || "compareAndSet".equals(name)
+                || "weakCompareAndSet".equals(name)
+                || "lazySet".equals(name);
     }
 
     private boolean isCanonicalField(String value) {

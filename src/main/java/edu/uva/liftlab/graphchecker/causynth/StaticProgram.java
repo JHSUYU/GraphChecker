@@ -14,8 +14,8 @@ final class StaticProgram {
     /**
      * Methods that are allowed to own a REGION activation.  The value is a
      * project-independent authority such as THREAD_ENTRY, TASK_ENTRY,
-     * MAIN_ENTRY, or RPC_HANDLER.  Constructors and ordinary helpers never
-     * appear here.
+     * MAIN_ENTRY, RPC_HANDLER, or a configured WORKLOAD_ENTRY. Constructors
+     * and ordinary helpers never appear here.
      */
     final Map<String, String> executionContextAuthorities =
             new LinkedHashMap<>();

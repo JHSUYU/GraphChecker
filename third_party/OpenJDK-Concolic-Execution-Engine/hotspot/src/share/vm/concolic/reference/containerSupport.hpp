@@ -32,8 +32,9 @@ void attach_result(oop result, Expression *expression, oop owner = NULL);
 // destination class more harshly than an untracked one, which is silently
 // tolerated on the same line today.
 bool follows_callee_body(const std::string &callee_name);
-// True when the engine holds a claim about this receiver: it is symbolic, or
-// it carries container state (its own, or an owner's if it is a view).  An
+// True when this invocation carries a receiver expression, or the engine
+// holds semantic/container state for the receiver (its own, or an owner's
+// if it is a view).  Merely allocating an identity shadow is not a claim.  An
 // unmodeled operation only has something to contradict when such a claim
 // exists, and only then must it fail closed.  On a receiver the engine
 // claims nothing about, the body's concrete answer is the only answer there

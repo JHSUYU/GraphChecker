@@ -91,19 +91,26 @@ oop Reflection::box(jvalue* value, BasicType type, TRAPS) {
     // regular objects are not boxed
     return (oop) value->l;
   }
+#ifdef ENABLE_CONCOLIC
+  Expression* ret_exp = NULL;
+  jlong ret_context_id = 0;
+  if (ConcolicMngr::ctx != NULL) {
+    ret_context_id = ConcolicMngr::ctx->get_context_id();
+    ret_exp = ConcolicMngr::ctx->get_shadow_stack()
+        .get_reflection_ret_exp();
+  }
+#endif
   oop result = java_lang_boxing_object::create(type, value, CHECK_NULL);
   if (result == NULL) {
     THROW_(vmSymbols::java_lang_IllegalArgumentException(), result);
   }
 
 #ifdef ENABLE_CONCOLIC
-  if (ConcolicMngr::can_do_concolic()) {
-    Expression* ret_exp = ConcolicMngr::ctx->get_shadow_stack().get_reflection_ret_exp();
-    if (ret_exp != NULL) {
-      assert(!result->is_symbolic(), "should not be symbolic!");
-      SymInstance* sym_inst = ConcolicMngr::ctx->alloc_sym_inst(result);
-      sym_inst->set_ref_exp(ret_exp);
-    }
+  if (ret_exp != NULL && ConcolicMngr::can_do_concolic()
+      && ConcolicMngr::ctx->get_context_id() == ret_context_id) {
+    assert(!result->is_symbolic(), "should not be symbolic!");
+    SymInstance* sym_inst = ConcolicMngr::ctx->alloc_sym_inst(result);
+    sym_inst->set_ref_exp(ret_exp);
   }
 #endif
 
@@ -1042,10 +1049,15 @@ oop Reflection::invoke(instanceKlassHandle klass, methodHandle reflected_method,
     THROW_MSG_0(vmSymbols::java_lang_IllegalArgumentException(), "wrong number of arguments");
   }
 #ifdef ENABLE_CONCOLIC
-  ShadowTable* reflection_stack = NULL;
-  if (ConcolicMngr::can_do_concolic()) {
-    reflection_stack =
-        ConcolicMngr::ctx->get_shadow_stack().init_reflection_stack(method->size_of_parameters());
+  ShadowTable reflection_carrier;
+  jlong reflection_token = 0;
+  jlong reflection_context_id = 0;
+  bool capture_reflection = ConcolicMngr::can_do_concolic();
+  if (capture_reflection) {
+    int parameter_words = method->size_of_parameters();
+    int result_words = is_java_primitive(rtype) ? type2size[rtype] : 0;
+    reflection_carrier.init(MAX2(parameter_words, result_words));
+    reflection_context_id = ConcolicMngr::ctx->get_context_id();
   }
 #endif
 
@@ -1067,10 +1079,11 @@ oop Reflection::invoke(instanceKlassHandle klass, methodHandle reflected_method,
         widen(&value, atype, ptype, CHECK_NULL);
       }
 #ifdef ENABLE_CONCOLIC
-      if (reflection_stack != NULL && arg->is_symbolic()) {
+      if (capture_reflection && arg->is_symbolic()) {
         SymInstance* sym_inst = ConcolicMngr::ctx->get_sym_inst(arg);
-        reflection_stack->set_slot(java_args.size_of_parameters() + type2size[ptype] - 1, sym_inst->get_ref_exp(),
-                                   sym_inst->get_sym_rid(), -1);
+        reflection_carrier.set_slot(
+            java_args.size_of_parameters() + type2size[ptype] - 1,
+            sym_inst->get_ref_exp(), sym_inst->get_sym_rid(), -1);
       }
 #endif
       switch (ptype) {
@@ -1102,7 +1115,25 @@ oop Reflection::invoke(instanceKlassHandle klass, methodHandle reflected_method,
   // All oops (including receiver) is passed in as Handles. An potential oop is returned as an
   // oop (i.e., NOT as an handle)
   JavaValue result(rtype);
+#ifdef ENABLE_CONCOLIC
+  if (capture_reflection) {
+    guarantee(ConcolicMngr::ctx != NULL
+                  && ConcolicMngr::ctx->get_context_id()
+                      == reflection_context_id,
+              "reflection context changed while preparing arguments");
+    reflection_token = ConcolicMngr::ctx->get_shadow_stack()
+        .register_reflection_call(method(), method->size_of_parameters(),
+                                  reflection_carrier);
+  }
+#endif
   JavaCalls::call(&result, method, &java_args, THREAD);
+#ifdef ENABLE_CONCOLIC
+  if (reflection_token != 0 && ConcolicMngr::ctx != NULL
+      && ConcolicMngr::ctx->get_context_id() == reflection_context_id) {
+    ConcolicMngr::ctx->get_shadow_stack()
+        .cancel_reflection_call(reflection_token);
+  }
+#endif
 
   if (HAS_PENDING_EXCEPTION) {
     // Method threw an exception; wrap it in an InvocationTargetException

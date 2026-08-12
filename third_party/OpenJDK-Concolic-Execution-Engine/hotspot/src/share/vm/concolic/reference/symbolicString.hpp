@@ -28,6 +28,7 @@ public:
     Expression::gc(_ref_exp);
     _ref_exp = exp;
     _ref_exp->inc_ref();
+    mark_semantic_expression();
   };
 
   bool need_recursive() { return false; }

@@ -8,9 +8,14 @@
 #include "concolic/reference/symbolicString.hpp"
 
 bool OopUtils::is_java_string_interned(oop str_obj) {
+  if (str_obj == NULL) return false;
   ResourceMark rm;
 
   typeArrayOop char_array_obj = java_string_to_char_array(str_obj);
+  // A freshly allocated String can acquire a shadow while its constructor is
+  // still before the value-field write.  Such an object cannot yet be in the
+  // intern table, and dereferencing its null value array would crash the VM.
+  if (char_array_obj == NULL) return false;
   int length = char_array_obj->length();
   jchar *char_array = (jchar *)char_array_obj->base(T_CHAR);
 
