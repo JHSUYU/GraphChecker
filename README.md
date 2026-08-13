@@ -224,7 +224,7 @@ The patched checkout and reusable evidence are:
 Hadoop checkout: /tmp/hdfs-11741-patched-worktree
 work root:       /opt/GraphChecker/experiments-output/hdfs-11741-patched
 runtime trace:   runtime/runtime_trace.jsonl             (closed, 2,477,526,886 bytes)
-static graph:    analysis/candidate_dataflow_edges.jsonl (2,028,773,031 bytes)
+static graph:    analysis/candidate_dataflow_edges.jsonl (legacy run, 2,028,773,031 bytes; new runs use .jsonl.gz)
 ```
 
 The stated call ids are evidence read from the current trace and schedule, not
@@ -254,7 +254,6 @@ participates in the generic ranking rule.
    CAUSYNTH_OUTPUT_DIR=/opt/GraphChecker/experiments-output/hdfs-11741-patched/analysis \
    CAUSYNTH_INSTRUMENTED_CLASSES_DIR=/opt/GraphChecker/experiments-output/hdfs-11741-patched/instrumented-classes \
    CAUSYNTH_REGION_PLAN=/opt/GraphChecker/experiments-output/hdfs-11741-patched/runtime/concolic_region_plan.jsonl \
-   CAUSYNTH_EDGE_VALIDATIONS=/opt/GraphChecker/experiments-output/hdfs-11741-patched/runtime/runtime_region_edge_validation.jsonl \
    CAUSYNTH_SCHEDULE_OUTPUT_DIR=/opt/GraphChecker/experiments-output/hdfs-11741-patched/schedule \
    ./run_engine.sh --config experiments/hdfs/hdfs-11741/workflow.properties workload
    ```

@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
+import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -49,7 +50,8 @@ public final class RuntimeWorkflowDiscovery {
 
     private RuntimeWorkflowDiscovery(Path regionPlan, String targetInstance,
                                      String targetGoal) throws IOException {
-        this(ArtifactIO.readJsonl(regionPlan), targetInstance, targetGoal);
+        this(RuntimePlanArtifact.read(regionPlan).plans(), targetInstance,
+                targetGoal);
     }
 
     private RuntimeWorkflowDiscovery(Iterable<JsonObject> regionPlan,
@@ -1707,19 +1709,6 @@ public final class RuntimeWorkflowDiscovery {
             return 1 + producerGroups.size();
         }
 
-        String targetBinding() {
-            return target.binding();
-        }
-
-        List<String> closureBindings() {
-            List<String> result = new ArrayList<>();
-            result.add("TARGET\t" + target.binding());
-            for (ProducerGroup group : producerGroups) {
-                result.add("PRODUCER\t" + group.binding());
-            }
-            return result;
-        }
-
         /**
          * Deep-validates the scheduled tasks against discovery and emits the
          * compact index consumed by later candidate stages.
@@ -1870,15 +1859,6 @@ public final class RuntimeWorkflowDiscovery {
             return ProducerOutputProjection.create(campaignId(), regionId,
                     logicalRegionId, goalId(), pathSeedKey, outputPorts(),
                     edgeIds());
-        }
-
-        String binding() {
-            try {
-                return campaignId() + "\t" + regionId + "\t"
-                        + regionInstanceId + "\t" + goalId();
-            } catch (IOException impossible) {
-                throw new IllegalStateException(impossible);
-            }
         }
 
         JsonObject indexEntry(String taskId) throws IOException {

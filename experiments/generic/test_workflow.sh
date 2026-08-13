@@ -39,11 +39,9 @@ mkdir -p \
 for file in \
   tool/fake.jar tool/env.jar tool/pom.xml target.yaml bin/z3 bin/java \
   artifacts/region_skeletons.jsonl.gz \
-  artifacts/symbolic_regions.jsonl artifacts/candidate_dataflow_edges.jsonl \
-  artifacts/symbolic_region_edges.jsonl \
-  artifacts/runtime/refined_dataflow_edges.jsonl \
+  artifacts/candidate_dataflow_edges.jsonl.gz \
+  artifacts/runtime/refined_dataflow_edges.jsonl.gz \
   artifacts/runtime/concolic_region_plan.jsonl \
-  artifacts/runtime/runtime_region_edge_validation.jsonl \
   artifacts/schedule/concolic_region_results.jsonl \
   artifacts/schedule/execution_task_plan.jsonl \
   artifacts/schedule/concolic_region_summaries.jsonl \
@@ -59,17 +57,11 @@ chmod +x "${fixture_root}/bin/java"
 printf '%s\n' \
   '{"schemaVersion":3,"id":"DF.Z","kind":"z-static","fromCell":"z-cell","toCell":"sink","method":"m","siteId":"z"}' \
   '{"schemaVersion":3,"id":"DF.A","kind":"a-static","fromCell":"a-cell","toCell":"sink","method":"m","siteId":"a"}' \
-  > "${fixture_root}/artifacts/candidate_dataflow_edges.jsonl"
+  | gzip -n > "${fixture_root}/artifacts/candidate_dataflow_edges.jsonl.gz"
+printf '' | gzip -n \
+  > "${fixture_root}/artifacts/runtime/refined_dataflow_edges.jsonl.gz"
 printf '%s\n' \
-  '{"schemaVersion":3,"kind":"SYMBOLIC_REGION","graphKind":"RUNTIME_REFINED_DATAFLOW","regionId":"REGION.0","rootMethod":"m","anchorMethod":"m","methods":["m"],"symbolicInputs":[{"portId":"REGION.0.in.0"}],"outputs":[{"portId":"REGION.0.out.0"}]}' \
-  > "${fixture_root}/artifacts/symbolic_regions.jsonl"
-printf '%s\n' \
-  '{"schemaVersion":3,"edgeId":"RF.0","kind":"RUNTIME_FIELD_FLOW","transportKind":"HEAP","fromRegion":"REGION.1","fromPort":"REGION.1.out.0","toRegion":"REGION.0","toPort":"REGION.0.in.0"}' \
-  > "${fixture_root}/artifacts/symbolic_region_edges.jsonl"
-printf '%s\n' \
-  '{"schemaVersion":3,"kind":"RUNTIME_FIELD_FLOW","edgeId":"RF.0","fromRegion":"REGION.1","toRegion":"REGION.0","transportKind":"HEAP","fromPort":"REGION.1.out.0","toPort":"REGION.0.in.0","state":"CONFIRMED_RUNTIME_IDENTITY","bindings":[]}' \
-  > "${fixture_root}/artifacts/runtime/runtime_region_edge_validation.jsonl"
-printf '%s\n' \
+  '{"schemaVersion":2,"kind":"CONCOLIC_RUNTIME_MODEL_CATALOG","regions":[{"schemaVersion":3,"kind":"SYMBOLIC_REGION","regionId":"REGION.0","symbolicInputs":[{"portId":"REGION.0.in.0"}],"outputs":[{"portId":"REGION.0.out.0"}]}],"edges":[{"schemaVersion":3,"kind":"RUNTIME_FIELD_FLOW","edgeId":"RF.0","fromRegion":"REGION.1","toRegion":"REGION.0","transportKind":"HEAP","fromOutputPort":"REGION.1.out.0","toInputPort":"REGION.0.in.0","state":"CONFIRMED_RUNTIME_IDENTITY"}]}' \
   '{"schemaVersion":3,"kind":"CONCOLIC_REGION_PLAN","regionInstanceId":"REGION.0@fixture#call1","regionId":"REGION.0","rootSelector":{"kind":"GLOBAL_INVOCATION","method":"m","ordinal":1},"closureGoals":[]}' \
   > "${fixture_root}/artifacts/runtime/concolic_region_plan.jsonl"
 printf '%s\n' \
@@ -103,7 +95,6 @@ printf '%s\n' \
   'workload_command=echo workflow' \
   'trace_test=workflow-shell-test' \
   'runtime_region_plan=artifacts/runtime/concolic_region_plan.jsonl' \
-  'runtime_edge_validations=artifacts/runtime/runtime_region_edge_validation.jsonl' \
   'schedule_output_dir=artifacts/schedule' \
   'reach_report=artifacts/reports/reach-condition.json' \
   'reach_max_inputs=7' \
@@ -183,9 +174,9 @@ assert_contains "${workload}" '--refined-graph'
   >"${debug_stdout}" 2>"${debug_stderr}"
 debug_text=$(<"${debug_stderr}")
 assert_contains "${debug_text}" 'artifact=refined_graph'
-assert_contains "${debug_text}" 'artifact=runtime_region_edge_validation'
 assert_contains "${debug_text}" 'artifact=concolic_region_instance_plan'
-assert_contains "${debug_text}" 'total=1 shown=1 truncated=false'
+assert_contains "${debug_text}" 'total=2 shown=2 truncated=false'
+assert_contains "${debug_text}" '"edgeCount":1'
 assert_contains "${debug_text}" \
   '"regionInstanceId":"REGION.0@fixture#call1"'
 assert_contains "${debug_text}" '"goalCount":0'
@@ -223,7 +214,7 @@ assert_contains "${reached}" \
 assert_contains "${reached}" \
   "--manifest ${fixture_root}/artifacts/schedule/composed_smt_manifest.json"
 assert_contains "${reached}" \
-  "--regions ${fixture_root}/artifacts/symbolic_regions.jsonl"
+  "--runtime-plan ${fixture_root}/artifacts/runtime/concolic_region_plan.jsonl"
 assert_contains "${reached}" \
   "--output ${fixture_root}/artifacts/reports/reach-condition.json"
 assert_contains "${reached}" "--z3 ${fixture_root}/bin/z3"

@@ -54,7 +54,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|refined_regions|candidate_graph|refined_graph|runtime_region_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|symbolic_selector_command|symbolic_selector_context|symbolic_selector_required|symbolic_selector_timeout_ms|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|refined_regions|candidate_graph|refined_graph|runtime_region_plan|schedule_output_dir|schedule_summaries|symbolic_selector_command|symbolic_selector_context|symbolic_selector_required|symbolic_selector_timeout_ms|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -91,7 +91,6 @@ reset_config() {
   candidate_graph=""
   refined_graph=""
   runtime_region_plan=""
-  runtime_edge_validations=""
   schedule_output_dir=""
   schedule_summaries=""
   symbolic_selector_command=""
@@ -175,7 +174,6 @@ apply_environment_overrides() {
   apply_env_override candidate_graph CAUSYNTH_CANDIDATE_GRAPH
   apply_env_override refined_graph CAUSYNTH_REFINED_GRAPH
   apply_env_override runtime_region_plan CAUSYNTH_REGION_PLAN
-  apply_env_override runtime_edge_validations CAUSYNTH_EDGE_VALIDATIONS
   apply_env_override schedule_output_dir CAUSYNTH_SCHEDULE_OUTPUT_DIR
   apply_env_override schedule_summaries CAUSYNTH_SCHEDULE_SUMMARIES
   apply_env_override symbolic_selector_command \
@@ -348,10 +346,9 @@ initialize_config() {
     causynth_protocol_stubs=$(resolve_path "${causynth_protocol_stubs}")
   fi
   refined_regions=${refined_regions:-${causynth_output_dir}/symbolic_regions.jsonl}
-  candidate_graph=${candidate_graph:-${causynth_output_dir}/candidate_dataflow_edges.jsonl}
+  candidate_graph=${candidate_graph:-${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz}
   runtime_region_plan=${runtime_region_plan:-${causynth_output_dir}/runtime/concolic_region_plan.jsonl}
-  refined_graph=${refined_graph:-$(dirname "${runtime_region_plan}")/refined_dataflow_edges.jsonl}
-  runtime_edge_validations=${runtime_edge_validations:-${causynth_output_dir}/runtime/runtime_region_edge_validation.jsonl}
+  refined_graph=${refined_graph:-$(dirname "${runtime_region_plan}")/refined_dataflow_edges.jsonl.gz}
   schedule_output_dir=${schedule_output_dir:-${causynth_output_dir}/schedule}
   raw_concolic_results=${raw_concolic_results:-${schedule_output_dir}/concolic_region_results.jsonl}
   import_task_plan=${import_task_plan:-${schedule_output_dir}/execution_task_plan.jsonl}
@@ -368,7 +365,6 @@ initialize_config() {
   candidate_graph=$(resolve_path "${candidate_graph}")
   refined_graph=$(resolve_path "${refined_graph}")
   runtime_region_plan=$(resolve_path "${runtime_region_plan}")
-  runtime_edge_validations=$(resolve_path "${runtime_edge_validations}")
   schedule_output_dir=$(resolve_path "${schedule_output_dir}")
   raw_concolic_results=$(resolve_path "${raw_concolic_results}")
   import_task_plan=$(resolve_path "${import_task_plan}")
@@ -445,7 +441,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs causynth_protocol_stubs custom_jdk_home z3_bin workload_work_dir workload_command trace_test refined_regions candidate_graph refined_graph runtime_region_plan runtime_edge_validations schedule_output_dir symbolic_selector_command symbolic_selector_context symbolic_selector_required symbolic_selector_timeout_ms raw_concolic_results import_task_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs causynth_protocol_stubs custom_jdk_home z3_bin workload_work_dir workload_command trace_test refined_regions candidate_graph refined_graph runtime_region_plan schedule_output_dir symbolic_selector_command symbolic_selector_context symbolic_selector_required symbolic_selector_timeout_ms raw_concolic_results import_task_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -570,16 +566,12 @@ do_analyze() {
 }
 
 do_schedule() {
-  require_file "symbolic regions" "${refined_regions}"
   local region_plan="${runtime_region_plan}"
   require_file "runtime region plan" "${region_plan}"
-  require_file "runtime edge validations" "${runtime_edge_validations}"
   ensure_output_directory "${schedule_output_dir}"
   local -a args
   args=(
-    --regions "${refined_regions}"
     --region-plan "${region_plan}"
-    --edge-validations "${runtime_edge_validations}"
     --output-dir "${schedule_output_dir}"
   )
   require_file "runtime-refined graph" "${refined_graph}"
@@ -603,12 +595,12 @@ do_schedule() {
 do_import() {
   require_file "raw concolic results" "${raw_concolic_results}"
   require_file "import activation plan" "${import_task_plan}"
-  require_file "symbolic regions" "${refined_regions}"
+  require_file "runtime region plan" "${runtime_region_plan}"
   ensure_output_directory "$(dirname "${imported_summaries}")"
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter \
     --results "${raw_concolic_results}" \
     --task-plan "${import_task_plan}" \
-    --regions "${refined_regions}" \
+    --runtime-plan "${runtime_region_plan}" \
     --output "${imported_summaries}" \
     --diagnostics "${import_diagnostics}" "$@"
 }
@@ -628,7 +620,6 @@ append_path_list_arguments() {
 
 do_compose() {
   require_file "fatal branch queries" "${fatal_queries}"
-  require_file "symbolic regions" "${refined_regions}"
   ensure_output_directory "$(dirname "${composed_smt}")"
   PATH_LIST_ARGUMENTS=()
   append_path_list_arguments --summaries "${compose_summary_inputs}"
@@ -638,38 +629,37 @@ do_compose() {
   [[ -z "${fatal_region}" ]] || selection+=(--fatal-region "${fatal_region}")
   [[ -z "${fatal_region_instance_id}" ]] \
     || selection+=(--region-instance-id "${fatal_region_instance_id}")
-  # The composer audits its own freedoms against the validated runtime edges:
-  # an input it left without a producer while a confirmed edge already named
-  # that consumer port is dropped evidence, not an honest freedom.
-  local -a evidence
-  evidence=()
-  if [[ -n "${runtime_edge_validations}" \
-    && -f "${runtime_edge_validations}" ]]; then
-    evidence+=(--edge-validations "${runtime_edge_validations}")
-  fi
+  require_file "runtime region plan" "${runtime_region_plan}"
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
     --fatal-query "${fatal_queries}" \
     "${PATH_LIST_ARGUMENTS[@]}" \
-    --regions "${refined_regions}" \
+    --runtime-plan "${runtime_region_plan}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
-    "${evidence[@]}" "${selection[@]}" "$@"
+    "${selection[@]}" "$@"
 }
 
 do_reach() {
   require_file "composed SMT" "${composed_smt}"
   require_file "composition manifest" "${composition_manifest}"
-  require_file "symbolic regions" "${refined_regions}"
+  require_file "runtime region plan" "${runtime_region_plan}"
   ensure_output_directory "$(dirname "${reach_report}")"
   run_java_main edu.uva.liftlab.graphchecker.concolic.BooleanReachConditionExtractor \
     --smt "${composed_smt}" \
     --manifest "${composition_manifest}" \
-    --regions "${refined_regions}" \
+    --runtime-plan "${runtime_region_plan}" \
     --output "${reach_report}" \
     --z3 "${z3_bin}" \
     --timeout-ms "${solver_timeout_ms}" \
     --max-inputs "${reach_max_inputs}" \
     --max-valuations "${reach_max_valuations}" "$@"
+}
+
+discard_transient_region_artifacts() {
+  [[ "${dry_run}" == true ]] && return
+  require_file "runtime region plan" "${runtime_region_plan}"
+  rm -f -- "${refined_regions}" \
+    "$(dirname "${refined_regions}")/symbolic_region_edges.jsonl"
 }
 
 run_configured_workload() {
@@ -828,6 +818,15 @@ debug_file_bytes() {
   printf '%s' "${count//[[:space:]]/}"
 }
 
+debug_jsonl_content() {
+  local path=$1
+  if [[ "${path}" == *.gz ]]; then
+    gzip -cd -- "${path}"
+  else
+    sed -n 'p' "${path}"
+  fi
+}
+
 # JSON artifacts are projected before printing so runtime ids, trace payloads,
 # and other large incidental fields do not hide the graph structure.
 debug_json_projection() {
@@ -875,14 +874,16 @@ debug_jsonl_projection() {
     debug_log "artifact=${label} path=${path} status=skipped reason=jq-unavailable"
     return 0
   fi
-  total=$(LC_ALL=C awk 'NF { count++ } END { print count + 0 }' "${path}")
+  total=$(debug_jsonl_content "${path}" \
+    | LC_ALL=C awk 'NF { count++ } END { print count + 0 }')
   shown=${total}
   if (( shown > debug_max_items )); then
     shown=${debug_max_items}
     truncated=true
   fi
-  if ! rendered=$(jq -cS --argjson max "${debug_max_items}" \
-      "${filter}" "${path}" 2>/dev/null \
+  if ! rendered=$(debug_jsonl_content "${path}" \
+      | jq -cS --argjson max "${debug_max_items}" \
+      "${filter}" 2>/dev/null \
       | LC_ALL=C sort | sed -n "1,${debug_max_items}p"); then
     debug_log "artifact=${label} path=${path} bytes=${bytes} status=invalid-json"
     return 0
@@ -915,20 +916,17 @@ debug_runtime_artifacts() {
     select(type == "object")
     | {id, kind, transferKind, fromCell, toCell, method, siteId,
        runtimeObserved, fieldPath, runtimeFieldBindings}'
-  debug_jsonl_projection runtime_region_edge_validation \
-    "${runtime_edge_validations}" '
-    select(type == "object")
-    | {schemaVersion, edgeId, kind, state, transportKind,
-       fromRegion, fromPort, toRegion, toPort,
-       bindingCount: ((.bindings // []) | length),
-       bindings: ((.bindings // [])[:$max])}'
   debug_jsonl_projection concolic_region_instance_plan \
     "${runtime_region_plan}" '
     select(type == "object")
-    | {regionInstanceId, regionId, rootSelector,
+    | if .kind == "CONCOLIC_RUNTIME_MODEL_CATALOG" then
+        {kind, regionCount: ((.regions // []) | length),
+         edgeCount: ((.edges // []) | length)}
+      else {regionInstanceId, regionId, rootSelector,
        goalCount: ((.closureGoals // []) | length),
        goals: ((.closureGoals // [])
-         | map({goalId, kind, admission})[:$max])}'
+         | map({goalId, kind, admission})[:$max])}
+      end'
 }
 
 debug_merge_artifacts() {
@@ -1064,7 +1062,11 @@ case "${command_name}" in
       import) do_import "$@" ;;
       compose) do_compose "$@"; debug_after_stage compose ;;
       reach) do_reach "$@" ;;
-      workload) do_workload "$@"; debug_after_stage workload ;;
+      workload)
+        do_workload "$@"
+        debug_after_stage workload
+        discard_transient_region_artifacts
+        ;;
       config) print_normalized_config ;;
       validate) validate_config ;;
     esac

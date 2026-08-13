@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
+import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -39,7 +41,8 @@ public class RuntimeWorkflowDiscoveryTest {
                 leafProducerPlan("REGION.P", 3, targetInstance,
                         "REGION.T.in.value"),
                 targetPlanWithInput(targetInstance));
-        List<JsonObject> rows = ArtifactIO.readJsonl(forward.toPath());
+        List<JsonObject> rows = RuntimePlanArtifact.read(
+                forward.toPath()).plans();
         RuntimeWorkflowDiscovery.RankedWorkflow ranked =
                 RuntimeWorkflowDiscovery.rankedWorkflow(rows);
 
@@ -52,8 +55,7 @@ public class RuntimeWorkflowDiscoveryTest {
         Collections.reverse(rows);
         RuntimeWorkflowDiscovery.RankedWorkflow reversed =
                 RuntimeWorkflowDiscovery.rankedWorkflow(rows);
-        assertEquals(ranked.targetBinding(), reversed.targetBinding());
-        assertEquals(ranked.closureBindings(), reversed.closureBindings());
+        assertEquals(selectionKeys(ranked), selectionKeys(reversed));
     }
 
     @Test
@@ -66,15 +68,14 @@ public class RuntimeWorkflowDiscoveryTest {
         Map<String, Object> producer = singletonGoalProducerPlan(
                 targetInstance, targetPorts, false);
         RuntimeWorkflowDiscovery.RankedWorkflow ranked =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
-                        GSON.toJsonTree(producer).getAsJsonObject(),
-                        GSON.toJsonTree(targetPlanWithInputs(
-                                targetInstance, targetPorts))
-                                .getAsJsonObject()));
+                RuntimeWorkflowDiscovery.rankedWorkflow(compactPlans(
+                        producer, targetPlanWithInputs(
+                                targetInstance, targetPorts)));
 
         assertEquals(2, ranked.scheduledTaskCount());
-        assertEquals(2, ranked.closureBindings().size());
-        assertTrue(ranked.closureBindings().get(1).contains("#call3"));
+        assertEquals(1, ranked.producerGroups().size());
+        assertTrue(ranked.producerGroups().get(0).regionInstanceId
+                .contains("#call3"));
         Map<String, JsonObject> components = producerComponents(producer,
                 ranked);
         // Projected slices may intentionally share one replay-stable task id
@@ -216,11 +217,9 @@ public class RuntimeWorkflowDiscoveryTest {
         Map<String, Object> splitPath = singletonGoalProducerPlan(
                 targetInstance, targetPorts, true);
         RuntimeWorkflowDiscovery.RankedWorkflow separated =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
-                        GSON.toJsonTree(splitPath).getAsJsonObject(),
-                        GSON.toJsonTree(targetPlanWithInputs(
-                                targetInstance, targetPorts))
-                                .getAsJsonObject()));
+                RuntimeWorkflowDiscovery.rankedWorkflow(compactPlans(
+                        splitPath, targetPlanWithInputs(
+                                targetInstance, targetPorts)));
         assertEquals(3, separated.scheduledTaskCount());
         assertEquals(2, ConcolicScheduler.atomicProducerTasksForTests(
                 separated, producerComponents(splitPath, separated)).size());
@@ -235,9 +234,8 @@ public class RuntimeWorkflowDiscoveryTest {
                 targetInstance, "REGION.T.in.value");
         Map<String, Object> target = targetPlanWithInput(targetInstance);
         RuntimeWorkflowDiscovery.RankedWorkflow ranked =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
-                        GSON.toJsonTree(producer).getAsJsonObject(),
-                        GSON.toJsonTree(target).getAsJsonObject()));
+                RuntimeWorkflowDiscovery.rankedWorkflow(compactPlans(
+                        producer, target));
 
         Map<String, Object> targetTask = targetTask("TASK.TARGET",
                 "REGION.T", targetInstance, "GOAL.TARGET");
@@ -1119,6 +1117,29 @@ public class RuntimeWorkflowDiscoveryTest {
         }
     }
 
+    private static List<String> selectionKeys(
+            RuntimeWorkflowDiscovery.RankedWorkflow workflow) {
+        List<String> result = new ArrayList<>();
+        for (RuntimeWorkflowDiscovery.Selection selection
+                : workflow.selections()) {
+            result.add(selection.campaignId + "\t" + selection.regionId
+                    + "\t" + selection.regionInstanceId + "\t"
+                    + selection.goalId);
+        }
+        return result;
+    }
+
+    @SafeVarargs
+    private static List<JsonObject> compactPlans(
+            Map<String, Object>... plans) {
+        List<JsonObject> result = new ArrayList<>();
+        for (Map<String, Object> plan : plans) {
+            result.add(RegionInstancePlan.compactOccurrences(
+                    GSON.toJsonTree(plan).getAsJsonObject()));
+        }
+        return result;
+    }
+
     private String run(File plans, String command, String... extra)
             throws Exception {
         List<String> args = new ArrayList<>();
@@ -1146,6 +1167,35 @@ public class RuntimeWorkflowDiscoveryTest {
     private File writeRows(String name, List<Map<String, Object>> rows)
             throws Exception {
         File file = new File(folder.getRoot(), name);
+        if (!rows.isEmpty() && "CONCOLIC_REGION_PLAN".equals(
+                String.valueOf(rows.get(0).get("kind")))) {
+            List<JsonObject> compact = new ArrayList<>();
+            Map<String, JsonObject> edges = new LinkedHashMap<>();
+            for (Map<String, Object> row : rows) {
+                JsonObject plan = GSON.toJsonTree(row).getAsJsonObject();
+                for (JsonElement goalElement : plan.getAsJsonArray(
+                        "closureGoals")) {
+                    JsonObject goal = goalElement.getAsJsonObject();
+                    for (JsonElement bindingElement : goal.getAsJsonArray(
+                            "edgeBindings")) {
+                        JsonObject binding = bindingElement.getAsJsonObject();
+                        String edgeId = binding.get("edgeId").getAsString();
+                        JsonObject edge = edges.get(edgeId);
+                        if (edge == null) {
+                            edge = binding.deepCopy();
+                            edges.put(edgeId, edge);
+                        } else if (!edge.equals(binding)) {
+                            throw new IllegalArgumentException(
+                                    "conflicting edge " + edgeId);
+                        }
+                    }
+                }
+                compact.add(RegionInstancePlan.compactOccurrences(plan));
+            }
+            Files.write(file.toPath(), RuntimePlanArtifact.encode(compact,
+                    edges.values()).getBytes(StandardCharsets.UTF_8));
+            return file;
+        }
         List<String> lines = new ArrayList<>();
         for (Map<String, Object> row : rows) {
             lines.add(GSON.toJson(row));
@@ -1823,6 +1873,7 @@ public class RuntimeWorkflowDiscoveryTest {
         String producerInstance = "REGION.P@test#call1";
         Map<String, Object> edge = object(
                 "schemaVersion", 3,
+                "edgeId", "EDGE.PENDING",
                 "evidenceKind", "TRUSTED_CONFIGURED_RPC_MAPPING_V1",
                 "correlationAuthority",
                 "TRUSTED_CONFIGURED_RPC_MAPPING_V1",

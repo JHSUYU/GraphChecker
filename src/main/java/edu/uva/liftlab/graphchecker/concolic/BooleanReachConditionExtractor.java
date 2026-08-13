@@ -15,6 +15,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 
@@ -59,8 +60,10 @@ public final class BooleanReachConditionExtractor {
         Arguments arguments = Arguments.parse(argv);
         JsonObject manifest = ArtifactIO.readObject(arguments.manifest);
         String smt = ArtifactIO.readText(arguments.smt);
-        List<JsonObject> regions = ArtifactIO.readJsonl(arguments.regions);
-        validateArtifactBindings(arguments.smt, arguments.regions, manifest);
+        List<JsonObject> regions = RuntimePlanArtifact.read(
+                arguments.runtimePlan).regions();
+        validateArtifactBindings(arguments.smt, arguments.runtimePlan,
+                manifest);
         Z3Solver solver = new Z3Solver(arguments.z3,
                 arguments.timeoutMillis);
         JsonObject report = extract(smt, manifest, regions, solver,
@@ -931,7 +934,7 @@ public final class BooleanReachConditionExtractor {
     private static final class Arguments {
         private Path smt;
         private Path manifest;
-        private Path regions;
+        private Path runtimePlan;
         private Path output;
         private String z3 = "z3";
         private long timeoutMillis = 20_000L;
@@ -959,7 +962,7 @@ public final class BooleanReachConditionExtractor {
             Arguments result = new Arguments();
             result.smt = required(values, "smt");
             result.manifest = required(values, "manifest");
-            result.regions = required(values, "regions");
+            result.runtimePlan = required(values, "runtime-plan");
             result.output = values.containsKey("output")
                     ? Paths.get(values.get("output"))
                     : sibling(result.manifest,
@@ -975,7 +978,7 @@ public final class BooleanReachConditionExtractor {
 
         private static boolean option(String key) {
             return "smt".equals(key) || "manifest".equals(key)
-                    || "regions".equals(key)
+                    || "runtime-plan".equals(key)
                     || "output".equals(key) || "z3".equals(key)
                     || "timeout-ms".equals(key)
                     || "max-inputs".equals(key)
@@ -997,15 +1000,15 @@ public final class BooleanReachConditionExtractor {
      * The composer manifest is the trust root: it fingerprints the exact SMT,
      * and static-region ledger.
      */
-    static void validateArtifactBindings(Path smtPath, Path regionsPath,
+    static void validateArtifactBindings(Path smtPath, Path runtimePlanPath,
                                          JsonObject manifest)
             throws IOException {
         JsonObject actualSmt = artifact(smtPath);
-        JsonObject actualRegions = artifact(regionsPath);
+        JsonObject actualRuntimePlan = artifact(runtimePlanPath);
         requireExactArtifact("composed SMT", object(manifest,
                 "composedSmtArtifact"), actualSmt);
-        requireExactArtifact("static regions", object(manifest,
-                "staticRegionsArtifact"), actualRegions);
+        requireExactArtifact("runtime plan", object(manifest,
+                "runtimePlanArtifact"), actualRuntimePlan);
     }
 
     private static void requireExactArtifact(String label,

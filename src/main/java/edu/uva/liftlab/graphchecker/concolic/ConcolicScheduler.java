@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
+import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -75,7 +76,7 @@ public final class ConcolicScheduler {
                 ? scheduleTargetFirst(arguments) : schedule(arguments);
         if (result.executionTasks.isEmpty()) {
             throw new IllegalStateException(noCandidateDiagnostic(arguments,
-                    readJsonl(arguments.regionPlan)));
+                    RuntimePlanArtifact.read(arguments.regionPlan).plans()));
         }
     }
 
@@ -95,17 +96,25 @@ public final class ConcolicScheduler {
 
     private static LoadedInputs loadInputs(Arguments arguments)
             throws IOException {
-        requireFile(arguments.regions, "symbolic regions");
         requireFile(arguments.regionPlan, "region plan");
-        requireFile(arguments.edgeValidations, "runtime edge validation");
         requireFile(arguments.refinedGraph, "runtime-refined graph");
         Files.createDirectories(arguments.outputDirectory);
 
         JsonObject regionPlanIdentity = arguments.targetFirst
                 ? artifactIdentity(arguments.regionPlan) : null;
-        List<JsonObject> regions = readJsonl(arguments.regions);
-        List<JsonObject> regionPlans = readJsonl(arguments.regionPlan);
-        List<JsonObject> edges = readJsonl(arguments.edgeValidations);
+        RuntimePlanArtifact runtimePlan = RuntimePlanArtifact.read(
+                arguments.regionPlan);
+        List<JsonObject> regions = runtimePlan.regions();
+        if (regions.isEmpty()) {
+            throw new IOException("runtime plan has no region port catalog: "
+                    + arguments.regionPlan);
+        }
+        List<JsonObject> regionPlans = runtimePlan.plans();
+        if (regionPlans.isEmpty()) {
+            throw new IOException("runtime plan contains no region plans: "
+                    + arguments.regionPlan);
+        }
+        List<JsonObject> edges = runtimePlan.edgeValidations();
         List<JsonObject> summaries = arguments.summaries == null
                 ? Collections.<JsonObject>emptyList()
                 : readJsonl(arguments.summaries);
@@ -279,18 +288,10 @@ public final class ConcolicScheduler {
                 "region plan changed while scheduling");
         requireArtifactIdentity(taskPlan, taskPlanIdentity,
                 "execution task plan changed before index publication");
-        ArtifactIO.replace(arguments.outputDirectory.resolve(
-                        "selected_target_binding.tsv"),
-                workflow.targetBinding() + "\n");
-        StringBuilder closure = new StringBuilder();
-        for (String binding : workflow.closureBindings()) {
-            closure.append(binding).append('\n');
-        }
-        ArtifactIO.replace(arguments.outputDirectory.resolve(
-                        "selected_closure_bindings.tsv"),
-                closure.toString());
         // The integrity-checked index is the commit record.  Publish it only
-        // after every artifact it describes or accompanies is durable.
+        // after every artifact it describes is durable. Target and producer
+        // selections live only in this index; parallel TSV mirrors used to
+        // repeat the same identities without adding authority.
         ArtifactIO.replace(arguments.outputDirectory.resolve(
                         "runtime_workflow_schedule_index.json"),
                 CanonicalJson.render(index) + "\n");
@@ -2325,7 +2326,7 @@ public final class ConcolicScheduler {
     private static Endpoint producerEndpoint(JsonObject edge,
                                              Region region) {
         if (region == null) return null;
-        return region.outputEndpoint(string(edge, "fromPort"), "");
+        return region.outputEndpoint(string(edge, "fromOutputPort"), "");
     }
 
     private static Endpoint consumerEndpoint(JsonObject edge,
@@ -2427,7 +2428,9 @@ public final class ConcolicScheduler {
     }
 
     private static JsonArray runtimeBindings(JsonObject edge) {
-        return array(edge, "bindings");
+        JsonArray result = new JsonArray();
+        result.add(edge.deepCopy());
+        return result;
     }
 
     /**
@@ -4137,9 +4140,7 @@ public final class ConcolicScheduler {
                 : CanonicalJson.render(root))
                 + " admissionState=" + display(state)
                 + " blockers=" + display(blockers)
-                + " artifacts={regions=" + artifact(arguments.regions)
-                + ",regionPlan=" + artifact(arguments.regionPlan)
-                + ",edgeValidations=" + artifact(arguments.edgeValidations)
+                + " artifacts={runtimePlan=" + artifact(arguments.regionPlan)
                 + ",refinedGraph=" + artifact(arguments.refinedGraph)
                 + ",summaries=" + artifact(arguments.summaries) + "}";
     }
@@ -4182,9 +4183,7 @@ public final class ConcolicScheduler {
     }
 
     public static final class Arguments {
-        public final Path regions;
         public final Path regionPlan;
-        public final Path edgeValidations;
         public final Path refinedGraph;
         public final Path summaries;
         public final Path producerProjection;
@@ -4199,8 +4198,7 @@ public final class ConcolicScheduler {
         private final LlmSymbolicInputSelector symbolicInputSelector;
         private final Set<String> targetEdgeIds;
 
-        private Arguments(Path regions, Path regionPlan,
-                          Path edgeValidations, Path refinedGraph,
+        private Arguments(Path regionPlan, Path refinedGraph,
                           Path summaries, Path producerProjection,
                           Path outputDirectory, String regionId,
                           String regionInstanceId, String goalId,
@@ -4208,9 +4206,7 @@ public final class ConcolicScheduler {
                           int maxLoopIterations,
                           LlmSymbolicInputSelector symbolicInputSelector,
                           Set<String> targetEdgeIds) {
-            this.regions = regions;
             this.regionPlan = regionPlan;
-            this.edgeValidations = edgeValidations;
             this.refinedGraph = refinedGraph;
             this.summaries = summaries;
             this.producerProjection = producerProjection;
@@ -4249,9 +4245,7 @@ public final class ConcolicScheduler {
                     values.put(key, "true");
                 }
             }
-            Path regions = requiredPath(values, "regions");
             Path regionPlan = requiredPath(values, "region-plan");
-            Path edges = requiredPath(values, "edge-validations");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
                     sibling(regionPlan, "concolic-schedule").toString()));
             Path refinedGraph = requiredPath(values, "refined-graph");
@@ -4292,7 +4286,7 @@ public final class ConcolicScheduler {
                         + "be combined with goal filters or "
                         + "--producer-projection");
             }
-            return new Arguments(regions, regionPlan, edges, refinedGraph,
+            return new Arguments(regionPlan, refinedGraph,
                     summaries, producerProjection, output,
                     firstNonBlank(values.get("region-id")),
                     firstNonBlank(values.get("region-instance-id")),
@@ -4307,9 +4301,7 @@ public final class ConcolicScheduler {
         }
 
         private static boolean knownOption(String key) {
-            return "regions".equals(key)
-                    || "region-plan".equals(key)
-                    || "edge-validations".equals(key)
+            return "region-plan".equals(key)
                     || "refined-graph".equals(key)
                     || "summaries".equals(key)
                     || "producer-projection".equals(key)
@@ -4387,8 +4379,8 @@ public final class ConcolicScheduler {
 
         private Arguments forSelection(
                 RuntimeWorkflowDiscovery.Selection selection) {
-            return new Arguments(regions, regionPlan, edgeValidations,
-                    refinedGraph, summaries, null, outputDirectory,
+            return new Arguments(regionPlan, refinedGraph,
+                    summaries, null, outputDirectory,
                     selection.regionId, selection.regionInstanceId,
                     selection.goalId, "", false, 1,
                     maxLoopIterations, symbolicInputSelector,

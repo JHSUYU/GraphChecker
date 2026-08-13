@@ -29,7 +29,7 @@ public class RegionInstancePlanTest {
         JsonObject plan = plan(instance, canonical,
                 occurrence(instance, 1L, first, duplicate));
 
-        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+        JsonArray catalog = decodePlan(plan).goals().get(0)
                 .occurrenceInstantiationCatalog()
                 .getAsJsonArray("occurrences");
 
@@ -56,7 +56,7 @@ public class RegionInstancePlanTest {
         JsonObject plan = plan(instance, canonical,
                 occurrence(instance, 1L, first, duplicate));
 
-        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+        JsonArray catalog = decodePlan(plan).goals().get(0)
                 .occurrenceInstantiationCatalog()
                 .getAsJsonArray("occurrences");
 
@@ -86,7 +86,7 @@ public class RegionInstancePlanTest {
         JsonObject plan = plan(instance, canonical,
                 occurrence(instance, 1L, selected, other));
 
-        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+        JsonArray catalog = decodePlan(plan).goals().get(0)
                 .occurrenceInstantiationCatalog()
                 .getAsJsonArray("occurrences");
 
@@ -121,7 +121,7 @@ public class RegionInstancePlanTest {
         JsonObject plan = plan(instance, canonical,
                 occurrence(instance, 1L, selected, other));
 
-        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+        JsonArray catalog = decodePlan(plan).goals().get(0)
                 .occurrenceInstantiationCatalog()
                 .getAsJsonArray("occurrences");
 
@@ -150,7 +150,7 @@ public class RegionInstancePlanTest {
         JsonObject plan = plan(instance, canonical,
                 occurrence(instance, 1L, selected, other));
 
-        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+        JsonArray catalog = decodePlan(plan).goals().get(0)
                 .occurrenceInstantiationCatalog()
                 .getAsJsonArray("occurrences");
         assertEquals(1, catalog.size());
@@ -178,7 +178,7 @@ public class RegionInstancePlanTest {
         JsonObject plan = plan(instance, canonical,
                 occurrence(instance, 1L, first, duplicate));
 
-        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+        JsonArray catalog = decodePlan(plan).goals().get(0)
                 .occurrenceInstantiationCatalog()
                 .getAsJsonArray("occurrences");
 
@@ -200,7 +200,7 @@ public class RegionInstancePlanTest {
         JsonObject plan = plan(instance, canonical,
                 occurrence(instance, 1L, first, conflict));
 
-        RegionInstancePlan.decode(plan).goals().get(0)
+        decodePlan(plan).goals().get(0)
                 .occurrenceInstantiationCatalog();
     }
 
@@ -218,7 +218,7 @@ public class RegionInstancePlanTest {
         JsonObject plan = plan(instance, canonical,
                 occurrence(instance, 1L, first, conflict));
 
-        RegionInstancePlan.decode(plan).goals().get(0)
+        decodePlan(plan).goals().get(0)
                 .occurrenceInstantiationCatalog();
     }
 
@@ -247,7 +247,7 @@ public class RegionInstancePlanTest {
                 secondGoal));
         plan.add("occurrences", occurrences);
 
-        JsonObject catalog = RegionInstancePlan.decode(plan).goals().get(0)
+        JsonObject catalog = decodePlan(plan).goals().get(0)
                 .occurrenceInstantiationCatalog();
 
         assertEquals(2, catalog.getAsJsonArray("occurrences").size());
@@ -288,7 +288,7 @@ public class RegionInstancePlanTest {
         JsonObject plan = plan(first, canonical,
                 occurrence(first, 1L, ready),
                 occurrence(second, 2L, blocked));
-        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+        JsonArray catalog = decodePlan(plan).goals().get(0)
                 .occurrenceInstantiationCatalog()
                 .getAsJsonArray("occurrences");
 
@@ -325,7 +325,7 @@ public class RegionInstancePlanTest {
                 outputGoal("GOAL.EXACT.2.2", second, 2L, "second", 2)));
         plan.add("occurrences", occurrences);
 
-        JsonArray catalog = RegionInstancePlan.decode(plan).goals().get(0)
+        JsonArray catalog = decodePlan(plan).goals().get(0)
                 .occurrenceInstantiationCatalog()
                 .getAsJsonArray("occurrences");
 
@@ -534,6 +534,11 @@ public class RegionInstancePlanTest {
         for (JsonObject occurrence : occurrences) exact.add(occurrence);
         plan.add("occurrences", exact);
         return plan;
+    }
+
+    private static RegionInstancePlan decodePlan(JsonObject expanded) {
+        return RegionInstancePlan.decode(
+                RegionInstancePlan.compactOccurrences(expanded));
     }
 
     private static JsonObject occurrence(

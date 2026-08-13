@@ -5,6 +5,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
+import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -31,9 +33,7 @@ public class ConcolicSchedulerTest {
     public void targetFirstModeRejectsPerGoalFilters() {
         try {
             ConcolicScheduler.Arguments.parse(new String[]{
-                    "--regions", "regions.jsonl",
                     "--region-plan", "plan.jsonl",
-                    "--edge-validations", "validations.jsonl",
                     "--refined-graph", "refined.jsonl",
                     "--target-first",
                     "--goal-id", "GOAL.1"
@@ -129,9 +129,8 @@ public class ConcolicSchedulerTest {
 
         ConcolicScheduler.Result result = ConcolicScheduler.schedule(
                 ConcolicScheduler.Arguments.parse(new String[]{
-                        "--regions", regions.getPath(),
-                        "--region-plan", plans.getPath(),
-                        "--edge-validations", edges.getPath(),
+                        "--region-plan", runtimePlan(plans, edges,
+                                regions).getPath(),
                         "--refined-graph", refined.getPath(),
                         "--output-dir", output.getPath(),
                         "--target-edge-ids", "EDGE.ATOMIC",
@@ -153,6 +152,8 @@ public class ConcolicSchedulerTest {
                 projected.get("selectedIncomingEdgeId").getAsString());
         assertEquals(java.util.Arrays.asList("count", "value"),
                 GSON.fromJson(projected.get("fieldPath"), java.util.List.class));
+        assertFalse(projected.has("fieldPaths"));
+        assertFalse(projected.has("runtimeAccesses"));
         assertEquals(1, result.executionTasks.get(0)
                 .getAsJsonArray("edgeBindings").size());
         JsonObject occurrence = result.executionTasks.get(0)
@@ -755,9 +756,8 @@ public class ConcolicSchedulerTest {
         File output = folder.newFolder("selected-query-schedule");
         ConcolicScheduler.Arguments arguments =
                 ConcolicScheduler.Arguments.parse(new String[]{
-                        "--regions", regions.getPath(),
-                        "--region-plan", plans.getPath(),
-                        "--edge-validations", edges.getPath(),
+                        "--region-plan", runtimePlan(plans, edges,
+                                regions).getPath(),
                         "--refined-graph", refined.getPath(),
                         "--summaries", summaries.getPath(),
                         "--output-dir", output.getPath(),
@@ -831,9 +831,8 @@ public class ConcolicSchedulerTest {
         File output = folder.newFolder("selected-binding-schedule");
         ConcolicScheduler.Arguments arguments =
                 ConcolicScheduler.Arguments.parse(new String[]{
-                        "--regions", regions.getPath(),
-                        "--region-plan", plans.getPath(),
-                        "--edge-validations", edges.getPath(),
+                        "--region-plan", runtimePlan(plans, edges,
+                                regions).getPath(),
                         "--refined-graph", refined.getPath(),
                         "--output-dir", output.getPath(),
                         "--region-id", "REGION.1",
@@ -875,17 +874,15 @@ public class ConcolicSchedulerTest {
                 "programOrderRequired", false,
                 "writerEventSeq", 5,
                 "readerEventSeq", 6);
-        Map<String, Object> row = object(
+        Map<String, Object> row = new LinkedHashMap<>(binding);
+        row.putAll(object(
                 "schemaVersion", 3,
                 "kind", "RUNTIME_FIELD_FLOW",
                 "edgeId", "RF.1",
                 "transportKind", "HEAP",
                 "state", "CONFIRMED_RUNTIME_IDENTITY",
                 "fromRegion", "REGION.2",
-                "toRegion", "REGION.1",
-                "fromPort", "REGION.2.out.value",
-                "toPort", "REGION.1.in.value",
-                "bindings", Collections.singletonList(binding));
+                "toRegion", "REGION.1"));
         JsonObject edge = GSON.toJsonTree(row).getAsJsonObject();
         assertTrue(AutomaticRegionEdge.composable(edge));
 
@@ -1169,7 +1166,7 @@ public class ConcolicSchedulerTest {
             fail("different occurrence projections for one edge must fail");
         } catch (IllegalArgumentException expected) {
             assertTrue(expected.getMessage(), expected.getMessage().contains(
-                    "conflicting occurrence projection EDGE.KEEP"));
+                    "unique nonempty ids"));
         }
     }
 
@@ -1501,30 +1498,77 @@ public class ConcolicSchedulerTest {
 
     private ConcolicScheduler.Arguments arguments(
             File regions, File plans, File edges, File graph, File output) {
-        return ConcolicScheduler.Arguments.parse(new String[]{
-                "--regions", regions.getPath(),
-                "--region-plan", plans.getPath(),
-                "--edge-validations", edges.getPath(),
+        try {
+            return ConcolicScheduler.Arguments.parse(new String[]{
+                "--region-plan", runtimePlan(plans, edges,
+                        regions).getPath(),
                 "--refined-graph", graph.getPath(),
                 "--output-dir", output.getPath(),
                 "--max-jobs", "16",
                 "--max-loop-iterations", "8"
-        });
+            });
+        } catch (Exception failure) {
+            throw new IllegalArgumentException(failure.getMessage(), failure);
+        }
     }
 
     private ConcolicScheduler.Arguments arguments(
             File regions, File plans, File edges, File graph, File output,
             File projection) {
-        return ConcolicScheduler.Arguments.parse(new String[]{
-                "--regions", regions.getPath(),
-                "--region-plan", plans.getPath(),
-                "--edge-validations", edges.getPath(),
+        try {
+            return ConcolicScheduler.Arguments.parse(new String[]{
+                "--region-plan", runtimePlan(plans, edges,
+                        regions).getPath(),
                 "--refined-graph", graph.getPath(),
                 "--producer-projection", projection.getPath(),
                 "--output-dir", output.getPath(),
                 "--max-jobs", "16",
                 "--max-loop-iterations", "8"
-        });
+            });
+        } catch (Exception failure) {
+            throw new IllegalArgumentException(failure.getMessage(), failure);
+        }
+    }
+
+    private File runtimePlan(File plans, File ignoredEdges, File regionsFile)
+            throws Exception {
+        java.util.List<JsonObject> source = ArtifactIO.readJsonl(
+                plans.toPath());
+        if (!source.isEmpty() && RuntimePlanArtifact.CATALOG_KIND.equals(
+                source.get(0).has("kind")
+                        ? source.get(0).get("kind").getAsString() : "")) {
+            return plans;
+        }
+        java.util.Map<String, JsonObject> edges = new LinkedHashMap<>();
+        java.util.List<JsonObject> conflictingEdges =
+                new java.util.ArrayList<>();
+        java.util.List<JsonObject> compact = new java.util.ArrayList<>();
+        for (JsonObject plan : source) {
+            for (JsonElement goalElement : plan.getAsJsonArray(
+                    "closureGoals")) {
+                JsonObject goal = goalElement.getAsJsonObject();
+                for (JsonElement bindingElement : goal.getAsJsonArray(
+                        "edgeBindings")) {
+                    JsonObject binding = bindingElement.getAsJsonObject();
+                    String edgeId = binding.get("edgeId").getAsString();
+                    JsonObject edge = edges.get(edgeId);
+                    if (edge == null) {
+                        edge = binding.deepCopy();
+                        edges.put(edgeId, edge);
+                    } else if (!edge.equals(binding)) {
+                        conflictingEdges.add(binding.deepCopy());
+                    }
+                }
+            }
+            compact.add(RegionInstancePlan.compactOccurrences(plan));
+        }
+        java.util.List<JsonObject> catalog =
+                new java.util.ArrayList<>(edges.values());
+        catalog.addAll(conflictingEdges);
+        Files.write(plans.toPath(), RuntimePlanArtifact.encode(compact,
+                catalog, ArtifactIO.readJsonl(regionsFile.toPath()))
+                .getBytes(StandardCharsets.UTF_8));
+        return plans;
     }
 
     private static Map<String, Object> region() {

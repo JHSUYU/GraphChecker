@@ -90,7 +90,6 @@ project_test_classes=$(configured_value project_test_classes_dir)
 original_classes=$(configured_value project_classes_dir)
 instrumented_classes=$(configured_value analysis_classes_dir)
 refined_graph=$(configured_value refined_graph)
-runtime_edge_validations=$(configured_value runtime_edge_validations)
 graphchecker_jar=$(configured_value graphchecker_jar)
 maven_bin=$(configured_value maven_bin)
 fixture_class=$(workflow_property fixture_class)
@@ -153,7 +152,6 @@ workflow_discovery() {
 
 validate_discovery_inputs() {
   require_file "runtime region plan" "${region_plan}"
-  require_file "runtime edge validations" "${runtime_edge_validations}"
   require_file "runtime-refined data-flow graph" "${refined_graph}"
 }
 
@@ -244,7 +242,6 @@ do_trace() {
     "${instrumented_classes}"
   (cd "${graphchecker_dir}" && "${runner}" --config "${config}" workload)
   require_file "runtime region plans" "${region_plan}"
-  require_file "runtime edge validations" "${runtime_edge_validations}"
 }
 
 do_discover() {

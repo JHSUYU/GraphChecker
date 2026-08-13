@@ -63,12 +63,9 @@ There is no public single-task, single-region, or single-target selector.
 `tasks` stops before concolic execution and produces:
 
 ```text
-experiments-output/hdfs-11741/analysis/symbolic_regions.jsonl
 experiments-output/hdfs-11741/runtime/concolic_region_plan.jsonl
 experiments-output/hdfs-11741/schedule/execution_task_plan.jsonl
 experiments-output/hdfs-11741/schedule/branch_queries.jsonl
-experiments-output/hdfs-11741/schedule/selected_target_binding.tsv
-experiments-output/hdfs-11741/schedule/selected_closure_bindings.tsv
 experiments-output/hdfs-11741/schedule/runtime_workflow_schedule_index.json
 ```
 
@@ -77,7 +74,8 @@ walks its trusted exact-port dependency closure, and schedules only that one
 target goal plus the unique producer logical goals in the closure. Each goal
 is selected with its region, runtime occurrence membership, and goal identity;
 the occurrence is discovery evidence, while the emitted task retains the
-logical replay identity. The scheduler parses the large region plan once,
+logical replay identity. The runtime plan owns compact region ports and flat
+edge evidence once; goals refer to edges by id. The scheduler parses it once,
 materializes the target and all producers from one in-memory index, and writes
 the compact workflow index last as the schedule commit record. `candidates`
 requires that record and verifies its region-plan/task-plan hashes, task set,

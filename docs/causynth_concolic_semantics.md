@@ -153,6 +153,19 @@ structurally ready only when:
 The final independent Z3 result remains a candidate analysis result; the
 fixture gate checks its expected SAT/UNSAT profile.
 
+## Canonical artifact ownership
+
+Large discovery and refinement graphs are streamed as
+`candidate_dataflow_edges.jsonl.gz` and `refined_dataflow_edges.jsonl.gz`.
+`concolic_region_plan.jsonl` is the single runtime-planning artifact: its first
+row owns the compact region-port catalog and flat validated edge catalog,
+goals name those edges by id, and each goal carries only its compact exact-
+occurrence port map. The expanded runtime-finalized region/edge files are
+transient planner inputs and are removed after this artifact is published.
+The target-first schedule index is the sole published target/producer selection
+record. Static analysis does not create empty placeholders for artifacts that
+only runtime finalization can define.
+
 ## Engineering principle
 
 Correctness is protected at the semantic boundaries above, not by duplicating

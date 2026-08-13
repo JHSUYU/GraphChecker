@@ -23,7 +23,8 @@ public class CausynthArtifactWriterTest {
     public final TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
-    public void discoveryWritesCandidateSkeletonsAsGzip() throws Exception {
+    public void discoveryWritesLargeGraphsAsGzipWithoutPlaceholders()
+            throws Exception {
         Path output = temporary.newFolder("artifacts").toPath();
         StaticProgram program = new StaticProgram();
         Map<String, Object> skeleton = new LinkedHashMap<>();
@@ -31,19 +32,36 @@ public class CausynthArtifactWriterTest {
         skeleton.put("kind", "REGION_SKELETON");
         skeleton.put("regionId", "REGION.0");
         program.regions.add(skeleton);
+        Map<String, Object> edge = new LinkedHashMap<>();
+        edge.put("schemaVersion", 3);
+        edge.put("id", "DF.0");
+        program.edges.add(edge);
 
         CausynthArtifactWriter.writeDiscoveryArtifacts(output, program);
 
-        Path gzip = output.resolve("region_skeletons.jsonl.gz");
-        assertTrue(Files.isRegularFile(
-                output.resolve("candidate_dataflow_edges.jsonl")));
-        assertTrue(Files.isRegularFile(gzip));
+        Path skeletonGzip = output.resolve("region_skeletons.jsonl.gz");
+        Path candidateGzip = output.resolve(
+                "candidate_dataflow_edges.jsonl.gz");
+        assertTrue(Files.isRegularFile(candidateGzip));
+        assertFalse(Files.exists(output.resolve(
+                "candidate_dataflow_edges.jsonl")));
+        assertTrue(Files.isRegularFile(skeletonGzip));
         assertFalse(Files.exists(output.resolve("region_skeletons.jsonl")));
+        assertFalse(Files.exists(output.resolve("symbolic_regions.jsonl")));
+        assertFalse(Files.exists(output.resolve(
+                "symbolic_region_edges.jsonl")));
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(new GZIPInputStream(
-                        Files.newInputStream(gzip)),
+                        Files.newInputStream(skeletonGzip)),
                         StandardCharsets.UTF_8))) {
             assertEquals(CausynthJson.write(skeleton), reader.readLine());
+            assertEquals(null, reader.readLine());
+        }
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new GZIPInputStream(
+                        Files.newInputStream(candidateGzip)),
+                        StandardCharsets.UTF_8))) {
+            assertEquals(CausynthJson.write(edge), reader.readLine());
             assertEquals(null, reader.readLine());
         }
     }

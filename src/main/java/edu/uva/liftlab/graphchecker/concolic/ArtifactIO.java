@@ -6,6 +6,8 @@ import com.google.gson.JsonParser;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -20,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
 
 /**
  * Schema-free file operations shared by concolic command boundaries.
@@ -62,8 +65,7 @@ final class ArtifactIO {
                                       String nonObjectFormat)
             throws IOException {
         List<JsonObject> result = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(path,
-                StandardCharsets.UTF_8)) {
+        try (BufferedReader reader = jsonlReader(path)) {
             String line;
             int number = 0;
             while ((line = reader.readLine()) != null) {
@@ -85,6 +87,20 @@ final class ArtifactIO {
             }
         }
         return result;
+    }
+
+    private static BufferedReader jsonlReader(Path path) throws IOException {
+        InputStream input = Files.newInputStream(path);
+        try {
+            if (path.getFileName().toString().endsWith(".gz")) {
+                input = new GZIPInputStream(input);
+            }
+            return new BufferedReader(new InputStreamReader(input,
+                    StandardCharsets.UTF_8));
+        } catch (IOException failure) {
+            input.close();
+            throw failure;
+        }
     }
 
     static void replace(Path path, String value) throws IOException {

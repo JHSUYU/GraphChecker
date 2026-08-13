@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
+import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 import org.junit.Assume;
 import org.junit.Rule;
 import org.junit.Test;
@@ -1652,7 +1653,7 @@ public class ConcolicSmtComposerTest {
      * in the manifest instead of leaving the freedom silently unexamined.
      */
     @Test
-    public void missingEdgeArtifactIsNamedRatherThanSilentlySkipped()
+    public void emptyEdgeCatalogIsExplicitlyAudited()
             throws Exception {
         String fatalInstance = "REGION.0@Test#call30";
         String producerInstance = "REGION.1@Test#call20";
@@ -1671,7 +1672,7 @@ public class ConcolicSmtComposerTest {
                 edge);
 
         assertEquals(result.manifest.toString(),
-                "EDGE_VALIDATIONS_NOT_SUPPLIED",
+                "AUDITED",
                 result.manifest.get("droppedEdgeEvidenceAudit")
                         .getAsString());
     }
@@ -2482,22 +2483,22 @@ public class ConcolicSmtComposerTest {
         writeJsonl(regions, regionRows.toArray(
                 new JsonObject[regionRows.size()]));
 
+        Path runtimePlan = directory.resolve("runtime_plan.jsonl");
+        Files.write(runtimePlan, RuntimePlanArtifact.encode(
+                java.util.Collections.<JsonObject>emptyList(),
+                edgeValidations == null
+                        ? java.util.Collections.<JsonObject>emptyList()
+                        : edgeValidations,
+                regionRows).getBytes(StandardCharsets.UTF_8));
         java.util.List<String> argv = new java.util.ArrayList<>(
                 Arrays.asList(
                         "--fatal-query", fatal.toString(),
                         "--summaries", summaryFile.toString(),
-                        "--regions", regions.toString(),
+                        "--runtime-plan", runtimePlan.toString(),
                         "--output", output.toString(),
                         "--manifest", manifest.toString(),
                         "--fatal-region", "REGION.0",
                         "--region-instance-id", fatalInstance));
-        if (edgeValidations != null) {
-            Path validations = directory.resolve("edge_validations.jsonl");
-            writeJsonl(validations, edgeValidations.toArray(
-                    new JsonObject[edgeValidations.size()]));
-            argv.add("--edge-validations");
-            argv.add(validations.toString());
-        }
         return ConcolicSmtComposer.compose(
                 ConcolicSmtComposer.Arguments.parse(
                         argv.toArray(new String[argv.size()])));
@@ -2525,12 +2526,12 @@ public class ConcolicSmtComposerTest {
         edge.addProperty("edgeId", edgeId);
         edge.addProperty("fromRegion", regionOf(fromPort));
         edge.addProperty("toRegion", regionOf(toPort));
-        edge.addProperty("fromPort", fromPort);
-        edge.addProperty("toPort", toPort);
-        JsonArray bindings = new JsonArray();
-        bindings.add(binding(edgeId, fromInstance, fromPort,
-                toInstance, toPort, 10, 20));
-        edge.add("bindings", bindings);
+        JsonObject binding = binding(edgeId, fromInstance, fromPort,
+                toInstance, toPort, 10, 20);
+        for (java.util.Map.Entry<String, JsonElement> entry
+                : binding.entrySet()) {
+            edge.add(entry.getKey(), entry.getValue().deepCopy());
+        }
         return edge;
     }
 

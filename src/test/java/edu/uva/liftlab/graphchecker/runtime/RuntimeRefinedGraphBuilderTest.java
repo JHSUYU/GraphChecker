@@ -6,14 +6,18 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -59,7 +63,11 @@ public class RuntimeRefinedGraphBuilderTest {
                 new RuntimeRegionPlanner.RuntimeEvent(3, "CALL_SITE_RETURN",
                         METHOD, 11, 70, 0, METHOD + "#u4", marker,
                         -1, "java.lang.Boolean", 0, "false", false, false);
-        File output = new File(folder.getRoot(), "fault-refined.jsonl");
+        File output = new File(folder.getRoot(), "fault-refined.jsonl.gz");
+        Path stalePlain = output.toPath().resolveSibling(
+                "fault-refined.jsonl");
+        Files.write(stalePlain, Collections.singletonList("stale"),
+                StandardCharsets.UTF_8);
 
         RuntimeRefinedGraphBuilder.Result result =
                 RuntimeRefinedGraphBuilder.refine(candidate, skeleton,
@@ -71,8 +79,14 @@ public class RuntimeRefinedGraphBuilderTest {
                         output.toPath());
 
         assertEquals(1, result.runtimeBoundEdgeCount);
-        JsonObject edge = GSON.fromJson(Files.readAllLines(output.toPath(),
-                StandardCharsets.UTF_8).get(0), JsonObject.class);
+        assertFalse(Files.exists(stalePlain));
+        JsonObject edge;
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new GZIPInputStream(
+                        Files.newInputStream(output.toPath())),
+                        StandardCharsets.UTF_8))) {
+            edge = GSON.fromJson(reader.readLine(), JsonObject.class);
+        }
         JsonObject binding = edge.getAsJsonArray(
                 "runtimeExplicitFaultBindings").get(0).getAsJsonObject();
         assertEquals(11, binding.get("rootCallId").getAsLong());

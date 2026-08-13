@@ -27,9 +27,12 @@ public final class RegionInstancePlan {
             "occurrenceInstantiationCatalog";
     private final JsonObject encoded;
     private final List<Goal> goals;
+    private final boolean expandedPlanningForm;
 
-    private RegionInstancePlan(JsonObject encoded) {
+    private RegionInstancePlan(JsonObject encoded,
+                               boolean expandedPlanningForm) {
         this.encoded = encoded;
+        this.expandedPlanningForm = expandedPlanningForm;
         if (regionId().isEmpty() || regionInstanceId().isEmpty()) {
             throw new IllegalArgumentException(
                     "region plan requires regionId and regionInstanceId");
@@ -57,7 +60,47 @@ public final class RegionInstancePlan {
         if (encoded == null) {
             throw new IllegalArgumentException("region plan is required");
         }
-        return new RegionInstancePlan(encoded);
+        return new RegionInstancePlan(encoded, false);
+    }
+
+    /** True when every goal already carries the normalized occurrence view. */
+    public static boolean hasCompactOccurrenceCatalogs(JsonObject encoded) {
+        if (encoded == null) return false;
+        JsonArray goals = array(encoded, "closureGoals");
+        if (goals.size() == 0) return false;
+        for (JsonElement element : goals) {
+            if (!element.isJsonObject()
+                    || !element.getAsJsonObject().has(OCCURRENCE_CATALOG)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Replaces the planner's temporary full occurrence copies with the exact
+     * port/identity catalog that executable tasks actually consume.
+     */
+    public static JsonObject compactOccurrences(JsonObject expanded) {
+        if (expanded == null) {
+            throw new IllegalArgumentException("region plan is required");
+        }
+        JsonObject compact = expanded.deepCopy();
+        RegionInstancePlan decoded = new RegionInstancePlan(compact, true);
+        for (Goal goal : decoded.goals) {
+            try {
+                goal.encoded.add(OCCURRENCE_CATALOG,
+                        goal.buildOccurrenceInstantiationCatalog());
+            } catch (IllegalArgumentException malformed) {
+                goal.encoded.add(OCCURRENCE_CATALOG,
+                        goal.failedOccurrenceInstantiationCatalog(
+                                malformed.getMessage()));
+            }
+        }
+        compact.remove("occurrences");
+        compact.remove("logicalRootCallIds");
+        compact.remove("logicalActivationIds");
+        return compact;
     }
 
     public String regionId() {
@@ -77,17 +120,17 @@ public final class RegionInstancePlan {
         return integer(encoded, "logicalInstanceCount", 1);
     }
 
-    public JsonArray occurrences() {
-        return array(encoded, "occurrences").deepCopy();
-    }
-
     public boolean containsRegionInstance(String instance) {
         if (regionInstanceId().equals(instance)) return true;
-        for (JsonElement element : array(encoded, "occurrences")) {
-            if (element.isJsonObject()
-                    && instance.equals(string(element.getAsJsonObject(),
-                    "regionInstanceId"))) {
-                return true;
+        for (Goal goal : goals) {
+            for (JsonElement element : array(
+                    object(goal.encoded, OCCURRENCE_CATALOG),
+                    "occurrences")) {
+                if (element.isJsonObject()
+                        && instance.equals(string(element.getAsJsonObject(),
+                        "regionInstanceId"))) {
+                    return true;
+                }
             }
         }
         return false;
@@ -137,6 +180,12 @@ public final class RegionInstancePlan {
             runtimeDefinitionMethods = decodeRuntimeDefinitionMethods();
             outputClosure = encoded.has(OutputClosureContract.FIELD)
                     ? decodeOutputClosure() : null;
+            if (!plan.expandedPlanningForm
+                    && !encoded.has(OCCURRENCE_CATALOG)) {
+                throw new IllegalArgumentException(
+                        "closure goal requires compact occurrence catalog: "
+                                + goalId());
+            }
         }
 
         public RegionInstancePlan plan() {
@@ -237,11 +286,60 @@ public final class RegionInstancePlan {
 
         /**
          * Compact exact-occurrence adapter for one shared VM relation.
-         * Full occurrence plans remain in the planner artifact; executable
-         * tasks carry only identities, exact causal binding ids and the
-         * canonical-to-exact port bijection required by composition.
+         * Executable tasks carry only identities, exact causal binding ids
+         * and the canonical-to-exact port bijection required by composition.
          */
         public JsonObject occurrenceInstantiationCatalog() {
+            if (!encoded.has(OCCURRENCE_CATALOG)) {
+                throw new IllegalArgumentException(
+                        "closure goal has no compact occurrence catalog: "
+                                + goalId());
+            }
+            JsonObject result = object(encoded, OCCURRENCE_CATALOG)
+                    .deepCopy();
+            String error = string(result, "error");
+            if (!error.isEmpty()) {
+                throw new IllegalArgumentException(error);
+            }
+            if (integer(result, "schemaVersion", -1) != 1
+                    || !"LOGICAL_SUMMARY_OCCURRENCE_CATALOG".equals(
+                    string(result, "kind"))
+                    || !plan.logicalRegionId().equals(
+                    string(result, "logicalRegionId"))
+                    || array(result, "occurrences").size() < 1) {
+                throw new IllegalArgumentException(
+                        "malformed occurrence catalog for " + goalId());
+            }
+            return result;
+        }
+
+        private JsonObject failedOccurrenceInstantiationCatalog(
+                String error) {
+            JsonObject result = new JsonObject();
+            result.addProperty("schemaVersion", 1);
+            result.addProperty("kind",
+                    "LOGICAL_SUMMARY_OCCURRENCE_CATALOG");
+            result.addProperty("logicalRegionId", plan.logicalRegionId());
+            result.addProperty("summaryReuseKey", firstNonBlank(
+                    string(plan.encoded, "summaryReuseKey"),
+                    plan.logicalRegionId()));
+            result.addProperty("canonicalRegionInstanceId",
+                    executionRegionInstanceId());
+            result.addProperty("error", firstNonBlank(error,
+                    "invalid logical occurrence mapping"));
+            JsonArray occurrences = new JsonArray();
+            for (JsonObject occurrence : occurrenceRows()) {
+                JsonObject identity = occurrenceIdentity(occurrence);
+                identity.add("inputPortMap", new JsonArray());
+                identity.add("outputPortMap", new JsonArray());
+                identity.add("bindingIds", new JsonArray());
+                occurrences.add(identity);
+            }
+            result.add("occurrences", occurrences);
+            return result;
+        }
+
+        private JsonObject buildOccurrenceInstantiationCatalog() {
             JsonObject result = new JsonObject();
             result.addProperty("schemaVersion", 1);
             result.addProperty("kind",

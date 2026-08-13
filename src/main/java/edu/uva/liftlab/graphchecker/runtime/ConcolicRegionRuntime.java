@@ -6059,6 +6059,9 @@ public final class ConcolicRegionRuntime {
                     "leafFieldSignature");
             this.fieldPaths = new ArrayList<>(
                     FieldPathSpec.paths(json, "fieldPaths"));
+            if (this.fieldPaths.isEmpty() && !this.fieldPath.isEmpty()) {
+                this.fieldPaths.add(new ArrayList<>(this.fieldPath));
+            }
             for (JsonElement declarationElement : array(json,
                     "fieldPathLeafDeclarations")) {
                 if (!declarationElement.isJsonObject()) continue;

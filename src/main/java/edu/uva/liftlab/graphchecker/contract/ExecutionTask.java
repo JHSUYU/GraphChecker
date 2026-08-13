@@ -61,7 +61,7 @@ public final class ExecutionTask {
                 goal.occurrenceInstantiationCatalog());
         task.addProperty("taskId", taskId);
         task.addProperty("goalKind", goal.kind().name());
-        task.add(InputActionCatalog.FIELD, inputActions.deepCopy());
+        task.add(InputActionCatalog.FIELD, compactInputActions(inputActions));
         task.add("branches", branches.deepCopy());
         bindPathSeedToBranches(task);
         loopBound.writeTo(task);
@@ -72,6 +72,28 @@ public final class ExecutionTask {
         admission.addProperty("state", ready ? "EXECUTABLE" : "BLOCKED");
         task.add("admission", admission);
         return new ExecutionTask(task);
+    }
+
+    /** Drops planner-only access histories after the exact replay site wins. */
+    private static JsonArray compactInputActions(JsonArray actions) {
+        JsonArray result = new JsonArray();
+        for (JsonElement element : actions) {
+            if (!element.isJsonObject()) {
+                result.add(element.deepCopy());
+                continue;
+            }
+            JsonObject action = element.getAsJsonObject().deepCopy();
+            action.remove("runtimeAccesses");
+            JsonArray path = array(action, "fieldPath");
+            JsonArray paths = array(action, "fieldPaths");
+            if (path.size() > 0 && paths.size() == 1
+                    && paths.get(0).isJsonArray()
+                    && path.equals(paths.get(0).getAsJsonArray())) {
+                action.remove("fieldPaths");
+            }
+            result.add(action);
+        }
+        return result;
     }
 
     public static ExecutionTask createProjectedOutput(

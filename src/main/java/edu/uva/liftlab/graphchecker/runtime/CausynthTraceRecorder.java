@@ -120,7 +120,7 @@ public final class CausynthTraceRecorder {
                 File refinedGraph = configuredRefined == null
                         || configuredRefined.trim().isEmpty()
                         ? new File(planOutputDirectory,
-                        "refined_dataflow_edges.jsonl")
+                        "refined_dataflow_edges.jsonl.gz")
                         : new File(configuredRefined.trim());
                 aggregateStateTrace(directory, graph, candidateSkeletons,
                         refinedGraph, regions, regionEdges, test,
@@ -2274,20 +2274,20 @@ public final class CausynthTraceRecorder {
                 regions, regionEdges, flowIndex, regionFile,
                 regionEdgeFile, runtimeSeeds, trace.methods,
                 trace.execution, trace.fields);
-        writeRuntimePlanArtifacts(directory,
-                planned.edgeValidationsJsonl(), planned.regionPlansJsonl());
+        writeRuntimePlanArtifact(directory, planned.runtimePlanJsonl());
     }
 
-    private static void writeRuntimePlanArtifacts(
-            File directory,
-            String edgeValidations, String regionPlans)
+    private static void writeRuntimePlanArtifact(
+            File directory, String runtimePlan)
             throws IOException {
         writeFile(new File(directory,
-                        "runtime_region_edge_validation.jsonl"),
-                edgeValidations);
-        writeFile(new File(directory,
                         "concolic_region_plan.jsonl"),
-                regionPlans);
+                runtimePlan);
+        // The edge catalog is now the first row of the canonical runtime
+        // plan. Remove a stale pre-normalization artifact so later stages
+        // cannot accidentally audit a different edge snapshot.
+        Files.deleteIfExists(new File(directory,
+                "runtime_region_edge_validation.jsonl").toPath());
     }
 
     private static void writeFile(File file, String value) throws IOException {

@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
@@ -49,8 +48,9 @@ public final class AutomaticRegionEdge {
                 || string(edge, "fromRegion").isEmpty()
                 || string(edge, "toRegion").isEmpty()
                 || string(edge, "transportKind").isEmpty()
-                || string(edge, "fromPort").isEmpty()
-                || string(edge, "toPort").isEmpty()) {
+                || string(edge, "fromOutputPort").isEmpty()
+                || string(edge, "toInputPort").isEmpty()
+                || edge.has("bindings")) {
             return "";
         }
         String edgeKind = string(edge, "kind");
@@ -61,25 +61,11 @@ public final class AutomaticRegionEdge {
                 : RUNTIME_PROTOCOL_EDGE_KIND.equals(edgeKind)
                 && "CONFIRMED_TRUSTED_CONFIGURED_RPC".equals(state)
                 ? "EQUALITY" : "";
-        JsonElement bindings = edge.get("bindings");
-        if (relation.isEmpty() || bindings == null || !bindings.isJsonArray()
-                || bindings.getAsJsonArray().size() == 0) {
-            return "";
-        }
-        for (JsonElement element : bindings.getAsJsonArray()) {
-            if (!element.isJsonObject()) {
-                return "";
-            }
-            JsonObject binding = element.getAsJsonObject();
-            if (("READ_FROM".equals(relation)
-                    ? !trustedReadFromEvidence(binding)
-                    : !trustedRuntimeValueEqualityEvidence(binding))
-                    || "EQUALITY".equals(relation)
-                    && !exactEndpoints(edge, binding)) {
-                return "";
-            }
-        }
-        return relation;
+        if (relation.isEmpty()) return "";
+        return ("READ_FROM".equals(relation)
+                ? trustedReadFromEvidence(edge)
+                : trustedRuntimeValueEqualityEvidence(edge))
+                ? relation : "";
     }
 
     /**
@@ -198,15 +184,4 @@ public final class AutomaticRegionEdge {
         return required == writerLane.equals(readerLane);
     }
 
-    private static boolean exactEndpoints(JsonObject edge,
-                                          JsonObject binding) {
-        return string(edge, "fromRegion").equals(
-                string(binding, "fromRegion"))
-                && string(edge, "toRegion").equals(
-                string(binding, "toRegion"))
-                && string(edge, "fromPort").equals(
-                string(binding, "fromOutputPort"))
-                && string(edge, "toPort").equals(
-                string(binding, "toInputPort"));
-    }
 }

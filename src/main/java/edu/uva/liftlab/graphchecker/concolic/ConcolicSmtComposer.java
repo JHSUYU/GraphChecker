@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
+import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -86,7 +87,9 @@ public final class ConcolicSmtComposer {
 
     public static Result compose(Arguments arguments) throws IOException {
         require(arguments.fatalQueries, "fatal branch queries");
-        require(arguments.regions, "symbolic regions");
+        require(arguments.runtimePlan, "runtime plan");
+        RuntimePlanArtifact runtimePlan = RuntimePlanArtifact.read(
+                arguments.runtimePlan);
 
         List<JsonObject> queryRows = ArtifactIO.readJsonl(
                 arguments.fatalQueries);
@@ -117,7 +120,11 @@ public final class ConcolicSmtComposer {
                 row++;
             }
         }
-        List<JsonObject> regions = ArtifactIO.readJsonl(arguments.regions);
+        List<JsonObject> regions = runtimePlan.regions();
+        if (regions.isEmpty()) {
+            throw new IOException("runtime plan has no region port catalog: "
+                    + arguments.runtimePlan);
+        }
         JsonObject fatal = selectFatalQuery(queryRows, arguments);
         if (fatal.size() == 0) {
             throw new IOException("No ready fatal query matches region="
@@ -230,11 +237,9 @@ public final class ConcolicSmtComposer {
         emitter.emitExactCausalInputAliases(
                 resolved.selectedRegionSummaries.values());
         emitter.finishBindings();
-        boolean auditedEdgeEvidence = arguments.edgeValidations != null;
-        if (auditedEdgeEvidence) {
-            auditDroppedEdgeEvidence(emitter, ports,
-                    ArtifactIO.readJsonl(arguments.edgeValidations));
-        }
+        boolean auditedEdgeEvidence = true;
+        auditDroppedEdgeEvidence(emitter, ports,
+                runtimePlan.edgeValidations());
         emitter.finish();
         String composedSmt = emitter.render();
 
@@ -269,7 +274,7 @@ public final class ConcolicSmtComposer {
                 : "CANDIDATE_ONLY");
         manifest.add("composedSmtArtifact", artifact(arguments.output,
                 composedSmt.getBytes(StandardCharsets.UTF_8)));
-        manifest.add("staticRegionsArtifact", artifact(arguments.regions));
+        manifest.add("runtimePlanArtifact", artifact(arguments.runtimePlan));
         return new Result(composedSmt, manifest);
     }
 
@@ -310,32 +315,21 @@ public final class ConcolicSmtComposer {
             if (!AutomaticRegionEdge.composable(edge)) {
                 continue;
             }
-            JsonArray bindings = array(edge, "bindings");
-            if (bindings.size() == 0
-                    && !bindingTargetInstance(edge).isEmpty()) {
-                bindings.add(edge.deepCopy());
+            String consumer = bindingTargetInput(edge);
+            String instance = bindingTargetInstance(edge);
+            String region = firstNonBlank(string(edge, "toRegion"),
+                    regionOf(consumer));
+            if (consumer.isEmpty() || instance.isEmpty()) continue;
+            PortOccurrence occurrence = new PortOccurrence(
+                    new InvocationKey(region, instance), consumer);
+            if (!unbound.contains(occurrence)
+                    || !reported.add(occurrence)) {
+                continue;
             }
-            for (JsonElement element : bindings) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binding = element.getAsJsonObject();
-                String consumer = firstNonBlank(
-                        bindingTargetInput(binding),
-                        string(edge, "toPort"));
-                String instance = bindingTargetInstance(binding);
-                String region = firstNonBlank(string(binding, "toRegion"),
-                        string(edge, "toRegion"), regionOf(consumer));
-                if (consumer.isEmpty() || instance.isEmpty()) continue;
-                PortOccurrence occurrence = new PortOccurrence(
-                        new InvocationKey(region, instance), consumer);
-                if (!unbound.contains(occurrence)
-                        || !reported.add(occurrence)) {
-                    continue;
-                }
-                emitter.unsupported.add(
-                        "DROPPED_CONFIRMED_EDGE_EVIDENCE:"
-                                + occurrence + ":"
-                                + string(edge, "edgeId"));
-            }
+            emitter.unsupported.add(
+                    "DROPPED_CONFIRMED_EDGE_EVIDENCE:"
+                            + occurrence + ":"
+                            + string(edge, "edgeId"));
         }
     }
 
@@ -6679,10 +6673,9 @@ public final class ConcolicSmtComposer {
     public static final class Arguments {
         private Path fatalQueries;
         private final List<Path> summaries = new ArrayList<>();
-        private Path regions;
         private Path output;
         private Path manifest;
-        private Path edgeValidations;
+        private Path runtimePlan;
         private String fatalRegion = "";
         private String regionInstanceId = "";
         private String compositionMode = "CLOSED_PATH_SET";
@@ -6702,14 +6695,12 @@ public final class ConcolicSmtComposer {
                     result.fatalQueries = Paths.get(value);
                 } else if ("summaries".equals(key)) {
                     result.summaries.add(Paths.get(value));
-                } else if ("regions".equals(key)) {
-                    result.regions = Paths.get(value);
                 } else if ("output".equals(key)) {
                     result.output = Paths.get(value);
                 } else if ("manifest".equals(key)) {
                     result.manifest = Paths.get(value);
-                } else if ("edge-validations".equals(key)) {
-                    result.edgeValidations = Paths.get(value);
+                } else if ("runtime-plan".equals(key)) {
+                    result.runtimePlan = Paths.get(value);
                 } else if ("fatal-region".equals(key)) {
                     result.fatalRegion = firstNonBlank(value);
                 } else if ("region-instance-id".equals(key)) {
@@ -6721,10 +6712,10 @@ public final class ConcolicSmtComposer {
                             "Unknown composer option: --" + key);
                 }
             }
-            if (result.fatalQueries == null || result.regions == null
+            if (result.fatalQueries == null || result.runtimePlan == null
                     || result.output == null) {
                 throw new IllegalArgumentException(
-                        "--fatal-query, --regions and --output are required");
+                        "--fatal-query, --runtime-plan and --output are required");
             }
             if (result.manifest == null) {
                 result.manifest = sibling(result.output,

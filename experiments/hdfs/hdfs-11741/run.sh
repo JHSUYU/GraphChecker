@@ -609,22 +609,16 @@ verify_static_artifacts() {
   require_nonempty_file "resolved target" \
     "${analysis}/target_resolved.json"
   require_nonempty_file "candidate dataflow graph" \
-    "${analysis}/candidate_dataflow_edges.jsonl"
+    "${analysis}/candidate_dataflow_edges.jsonl.gz"
   require_nonempty_file "region skeleton archive" \
     "${analysis}/region_skeletons.jsonl.gz"
-  # Static analysis creates these finalizer destinations.  Their rows are
-  # runtime-selected, so an empty file is valid until the two-pass workload.
-  require_file "symbolic regions placeholder" \
-    "${analysis}/symbolic_regions.jsonl"
-  require_file "symbolic region edges placeholder" \
-    "${analysis}/symbolic_region_edges.jsonl"
   require_nonempty_directory "instrumented classes" \
     "${work_root}/instrumented-classes"
 }
 
 verify_runtime_artifacts() {
   local runtime="${work_root}/runtime"
-  local regions="${work_root}/analysis/symbolic_regions.jsonl"
+  local runtime_plan="${runtime}/concolic_region_plan.jsonl"
   require_command rg
   require_command jq
   verify_region_artifacts
@@ -633,17 +627,12 @@ verify_runtime_artifacts() {
   require_nonempty_file "pass-2 streaming manifest" \
     "${runtime}/streaming_trace_manifest.json"
   require_nonempty_file "runtime-refined graph" \
-    "${runtime}/refined_dataflow_edges.jsonl"
-  require_nonempty_file "runtime-finalized symbolic regions" \
-    "${regions}"
-  # A valid refinement may contain no cross-region edge, so the JSONL
-  # contract requires the edge artifacts to exist but not to have rows.
-  require_file "runtime-finalized symbolic region edges" \
-    "${work_root}/analysis/symbolic_region_edges.jsonl"
+    "${runtime}/refined_dataflow_edges.jsonl.gz"
   require_nonempty_file "runtime region plan" \
-    "${runtime}/concolic_region_plan.jsonl"
-  require_file "runtime edge validations" \
-    "${runtime}/runtime_region_edge_validation.jsonl"
+    "${runtime_plan}"
+  jq -e -s '.[0].kind == "CONCOLIC_RUNTIME_MODEL_CATALOG" and
+    ((.[0].regions // []) | length > 0)' "${runtime_plan}" >/dev/null \
+    || die "runtime plan has no compact region catalog: ${runtime_plan}"
 
   if [[ "${variant}" == external ]]; then
     return
@@ -660,25 +649,21 @@ verify_runtime_artifacts() {
     'DataXceiver: void run()'
   )
   for root in "${core_roots[@]}"; do
-    require_jsonl_contains "core runtime region" "${regions}" "${root}"
+    require_jsonl_contains "core runtime region" "${runtime_plan}" "${root}"
   done
-  local edges="${work_root}/analysis/symbolic_region_edges.jsonl"
-  local validations="${runtime}/runtime_region_edge_validation.jsonl"
   jq -e -s '
-    any(.[];
+    any(.[0].edges[]?;
       .kind == "RUNTIME_FIELD_FLOW" and
       .bindingKind == "CONTAINER_MUTATION" and
       ((.fieldPathDeclarations // []) |
         index("<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: java.util.Map allKeys>") != null))
-  ' "${edges}" >/dev/null \
-    || die "exact runtime allKeys container flow missing from ${edges}"
-  require_jsonl_contains "trusted runtime RPC" "${validations}" \
+  ' "${runtime_plan}" >/dev/null \
+    || die "exact runtime allKeys container flow missing from ${runtime_plan}"
+  require_jsonl_contains "trusted runtime RPC" "${runtime_plan}" \
     '"state":"CONFIRMED_TRUSTED_CONFIGURED_RPC"'
-  require_jsonl_contains "trusted runtime RPC authority" "${validations}" \
+  require_jsonl_contains "trusted runtime RPC authority" "${runtime_plan}" \
     '"correlationAuthority":"TRUSTED_CONFIGURED_RPC_MAPPING_V1"'
-  reject_coordination_candidates "${edges}"
-  reject_coordination_candidates "${validations}"
-  reject_coordination_candidates "${runtime}/concolic_region_plan.jsonl"
+  reject_coordination_candidates "${runtime_plan}"
 }
 
 verify_region_artifacts() {
@@ -695,33 +680,25 @@ verify_region_artifacts() {
 verify_task_artifacts() {
   local schedule="${work_root}/schedule"
   local tasks="${schedule}/execution_task_plan.jsonl"
-  local selected_target="${schedule}/selected_target_binding.tsv"
-  local selected_closure="${schedule}/selected_closure_bindings.tsv"
   local workflow_index="${schedule}/runtime_workflow_schedule_index.json"
-  local selected_count target_campaign target_region target_instance
+  local target_campaign target_region target_instance
   local target_goal plan_sha task_sha plan_size task_size
   require_command jq
   require_nonempty_file "concolic execution task plan" "${tasks}"
   require_file "branch query plan" "${schedule}/branch_queries.jsonl"
-  require_nonempty_file "selected target binding" "${selected_target}"
-  require_nonempty_file "selected exact closure" "${selected_closure}"
   # This index is the target-first schedule's commit record.  Missing it is
   # an incomplete publication, not permission to rediscover against a
   # potentially different region plan.
   require_nonempty_file "target-first workflow index" "${workflow_index}"
-  selected_count=$(sed -n '/[^[:space:]]/p' "${selected_target}" \
-    | wc -l | tr -d '[:space:]')
-  [[ "${selected_count}" == "1" ]] \
-    || die "selected target binding must contain exactly one row: ${selected_target}"
   IFS=$'\t' read -r target_campaign target_region target_instance \
-    target_goal <"${selected_target}"
+    target_goal <<<"$(jq -er '[.target.campaignId, .target.regionId,
+      .target.regionInstanceId, .target.goalId]
+      | if all(.[]; type == "string" and length > 0)
+        then join("\t") else error("incomplete target") end' \
+      "${workflow_index}")"
   [[ -n "${target_campaign}" && -n "${target_region}" \
       && -n "${target_instance}" && -n "${target_goal}" ]] \
-    || die "selected target binding is incomplete: ${selected_target}"
-  require_jsonl_contains "selected closure target" "${selected_closure}" \
-    $'TARGET\t'
-  require_jsonl_contains "selected closure producer" "${selected_closure}" \
-    $'PRODUCER\t'
+    || die "target-first index contains an incomplete target: ${workflow_index}"
   reject_coordination_candidates "${tasks}"
   jq -e -s '
     length > 0 and
@@ -896,7 +873,6 @@ do_engine_config() {
       CAUSYNTH_OUTPUT_DIR="${CAUSYNTH_OUTPUT_DIR:-${work_root}/analysis}" \
       CAUSYNTH_INSTRUMENTED_CLASSES_DIR="${CAUSYNTH_INSTRUMENTED_CLASSES_DIR:-${work_root}/instrumented-classes}" \
       CAUSYNTH_REGION_PLAN="${CAUSYNTH_REGION_PLAN:-${work_root}/runtime/concolic_region_plan.jsonl}" \
-      CAUSYNTH_EDGE_VALIDATIONS="${CAUSYNTH_EDGE_VALIDATIONS:-${work_root}/runtime/runtime_region_edge_validation.jsonl}" \
       CAUSYNTH_SCHEDULE_OUTPUT_DIR="${CAUSYNTH_SCHEDULE_OUTPUT_DIR:-${work_root}/schedule}" \
       ./run_engine.sh --config "${workflow}" "${command}" "$@"
   )
@@ -1016,10 +992,6 @@ schedule_target_first_closure() {
     "${staging}/symbolic_input_selections.jsonl"
   require_nonempty_file "target-first workflow index" \
     "${staging}/runtime_workflow_schedule_index.json"
-  require_nonempty_file "selected target binding" \
-    "${staging}/selected_target_binding.tsv"
-  require_nonempty_file "selected closure bindings" \
-    "${staging}/selected_closure_bindings.tsv"
 
   task_count=$(jq -s 'length' \
     "${staging}/execution_task_plan.jsonl")
@@ -1035,13 +1007,11 @@ schedule_target_first_closure() {
     "${schedule}/branch_queries.jsonl"
   publish_file_atomically "${staging}/symbolic_input_selections.jsonl" \
     "${schedule}/symbolic_input_selections.jsonl"
-  publish_file_atomically "${staging}/selected_target_binding.tsv" \
-    "${schedule}/selected_target_binding.tsv"
-  publish_file_atomically "${staging}/selected_closure_bindings.tsv" \
-    "${schedule}/selected_closure_bindings.tsv"
   publish_file_atomically \
     "${staging}/runtime_workflow_schedule_index.json" \
     "${schedule}/runtime_workflow_schedule_index.json"
+  rm -f -- "${schedule}/selected_target_binding.tsv" \
+    "${schedule}/selected_closure_bindings.tsv"
   rm -rf -- "${staging}"
   echo "[hdfs-11741] scheduled ranked exact closure: 1 target + ${producer_count} producer logical goal(s)"
 }
@@ -1093,6 +1063,39 @@ seed_campaign_directory() {
   local group
   group=$(seed_campaign_group "${goal_kind}")
   printf '%s/%s/%s\n' "${seed_campaign_root}" "${group}" "${task_id}"
+}
+
+# The schedule is the sole owner of auto-seed cache reachability. Old task
+# ids otherwise retain a complete instrumented class tree indefinitely.
+prune_stale_seed_campaigns() {
+  local schedule_plan=$1
+  local goal_kind task_id group group_dir campaign base
+  declare -A keep_target=() keep_producer=()
+  while IFS=$'\t' read -r goal_kind task_id; do
+    [[ "${task_id}" == TASK.SEED.* ]] \
+      || die "invalid scheduled seed task id: ${task_id}"
+    case "${goal_kind}" in
+      TARGET_REACH_CLOSURE) keep_target["${task_id}"]=1 ;;
+      OUTPUT_RELATION_CLOSURE) keep_producer["${task_id}"]=1 ;;
+    esac
+  done < <(jq -r '[.goalKind,.taskId] | @tsv' "${schedule_plan}")
+
+  for group in target producer; do
+    group_dir="${seed_campaign_root}/${group}"
+    [[ -d "${group_dir}" ]] || continue
+    while IFS= read -r -d '' campaign; do
+      base=${campaign##*/}
+      [[ "${base}" == TASK.SEED.* ]] \
+        || die "refusing to prune unexpected campaign: ${campaign}"
+      if [[ "${group}" == target ]]; then
+        [[ -n "${keep_target[${base}]+x}" ]] && continue
+      else
+        [[ -n "${keep_producer[${base}]+x}" ]] && continue
+      fi
+      rm -rf -- "${campaign}"
+    done < <(find "${group_dir}" -mindepth 1 -maxdepth 1 -type d \
+      -name 'TASK.SEED.*' -print0)
+  done
 }
 
 prepare_seed_campaign() {
@@ -2104,6 +2107,8 @@ run_candidate_for_target() {
   (( ${#producer_ids[@]} > 0 )) \
     || die "target ${target_campaign_id} has no runtime-confirmed producer"
 
+  prune_stale_seed_campaigns "${schedule_plan}"
+
   seed_specs+=("TARGET_REACH_CLOSURE"$'\t'"${target_task}")
   for index in "${!producer_tasks[@]}"; do
     seed_specs+=("OUTPUT_RELATION_CLOSURE"$'\t'"${producer_tasks[$index]}")
@@ -2243,25 +2248,20 @@ run_candidate_for_target() {
 }
 
 do_candidates() {
-  local binding status discovery_output selected_target_binding
+  local binding status workflow_index
   local -a targets=()
   require_nonempty_file "runtime region plan" "${region_plan}"
   require_nonempty_file "scheduled concolic tasks" \
     "${work_root}/schedule/execution_task_plan.jsonl"
   verify_task_artifacts
   initialize_replay_engine_fingerprint
-  selected_target_binding="${work_root}/schedule/selected_target_binding.tsv"
-  discovery_output=$(sed -n '/[^[:space:]]/p' \
-    "${selected_target_binding}")
-  while IFS= read -r binding; do
-    [[ -n "${binding}" ]] && targets+=("${binding}")
-  done <<< "${discovery_output}"
-  (( ${#targets[@]} > 0 )) \
-    || die "runtime plan has no target instance"
-  if [[ -s "${selected_target_binding}" \
-      && ${#targets[@]} -ne 1 ]]; then
-    die "target-first schedule must name exactly one selected target: ${selected_target_binding}"
-  fi
+  workflow_index="${work_root}/schedule/runtime_workflow_schedule_index.json"
+  binding=$(jq -er '[.target.campaignId, .target.regionId,
+    .target.regionInstanceId, .target.goalId]
+    | if all(.[]; type == "string" and length > 0)
+      then join("\t") else error("incomplete target") end' \
+    "${workflow_index}")
+  targets+=("${binding}")
   mkdir -p "${candidate_root}"
   for binding in "${targets[@]}"; do
     echo "[hdfs-11741] trying target: ${binding}"

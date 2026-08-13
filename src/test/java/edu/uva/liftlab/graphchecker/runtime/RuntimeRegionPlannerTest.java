@@ -351,11 +351,12 @@ public class RuntimeRegionPlannerTest {
         assertTrue(String.valueOf(sharedGoal.get("pathSeedKey"))
                 .startsWith("PATH.SEED."));
         assertEquals(2, RegionInstancePlan.decode(
-                GSON.toJsonTree(plan).getAsJsonObject()).goals().get(0)
+                RegionInstancePlan.compactOccurrences(
+                        GSON.toJsonTree(plan).getAsJsonObject()))
+                .goals().get(0)
                 .occurrenceInstantiationCatalog()
                 .getAsJsonArray("occurrences").size());
-        String binding = String.valueOf(result.edgeValidations.get(0)
-                .get("bindings"));
+        String binding = String.valueOf(result.edgeValidations.get(0));
         assertTrue(binding.contains("REGION.1@test#call1"));
         assertTrue(binding.contains("REGION.1@test#call3"));
         assertTrue(binding.contains("REGION.1.out.call1"));
@@ -414,7 +415,8 @@ public class RuntimeRegionPlannerTest {
         }
         assertEquals(2, seeds.size());
         RegionInstancePlan decoded = RegionInstancePlan.decode(
-                GSON.toJsonTree(plan).getAsJsonObject());
+                RegionInstancePlan.compactOccurrences(
+                        GSON.toJsonTree(plan).getAsJsonObject()));
         for (RegionInstancePlan.Goal goal : decoded.goals()) {
             assertEquals(1, goal.occurrenceInstantiationCatalog()
                     .getAsJsonArray("occurrences").size());
@@ -569,9 +571,9 @@ public class RuntimeRegionPlannerTest {
         assertEquals(1, result.edgeValidations.size());
         Map<String, Object> validation = result.edgeValidations.get(0);
         assertEquals("CONFIRMED_RUNTIME_IDENTITY", validation.get("state"));
-        assertTrue(String.valueOf(validation.get("bindings"))
+        assertTrue(String.valueOf(validation)
                 .contains("REGION.2@test#call3"));
-        assertTrue(String.valueOf(validation.get("bindings"))
+        assertTrue(String.valueOf(validation)
                 .contains("REGION.1@test#call1"));
 
         Map<String, Object> writerPlan = null;

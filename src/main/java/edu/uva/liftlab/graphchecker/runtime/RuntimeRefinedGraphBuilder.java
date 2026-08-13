@@ -16,6 +16,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -39,6 +41,7 @@ import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 /**
  * Refines the cheap static candidate graph with one concrete REGION_STATE
@@ -1396,12 +1399,26 @@ final class RuntimeRefinedGraphBuilder {
         if (parent != null) {
             Files.createDirectories(parent);
         }
-        try (BufferedWriter writer = Files.newBufferedWriter(output,
-                StandardCharsets.UTF_8)) {
+        OutputStream stream = Files.newOutputStream(output);
+        try {
+            if (output.getFileName().toString().endsWith(".gz")) {
+                stream = new GZIPOutputStream(stream);
+            }
+        } catch (IOException failure) {
+            stream.close();
+            throw failure;
+        }
+        try (BufferedWriter writer = new BufferedWriter(
+                new OutputStreamWriter(stream, StandardCharsets.UTF_8))) {
             for (Map<String, Object> row : rows) {
                 writer.write(CausynthJson.write(row));
                 writer.write('\n');
             }
+        }
+        String name = output.getFileName().toString();
+        if (name.endsWith(".gz")) {
+            Files.deleteIfExists(output.resolveSibling(
+                    name.substring(0, name.length() - 3)));
         }
     }
 

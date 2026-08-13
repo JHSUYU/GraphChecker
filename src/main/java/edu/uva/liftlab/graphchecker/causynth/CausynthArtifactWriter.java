@@ -6,7 +6,6 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,18 +22,19 @@ final class CausynthArtifactWriter {
         Files.createDirectories(outputDir);
         writeJson(outputDir.resolve("target_resolved.json"),
                 program.targetResolved);
-        writeJsonl(outputDir.resolve("candidate_dataflow_edges.jsonl"),
-                program.edges);
+        Files.deleteIfExists(outputDir.resolve(
+                "candidate_dataflow_edges.jsonl"));
+        writeGzipJsonl(outputDir.resolve(
+                "candidate_dataflow_edges.jsonl.gz"), program.edges);
         Files.deleteIfExists(outputDir.resolve("region_skeletons.jsonl"));
         writeGzipJsonl(outputDir.resolve("region_skeletons.jsonl.gz"),
                 program.regions);
         // A fresh discovery run invalidates any regions selected by an older
-        // trace. The current trace will repopulate both files during
-        // finalization.
-        writeJsonl(outputDir.resolve("symbolic_regions.jsonl"),
-                Collections.emptyList());
-        writeJsonl(outputDir.resolve("symbolic_region_edges.jsonl"),
-                Collections.emptyList());
+        // trace. Finalization publishes both files atomically later; empty
+        // placeholder artifacts carried no usable contract.
+        Files.deleteIfExists(outputDir.resolve("symbolic_regions.jsonl"));
+        Files.deleteIfExists(outputDir.resolve(
+                "symbolic_region_edges.jsonl"));
     }
 
     static void writeRegions(Path regions, Path regionEdges,

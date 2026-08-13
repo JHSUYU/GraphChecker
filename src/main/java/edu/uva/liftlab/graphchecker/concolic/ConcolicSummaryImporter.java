@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
+import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -49,7 +50,7 @@ public final class ConcolicSummaryImporter {
         Map<String, String> options = parseArgs(args);
         Path results = required(options, "results");
         Path tasks = required(options, "task-plan");
-        Path regions = required(options, "regions");
+        Path runtimePlan = required(options, "runtime-plan");
         Path output = Paths.get(firstNonBlank(options.get("output"),
                 sibling(results,
                         "concolic_region_summaries.jsonl").toString()));
@@ -57,6 +58,8 @@ public final class ConcolicSummaryImporter {
                 options.get("diagnostics"),
                 sibling(results,
                         "concolic_import_diagnostics.jsonl").toString()));
+        Set<String> regions = regionIds(RuntimePlanArtifact.read(
+                runtimePlan).regions());
         ImportResult imported = importSummaries(results, tasks, regions,
                 output, diagnostics);
         if (imported.diagnosticCount > 0) {
@@ -77,9 +80,16 @@ public final class ConcolicSummaryImporter {
     public static ImportResult importSummaries(
             Path resultsFile, Path taskPlanFile, Path regionFile,
             Path outputFile, Path diagnosticFile) throws IOException {
+        return importSummaries(resultsFile, taskPlanFile,
+                regionIds(ArtifactIO.readJsonl(regionFile)), outputFile,
+                diagnosticFile);
+    }
+
+    private static ImportResult importSummaries(
+            Path resultsFile, Path taskPlanFile, Set<String> regions,
+            Path outputFile, Path diagnosticFile) throws IOException {
         Map<String, ExecutionTask> tasks = taskIndex(
                 ArtifactIO.readJsonl(taskPlanFile));
-        Set<String> regions = regionIds(ArtifactIO.readJsonl(regionFile));
         List<JsonObject> rawResults = ArtifactIO.readJsonl(resultsFile);
         List<JsonObject> summaries = new ArrayList<>();
         List<JsonObject> diagnostics = new ArrayList<>();

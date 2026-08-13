@@ -102,9 +102,9 @@ public class AutomaticRegionEdgeTest {
     }
 
     @Test
-    public void responseBindingMustNameTheExactConfiguredPorts() {
+    public void responseBindingMustNameConfiguredPorts() {
         JsonObject binding = responseBinding();
-        binding.addProperty("toInputPort", "REGION.client.in.other");
+        binding.remove("toInputPort");
 
         assertFalse(AutomaticRegionEdge.composable(responseEdge(binding)));
     }
@@ -122,19 +122,11 @@ public class AutomaticRegionEdgeTest {
     }
 
     private static JsonObject responseEdge(JsonObject binding) {
-        JsonObject edge = new JsonObject();
-        edge.addProperty("schemaVersion", 3);
+        JsonObject edge = binding.deepCopy();
         edge.addProperty("kind", "RUNTIME_PROTOCOL_FLOW");
         edge.addProperty("edgeId", "RP.response");
-        edge.addProperty("fromRegion", "REGION.server");
-        edge.addProperty("toRegion", "REGION.client");
         edge.addProperty("transportKind", "TEST_RPC");
-        edge.addProperty("fromPort", "REGION.server.out.response");
-        edge.addProperty("toPort", "REGION.client.in.response");
         edge.addProperty("state", "CONFIRMED_TRUSTED_CONFIGURED_RPC");
-        JsonArray bindings = new JsonArray();
-        bindings.add(binding);
-        edge.add("bindings", bindings);
         return edge;
     }
 

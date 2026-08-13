@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
+import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -353,6 +354,9 @@ final class RuntimeRegionPlanner {
         TraceIndex trace = new TraceIndex(methods, runtimeEvents, fieldEvents);
         Result result = new Result();
         result.staticRegionCount = regions.size();
+        for (Map<String, Object> region : regions) {
+            result.regionCatalog.add(deepCopy(region));
+        }
         Map<String, Map<String, Object>> regionById = new LinkedHashMap<>();
         for (Map<String, Object> region : regions) {
             require(region, 3, "SYMBOLIC_REGION", regionFile);
@@ -650,21 +654,25 @@ final class RuntimeRegionPlanner {
             copyBindingContext(binding, edge,
                     planByInstance.get(fromInstance),
                     planByInstance.get(toInstance));
+            // One exact dynamic relation is the canonical edge.  The old
+            // wrapper repeated the same endpoint/evidence fields outside a
+            // singleton bindings array; keep the union once instead.
             Map<String, Object> evidence = new LinkedHashMap<>(edge);
-            evidence.put("fromPort", fromPort);
-            evidence.put("toPort", toPort);
+            evidence.remove("fromPort");
+            evidence.remove("toPort");
+            evidence.remove("bindings");
+            evidence.putAll(binding);
             evidence.put("state", protocol
                     ? "CONFIRMED_TRUSTED_CONFIGURED_RPC"
                     : coordinated
                     ? "CANDIDATE_COORDINATED_STATE"
                     : "CONFIRMED_RUNTIME_IDENTITY");
-            evidence.put("bindings", Collections.singletonList(binding));
             result.edgeValidations.add(evidence);
             Map<String, Object> producerGoal = goalByInstance.get(
                     fromInstance);
             if (producerGoal != null && "OUTPUT_RELATION_CLOSURE".equals(
                     text(producerGoal.get("kind")))) {
-                appendGoalBinding(producerGoal, binding);
+                appendGoalBinding(producerGoal, evidence);
             }
             Map<String, Object> consumerGoal = goalByInstance.get(
                     toInstance);
@@ -672,7 +680,7 @@ final class RuntimeRegionPlanner {
                 // Consumer protocol arguments are symbolic expressions only
                 // when this exact trusted incoming edge is present.  They are
                 // not fresh independent leaves.
-                appendGoalBinding(consumerGoal, binding);
+                appendGoalBinding(consumerGoal, evidence);
             }
         }
         finalizeProducerGoals(result.regionPlans, regionById, refinedFlow,
@@ -4824,24 +4832,27 @@ final class RuntimeRegionPlanner {
     static final class Result {
         final List<Map<String, Object>> regionPlans = new ArrayList<>();
         final List<Map<String, Object>> edgeValidations = new ArrayList<>();
+        final List<Map<String, Object>> regionCatalog = new ArrayList<>();
         final List<Map<String, Object>> runtimeInstances = new ArrayList<>();
         int staticRegionCount;
 
-        String regionPlansJsonl() {
-            return jsonl(regionPlans);
-        }
-
-        String edgeValidationsJsonl() {
-            return jsonl(edgeValidations);
-        }
-
-        private static String jsonl(List<Map<String, Object>> rows) {
-            StringBuilder result = new StringBuilder();
-            for (Map<String, Object> row : rows) {
-                result.append(GSON.toJson(row)).append('\n');
+        String runtimePlanJsonl() {
+            List<JsonObject> plans = new ArrayList<>();
+            for (Map<String, Object> plan : regionPlans) {
+                plans.add(RegionInstancePlan.compactOccurrences(
+                        toJsonTreeFast(plan).getAsJsonObject()));
             }
-            return result.toString();
+            List<JsonObject> edges = new ArrayList<>();
+            for (Map<String, Object> edge : edgeValidations) {
+                edges.add(toJsonTreeFast(edge).getAsJsonObject());
+            }
+            List<JsonObject> regions = new ArrayList<>();
+            for (Map<String, Object> region : regionCatalog) {
+                regions.add(toJsonTreeFast(region).getAsJsonObject());
+            }
+            return RuntimePlanArtifact.encode(plans, edges, regions);
         }
+
     }
 
     static final class MethodEvent {
