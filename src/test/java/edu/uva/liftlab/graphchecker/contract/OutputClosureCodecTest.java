@@ -14,25 +14,25 @@ import static org.junit.Assert.fail;
 
 public class OutputClosureCodecTest {
     @Test
-    public void buildsOneCanonicalSingletonAndRoundTrips() {
-        JsonObject activation = canonicalActivation("REGION.1.out.0",
-                "<P: int out>", "DF.1");
+    public void relationContractRoundTripsWithoutOccurrenceOrEdgeCopies() {
+        JsonObject artifact = artifact(singleton("out", "EDGE.1"));
 
-        OutputClosureContract closure = OutputClosureCodec.decode(activation);
+        OutputClosureContract closure = OutputClosureCodec.decode(artifact);
 
-        assertEquals(1, closure.members().size());
-        assertEquals("I",
-                closure.members().get(0).javaTypeDescriptor());
-        assertEquals(Arrays.asList("REGION.1.in.0"),
-                Arrays.asList(closure.executionScope().inputPorts()
-                        .toArray(new String[0])));
+        assertEquals(3, closure.toJson().get("schemaVersion").getAsInt());
+        assertEquals("REL.1", closure.producer().relationKey());
+        assertEquals("REGION.1", closure.producer().regionId());
+        assertEquals("HASH.1", closure.producer().contractHash());
+        assertEquals(Arrays.asList("EDGE.1"), Arrays.asList(closure
+                .executionScope().causalEdgeIds().toArray(new String[0])));
+        assertFalse(closure.toJson().has("causalEdges"));
+        assertFalse(closure.toJson().getAsJsonObject("producer")
+                .has("regionInstanceId"));
+        assertFalse(closure.toJson().getAsJsonObject("producer")
+                .has("rootCallId"));
 
-        JsonObject encoded = activation.deepCopy();
+        JsonObject encoded = artifact.deepCopy();
         OutputClosureCodec.writeTo(encoded, closure);
-        assertTrue(encoded.has("outputClosure"));
-        assertFalse(encoded.has("requestedOutput"));
-        assertFalse(encoded.has("requestedOutputSlice"));
-        assertFalse(encoded.has("outputs"));
         OutputClosureContract roundTrip = OutputClosureCodec.decode(encoded);
         assertEquals(closure.demandKey(), roundTrip.demandKey());
         assertEquals(closure.closureFingerprint(),
@@ -40,264 +40,163 @@ public class OutputClosureCodecTest {
     }
 
     @Test
-    public void captureSpecPreservesBoundedOutputOccurrence() {
-        JsonObject activation = canonicalActivation("REGION.1.out.0",
-                "<P: int out>", "DF.1");
-        JsonObject member = activation.getAsJsonObject("outputClosure")
-                .getAsJsonArray("members").get(0).getAsJsonObject();
-        JsonObject output = member.getAsJsonObject("output");
-        JsonObject capture = member.getAsJsonObject("slice")
-                .getAsJsonArray("captureBindings").get(0).getAsJsonObject();
-        capture.addProperty("captureKind",
-                OutputCaptureSpec.FIELD_WRITE_STATE);
-        capture.addProperty("definitionMethod", "<P: void run()>");
-        capture.addProperty("definitionUnitIndex", 7);
-        for (JsonObject value : Arrays.asList(output, capture)) {
-            value.addProperty("outputSiteId",
-                    "FIELD_WRITE_STATE:<P: void run()>#u7:<P: int out>");
-            value.addProperty("outputOccurrence", 3);
-            value.addProperty("replayOccurrence", 3);
-        }
+    public void mergeUsesRelationIdentityAndCanonicalPorts() {
+        OutputClosureContract first = singleton("out", "EDGE.1");
+        OutputClosureContract second = singleton("other", "EDGE.2");
 
-        OutputCaptureSpec spec = OutputClosureCodec.captureSpecs(
-                OutputClosureCodec.decode(activation)).get(0);
-        assertTrue(spec.occurrenceScoped());
-        assertEquals("FIELD_WRITE_STATE:<P: void run()>#u7:<P: int out>",
-                spec.outputSiteId());
-        assertEquals(3, spec.outputOccurrence());
-        assertEquals(3, spec.replayOccurrence());
+        OutputClosureContract merged = OutputClosureCodec.merge(
+                Arrays.asList(first, second));
 
-        // A recorded ordinal past the replay loop bound is provenance, not a
-        // replay demand: the mutation writer of a demanded container may
-        // well have been recorded at its site's twenty-sixth execution.
-        for (JsonObject value : Arrays.asList(output, capture)) {
-            value.addProperty("outputOccurrence", 26);
-            value.addProperty("replayOccurrence", 26);
-        }
-        OutputCaptureSpec recordedPastBound = OutputClosureCodec
-                .captureSpecs(OutputClosureCodec.decode(activation)).get(0);
-        assertEquals(26, recordedPastBound.outputOccurrence());
-
-        // Internal coherence of the declared identity is still validated.
-        output.addProperty("replayOccurrence", 25);
-        expectFailure(() -> OutputClosureCodec.captureSpecs(
-                OutputClosureCodec.decode(activation)),
-                "outside the bounded replay");
+        assertEquals(Arrays.asList("REGION.1.out.other", "REGION.1.out.out"),
+                Arrays.asList(merged.outputPorts().toArray(new String[0])));
+        assertEquals(Arrays.asList("EDGE.1", "EDGE.2"), Arrays.asList(
+                merged.executionScope().causalEdgeIds()
+                        .toArray(new String[0])));
+        assertNotEquals(first.closureFingerprint(),
+                merged.closureFingerprint());
     }
 
     @Test
-    public void memberOrderIsCanonicalAndPartOfOneJointContract() {
-        OutputClosureContract left = OutputClosureCodec.decode(
-                canonicalActivation("REGION.1.out.0", "<P: int x>", "DF.1"));
-        OutputClosureContract right = OutputClosureCodec.decode(
-                canonicalActivation("REGION.1.out.1", "<P: int y>", "DF.2"));
-        JsonObject envelope = left.toJson();
-        JsonArray causalEdges = envelope.getAsJsonArray("causalEdges");
-        causalEdges.add(right.toJson().getAsJsonArray("causalEdges").get(0));
-        JsonArray members = new JsonArray();
-        members.add(right.toJson().getAsJsonArray("members").get(0));
-        members.add(left.toJson().getAsJsonArray("members").get(0));
-        envelope.add("members", members);
-        OutputClosureContract joint =
-                OutputClosureCodec.decodeEnvelope(envelope);
-        assertEquals(2, joint.members().size());
-        assertEquals("REGION.1.out.0", joint.members().get(0).portId());
-        assertEquals("REGION.1.out.1", joint.members().get(1).portId());
+    public void mergeUnionsEdgesForOneRelationMember() {
+        OutputClosureContract merged = OutputClosureCodec.merge(
+                Arrays.asList(singleton("out", "EDGE.1"),
+                        singleton("out", "EDGE.2")));
+
+        assertEquals(1, merged.members().size());
+        assertEquals(Arrays.asList("EDGE.1", "EDGE.2"), Arrays.asList(
+                merged.executionScope().causalEdgeIds()
+                        .toArray(new String[0])));
     }
 
     @Test
-    public void jointCaptureSupportsPrimitiveMapAndArrayMembers() {
-        OutputClosureContract scalar = OutputClosureCodec.decode(
-                canonicalActivation("REGION.1.out.0", "<P: int count>",
-                        "DF.1", "int"));
-        OutputClosureContract map = OutputClosureCodec.decode(
-                canonicalActivation("REGION.1.out.1",
-                        "<P: java.util.Map values>", "DF.2",
-                        "java.util.Map"));
-        OutputClosureContract array = OutputClosureCodec.decode(
-                canonicalActivation("REGION.1.out.2",
-                        "<P: int[] entries>", "DF.3", "int[]"));
+    public void mergeKeepsObservedVersionsAsBestEffortCaptures() {
+        JsonObject second = singleton("out", "EDGE.2").toJson();
+        JsonObject member = second.getAsJsonArray("members").get(0)
+                .getAsJsonObject();
+        JsonObject slice = member.getAsJsonObject("slice");
+        slice.addProperty("selectedRuntimeEventSeq", 20);
+        slice.addProperty("activationLocalOccurrence", 2);
+        JsonObject capture = slice.getAsJsonArray("captureBindings")
+                .get(0).getAsJsonObject();
+        capture.addProperty("captureBindingId", "CAPTURE.second");
+        capture.addProperty("accessRootInputPort", "REGION.1.in.1");
 
-        OutputClosureContract joint = OutputClosureCodec.merge(
-                Arrays.asList(array, scalar, map));
-        OutputClosureContract roundTrip =
-                OutputClosureCodec.decodeEnvelope(joint.toJson());
+        OutputClosureContract merged = OutputClosureCodec.merge(
+                Arrays.asList(singleton("out", "EDGE.1"),
+                        OutputClosureCodec.decodeEnvelope(second)));
 
-        assertEquals("I", roundTrip.member(
-                "REGION.1.out.0").javaTypeDescriptor());
-        assertEquals("Ljava/util/Map;", roundTrip.member(
-                "REGION.1.out.1").javaTypeDescriptor());
-        assertEquals("[I", roundTrip.member(
-                "REGION.1.out.2").javaTypeDescriptor());
-        assertEquals(3, OutputClosureCodec.captureSpecs(roundTrip).size());
+        assertEquals(2, merged.member("REGION.1.out.out")
+                .captures().size());
+        assertTrue(merged.member("REGION.1.out.out").slice()
+                .has("alignmentGaps"));
     }
 
     @Test
-    public void malformedExplicitEnvelopeNeverFallsBackToLegacy() {
-        JsonObject artifact = canonicalActivation("REGION.1.out.0",
-                "<P: int out>", "DF.1");
-        artifact.add("requestedOutput", new JsonObject());
-        JsonObject malformed = new JsonObject();
-        malformed.addProperty("schemaVersion", 99);
-        artifact.add("outputClosure", malformed);
+    public void mergeRejectsDifferentRelationContracts() {
+        OutputClosureContract first = singleton("out", "EDGE.1");
+        JsonObject other = singleton("other", "EDGE.2").toJson();
+        other.getAsJsonObject("producer").addProperty(
+                "contractHash", "HASH.2");
 
+        expectFailure(() -> OutputClosureCodec.merge(Arrays.asList(first,
+                OutputClosureCodec.decodeEnvelope(other))),
+                "different producer relations");
+    }
+
+    @Test
+    public void oldInvocationScopedProducerFailsDirectly() {
+        JsonObject closure = singleton("out", "EDGE.1").toJson();
+        JsonObject producer = closure.getAsJsonObject("producer");
+        producer.addProperty("regionInstanceId", "REGION.1@test#call1");
+        producer.addProperty("rootCallId", 1L);
+
+        expectFailure(() -> OutputClosureCodec.decodeEnvelope(closure),
+                "retired output closure field regionInstanceId");
+    }
+
+    @Test
+    public void embeddedCausalEdgesFailInsteadOfDuplicatingCatalog() {
+        JsonObject closure = singleton("out", "EDGE.1").toJson();
+        closure.add("causalEdges", new JsonArray());
+        expectFailure(() -> OutputClosureCodec.decodeEnvelope(closure),
+                "retired output closure field causalEdges");
+
+        JsonObject slice = slice("REGION.1.out.out", "<P: int out>",
+                "EDGE.1");
+        slice.add("causalEdges", new JsonArray());
+        expectFailure(() -> OutputClosureCodec.singleton(
+                "REL.1", "REGION.1", "HASH.1", "REGION.1.out.out",
+                "<P: int out>", "HEAP_STATE", "int", slice),
+                "causalEdgeIds");
+    }
+
+    @Test
+    public void outerRelationScopeMustMatchProducer() {
+        JsonObject artifact = artifact(singleton("out", "EDGE.1"));
+        artifact.addProperty("relationKey", "REL.other");
         expectFailure(() -> OutputClosureCodec.decode(artifact),
-                "forbids legacy mirror");
+                "conflicts with artifact scope");
     }
 
     @Test
-    public void missingMemberIsRejectedInsteadOfReturningPartialValue() {
-        OutputClosureContract first = OutputClosureCodec.decode(
-                canonicalActivation("REGION.1.out.0", "<P: int x>", "DF.1"));
-        OutputClosureContract second = OutputClosureCodec.decode(
-                canonicalActivation("REGION.1.out.1", "<P: int y>", "DF.2"));
-        JsonObject envelope = first.toJson();
-        JsonArray members = new JsonArray();
-        members.add(first.toJson().getAsJsonArray("members").get(0));
-        JsonObject malformed = second.toJson().getAsJsonArray("members")
-                .get(0).getAsJsonObject().deepCopy();
-        malformed.getAsJsonObject("output").remove("cell");
-        members.add(malformed);
-        envelope.add("members", members);
-
-        expectFailure(() -> OutputClosureCodec.decodeEnvelope(envelope),
-                "cell must be a non-empty string");
+    public void captureSpecsRemainAvailableToRuntime() {
+        OutputCaptureSpec capture = OutputClosureCodec.captureSpecs(
+                singleton("out", "EDGE.1")).get(0);
+        assertEquals("REGION.1.out.out", capture.outputPort());
+        assertEquals("<P: int out>", capture.fieldSignature());
     }
 
-    @Test
-    public void demandIncludesProducerRegionAndFingerprintIncludesInvocation() {
-        OutputClosureContract original = OutputClosureCodec.decode(
-                canonicalActivation("REGION.1.out.0", "<P: int x>", "DF.1"));
-        JsonObject otherRegion = canonicalActivation(
-                "REGION.2.out.0", "<P: int x>", "DF.1");
-        setProducer(otherRegion, "REGION.2",
-                "REGION.2@test#call7", 7);
-        OutputClosureContract moved = OutputClosureCodec.decode(otherRegion);
-        assertNotEquals(original.demandKey(), moved.demandKey());
-
-        JsonObject otherInvocation = canonicalActivation(
-                "REGION.1.out.0", "<P: int x>", "DF.1");
-        setProducer(otherInvocation, "REGION.1",
-                "REGION.1@test#call8", 8);
-        OutputClosureContract replay =
-                OutputClosureCodec.decode(otherInvocation);
-        assertEquals(original.demandKey(), replay.demandKey());
-        assertNotEquals(original.closureFingerprint(),
-                replay.closureFingerprint());
+    private static JsonObject artifact(OutputClosureContract closure) {
+        JsonObject result = new JsonObject();
+        result.addProperty("sourceKey", "nn0#epoch1");
+        result.addProperty("occurrenceId", "OCC.1");
+        result.addProperty("relationKey", "REL.1");
+        result.addProperty("relationContractHash", "HASH.1");
+        result.addProperty("regionId", "REGION.1");
+        result.add(OutputClosureContract.FIELD, closure.toJson());
+        return result;
     }
 
-    @Test
-    public void codecPreservesCaptureIssuesForAdmissionBoundary() {
-        OutputClosureContract first = OutputClosureCodec.decode(
-                canonicalActivation("REGION.1.out.0", "<P: int x>", "DF.1"));
-        OutputClosureContract second = OutputClosureCodec.decode(
-                canonicalActivation("REGION.1.out.1", "<P: int y>", "DF.2"));
-        JsonObject envelope = OutputClosureCodec.merge(
-                Arrays.asList(first, second)).toJson();
-        envelope.getAsJsonArray("members").get(1).getAsJsonObject()
-                .getAsJsonObject("slice")
-                .getAsJsonArray("captureBindingIssues")
-                .add("MISSING_CAPTURE");
-
-        OutputClosureContract incompleteJoint =
-                OutputClosureCodec.decodeEnvelope(envelope);
-        assertEquals(1, incompleteJoint.member("REGION.1.out.1")
-                .slice().getAsJsonArray("captureBindingIssues").size());
-
-        JsonObject singleton = first.toJson();
-        singleton.getAsJsonArray("members").get(0).getAsJsonObject()
-                .getAsJsonObject("slice")
-                .getAsJsonArray("captureBindingIssues")
-                .add("MISSING_CAPTURE");
-        OutputClosureContract incomplete =
-                OutputClosureCodec.decodeEnvelope(singleton);
-        assertEquals(1, incomplete.member("REGION.1.out.0")
-                .slice().getAsJsonArray("captureBindingIssues").size());
+    private static OutputClosureContract singleton(
+            String field, String edgeId) {
+        String port = "REGION.1.out." + field;
+        String cell = "<P: int " + field + ">";
+        return OutputClosureCodec.singleton("REL.1", "REGION.1",
+                "HASH.1", port, cell, "HEAP_STATE", "int",
+                slice(port, cell, edgeId));
     }
 
-    private static JsonObject canonicalActivation(
+    private static JsonObject slice(
             String port, String cell, String edgeId) {
-        return canonicalActivation(port, cell, edgeId, "int");
-    }
-
-    private static JsonObject canonicalActivation(
-            String port, String cell, String edgeId, String javaType) {
-        String method = "<P: void run()>";
-        String site = method + "#u2";
-        String region = port.substring(0, port.indexOf(".out."));
-        JsonObject activation = new JsonObject();
-        activation.addProperty("regionId", region);
-        activation.addProperty("regionInstanceId",
-                region + "@test#call7");
-        activation.addProperty("rootCallId", 7);
-
-        JsonObject capture = new JsonObject();
-        capture.addProperty("captureBindingId", port + ".exit-field");
-        capture.addProperty("outputPort", port);
-        capture.addProperty("outputCell", cell);
-        capture.addProperty("accessRootInputPort", region + ".in.0");
-        JsonArray fieldPath = new JsonArray();
-        fieldPath.add(FieldPathSpec.declaredField(cell).name());
-        capture.add("fieldPath", fieldPath);
-        capture.addProperty("fieldSignature", cell);
-        capture.addProperty("javaType", javaType);
-        JsonArray captures = new JsonArray();
-        captures.add(capture);
-
         JsonObject slice = new JsonObject();
         slice.addProperty("outputPort", port);
         slice.addProperty("outputCell", cell);
-        slice.addProperty("complete", true);
-        slice.addProperty("structuralComplete", true);
-        slice.addProperty("runtimeRefined", true);
-        slice.addProperty("runtimeRefinementComplete", true);
-        slice.addProperty("runtimeRefinementAuthority",
-                "OBSERVED_REGION_CALL_TREE");
-        slice.addProperty("inputAliasCanonicalizationComplete", true);
-        slice.addProperty("regionTruncated", false);
-        slice.addProperty("truncated", false);
-        slice.addProperty("methodBudgetTruncated", false);
-        slice.addProperty("causalCellBudgetTruncated", false);
-        slice.add("inputGaps", new JsonArray());
-        slice.add("truncationReasons", new JsonArray());
-        slice.add("captureBindingIssues", new JsonArray());
-        slice.add("inputAliasCanonicalizationIssues", new JsonArray());
         slice.add("inputPorts", strings("REGION.1.in.0"));
-        slice.add("staticInputPorts", strings("REGION.1.in.0"));
-        slice.add("methods", strings(method));
-        slice.add("staticMethods", strings(method));
-        slice.add("sites", strings(site));
-        slice.add("staticSites", strings(site));
+        slice.add("sites", strings("<P: void run()>#u1"));
+        slice.add("staticSites", new JsonArray());
+        slice.add("methods", strings("<P: void run()>"));
         slice.add("causalEdgeIds", strings(edgeId));
-        slice.add("staticCausalEdgeIds", strings(edgeId));
-        JsonObject edge = new JsonObject();
-        edge.addProperty("edgeId", edgeId);
-        JsonArray edges = new JsonArray();
-        edges.add(edge);
-        slice.add("causalEdges", edges);
-        slice.add("captureBindings", captures.deepCopy());
-        OutputClosureCodec.writeTo(activation, OutputClosureCodec.singleton(
-                region, region + "@test#call7", 7, port, cell,
-                "HEAP_STATE", javaType, slice));
-        return activation;
+        slice.add("captureBindingIssues", new JsonArray());
+
+        JsonObject capture = new JsonObject();
+        capture.addProperty("captureBindingId", "CAPTURE." + cell);
+        capture.addProperty("outputPort", port);
+        capture.addProperty("outputCell", cell);
+        capture.addProperty("fieldSignature", cell);
+        capture.add("fieldPath", strings(cell.substring(
+                cell.lastIndexOf(' ') + 1, cell.length() - 1)));
+        capture.addProperty("javaType", "int");
+        capture.addProperty("accessRootInputPort", "REGION.1.in.0");
+        JsonArray captures = new JsonArray();
+        captures.add(capture);
+        slice.add("captureBindings", captures);
+        return slice;
     }
 
     private static JsonArray strings(String... values) {
         JsonArray result = new JsonArray();
         for (String value : values) result.add(value);
         return result;
-    }
-
-    private static void setProducer(JsonObject activation, String region,
-                                    String instance, long rootCall) {
-        activation.addProperty("regionId", region);
-        activation.addProperty("regionInstanceId", instance);
-        activation.addProperty("rootCallId", rootCall);
-        JsonObject producer = activation.getAsJsonObject("outputClosure")
-                .getAsJsonObject("producer");
-        producer.addProperty("regionId", region);
-        producer.addProperty("regionInstanceId", instance);
-        producer.addProperty("rootCallId", rootCall);
     }
 
     private static void expectFailure(Runnable action, String text) {

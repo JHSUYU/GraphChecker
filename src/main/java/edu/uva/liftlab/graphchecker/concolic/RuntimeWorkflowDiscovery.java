@@ -60,9 +60,9 @@ public final class RuntimeWorkflowDiscovery {
         Set<String> instances = new LinkedHashSet<>();
         for (JsonObject row : regionPlan) {
             RegionInstancePlan plan = RegionInstancePlan.decode(row);
-            if (!instances.add(plan.regionInstanceId())) {
-                throw new IOException("duplicate regionInstanceId: "
-                        + plan.regionInstanceId());
+            if (!instances.add(plan.occurrenceId())) {
+                throw new IOException("duplicate occurrenceId: "
+                        + plan.occurrenceId());
             }
             plans.add(plan);
         }
@@ -159,7 +159,7 @@ public final class RuntimeWorkflowDiscovery {
             throw new IOException("runtime read-from graph has no executable "
                     + "producer path to target; targetRegion="
                     + selectedTarget.regionId + "; targetInstance="
-                    + selectedTarget.regionInstanceId + "; outputGoals="
+                    + selectedTarget.occurrenceId + "; outputGoals="
                     + outputGoalAdmissions());
         }
         return closure.demands;
@@ -199,7 +199,7 @@ public final class RuntimeWorkflowDiscovery {
             String input = string(action, "symbol");
             if (input.isEmpty()) continue;
             Endpoint endpoint = new Endpoint(
-                    selectedTarget.regionInstanceId,
+                    selectedTarget.occurrenceId,
                     selectedTarget.exactInput(input));
             if (causalAction(action)
                     || exactTrustedProjectedProducer(endpoint,
@@ -276,7 +276,7 @@ public final class RuntimeWorkflowDiscovery {
             throw new IOException("runtime read-from graph has blocked exact "
                     + "producer closure; targetRegion="
                     + selectedTarget.regionId + "; targetInstance="
-                    + selectedTarget.regionInstanceId
+                    + selectedTarget.occurrenceId
                     + "; blockedProducers=" + blocked);
         }
 
@@ -311,7 +311,7 @@ public final class RuntimeWorkflowDiscovery {
             String input = string(action, "symbol");
             if (input.isEmpty()) continue;
             Endpoint endpoint = new Endpoint(
-                    selectedTarget.regionInstanceId,
+                    selectedTarget.occurrenceId,
                     selectedTarget.exactInput(input));
             JsonObject edge = selectedEdgeByEndpoint.get(endpoint);
             if (edge != null && AutomaticRegionEdge
@@ -340,10 +340,10 @@ public final class RuntimeWorkflowDiscovery {
         boolean propagatedBoundedStateTransition =
                 directInterOccurrenceStatePresentation(fatalInputs,
                         selectedEdgeByEndpoint, result,
-                        selectedTarget.regionInstanceId);
+                        selectedTarget.occurrenceId);
         int stateBackedFatalInputs = stateBackedFatalInputs(fatalInputs,
                 selectedEdgeByEndpoint, result,
-                selectedTarget.regionInstanceId);
+                selectedTarget.occurrenceId);
         Set<String> observedSemanticGuards = new LinkedHashSet<>();
         for (Demand demand : result) {
             demand.addObservedSelectedSemanticGuards(
@@ -414,15 +414,15 @@ public final class RuntimeWorkflowDiscovery {
         for (Endpoint fatalInput : fatalInputs) {
             JsonObject targetEdge = selectedEdgeByEndpoint.get(fatalInput);
             if (targetEdge == null || !fatalTargetInstance.equals(
-                    required(targetEdge, "toRegionInstance"))) {
+                    required(targetEdge, "toOccurrenceId"))) {
                 continue;
             }
             Demand presentation = demandByEdgeId.get(
                     required(targetEdge, "edgeId"));
             if (presentation == null) continue;
             String presentationInstance = required(targetEdge,
-                    "fromRegionInstance");
-            Occurrence presented = presentation.occurrences.require(
+                    "fromOccurrenceId");
+            Occurrence presented = presentation.requireOccurrence(
                     presentationInstance);
             OutputClosureContract.Member presentedMember =
                     presentation.member(targetEdge, presented);
@@ -438,15 +438,15 @@ public final class RuntimeWorkflowDiscovery {
                 Demand state = demandByEdgeId.get(required(stateEdge,
                         "edgeId"));
                 if (state == null) continue;
-                Occurrence producer = state.occurrences.require(
-                        required(stateEdge, "fromRegionInstance"));
+                Occurrence producer = state.requireOccurrence(
+                        required(stateEdge, "fromOccurrenceId"));
                 OutputClosureContract.Member member = state.member(
                         stateEdge, producer);
                 if (state.exactInterOccurrenceHeapStateHandoff(stateEdge,
                         member, member.slice(), producer,
                         new SelectedProducerOccurrence(
-                                presentation.logicalRegionId,
-                                presented.rootCallId))) {
+                                presentation.relationKey,
+                                presented.occurrenceId))) {
                     return true;
                 }
             }
@@ -468,21 +468,21 @@ public final class RuntimeWorkflowDiscovery {
             throw new IOException("selected exact edge has no producer "
                     + "demand: " + required(edge, "edgeId"));
         }
-        String sourceInstance = required(edge, "fromRegionInstance");
-        Occurrence occurrence = demand.occurrences.require(sourceInstance);
+        String sourceInstance = required(edge, "fromOccurrenceId");
+        Occurrence occurrence = demand.requireOccurrence(sourceInstance);
         OutputClosureContract.Member member = demand.member(edge,
                 occurrence);
         JsonObject slice = member.slice();
-        String consumerInstance = required(edge, "toRegionInstance");
+        String consumerInstance = required(edge, "toOccurrenceId");
         boolean stateTransition = boundedStateTransition(slice);
         if (!stateTransition
-                && demand.occurrences.contains(consumerInstance)) {
-            Occurrence consumer = demand.occurrences.require(
+                && demand.containsOccurrence(consumerInstance)) {
+            Occurrence consumer = demand.requireOccurrence(
                     consumerInstance);
             stateTransition = demand.exactInterOccurrenceHeapStateHandoff(
                     edge, member, slice, occurrence,
-                    new SelectedProducerOccurrence(demand.logicalRegionId,
-                            consumer.rootCallId));
+                    new SelectedProducerOccurrence(demand.relationKey,
+                            consumer.occurrenceId));
         }
         if (!fatalTargetInstance.equals(consumerInstance)
                 && stateTransition) {
@@ -575,18 +575,8 @@ public final class RuntimeWorkflowDiscovery {
         for (RegionInstancePlan plan : plans) {
             for (Goal goal : plan.goals()) {
                 if (goal.kind() == ClosureGoalKind.TARGET_REACH_CLOSURE) {
-                    try {
-                        OccurrenceCatalog catalog =
-                                OccurrenceCatalog.from(goal);
-                        for (Occurrence occurrence
-                                : catalog.occurrences.values()) {
-                            matches.add(new Target(plan, goal, occurrence));
-                        }
-                    } catch (IllegalArgumentException malformed) {
-                        throw new IOException("invalid logical target "
-                                + "occurrence catalog; "
-                                + context(plan, goal), malformed);
-                    }
+                    matches.add(new Target(plan, goal,
+                            new Occurrence(goal)));
                 }
             }
         }
@@ -615,7 +605,7 @@ public final class RuntimeWorkflowDiscovery {
         List<Target> matches = new ArrayList<>();
         for (Target candidate : targets) {
             if ((!targetInstance.isEmpty()
-                    && !targetInstance.equals(candidate.regionInstanceId))
+                    && !targetInstance.equals(candidate.occurrenceId))
                     || (!targetGoal.isEmpty()
                     && !targetGoal.equals(candidate.goalId))) {
                 continue;
@@ -653,22 +643,15 @@ public final class RuntimeWorkflowDiscovery {
         List<JsonObject> result = new ArrayList<>();
         OutputClosureContract closure = goal.outputClosure();
         if (closure != null) {
-            // A logical summary's outputClosure is canonical and therefore
-            // contains only its canonical occurrence edges.  edgeBindings is
-            // the exact-occurrence ledger; index every trusted outgoing edge
-            // from this logical region so a later loop/RPC occurrence can
-            // satisfy an exact downstream port while still reusing one VM
-            // relation.
             Set<String> selectedIds = new LinkedHashSet<>();
             for (JsonElement element : goal.edgeBindings()) {
                 if (!element.isJsonObject()) continue;
                 JsonObject edge = element.getAsJsonObject();
                 String fromRegion = string(edge, "fromRegion");
-                String fromInstance = string(edge,
-                        "fromRegionInstance");
+                String fromOccurrence = string(edge,
+                        "fromOccurrenceId");
                 boolean sameRegion = plan.regionId().equals(fromRegion)
-                        || fromInstance.equals(plan.regionInstanceId())
-                        || fromInstance.startsWith(plan.regionId() + "@");
+                        && fromOccurrence.equals(plan.occurrenceId());
                 if (!sameRegion || string(edge, "fromOutputPort").isEmpty()
                         || !AutomaticRegionEdge
                         .trustedRuntimeCompositionBinding(edge)) {
@@ -676,15 +659,6 @@ public final class RuntimeWorkflowDiscovery {
                 }
                 String id = string(edge, "edgeId");
                 if (selectedIds.add(id)) result.add(edge.deepCopy());
-            }
-            // Older/small artifacts may carry only the canonical contract.
-            if (result.isEmpty()) {
-                for (JsonObject edge : closure.causalEdges()) {
-                    if (AutomaticRegionEdge
-                            .trustedRuntimeCompositionBinding(edge)) {
-                        result.add(edge.deepCopy());
-                    }
-                }
             }
             return result;
         }
@@ -695,11 +669,11 @@ public final class RuntimeWorkflowDiscovery {
         // occurrence are producer candidates.  Incoming bindings describe
         // the relation's dependencies; indexing them as outputs makes the
         // relation appear to produce its own inputs.
-        String producer = goal.executionRegionInstanceId();
+        String producer = goal.plan().occurrenceId();
         for (JsonElement item : goal.edgeBindings()) {
             if (item.isJsonObject()) {
                 JsonObject edge = item.getAsJsonObject();
-                if (producer.equals(string(edge, "fromRegionInstance"))
+                if (producer.equals(string(edge, "fromOccurrenceId"))
                         && AutomaticRegionEdge
                         .trustedRuntimeCompositionBinding(edge)) {
                     result.add(edge.deepCopy());
@@ -743,15 +717,11 @@ public final class RuntimeWorkflowDiscovery {
         Occurrence exactProducer = demand.exactProducerOccurrence();
         List<ExecutionTask> matches = new ArrayList<>();
         for (ExecutionTask task : tasks) {
-            if (demand.regionId.equals(task.regionId())
-                    && demand.logicalRegionId.equals(firstNonBlank(
-                    task.logicalRegionId(), task.regionInstanceId()))
+            if (sameTaskIdentity(demand.plan, exactProducer, task)
+                    && demand.goalId.equals(task.goalId())
                     && task.goalKind().capturesOutputRelation()
                     && task.outputClosure() != null
-                    && task.executable()
-                    && catalogContains(task, exactProducer)
-                    && projectionContains(task.producerProjection(),
-                    demand.projection())) {
+                    && task.executable()) {
                 matches.add(task);
             }
         }
@@ -768,25 +738,22 @@ public final class RuntimeWorkflowDiscovery {
         Set<String> outputs = group.outputPorts();
         Set<String> edges = group.edgeIds();
         for (ExecutionTask task : tasks) {
-            JsonObject projection = task.producerProjection();
             if (group.regionId.equals(task.regionId())
-                    && group.logicalRegionId.equals(firstNonBlank(
-                    task.logicalRegionId(), task.regionInstanceId()))
-                    && group.pathSeedKey.equals(string(projection,
-                    "pathSeedKey"))
-                    && outputs.equals(stringSet(projection, "outputPorts"))
-                    && edges.equals(stringSet(projection, "edgeIds"))
+                    && group.sourceKey.equals(task.sourceKey())
+                    && group.relationKey.equals(task.relationKey())
+                    && group.relationContractHash.equals(
+                    task.relationContractHash())
+                    && group.occurrenceId.equals(task.occurrenceId())
+                    && group.goalId().equals(task.goalId())
                     && task.goalKind().capturesOutputRelation()
                     && task.outputClosure() != null
-                    && task.executable()
-                    && catalogContains(task, group.regionInstanceId,
-                    group.rootCallId)) {
+                    && task.executable()) {
                 matches.add(task);
             }
         }
         ExecutionTask task = onlyTask(matches,
                 "scheduled atomic producer task; instance="
-                        + group.regionInstanceId + "; pathSeed="
+                        + group.occurrenceId + "; pathSeed="
                         + group.pathSeedKey);
         Set<String> actualOutputs = new LinkedHashSet<>();
         for (OutputClosureContract.Member member
@@ -798,175 +765,71 @@ public final class RuntimeWorkflowDiscovery {
                 .equals(group.inputPorts())) {
             throw new IOException("scheduled atomic producer task closure "
                     + "does not exactly cover grouped ports; instance="
-                    + group.regionInstanceId);
+                    + group.occurrenceId);
         }
         for (Demand demand : group.demands) {
             requireSelectedProducerOccurrence(demand, task);
         }
-        Occurrence selected;
-        try {
-            selected = OccurrenceCatalog.from(
-                    task.occurrenceInstantiationCatalog()).require(
-                    group.regionInstanceId);
-        } catch (IllegalArgumentException malformed) {
-            throw new IOException("scheduled atomic producer task has "
-                    + "malformed occurrence catalog; instance="
-                    + group.regionInstanceId, malformed);
-        }
-        if (!selected.exactInputByCanonical.keySet().equals(
-                group.inputPorts())
-                || !new LinkedHashSet<>(
-                selected.canonicalOutputByExact.values()).equals(outputs)
-                || !selected.bindingIds.containsAll(edges)
-                || !trustedAtomicInternalBindings(task, group, edges,
-                selected.bindingIds)) {
-            throw new IOException("scheduled atomic producer occurrence "
-                    + "does not exactly cover grouped ports/edges; instance="
-                    + group.regionInstanceId);
+        if (!taskEdgeIds(task).containsAll(edges)) {
+            throw new IOException("scheduled atomic producer task omits "
+                    + "selected state-flow edges; occurrence="
+                    + group.occurrenceId);
         }
         return task;
     }
 
-    private static boolean trustedAtomicInternalBindings(
-            ExecutionTask task, ProducerGroup group,
-            Set<String> projectedEdges, Set<String> occurrenceEdges)
+    private static Set<String> taskEdgeIds(ExecutionTask task)
             throws IOException {
-        Set<String> internal = new LinkedHashSet<>(occurrenceEdges);
-        internal.removeAll(projectedEdges);
-        if (internal.isEmpty()) return true;
-        Map<String, JsonObject> byId = new LinkedHashMap<>();
+        Set<String> result = new LinkedHashSet<>();
         for (JsonElement element : task.edgeBindings()) {
             if (!element.isJsonObject()) continue;
-            JsonObject binding = element.getAsJsonObject();
-            String id = string(binding, "edgeId");
-            if (!internal.contains(id)) continue;
-            if (byId.putIfAbsent(id, binding) != null) return false;
-        }
-        if (!byId.keySet().equals(internal)) return false;
-        for (JsonObject binding : byId.values()) {
-            if (!AutomaticRegionEdge.trustedRuntimeReadFromBinding(binding)
-                    || !group.regionId.equals(string(binding,
-                    "fromRegion"))
-                    || !group.regionId.equals(string(binding, "toRegion"))
-                    || !group.regionInstanceId.equals(string(binding,
-                    "fromRegionInstance"))
-                    || !group.regionInstanceId.equals(string(binding,
-                    "toRegionInstance"))
-                    || longInteger(binding, "fromRootCallId", -1L)
-                    != group.rootCallId
-                    || longInteger(binding, "toRootCallId", -1L)
-                    != group.rootCallId
-                    || !group.outputPorts().contains(string(binding,
-                    "fromOutputPort"))
-                    || !group.inputPorts().contains(string(binding,
-                    "toInputPort"))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean projectionContains(
-            JsonObject encoded, ProducerOutputProjection selected) {
-        if (encoded == null || encoded.size() == 0) return false;
-        JsonObject expected = selected.json();
-        return string(encoded, "regionId").equals(
-                string(expected, "regionId"))
-                && string(encoded, "logicalRegionId").equals(
-                string(expected, "logicalRegionId"))
-                && string(encoded, "pathSeedKey").equals(
-                string(expected, "pathSeedKey"))
-                && stringSet(encoded, "outputPorts").containsAll(
-                selected.outputPorts())
-                && stringSet(encoded, "edgeIds").containsAll(
-                selected.edgeIds());
-    }
-
-    private static boolean catalogContains(
-            ExecutionTask task, Occurrence expected) {
-        return catalogContains(task, expected.regionInstanceId,
-                expected.rootCallId);
-    }
-
-    private static boolean catalogContains(
-            ExecutionTask task, String instance, long rootCallId) {
-        try {
-            Occurrence actual = OccurrenceCatalog.from(
-                    task.occurrenceInstantiationCatalog()).occurrences.get(
-                    instance);
-            return actual != null && actual.rootCallId == rootCallId;
-        } catch (IllegalArgumentException malformed) {
-            return false;
-        }
-    }
-
-    private static Set<String> stringSet(JsonObject encoded, String field) {
-        Set<String> result = new LinkedHashSet<>();
-        for (JsonElement element : array(encoded, field)) {
-            if (element.isJsonPrimitive()) {
-                result.add(element.getAsString());
+            String edgeId = required(element.getAsJsonObject(), "edgeId");
+            if (!result.add(edgeId)) {
+                throw new IOException("execution task repeats state-flow edge "
+                        + edgeId);
             }
         }
         return result;
     }
 
+    private static boolean sameTaskIdentity(RegionInstancePlan plan,
+                                            Occurrence occurrence,
+                                            ExecutionTask task) {
+        return plan.regionId().equals(task.regionId())
+                && plan.sourceKey().equals(task.sourceKey())
+                && plan.relationKey().equals(task.relationKey())
+                && plan.relationContractHash().equals(
+                task.relationContractHash())
+                && occurrence.occurrenceId.equals(task.occurrenceId());
+    }
+
     private static void requireSelectedProducerOccurrence(
             Demand demand, ExecutionTask task) throws IOException {
-        JsonObject encoded = task.occurrenceInstantiationCatalog();
-        if (integer(encoded, "schemaVersion", -1) != 1
-                || !"LOGICAL_SUMMARY_OCCURRENCE_CATALOG".equals(
-                string(encoded, "kind"))
-                || !demand.logicalRegionId.equals(
-                string(encoded, "logicalRegionId"))
-                || !task.summaryReuseKey().equals(
-                string(encoded, "summaryReuseKey"))
-                || !task.regionInstanceId().equals(string(encoded,
-                "canonicalRegionInstanceId"))) {
-            throw new IOException("scheduled producer task has malformed "
-                    + "logical occurrence catalog; " + demand.context());
-        }
-
-        final OccurrenceCatalog actual;
-        try {
-            actual = OccurrenceCatalog.from(encoded);
-        } catch (IllegalArgumentException malformed) {
-            throw new IOException("scheduled producer task has malformed "
-                    + "logical occurrence catalog; " + demand.context(),
-                    malformed);
-        }
         Occurrence expected = demand.exactProducerOccurrence();
-        Occurrence selected = actual.require(expected.regionInstanceId);
-        if (!selected.sameIdentity(expected)) {
+        if (!sameTaskIdentity(demand.plan, expected, task)) {
             throw new IOException("scheduled producer task occurrence does "
                     + "not match selected runtime evidence: "
-                    + expected.regionInstanceId);
+                    + expected.occurrenceId);
         }
 
         Set<String> projectedInputs = demand.projectedInputPorts();
         if (!task.outputClosure().executionScope().inputPorts()
                 .containsAll(projectedInputs)) {
             throw new IOException("scheduled producer task closure omits "
-                    + "selected inputs: " + expected.regionInstanceId);
+                    + "selected inputs: " + expected.occurrenceId);
         }
         Set<String> projectedOutputs = demand.projection().outputPorts();
         Set<String> projectedBindings = demand.projection().edgeIds();
-        Map<String, String> expectedInputs = expected.exactInputs(
-                projectedInputs);
-        Map<String, String> expectedOutputs = expected.canonicalOutputs(
-                projectedOutputs);
-        Set<String> expectedBindingIds = expected.bindings(
-                projectedBindings);
-        if (!expectedInputs.keySet().equals(projectedInputs)
-                || !new LinkedHashSet<>(expectedOutputs.values()).equals(
-                projectedOutputs)
-                || !selected.exactInputByCanonical.entrySet().containsAll(
-                expectedInputs.entrySet())
-                || !selected.canonicalOutputByExact.entrySet().containsAll(
-                expectedOutputs.entrySet())
-                || !selected.bindingIds.containsAll(expectedBindingIds)) {
-            throw new IOException("scheduled producer task occurrence port/"
-                    + "binding map does not match selected runtime evidence: "
-                    + expected.regionInstanceId);
+        Set<String> actualOutputs = new LinkedHashSet<>();
+        for (OutputClosureContract.Member member
+                : task.outputClosure().members()) {
+            actualOutputs.add(member.portId());
+        }
+        if (!actualOutputs.containsAll(projectedOutputs)
+                || !taskEdgeIds(task).containsAll(projectedBindings)) {
+            throw new IOException("scheduled producer task omits selected "
+                    + "outputs or state-flow edges: "
+                    + expected.occurrenceId);
         }
     }
 
@@ -981,8 +844,7 @@ public final class RuntimeWorkflowDiscovery {
         List<ExecutionTask> matches = new ArrayList<>();
         for (ExecutionTask task : tasks) {
             if (selectedTarget.regionId.equals(task.regionId())
-                    && selectedTarget.logicalRegionId.equals(firstNonBlank(
-                    task.logicalRegionId(), task.regionInstanceId()))
+                    && selectedTarget.relationKey.equals(task.relationKey())
                     && selectedTarget.goalId.equals(task.goalId())
                     && task.goalKind().capturesTargetReach()
                     && task.executable()) {
@@ -995,44 +857,13 @@ public final class RuntimeWorkflowDiscovery {
         return task;
     }
 
-    /**
-     * A logical target relation may be executed once using its canonical
-     * semantic path seed and instantiated at several trace occurrences.  The
-     * selected trace occurrence therefore must be present in the task's
-     * compact occurrence catalog; it must not be confused with the VM task's
-     * canonical execution identity (or with an invocation ordinal).
-     */
     private static void requireSelectedTargetOccurrence(
             Target selectedTarget, ExecutionTask task) throws IOException {
-        JsonObject encoded = task.occurrenceInstantiationCatalog();
-        if (integer(encoded, "schemaVersion", -1) != 1
-                || !"LOGICAL_SUMMARY_OCCURRENCE_CATALOG".equals(
-                string(encoded, "kind"))
-                || !selectedTarget.logicalRegionId.equals(
-                string(encoded, "logicalRegionId"))
-                || !task.summaryReuseKey().equals(
-                string(encoded, "summaryReuseKey"))
-                || !task.regionInstanceId().equals(string(encoded,
-                "canonicalRegionInstanceId"))) {
-            throw new IOException("scheduled target task has malformed "
-                    + "logical occurrence catalog; "
-                    + selectedTarget.context());
-        }
-
-        final OccurrenceCatalog actual;
-        try {
-            actual = OccurrenceCatalog.from(encoded);
-        } catch (IllegalArgumentException malformed) {
-            throw new IOException("scheduled target task has malformed "
-                    + "logical occurrence catalog; "
-                    + selectedTarget.context(), malformed);
-        }
-        Occurrence selected = actual.require(
-                selectedTarget.regionInstanceId);
-        if (!selected.sameIdentity(selectedTarget.occurrence)) {
+        if (!sameTaskIdentity(selectedTarget.plan,
+                selectedTarget.occurrence, task)) {
             throw new IOException("scheduled target task occurrence does "
                     + "not match selected runtime evidence: "
-                    + selectedTarget.regionInstanceId);
+                    + selectedTarget.occurrenceId);
         }
 
         Set<String> canonicalInputs = new LinkedHashSet<>();
@@ -1043,53 +874,29 @@ public final class RuntimeWorkflowDiscovery {
                     string(action, "symbol"));
             if (!port.isEmpty()) canonicalInputs.add(port);
         }
-        Map<String, String> expectedInputs = new LinkedHashMap<>();
-        for (String canonical : canonicalInputs) {
-            String exact = selectedTarget.occurrence
-                    .exactInputByCanonical.get(canonical);
-            if (exact != null) expectedInputs.put(canonical, exact);
-        }
-        if (!selected.exactInputByCanonical.equals(expectedInputs)
-                || expectedInputs.size() != canonicalInputs.size()
-                || !selected.canonicalOutputByExact.isEmpty()) {
-            throw new IOException("scheduled target task occurrence port "
-                    + "map does not cover the target inputs exactly: "
-                    + selectedTarget.regionInstanceId);
-        }
-
-        Set<String> exactInputs = new LinkedHashSet<>(
-                selected.exactInputByCanonical.values());
         Set<String> touchingBindings = new LinkedHashSet<>();
-        Set<String> demandedBindings = new LinkedHashSet<>();
         for (JsonElement element : task.edgeBindings()) {
             if (!element.isJsonObject()) continue;
             JsonObject binding = element.getAsJsonObject();
-            if (!selectedTarget.regionInstanceId.equals(string(binding,
-                    "fromRegionInstance"))
-                    && !selectedTarget.regionInstanceId.equals(
-                    string(binding, "toRegionInstance"))) {
+            if (!selectedTarget.occurrenceId.equals(string(binding,
+                    "fromOccurrenceId"))
+                    && !selectedTarget.occurrenceId.equals(
+                    string(binding, "toOccurrenceId"))) {
                 continue;
             }
             String edgeId = string(binding, "edgeId");
             if (edgeId.isEmpty()) {
                 throw new IOException("scheduled target occurrence binding "
                         + "has no edgeId: "
-                        + selectedTarget.regionInstanceId);
+                        + selectedTarget.occurrenceId);
             }
             touchingBindings.add(edgeId);
-            if (selectedTarget.regionInstanceId.equals(string(binding,
-                    "toRegionInstance")) && exactInputs.contains(
-                    string(binding, "toInputPort"))) {
-                demandedBindings.add(edgeId);
-            }
         }
-        if (!touchingBindings.containsAll(selected.bindingIds)
-                || !selected.bindingIds.containsAll(demandedBindings)
-                || !selectedTarget.occurrence.bindingIds.containsAll(
-                selected.bindingIds)) {
+        if (!selectedTarget.occurrence.bindingIds.containsAll(
+                touchingBindings)) {
             throw new IOException("scheduled target occurrence binding "
                     + "ledger is incomplete: "
-                    + selectedTarget.regionInstanceId);
+                    + selectedTarget.occurrenceId);
         }
     }
 
@@ -1120,14 +927,14 @@ public final class RuntimeWorkflowDiscovery {
     }
 
     private static String campaignId(String regionId,
-                                     String regionInstanceId,
+                                     String occurrenceId,
                                      String goalId) {
         String region = safeToken(regionId);
-        Matcher call = CALL_ID.matcher(regionInstanceId);
+        Matcher call = CALL_ID.matcher(occurrenceId);
         String invocation = call.find()
                 ? "call" + call.group(1)
                 : "instance-"
-                + ArtifactIO.sha256(regionInstanceId).substring(0, 8);
+                + ArtifactIO.sha256(occurrenceId).substring(0, 8);
         Matcher goalDigest = GOAL_DIGEST.matcher(goalId);
         String digest = goalDigest.find()
                 ? goalDigest.group(1).substring(0, 8).toLowerCase()
@@ -1144,7 +951,7 @@ public final class RuntimeWorkflowDiscovery {
 
     private static String context(RegionInstancePlan plan, Goal goal) {
         return "region=" + plan.regionId()
-                + "; instance=" + plan.regionInstanceId()
+                + "; instance=" + plan.occurrenceId()
                 + "; goal=" + goal.goalId()
                 + "; admission=" + goal.admissionState()
                 + "; blockers=" + goal.admissionBlockers();
@@ -1200,10 +1007,10 @@ public final class RuntimeWorkflowDiscovery {
         private final Goal goal;
         private final String campaignId;
         private final String regionId;
-        private final String logicalRegionId;
-        private final String regionInstanceId;
+        private final String relationKey;
+        private final String occurrenceId;
         private final String goalId;
-        private final OccurrenceCatalog occurrences;
+        private final Occurrence occurrence;
         private final Map<Endpoint, JsonObject> selectedEdges =
                 new LinkedHashMap<>();
         private final Set<Endpoint> requiredInputEndpoints =
@@ -1214,11 +1021,11 @@ public final class RuntimeWorkflowDiscovery {
             this.plan = plan;
             this.goal = goal;
             regionId = plan.regionId();
-            logicalRegionId = plan.logicalRegionId();
-            regionInstanceId = goal.executionRegionInstanceId();
+            relationKey = plan.relationKey();
+            occurrenceId = goal.plan().occurrenceId();
             goalId = goal.goalId();
-            campaignId = campaignId(regionId, logicalRegionId, goalId);
-            occurrences = OccurrenceCatalog.from(goal);
+            campaignId = campaignId(regionId, occurrenceId, goalId);
+            occurrence = new Occurrence(goal);
         }
 
         private void addRequiredInputs(Set<Endpoint> endpoints,
@@ -1229,7 +1036,7 @@ public final class RuntimeWorkflowDiscovery {
                 throws IOException {
             if (goal.outputClosure() == null) return;
             for (Endpoint target : endpoints) {
-                JsonObject edge = candidate.edgeFor(target, occurrences);
+                JsonObject edge = candidate.edgeFor(target, occurrence);
                 JsonObject prior = selectedEdges.putIfAbsent(target, edge);
                 if (prior != null && !required(prior, "edgeId").equals(
                         required(edge, "edgeId"))) {
@@ -1237,15 +1044,15 @@ public final class RuntimeWorkflowDiscovery {
                             + "more than one output: " + target.binding());
                 }
                 String sourceInstance = required(edge,
-                        "fromRegionInstance");
-                Occurrence occurrence = occurrences.require(sourceInstance);
+                        "fromOccurrenceId");
+                Occurrence selected = requireOccurrence(sourceInstance);
                 OutputClosureContract.Member member = member(edge,
-                        occurrence);
+                        selected);
                 for (JsonElement input : member.slice()
                         .getAsJsonArray("inputPorts")) {
                     String port = input.getAsString();
                     Endpoint endpoint = new Endpoint(sourceInstance,
-                            occurrence.exactInput(port));
+                            selected.exactInput(port));
                     if (causalPort(goal, port)
                             || exactTrustedProjectedProducer(endpoint,
                             producersByDownstream)) {
@@ -1262,8 +1069,8 @@ public final class RuntimeWorkflowDiscovery {
             Set<String> outputs = new LinkedHashSet<>();
             Set<String> edgeIds = new LinkedHashSet<>();
             for (JsonObject edge : selectedEdges.values()) {
-                Occurrence occurrence = occurrences.require(
-                        required(edge, "fromRegionInstance"));
+                Occurrence occurrence = requireOccurrence(
+                        required(edge, "fromOccurrenceId"));
                 outputs.add(member(edge, occurrence).portId());
                 edgeIds.add(required(edge, "edgeId"));
             }
@@ -1272,7 +1079,7 @@ public final class RuntimeWorkflowDiscovery {
                 if (edge != null) edgeIds.add(required(edge, "edgeId"));
             }
             projection = ProducerOutputProjection.create(campaignId,
-                    regionId, logicalRegionId, goalId,
+                    regionId, relationKey, goalId,
                     firstNonBlank(goal.pathSeedKey(), goalId), outputs,
                     edgeIds);
         }
@@ -1288,7 +1095,7 @@ public final class RuntimeWorkflowDiscovery {
         private OutputClosureContract.Member member(JsonObject edge,
                                                      Occurrence occurrence)
                 throws IOException {
-            String sourceInstance = required(edge, "fromRegionInstance");
+            String sourceInstance = required(edge, "fromOccurrenceId");
             String exactOutput = required(edge, "fromOutputPort");
             String output = occurrence.canonicalOutput(exactOutput);
             OutputClosureContract.Member member =
@@ -1306,10 +1113,10 @@ public final class RuntimeWorkflowDiscovery {
                 throws IOException {
             Set<String> result = new LinkedHashSet<>();
             for (Endpoint endpoint : endpoints) {
-                JsonObject edge = candidate.edgeFor(endpoint, occurrences);
-                Occurrence occurrence = occurrences.require(
-                        required(edge, "fromRegionInstance"));
-                result.add(member(edge, occurrence).portId());
+                JsonObject edge = candidate.edgeFor(endpoint, occurrence);
+                Occurrence selected = requireOccurrence(
+                        required(edge, "fromOccurrenceId"));
+                result.add(member(edge, selected).portId());
             }
             return result;
         }
@@ -1319,10 +1126,10 @@ public final class RuntimeWorkflowDiscovery {
                 throws IOException {
             Set<String> result = new LinkedHashSet<>();
             for (Endpoint endpoint : endpoints) {
-                JsonObject edge = candidate.edgeFor(endpoint, occurrences);
-                Occurrence occurrence = occurrences.require(
-                        required(edge, "fromRegionInstance"));
-                for (JsonElement input : member(edge, occurrence).slice()
+                JsonObject edge = candidate.edgeFor(endpoint, occurrence);
+                Occurrence selected = requireOccurrence(
+                        required(edge, "fromOccurrenceId"));
+                for (JsonElement input : member(edge, selected).slice()
                         .getAsJsonArray("inputPorts")) {
                     result.add(input.getAsString());
                 }
@@ -1333,8 +1140,8 @@ public final class RuntimeWorkflowDiscovery {
         private Set<String> projectedInputPorts() throws IOException {
             Set<String> result = new LinkedHashSet<>();
             for (JsonObject edge : selectedEdges.values()) {
-                Occurrence occurrence = occurrences.require(
-                        required(edge, "fromRegionInstance"));
+                Occurrence occurrence = requireOccurrence(
+                        required(edge, "fromOccurrenceId"));
                 for (JsonElement input : member(edge, occurrence).slice()
                         .getAsJsonArray("inputPorts")) {
                     result.add(input.getAsString());
@@ -1346,14 +1153,14 @@ public final class RuntimeWorkflowDiscovery {
         private Occurrence exactProducerOccurrence() throws IOException {
             Set<String> instances = new LinkedHashSet<>();
             for (JsonObject edge : selectedEdges.values()) {
-                instances.add(required(edge, "fromRegionInstance"));
+                instances.add(required(edge, "fromOccurrenceId"));
             }
             if (instances.size() != 1) {
                 throw new IOException("producer demand must select exactly "
                         + "one exact producer occurrence; found "
                         + instances.size() + "; " + context());
             }
-            return occurrences.require(instances.iterator().next());
+            return requireOccurrence(instances.iterator().next());
         }
 
         private void addExactBindings(Set<String> bindings)
@@ -1362,7 +1169,7 @@ public final class RuntimeWorkflowDiscovery {
                     : selectedEdges.entrySet()) {
                 Endpoint target = selected.getKey();
                 JsonObject edge = selected.getValue();
-                bindings.add(required(edge, "fromRegionInstance") + "\n"
+                bindings.add(required(edge, "fromOccurrenceId") + "\n"
                         + required(edge, "fromOutputPort") + "\n"
                         + target.instance + "\n" + target.input);
             }
@@ -1377,8 +1184,8 @@ public final class RuntimeWorkflowDiscovery {
         private void addObservedSelectedSemanticGuards(Set<String> result)
                 throws IOException {
             for (JsonObject edge : selectedEdges.values()) {
-                Occurrence occurrence = occurrences.require(
-                        required(edge, "fromRegionInstance"));
+                Occurrence occurrence = requireOccurrence(
+                        required(edge, "fromOccurrenceId"));
                 JsonObject slice = member(edge, occurrence).slice();
                 Set<String> selectedSites = new LinkedHashSet<>();
                 for (String field : new String[]{"sites", "staticSites"}) {
@@ -1400,7 +1207,7 @@ public final class RuntimeWorkflowDiscovery {
                             || bool(branch, "loopControlOnly", false)) {
                         continue;
                     }
-                    result.add(logicalRegionId + "\n"
+                    result.add(relationKey + "\n"
                             + firstNonBlank(goal.pathSeedKey(), goalId)
                             + "\n" + site);
                 }
@@ -1418,10 +1225,8 @@ public final class RuntimeWorkflowDiscovery {
                 JsonObject edge, OutputClosureContract.Member member,
                 JsonObject slice, Occurrence producer,
                 SelectedProducerOccurrence consumer) {
-            return logicalRegionId.equals(consumer.logicalRegionId)
-                    && producer.rootCallId >= 0L
-                    && consumer.rootCallId >= 0L
-                    && producer.rootCallId != consumer.rootCallId
+            return relationKey.equals(consumer.relationKey)
+                    && !producer.occurrenceId.equals(consumer.occurrenceId)
                     && "HEAP_STATE".equals(member.outputKind())
                     && "EXACT_FIELD_WRITE_AFTER_ASSIGNMENT".equals(
                     string(slice, "outputBoundaryKind"))
@@ -1455,19 +1260,7 @@ public final class RuntimeWorkflowDiscovery {
 
         private String binding() {
             return campaignId + "\t" + regionId + "\t"
-                    + regionInstanceId + "\t" + goalId;
-        }
-
-        private JsonObject indexEntry(String taskId) throws IOException {
-            JsonObject result = new JsonObject();
-            result.addProperty("campaignId", campaignId);
-            result.addProperty("regionId", regionId);
-            result.addProperty("logicalRegionId", logicalRegionId);
-            result.addProperty("regionInstanceId", regionInstanceId);
-            result.addProperty("goalId", goalId);
-            result.addProperty("taskId", taskId);
-            result.add("producerProjection", projection().json().deepCopy());
-            return result;
+                    + occurrenceId + "\t" + goalId;
         }
 
         private String context() {
@@ -1475,7 +1268,19 @@ public final class RuntimeWorkflowDiscovery {
         }
 
         private String sortKey() {
-            return regionInstanceId + "\n" + goalId;
+            return occurrenceId + "\n" + goalId;
+        }
+
+        private Occurrence requireOccurrence(String id) throws IOException {
+            if (!occurrence.occurrenceId.equals(id)) {
+                throw new IOException("relation does not contain occurrence "
+                        + id);
+            }
+            return occurrence;
+        }
+
+        private boolean containsOccurrence(String id) {
+            return occurrence.occurrenceId.equals(id);
         }
 
     }
@@ -1499,7 +1304,7 @@ public final class RuntimeWorkflowDiscovery {
             this.plan = plan;
             this.goal = goal;
             for (JsonObject edge : edges) {
-                String instance = string(edge, "toRegionInstance");
+                String instance = string(edge, "toOccurrenceId");
                 String input = string(edge, "toInputPort");
                 if (!instance.isEmpty() && !input.isEmpty()) {
                     Endpoint endpoint = new Endpoint(instance, input);
@@ -1510,8 +1315,7 @@ public final class RuntimeWorkflowDiscovery {
             }
             for (List<JsonObject> alternatives
                     : edgesByDownstream.values()) {
-                alternatives.sort(Comparator.comparing(
-                        ProducerCandidate::edgeSortKey));
+                alternatives.sort(ProducerCandidate::compareEdges);
             }
         }
 
@@ -1528,7 +1332,7 @@ public final class RuntimeWorkflowDiscovery {
         }
 
         private JsonObject edgeFor(Endpoint endpoint,
-                                   OccurrenceCatalog occurrences)
+                                   Occurrence occurrence)
                 throws IOException {
             List<JsonObject> edges = edgesByDownstream.get(endpoint);
             if (edges == null || edges.isEmpty()) {
@@ -1536,8 +1340,8 @@ public final class RuntimeWorkflowDiscovery {
                         + endpoint.binding());
             }
             for (JsonObject edge : edges) {
-                if (occurrences.contains(string(edge,
-                        "fromRegionInstance"))) {
+                if (occurrence.occurrenceId.equals(string(edge,
+                        "fromOccurrenceId"))) {
                     return edge;
                 }
             }
@@ -1546,11 +1350,11 @@ public final class RuntimeWorkflowDiscovery {
         }
 
         private boolean covers(Endpoint endpoint,
-                               OccurrenceCatalog occurrences) {
+                               Occurrence occurrence) {
             for (JsonObject edge : edgesByDownstream.getOrDefault(endpoint,
                     java.util.Collections.emptyList())) {
-                if (occurrences.contains(string(edge,
-                        "fromRegionInstance"))) {
+                if (occurrence.occurrenceId.equals(string(edge,
+                        "fromOccurrenceId"))) {
                     return true;
                 }
             }
@@ -1564,7 +1368,7 @@ public final class RuntimeWorkflowDiscovery {
 
         private String semanticKey() {
             OutputClosureContract closure = goal.outputClosure();
-            return plan.regionId() + "\n" + plan.logicalRegionId() + "\n"
+            return plan.regionId() + "\n" + plan.relationKey() + "\n"
                     + firstNonBlank(goal.pathSeedKey(), goal.goalId()) + "\n"
                     + (closure == null ? "" : closure.demandKey()) + "\n"
                     + goal.goalId();
@@ -1573,7 +1377,15 @@ public final class RuntimeWorkflowDiscovery {
         private static String edgeSortKey(JsonObject edge) {
             return string(edge, "fromOutputPort") + "\n"
                     + string(edge, "edgeId") + "\n"
-                    + string(edge, "fromRegionInstance");
+                    + string(edge, "fromOccurrenceId");
+        }
+
+        private static int compareEdges(JsonObject left, JsonObject right) {
+            int observedOrder = Long.compare(
+                    longInteger(right, "writerEventSeq", -1L),
+                    longInteger(left, "writerEventSeq", -1L));
+            return observedOrder != 0 ? observedOrder
+                    : edgeSortKey(left).compareTo(edgeSortKey(right));
         }
     }
 
@@ -1608,7 +1420,7 @@ public final class RuntimeWorkflowDiscovery {
             for (Endpoint endpoint : candidate.downstreamEndpoints) {
                 if (unresolved.contains(endpoint)
                         && candidate.covers(endpoint,
-                        demand.occurrences)) {
+                        demand.occurrence)) {
                     coveredEndpoints.add(endpoint);
                 }
             }
@@ -1678,8 +1490,8 @@ public final class RuntimeWorkflowDiscovery {
                 Selection selection = Selection.producer(producer);
                 materialized.add(selection);
                 for (JsonObject edge : producer.selectedEdges.values()) {
-                    if (target.regionInstanceId.equals(string(edge,
-                            "toRegionInstance"))) {
+                    if (target.occurrenceId.equals(string(edge,
+                            "toOccurrenceId"))) {
                         targetEdgeIds.add(required(edge, "edgeId"));
                     }
                 }
@@ -1768,9 +1580,10 @@ public final class RuntimeWorkflowDiscovery {
     /** Producer demands that must execute in one exact invocation/path. */
     static final class ProducerGroup {
         final String regionId;
-        final String logicalRegionId;
-        final String regionInstanceId;
-        final long rootCallId;
+        final String sourceKey;
+        final String relationKey;
+        final String relationContractHash;
+        final String occurrenceId;
         final String pathSeedKey;
         final List<Demand> demands = new ArrayList<>();
         final List<Selection> selections = new ArrayList<>();
@@ -1778,9 +1591,10 @@ public final class RuntimeWorkflowDiscovery {
         private ProducerGroup(Demand first) throws IOException {
             Occurrence exact = first.exactProducerOccurrence();
             regionId = first.regionId;
-            logicalRegionId = first.logicalRegionId;
-            regionInstanceId = exact.regionInstanceId;
-            rootCallId = exact.rootCallId;
+            sourceKey = first.plan.sourceKey();
+            relationKey = first.plan.relationKey();
+            relationContractHash = first.plan.relationContractHash();
+            occurrenceId = exact.occurrenceId;
             pathSeedKey = firstNonBlank(first.goal.pathSeedKey(),
                     first.goalId);
         }
@@ -1789,9 +1603,11 @@ public final class RuntimeWorkflowDiscovery {
                 throws IOException {
             Occurrence exact = demand.exactProducerOccurrence();
             if (!regionId.equals(demand.regionId)
-                    || !logicalRegionId.equals(demand.logicalRegionId)
-                    || !regionInstanceId.equals(exact.regionInstanceId)
-                    || rootCallId != exact.rootCallId
+                    || !sourceKey.equals(demand.plan.sourceKey())
+                    || !relationKey.equals(demand.plan.relationKey())
+                    || !relationContractHash.equals(
+                    demand.plan.relationContractHash())
+                    || !occurrenceId.equals(exact.occurrenceId)
                     || !pathSeedKey.equals(firstNonBlank(
                     demand.goal.pathSeedKey(), demand.goalId))) {
                 throw new IOException("producer group crosses exact "
@@ -1803,8 +1619,9 @@ public final class RuntimeWorkflowDiscovery {
 
         private static String key(Demand demand) throws IOException {
             Occurrence exact = demand.exactProducerOccurrence();
-            return demand.regionId + "\n" + demand.logicalRegionId + "\n"
-                    + exact.regionInstanceId + "\n" + firstNonBlank(
+            return demand.regionId + "\n" + demand.plan.sourceKey() + "\n"
+                    + demand.plan.relationKey() + "\n"
+                    + exact.occurrenceId + "\n" + firstNonBlank(
                     demand.goal.pathSeedKey(), demand.goalId);
         }
 
@@ -1857,7 +1674,7 @@ public final class RuntimeWorkflowDiscovery {
         ProducerOutputProjection projection() throws IOException {
             if (demands.size() == 1) return demands.get(0).projection();
             return ProducerOutputProjection.create(campaignId(), regionId,
-                    logicalRegionId, goalId(), pathSeedKey, outputPorts(),
+                    relationKey, goalId(), pathSeedKey, outputPorts(),
                     edgeIds());
         }
 
@@ -1865,24 +1682,10 @@ public final class RuntimeWorkflowDiscovery {
             JsonObject result = new JsonObject();
             result.addProperty("campaignId", campaignId());
             result.addProperty("regionId", regionId);
-            result.addProperty("logicalRegionId", logicalRegionId);
-            result.addProperty("regionInstanceId", regionInstanceId);
+            result.addProperty("relationKey", relationKey);
+            result.addProperty("occurrenceId", occurrenceId);
             result.addProperty("goalId", goalId());
             result.addProperty("taskId", taskId);
-            result.add("producerProjection", projection().json());
-            if (demands.size() > 1) {
-                com.google.gson.JsonArray selectedGoals =
-                        new com.google.gson.JsonArray();
-                for (Demand demand : demands) {
-                    JsonObject selected = new JsonObject();
-                    selected.addProperty("campaignId", demand.campaignId);
-                    selected.addProperty("goalId", demand.goalId);
-                    selected.add("producerProjection",
-                            demand.projection().json());
-                    selectedGoals.add(selected);
-                }
-                result.add("selectedGoals", selectedGoals);
-            }
             return result;
         }
     }
@@ -1891,18 +1694,18 @@ public final class RuntimeWorkflowDiscovery {
     static final class Selection {
         final String campaignId;
         final String regionId;
-        final String regionInstanceId;
+        final String occurrenceId;
         final String goalId;
         final ProducerOutputProjection producerProjection;
         final Set<String> targetEdgeIds;
 
         private Selection(String campaignId, String regionId,
-                          String regionInstanceId, String goalId,
+                          String occurrenceId, String goalId,
                           ProducerOutputProjection producerProjection,
                           Set<String> targetEdgeIds) {
             this.campaignId = campaignId;
             this.regionId = regionId;
-            this.regionInstanceId = regionInstanceId;
+            this.occurrenceId = occurrenceId;
             this.goalId = goalId;
             this.producerProjection = producerProjection;
             this.targetEdgeIds = java.util.Collections.unmodifiableSet(
@@ -1912,7 +1715,7 @@ public final class RuntimeWorkflowDiscovery {
         private static Selection target(Target target,
                                         Set<String> targetEdgeIds) {
             return new Selection(target.campaignId, target.regionId,
-                    target.regionInstanceId, target.goalId, null,
+                    target.occurrenceId, target.goalId, null,
                     targetEdgeIds);
         }
 
@@ -1923,7 +1726,7 @@ public final class RuntimeWorkflowDiscovery {
                             CanonicalJson.render(producer.projection()
                                     .json())).getAsJsonObject();
             return new Selection(producer.campaignId, producer.regionId,
-                    producer.regionInstanceId, producer.goalId,
+                    producer.occurrenceId, producer.goalId,
                     ProducerOutputProjection.decode(canonicalProjection),
                     Collections.<String>emptySet());
         }
@@ -1960,8 +1763,8 @@ public final class RuntimeWorkflowDiscovery {
         private final Goal goal;
         private final String campaignId;
         private final String regionId;
-        private final String logicalRegionId;
-        private final String regionInstanceId;
+        private final String relationKey;
+        private final String occurrenceId;
         private final String goalId;
         private final Occurrence occurrence;
         private TargetRank rank = TargetRank.invalid();
@@ -1972,10 +1775,10 @@ public final class RuntimeWorkflowDiscovery {
             this.goal = goal;
             this.occurrence = occurrence;
             regionId = plan.regionId();
-            logicalRegionId = plan.logicalRegionId();
-            regionInstanceId = occurrence.regionInstanceId;
+            relationKey = plan.relationKey();
+            occurrenceId = occurrence.occurrenceId;
             goalId = goal.goalId();
-            campaignId = campaignId(regionId, regionInstanceId, goalId);
+            campaignId = campaignId(regionId, occurrenceId, goalId);
         }
 
         private String exactInput(String canonical) throws IOException {
@@ -1984,15 +1787,15 @@ public final class RuntimeWorkflowDiscovery {
 
         private String binding() {
             return campaignId + "\t" + regionId + "\t"
-                    + regionInstanceId + "\t" + goalId;
+                    + occurrenceId + "\t" + goalId;
         }
 
         private JsonObject indexEntry(String taskId) {
             JsonObject result = new JsonObject();
             result.addProperty("campaignId", campaignId);
             result.addProperty("regionId", regionId);
-            result.addProperty("logicalRegionId", logicalRegionId);
-            result.addProperty("regionInstanceId", regionInstanceId);
+            result.addProperty("relationKey", relationKey);
+            result.addProperty("occurrenceId", occurrenceId);
             result.addProperty("goalId", goalId);
             result.addProperty("taskId", taskId);
             return result;
@@ -2005,7 +1808,7 @@ public final class RuntimeWorkflowDiscovery {
         private static int compare(Target left, Target right) {
             int compared = TargetRank.compare(left.rank, right.rank);
             if (compared != 0) return compared;
-            compared = left.logicalRegionId.compareTo(right.logicalRegionId);
+            compared = left.relationKey.compareTo(right.relationKey);
             if (compared != 0) return compared;
             compared = firstNonBlank(left.goal.pathSeedKey(), left.goalId)
                     .compareTo(firstNonBlank(right.goal.pathSeedKey(),
@@ -2013,10 +1816,7 @@ public final class RuntimeWorkflowDiscovery {
             if (compared != 0) return compared;
             compared = left.goalId.compareTo(right.goalId);
             if (compared != 0) return compared;
-            compared = Long.compare(left.occurrence.rootCallId,
-                    right.occurrence.rootCallId);
-            if (compared != 0) return compared;
-            return left.regionInstanceId.compareTo(right.regionInstanceId);
+            return left.occurrenceId.compareTo(right.occurrenceId);
         }
     }
 
@@ -2137,97 +1937,44 @@ public final class RuntimeWorkflowDiscovery {
         }
     }
 
-    private static final class OccurrenceCatalog {
-        private final Map<String, Occurrence> occurrences =
-                new LinkedHashMap<>();
-
-        private static OccurrenceCatalog from(Goal goal) {
-            return from(goal.occurrenceInstantiationCatalog());
-        }
-
-        private static OccurrenceCatalog from(JsonObject encoded) {
-            OccurrenceCatalog result = new OccurrenceCatalog();
-            for (JsonElement element : array(encoded, "occurrences")) {
-                if (!element.isJsonObject()) {
-                    throw new IllegalArgumentException(
-                            "occurrence catalog contains a non-object");
-                }
-                Occurrence occurrence = new Occurrence(
-                        element.getAsJsonObject());
-                if (result.occurrences.putIfAbsent(
-                        occurrence.regionInstanceId, occurrence) != null) {
-                    throw new IllegalArgumentException(
-                            "duplicate occurrence "
-                                    + occurrence.regionInstanceId);
-                }
-            }
-            if (result.occurrences.isEmpty()) {
-                throw new IllegalArgumentException(
-                        "occurrence catalog is empty");
-            }
-            return result;
-        }
-
-        private Occurrence require(String instance) throws IOException {
-            Occurrence result = occurrences.get(instance);
-            if (result == null) {
-                throw new IOException("logical summary has no exact "
-                        + "occurrence " + instance);
-            }
-            return result;
-        }
-
-        private boolean contains(String instance) {
-            return occurrences.containsKey(instance);
-        }
-    }
-
     private static final class SelectedProducerOccurrence {
-        private final String logicalRegionId;
-        private final long rootCallId;
+        private final String relationKey;
+        private final String occurrenceId;
 
-        private SelectedProducerOccurrence(String logicalRegionId,
-                                           long rootCallId) {
-            this.logicalRegionId = logicalRegionId;
-            this.rootCallId = rootCallId;
+        private SelectedProducerOccurrence(String relationKey,
+                                           String occurrenceId) {
+            this.relationKey = relationKey;
+            this.occurrenceId = occurrenceId;
         }
 
     }
 
     private static final class Occurrence {
-        private final String regionInstanceId;
-        private final long rootCallId;
-        private final Map<String, String> exactInputByCanonical;
-        private final Map<String, String> canonicalOutputByExact;
+        private final String occurrenceId;
+        private final String relationKey;
         private final Set<String> bindingIds;
 
-        private Occurrence(JsonObject encoded) {
-            regionInstanceId = string(encoded, "regionInstanceId");
-            rootCallId = longInteger(encoded, "rootCallId", -1L);
-            if (regionInstanceId.isEmpty() || (rootCallId >= 0L
-                    && !regionInstanceId.endsWith("#call" + rootCallId))) {
-                throw new IllegalArgumentException(
-                        "occurrence requires consistent instance/root");
+        private Occurrence(Goal goal) {
+            occurrenceId = goal.plan().occurrenceId();
+            relationKey = goal.plan().relationKey();
+            Set<String> ids = new LinkedHashSet<>();
+            for (JsonElement element : goal.edgeBindings()) {
+                if (element.isJsonObject()) {
+                    String id = string(element.getAsJsonObject(), "edgeId");
+                    if (!id.isEmpty()) ids.add(id);
+                }
             }
-            exactInputByCanonical = portMap(encoded, "inputPortMap",
-                    false);
-            canonicalOutputByExact = portMap(encoded, "outputPortMap",
-                    true);
-            bindingIds = stringSet(encoded, "bindingIds");
+            bindingIds = Collections.unmodifiableSet(ids);
         }
 
         private boolean sameIdentity(Occurrence other) {
-            return other != null && rootCallId == other.rootCallId
-                    && regionInstanceId.equals(other.regionInstanceId);
+            return other != null && occurrenceId.equals(other.occurrenceId);
         }
 
         private Map<String, String> exactInputs(Set<String> canonicalPorts) {
             Map<String, String> result = new LinkedHashMap<>();
-            for (Map.Entry<String, String> entry
-                    : exactInputByCanonical.entrySet()) {
-                if (canonicalPorts.contains(entry.getKey())) {
-                    result.put(entry.getKey(), entry.getValue());
-                }
+            for (String port : canonicalPorts) {
+                result.put(port, port);
             }
             return result;
         }
@@ -2235,11 +1982,8 @@ public final class RuntimeWorkflowDiscovery {
         private Map<String, String> canonicalOutputs(
                 Set<String> canonicalPorts) {
             Map<String, String> result = new LinkedHashMap<>();
-            for (Map.Entry<String, String> entry
-                    : canonicalOutputByExact.entrySet()) {
-                if (canonicalPorts.contains(entry.getValue())) {
-                    result.put(entry.getKey(), entry.getValue());
-                }
+            for (String port : canonicalPorts) {
+                result.put(port, port);
             }
             return result;
         }
@@ -2251,61 +1995,17 @@ public final class RuntimeWorkflowDiscovery {
         }
 
         private String exactInput(String canonical) throws IOException {
-            String result = exactInputByCanonical.get(canonical);
-            if (result == null) {
-                throw new IOException("occurrence " + regionInstanceId
-                        + " has no exact input for " + canonical);
+            if (canonical == null || canonical.trim().isEmpty()) {
+                throw new IOException("occurrence input is empty");
             }
-            return result;
+            return canonical;
         }
 
         private String canonicalOutput(String exact) throws IOException {
-            String result = canonicalOutputByExact.get(exact);
-            if (result == null) {
-                throw new IOException("occurrence " + regionInstanceId
-                        + " has no canonical output for " + exact);
+            if (exact == null || exact.trim().isEmpty()) {
+                throw new IOException("occurrence output is empty");
             }
-            return result;
-        }
-
-        private static Map<String, String> portMap(
-                JsonObject occurrence, String field, boolean reverse) {
-            Map<String, String> result = new LinkedHashMap<>();
-            for (JsonElement element : array(occurrence, field)) {
-                if (!element.isJsonObject()) {
-                    throw new IllegalArgumentException(
-                            "malformed " + field);
-                }
-                JsonObject mapping = element.getAsJsonObject();
-                String canonical = string(mapping, "canonicalPort");
-                String exact = string(mapping, "exactPort");
-                String key = reverse ? exact : canonical;
-                String value = reverse ? canonical : exact;
-                if (key.isEmpty() || value.isEmpty()
-                        || result.putIfAbsent(key, value) != null) {
-                    throw new IllegalArgumentException(
-                            "ambiguous " + field);
-                }
-            }
-            return result;
-        }
-
-        private static Set<String> stringSet(
-                JsonObject occurrence, String field) {
-            Set<String> result = new LinkedHashSet<>();
-            for (JsonElement element : array(occurrence, field)) {
-                if (!element.isJsonPrimitive()
-                        || !element.getAsJsonPrimitive().isString()) {
-                    throw new IllegalArgumentException(
-                            "malformed " + field);
-                }
-                String value = element.getAsString().trim();
-                if (value.isEmpty() || !result.add(value)) {
-                    throw new IllegalArgumentException(
-                            "ambiguous " + field);
-                }
-            }
-            return result;
+            return exact;
         }
     }
 }

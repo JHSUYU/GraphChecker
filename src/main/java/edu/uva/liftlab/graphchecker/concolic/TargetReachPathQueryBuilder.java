@@ -23,7 +23,6 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -69,28 +68,25 @@ public final class TargetReachPathQueryBuilder {
         }
         JsonObject seed = seeds.get(0);
         String region = string(seed, "regionId");
-        String instance = string(seed, "regionInstanceId");
-        String canonicalInstance = firstNonBlank(string(seed,
-                "canonicalRegionInstanceId"), instance);
+        String occurrenceId = string(seed, "occurrenceId");
         String goalId = string(seed, "goalId");
         String targetSite = string(seed, "targetSiteId");
         if (!region.equals(string(manifest, "regionId"))
                 || !goalId.equals(string(manifest, "goalId"))
-                || !canonicalInstance.equals(string(manifest,
-                "regionInstanceId"))
-                || region.isEmpty() || instance.isEmpty()
+                || !occurrenceId.equals(string(manifest, "occurrenceId"))
+                || region.isEmpty() || occurrenceId.isEmpty()
                 || goalId.isEmpty() || targetSite.isEmpty()) {
             throw new IOException(
                     "target seed and closed path scope do not match");
         }
         if (!arguments.targetInstance.isEmpty()
-                && !arguments.targetInstance.equals(instance)) {
-            throw new IOException("selected target instance does not match "
-                    + "the exact seed query occurrence");
+                && !arguments.targetInstance.equals(occurrenceId)) {
+            throw new IOException("selected target occurrence does not match "
+                    + "the seed query");
         }
         SelectedOccurrence selected = SelectedOccurrence.decode(
                 object(seed, "selectedTargetOccurrence"), region,
-                instance, "target seed query");
+                occurrenceId, "target seed query");
         final BranchReplayContract targetReplay;
         try {
             targetReplay = BranchReplayContract.fromJson(
@@ -118,19 +114,14 @@ public final class TargetReachPathQueryBuilder {
                 "Non-object target summary %1$s:%2$d");
         for (JsonObject summary : summaries) {
             if (!region.equals(string(summary, "regionId"))
-                    || !canonicalInstance.equals(string(summary,
-                    "regionInstanceId"))
+                    || !occurrenceId.equals(string(summary,
+                    "occurrenceId"))
                     || !goalId.equals(string(summary, "goalId"))
                     || !ClosureGoalKind.fromTask(summary)
                     .capturesTargetReach()
                     || !bool(summary, "relationallyComplete", false)) {
                 continue;
             }
-            SelectedOccurrence summaryOccurrence =
-                    selectedOccurrence(summary, region, instance,
-                            canonicalInstance);
-            selected.requireSameInstantiation(summaryOccurrence,
-                    "target summary occurrence");
             selected.requireExactDemandLedger(summary);
             // Parsing is the schema/admission boundary for branch-owned
             // predicates. The importer already normalized the PC; this check
@@ -195,9 +186,10 @@ public final class TargetReachPathQueryBuilder {
         result.addProperty("schemaVersion", 1);
         result.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
         result.addProperty("regionId", region);
-        result.addProperty("regionInstanceId", instance);
-        result.addProperty("canonicalRegionInstanceId",
-                canonicalInstance);
+        result.addProperty("occurrenceId", occurrenceId);
+        if (!string(seed, "sourceKey").isEmpty()) {
+            result.addProperty("sourceKey", string(seed, "sourceKey"));
+        }
         result.addProperty("targetSiteId", targetSite);
         result.addProperty("targetOccurrence", targetOccurrence);
         result.addProperty("requiredTakenOutcome", fatalRequiredOutcome);
@@ -213,7 +205,7 @@ public final class TargetReachPathQueryBuilder {
         result.add("symbolicContext", symbolicContext);
         result.add("selectedTargetOccurrence", selected.encoded.deepCopy());
         result.addProperty("constraintAuthority",
-                "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1");
+                "RECORDED_TARGET_PREFIX_V1");
         return result;
     }
 
@@ -231,45 +223,6 @@ public final class TargetReachPathQueryBuilder {
         return null;
     }
 
-    private static SelectedOccurrence selectedOccurrence(
-            JsonObject summary, String region, String selectedInstance,
-            String canonicalInstance) throws IOException {
-        JsonObject catalog = object(summary,
-                "occurrenceInstantiationCatalog");
-        if (!"LOGICAL_SUMMARY_OCCURRENCE_CATALOG".equals(
-                string(catalog, "kind"))
-                || !canonicalInstance.equals(string(catalog,
-                "canonicalRegionInstanceId"))
-                || !string(summary, "logicalRegionId").equals(
-                string(catalog, "logicalRegionId"))
-                || !string(summary, "summaryReuseKey").equals(
-                string(catalog, "summaryReuseKey"))) {
-            throw new IOException("target summary has malformed logical "
-                    + "occurrence catalog");
-        }
-        JsonObject selected = null;
-        Set<String> instances = new LinkedHashSet<>();
-        for (JsonElement element : array(catalog, "occurrences")) {
-            if (!element.isJsonObject()) {
-                throw new IOException("target summary occurrence catalog "
-                        + "contains a non-object");
-            }
-            JsonObject occurrence = element.getAsJsonObject();
-            String instance = string(occurrence, "regionInstanceId");
-            if (instance.isEmpty() || !instances.add(instance)) {
-                throw new IOException("target summary occurrence catalog "
-                        + "contains an ambiguous instance " + instance);
-            }
-            if (selectedInstance.equals(instance)) selected = occurrence;
-        }
-        if (!instances.contains(canonicalInstance) || selected == null) {
-            throw new IOException("target summary catalog does not contain "
-                    + "the selected exact occurrence " + selectedInstance);
-        }
-        return SelectedOccurrence.decode(selected, region,
-                selectedInstance, "target summary catalog");
-    }
-
     private static JsonElement remap(JsonElement value,
                                      Map<String, String> ports) {
         return PortAlphaRenaming.remap(value, ports,
@@ -279,17 +232,14 @@ public final class TargetReachPathQueryBuilder {
     private static final class SelectedOccurrence {
         private final JsonObject encoded;
         private final String instance;
-        private final long rootCallId;
         private final Map<String, String> exactInputByCanonical;
         private final Set<String> bindingIds;
 
         private SelectedOccurrence(JsonObject encoded, String instance,
-                                   long rootCallId,
                                    Map<String, String> inputPorts,
                                    Set<String> bindingIds) {
             this.encoded = encoded.deepCopy();
             this.instance = instance;
-            this.rootCallId = rootCallId;
             this.exactInputByCanonical = inputPorts;
             this.bindingIds = bindingIds;
         }
@@ -297,35 +247,23 @@ public final class TargetReachPathQueryBuilder {
         private static SelectedOccurrence decode(
                 JsonObject encoded, String region, String expectedInstance,
                 String source) throws IOException {
-            String instance = string(encoded, "regionInstanceId");
-            long rootCallId = longInteger(encoded, "rootCallId", -1L);
-            if (!expectedInstance.equals(instance)
-                    || rootCallId >= 0L
-                    && !instance.endsWith("#call" + rootCallId)) {
+            String instance = string(encoded, "occurrenceId");
+            if (!expectedInstance.equals(instance)) {
                 throw new IOException(source + " has inconsistent selected "
                         + "target occurrence identity");
             }
             Map<String, String> inputPorts = new LinkedHashMap<>();
-            Set<String> exactPorts = new LinkedHashSet<>();
-            for (JsonElement element : array(encoded, "inputPortMap")) {
-                if (!element.isJsonObject()) {
-                    throw new IOException(source
-                            + " has malformed inputPortMap");
+            for (JsonElement element : array(encoded, "inputPorts")) {
+                if (!element.isJsonPrimitive()
+                        || !element.getAsJsonPrimitive().isString()) {
+                    throw new IOException(source + " has malformed inputPorts");
                 }
-                JsonObject mapping = element.getAsJsonObject();
-                String canonical = string(mapping, "canonicalPort");
-                String exact = string(mapping, "exactPort");
-                if (canonical.isEmpty() || exact.isEmpty()
-                        || !exact.startsWith(region + ".in.")
-                        || inputPorts.putIfAbsent(canonical, exact) != null
-                        || !exactPorts.add(exact)) {
+                String port = element.getAsString().trim();
+                if (port.isEmpty() || !port.startsWith(region + ".in.")
+                        || inputPorts.putIfAbsent(port, port) != null) {
                     throw new IOException(source
-                            + " has ambiguous target inputPortMap");
+                            + " has ambiguous target inputPorts");
                 }
-            }
-            if (array(encoded, "outputPortMap").size() != 0) {
-                throw new IOException(source
-                        + " target occurrence declares output ports");
             }
             Set<String> bindingIds = new LinkedHashSet<>();
             for (JsonElement element : array(encoded, "bindingIds")) {
@@ -340,20 +278,8 @@ public final class TargetReachPathQueryBuilder {
                             + " has ambiguous binding ledger");
                 }
             }
-            return new SelectedOccurrence(encoded, instance, rootCallId,
+            return new SelectedOccurrence(encoded, instance,
                     inputPorts, bindingIds);
-        }
-
-        private void requireSameInstantiation(
-                SelectedOccurrence other, String source) throws IOException {
-            if (other == null || rootCallId != other.rootCallId
-                    || !instance.equals(other.instance)
-                    || !exactInputByCanonical.equals(
-                    other.exactInputByCanonical)
-                    || !other.bindingIds.containsAll(bindingIds)) {
-                throw new IOException(source
-                        + " does not match selected target evidence");
-            }
         }
 
         private void requireExactDemandLedger(JsonObject summary)
@@ -365,7 +291,7 @@ public final class TargetReachPathQueryBuilder {
                 if (!element.isJsonObject()) continue;
                 JsonObject binding = element.getAsJsonObject();
                 if (!instance.equals(string(binding,
-                        "toRegionInstance")) || !exactInputs.contains(
+                        "toOccurrenceId")) || !exactInputs.contains(
                         string(binding, "toInputPort"))) {
                     continue;
                 }
@@ -384,7 +310,7 @@ public final class TargetReachPathQueryBuilder {
 
         private void requireExactContext(JsonObject context)
                 throws IOException {
-            if (!instance.equals(string(context, "regionInstanceId"))) {
+            if (!instance.equals(string(context, "occurrenceId"))) {
                 throw new IOException("selected target symbolic context has "
                         + "the wrong occurrence identity");
             }
@@ -420,7 +346,7 @@ public final class TargetReachPathQueryBuilder {
                     if (!selected.isJsonObject()) continue;
                     JsonObject binding = selected.getAsJsonObject();
                     if (!instance.equals(string(binding,
-                            "toRegionInstance")) || !exactInputs.contains(
+                            "toOccurrenceId")) || !exactInputs.contains(
                             string(binding, "toInputPort"))) {
                         throw new IOException("selected target symbolic "
                                 + "context contains an unrelated binding");

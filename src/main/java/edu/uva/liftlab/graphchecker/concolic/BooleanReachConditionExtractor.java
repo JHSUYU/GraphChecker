@@ -182,9 +182,14 @@ public final class BooleanReachConditionExtractor {
         // exactly the SAT rows.  A second "base implies DNF" solver call only
         // rechecks that exhaustive table and adds no admission evidence.
         boolean complete = solverErrors == 0;
+        boolean observedUnderapproximation =
+                "OBSERVED_PATH_UNDERAPPROX".equals(
+                        string(manifest, "trustState"))
+                && !bool(manifest, "pathSetComplete", true);
         String reachability = !complete
                 ? "UNKNOWN" : !satisfyingValuations.isEmpty()
-                ? "REACHABLE" : "UNREACHABLE";
+                ? "REACHABLE" : observedUnderapproximation
+                ? "UNKNOWN" : "UNREACHABLE";
         JsonObject reachCondition = new JsonObject();
         String formula = dnf(inputs, satisfyingValuations, count);
         reachCondition.addProperty("formula", formula);
@@ -193,6 +198,11 @@ public final class BooleanReachConditionExtractor {
                     "BOOLEAN_PROJECTION_EXISTS_NON_BOOLEAN_ROOTS");
         }
         reachCondition.addProperty("reachability", reachability);
+        if (observedUnderapproximation
+                && satisfyingValuations.isEmpty() && complete) {
+            reachCondition.addProperty("coverageConclusion",
+                    "INCONCLUSIVE_UNDERAPPROXIMATION");
+        }
         reachCondition.addProperty("degeneracyCheck", degeneracyCheck(
                 formula, reachability, inputs.size(),
                 discovery.existentialNonBooleanRootInputs.size(),
@@ -289,9 +299,9 @@ public final class BooleanReachConditionExtractor {
             gaps.add("COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE");
         }
         JsonElement occurrences = manifest == null ? null
-                : manifest.get("canonicalPortOccurrences");
+                : manifest.get("portOccurrences");
         if (occurrences == null || !occurrences.isJsonArray()) {
-            gaps.add("CANONICAL_PORT_OCCURRENCE_CATALOG_MISSING");
+            gaps.add("PORT_OCCURRENCES_MISSING");
         }
     }
 
@@ -330,7 +340,7 @@ public final class BooleanReachConditionExtractor {
             }
             if (port.javaBoolean) {
                 RootInput input = new RootInput(port,
-                        occurrence.regionInstanceId, occurrence.solverTerm,
+                        occurrence.occurrenceId, occurrence.solverTerm,
                         "");
                 domainInputs.add(input);
                 if (upstreamSupplied.contains(port.id)) {
@@ -341,17 +351,17 @@ public final class BooleanReachConditionExtractor {
                 continue;
             } else {
                 scalarRoots.add(new RootInput(port,
-                        occurrence.regionInstanceId, occurrence.solverTerm,
+                        occurrence.occurrenceId, occurrence.solverTerm,
                         occurrence.nullnessSolverTerm));
             }
         }
         Comparator<RootInput> byOccurrence = Comparator
                 .comparing((RootInput value) -> value.port.id)
-                .thenComparing(value -> value.regionInstanceId);
+                .thenComparing(value -> value.occurrenceId);
         Collections.sort(roots, byOccurrence);
         Collections.sort(domainInputs, Comparator.comparing(
                 (RootInput value) -> value.port.id).thenComparing(
-                value -> value.regionInstanceId));
+                value -> value.occurrenceId));
         Collections.sort(scalarRoots, byOccurrence);
         return new Discovery(roots, domainInputs, scalarRoots,
                 undecoded.size());
@@ -532,15 +542,15 @@ public final class BooleanReachConditionExtractor {
 
     private static final class RootInput {
         private final PortInfo port;
-        private final String regionInstanceId;
+        private final String occurrenceId;
         private final String solverTerm;
         private final String nullnessSolverTerm;
 
-        private RootInput(PortInfo port, String regionInstanceId,
+        private RootInput(PortInfo port, String occurrenceId,
                           String solverTerm,
                           String nullnessSolverTerm) {
             this.port = port;
-            this.regionInstanceId = firstNonBlank(regionInstanceId);
+            this.occurrenceId = firstNonBlank(occurrenceId);
             this.solverTerm = solverTerm;
             this.nullnessSolverTerm = firstNonBlank(nullnessSolverTerm);
         }
@@ -563,7 +573,7 @@ public final class BooleanReachConditionExtractor {
         private JsonObject toJson() {
             JsonObject result = new JsonObject();
             result.addProperty("portId", port.id);
-            result.addProperty("regionInstanceId", regionInstanceId);
+            result.addProperty("occurrenceId", occurrenceId);
             result.addProperty("javaTypeDescriptor", port.descriptor);
             result.addProperty("solverTerm", solverTerm);
             if (!nullnessSolverTerm.isEmpty()) {
@@ -705,7 +715,7 @@ public final class BooleanReachConditionExtractor {
                 if (value == null) continue;
                 JsonObject row = new JsonObject();
                 row.addProperty("portId", root.port.id);
-                row.addProperty("regionInstanceId", root.regionInstanceId);
+                row.addProperty("occurrenceId", root.occurrenceId);
                 row.addProperty("solverTerm", root.solverTerm);
                 row.addProperty("value", value);
                 witness.add(row);
@@ -863,12 +873,12 @@ public final class BooleanReachConditionExtractor {
         private static PortOccurrenceCatalog from(JsonObject manifest) {
             PortOccurrenceCatalog result = new PortOccurrenceCatalog();
             for (JsonElement element : array(manifest,
-                    "canonicalPortOccurrences")) {
+                    "portOccurrences")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject row = element.getAsJsonObject();
                 PortOccurrenceInfo occurrence = new PortOccurrenceInfo(
                         string(row, "portId"),
-                        string(row, "regionInstanceId"),
+                        string(row, "occurrenceId"),
                         string(row, "sort"),
                         string(row, "portTerm"),
                         string(row, "solverTerm"),
@@ -884,7 +894,7 @@ public final class BooleanReachConditionExtractor {
             List<PortOccurrenceInfo> result = new ArrayList<>(occurrences);
             result.sort(Comparator
                     .comparing((PortOccurrenceInfo value) -> value.portId)
-                    .thenComparing(value -> value.regionInstanceId)
+                    .thenComparing(value -> value.occurrenceId)
                     .thenComparing(value -> value.sort));
             return result;
         }
@@ -892,18 +902,18 @@ public final class BooleanReachConditionExtractor {
 
     private static final class PortOccurrenceInfo {
         private final String portId;
-        private final String regionInstanceId;
+        private final String occurrenceId;
         private final String sort;
         private final String portTerm;
         private final String solverTerm;
         private final String nullnessSolverTerm;
 
-        private PortOccurrenceInfo(String portId, String regionInstanceId,
+        private PortOccurrenceInfo(String portId, String occurrenceId,
                                    String sort, String portTerm,
                                    String solverTerm,
                                    String nullnessSolverTerm) {
             this.portId = firstNonBlank(portId);
-            this.regionInstanceId = firstNonBlank(regionInstanceId);
+            this.occurrenceId = firstNonBlank(occurrenceId);
             this.sort = firstNonBlank(sort);
             this.portTerm = firstNonBlank(portTerm);
             this.solverTerm = firstNonBlank(solverTerm);
@@ -912,7 +922,7 @@ public final class BooleanReachConditionExtractor {
         }
 
         private boolean complete() {
-            return !portId.isEmpty() && !regionInstanceId.isEmpty()
+            return !portId.isEmpty() && !occurrenceId.isEmpty()
                     && !sort.isEmpty() && !portTerm.isEmpty()
                     && !solverTerm.isEmpty();
         }

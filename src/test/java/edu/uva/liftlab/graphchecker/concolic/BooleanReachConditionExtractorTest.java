@@ -41,7 +41,7 @@ public class BooleanReachConditionExtractorTest {
                 .getAsJsonArray("booleanInputs");
         assertEquals(1, roots.size());
         assertEquals(instance, roots.get(0).getAsJsonObject()
-                .get("regionInstanceId").getAsString());
+                .get("occurrenceId").getAsString());
         assertEquals(solverTerm, roots.get(0).getAsJsonObject()
                 .get("solverTerm").getAsString());
         assertEquals("unsat", report.getAsJsonArray("valuations").get(0)
@@ -53,7 +53,7 @@ public class BooleanReachConditionExtractorTest {
     @Test
     public void missingOccurrenceCatalogIsAnExplicitGap() throws Exception {
         JsonObject manifest = manifest("", "", "");
-        manifest.remove("canonicalPortOccurrences");
+        manifest.remove("portOccurrences");
         JsonObject report = BooleanReachConditionExtractor.extract(
                 "(set-logic ALL)\n", manifest,
                 Collections.singletonList(region()),
@@ -63,7 +63,7 @@ public class BooleanReachConditionExtractorTest {
                 report.get("state").getAsString());
         assertTrue(report.getAsJsonArray("gaps").toString(),
                 report.getAsJsonArray("gaps").toString().contains(
-                        "CANONICAL_PORT_OCCURRENCE_CATALOG_MISSING"));
+                        "PORT_OCCURRENCES_MISSING"));
     }
 
     @Test
@@ -76,7 +76,7 @@ public class BooleanReachConditionExtractorTest {
         String portTerm =
                 "port__REGION_3_in_0__instance__REGION_3_Test_call8";
         JsonObject manifest = manifest(instance, portTerm, solverTerm);
-        manifest.getAsJsonArray("canonicalPortOccurrences").get(0)
+        manifest.getAsJsonArray("portOccurrences").get(0)
                 .getAsJsonObject().addProperty("sort", "INT");
         JsonObject input = region().getAsJsonArray("symbolicInputs").get(0)
                 .getAsJsonObject();
@@ -129,6 +129,28 @@ public class BooleanReachConditionExtractorTest {
                 degeneracyCheck(report));
     }
 
+    @Test
+    public void observedUnsatIsInconclusive() throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject manifest = manifest("", "", "");
+        manifest.addProperty("trustState", "OBSERVED_PATH_UNDERAPPROX");
+        manifest.addProperty("compositionMode",
+                "EXISTENTIAL_OBSERVED_PATHS");
+        manifest.addProperty("pathSetComplete", false);
+
+        JsonObject report = BooleanReachConditionExtractor.extract(
+                "(set-logic ALL)\n(assert false)\n", manifest,
+                Collections.<JsonObject>emptyList(),
+                new BooleanReachConditionExtractor.Z3Solver("z3", 5_000L),
+                4, 16);
+
+        assertEquals("CANDIDATE_READY", report.get("state").getAsString());
+        JsonObject reach = report.getAsJsonObject("reachCondition");
+        assertEquals("UNKNOWN", reach.get("reachability").getAsString());
+        assertEquals("INCONCLUSIVE_UNDERAPPROXIMATION",
+                reach.get("coverageConclusion").getAsString());
+    }
+
     /**
      * A refused Boolean valuation proves the condition cuts the root space.
      */
@@ -173,11 +195,11 @@ public class BooleanReachConditionExtractorTest {
                 BOOL_TERM);
         JsonObject opaque = new JsonObject();
         opaque.addProperty("portId", "REGION.3.in.1");
-        opaque.addProperty("regionInstanceId", "REGION.3@Test#call7");
+        opaque.addProperty("occurrenceId", "source0#epoch0/region/REGION.3#1");
         opaque.addProperty("sort", "REF");
         opaque.addProperty("portTerm", "port__REGION_3_in_1");
         opaque.addProperty("solverTerm", "sym__port__REGION_3_in_1__ref");
-        manifest.getAsJsonArray("canonicalPortOccurrences").add(opaque);
+        manifest.getAsJsonArray("portOccurrences").add(opaque);
         JsonObject region = region();
         JsonObject reference = new JsonObject();
         reference.addProperty("portId", "REGION.3.in.1");
@@ -219,7 +241,7 @@ public class BooleanReachConditionExtractorTest {
         String portTerm =
                 "port__REGION_3_in_0__instance__REGION_3_Test_call8";
         JsonObject manifest = manifest(instance, portTerm, solverTerm);
-        manifest.getAsJsonArray("canonicalPortOccurrences").get(0)
+        manifest.getAsJsonArray("portOccurrences").get(0)
                 .getAsJsonObject().addProperty("sort", "INT");
         JsonObject input = region().getAsJsonArray("symbolicInputs").get(0)
                 .getAsJsonObject();
@@ -268,7 +290,7 @@ public class BooleanReachConditionExtractorTest {
         String portTerm =
                 "port__REGION_3_in_0__instance__REGION_3_Test_call8";
         JsonObject manifest = manifest(instance, portTerm, solverTerm);
-        manifest.getAsJsonArray("canonicalPortOccurrences").get(0)
+        manifest.getAsJsonArray("portOccurrences").get(0)
                 .getAsJsonObject().addProperty("sort", "INT");
         JsonObject input = region().getAsJsonArray("symbolicInputs").get(0)
                 .getAsJsonObject();
@@ -370,13 +392,13 @@ public class BooleanReachConditionExtractorTest {
         if (!instance.isEmpty()) {
             JsonObject occurrence = new JsonObject();
             occurrence.addProperty("portId", "REGION.3.in.0");
-            occurrence.addProperty("regionInstanceId", instance);
+            occurrence.addProperty("occurrenceId", instance);
             occurrence.addProperty("sort", "BOOL");
             occurrence.addProperty("portTerm", portTerm);
             occurrence.addProperty("solverTerm", solverTerm);
             occurrences.add(occurrence);
         }
-        result.add("canonicalPortOccurrences", occurrences);
+        result.add("portOccurrences", occurrences);
         return result;
     }
 

@@ -128,196 +128,6 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
-    public void logicalSummaryIsAlphaRenamedForEveryExactOccurrence()
-            throws Exception {
-        String fatalInstance = "REGION.0@Test#call30";
-        String firstInstance = "REGION.1@Test#call10";
-        String secondInstance = "REGION.1@Test#call20";
-        JsonObject firstToSecond = binding("EDGE.FIRST.SECOND",
-                firstInstance, "REGION.1.out.0", secondInstance,
-                "REGION.1.in.1", 10, 20);
-        JsonObject secondToFatal = binding("EDGE.SECOND.FATAL",
-                secondInstance, "REGION.1.out.1", fatalInstance,
-                "REGION.0.in.0", 20, 30);
-
-        RelationSummary logical = logicalSummary(
-                summary("LOGICAL", firstInstance, 10, 7,
-                        Collections.singletonList("REGION.1.in.0"),
-                        Arrays.asList(firstToSecond, secondToFatal)),
-                occurrence(firstInstance, 10, "REGION.1.in.0",
-                        "REGION.1.out.0", "EDGE.FIRST.SECOND"),
-                occurrence(secondInstance, 20, "REGION.1.in.1",
-                        "REGION.1.out.1", "EDGE.FIRST.SECOND",
-                        "EDGE.SECOND.FATAL"));
-        JsonObject repeatedRegion = region("REGION.1", true, true);
-        repeatedRegion.getAsJsonArray("symbolicInputs").add(
-                port("REGION.1.in.1", true));
-        repeatedRegion.getAsJsonArray("outputs").add(
-                port("REGION.1.out.1", false));
-
-        ConcolicSmtComposer.Result result = compose(fatalInstance,
-                Collections.singletonList(logical), Arrays.asList(
-                        region("REGION.0", true, false), repeatedRegion),
-                secondToFatal);
-
-        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
-                result.manifest.get("state").getAsString());
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "port__REGION_1_out_0__instance__REGION_1_Test_call10"));
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "port__REGION_1_out_1__instance__REGION_1_Test_call20"));
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "port__REGION_1_in_1__instance__REGION_1_Test_call20"));
-        assertFalse(result.smtLib, result.smtLib.contains(
-                "port__REGION_1_out_0__instance__REGION_1_Test_call20"));
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "case_selector__region_REGION_1_instance_"
-                        + "REGION_1_Test_call10_case_CASE_LOGICAL"));
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "case_selector__region_REGION_1_instance_"
-                        + "REGION_1_Test_call20_case_CASE_LOGICAL"));
-        assertEquals(2, result.manifest.getAsJsonArray(
-                "resolvedEdgeBindings").size());
-        if (z3Available()) {
-            ConcolicConstraintSolver.SolverOutput solved =
-                    ConcolicConstraintSolver.run(Paths.get("z3"),
-                            result.smtLib, 10_000L);
-            assertEquals(solved.diagnostic(), "sat", solved.status());
-        }
-    }
-
-    @Test
-    public void vmClockPlaceholdersAreScopedPerExactOccurrence()
-            throws Exception {
-        String firstInstance = "REGION.1@Test#call10";
-        String secondInstance = "REGION.1@Test#call20";
-        String fatalInstance = "REGION.0@Test#call30";
-        JsonObject firstToSecond = binding("EDGE.TIME.FIRST",
-                firstInstance, "REGION.1.out.0", secondInstance,
-                "REGION.1.in.1", 10, 20);
-        JsonObject secondToFatal = binding("EDGE.TIME.SECOND",
-                secondInstance, "REGION.1.out.1", fatalInstance,
-                "REGION.0.in.0", 20, 30);
-
-        RelationSummary logical = logicalSummary(
-                summary("TIME", firstInstance, 10, currentTimePlaceholder(),
-                        Collections.singletonList("REGION.1.in.0"),
-                        Arrays.asList(firstToSecond, secondToFatal), "long"),
-                occurrence(firstInstance, 10, "REGION.1.in.0",
-                        "REGION.1.out.0", "EDGE.TIME.FIRST"),
-                occurrence(secondInstance, 20, "REGION.1.in.1",
-                        "REGION.1.out.1", "EDGE.TIME.FIRST",
-                        "EDGE.TIME.SECOND"));
-        JsonObject repeatedRegion = region("REGION.1", "long", "long");
-        repeatedRegion.getAsJsonArray("symbolicInputs").add(
-                port("REGION.1.in.1", true, "long"));
-        repeatedRegion.getAsJsonArray("outputs").add(
-                port("REGION.1.out.1", false, "long"));
-
-        ConcolicSmtComposer.Result result = compose(fatalInstance,
-                Collections.singletonList(logical), Arrays.asList(
-                        region("REGION.0", "long", ""), repeatedRegion),
-                secondToFatal);
-
-        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
-                result.manifest.get("state").getAsString());
-        assertEquals(result.smtLib, 2,
-                count(result.smtLib, "(declare-const environment__"));
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "environment__region_REGION_1_instance_"
-                        + "REGION_1_Test_call10_case_CASE_TIME__"));
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "environment__region_REGION_1_instance_"
-                        + "REGION_1_Test_call20_case_CASE_TIME__"));
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    public void occurrenceInstantiationSelectsEachLedgerBindingOnce()
-            throws Exception {
-        String firstInstance = "REGION.1@Test#call10";
-        String secondInstance = "REGION.1@Test#call20";
-        String fatalInstance = "REGION.0@Test#call30";
-        JsonObject firstToSecond = binding("EDGE.FIRST.SECOND",
-                firstInstance, "REGION.1.out.0", secondInstance,
-                "REGION.1.in.1", 10, 20);
-        JsonObject secondToFatal = binding("EDGE.SECOND.FATAL",
-                secondInstance, "REGION.1.out.1", fatalInstance,
-                "REGION.0.in.0", 20, 30);
-        RelationSummary logical = logicalSummary(
-                summary("LOGICAL-BINDINGS", firstInstance, 10, 7,
-                        Collections.singletonList("REGION.1.in.0"),
-                        Arrays.asList(firstToSecond, secondToFatal)),
-                occurrence(firstInstance, 10, "REGION.1.in.0",
-                        "REGION.1.out.0", "EDGE.FIRST.SECOND"),
-                occurrence(secondInstance, 20, "REGION.1.in.1",
-                        "REGION.1.out.1", "EDGE.FIRST.SECOND",
-                        "EDGE.SECOND.FATAL"));
-
-        Class<?> type = Class.forName(ConcolicSmtComposer.class.getName()
-                + "$OccurrenceInstantiator");
-        java.lang.reflect.Method expand = type.getDeclaredMethod(
-                "expand", RelationSummary.class);
-        expand.setAccessible(true);
-        java.util.List<RelationSummary> instantiated =
-                (java.util.List<RelationSummary>) expand.invoke(null,
-                        logical);
-
-        assertEquals(2, instantiated.size());
-        for (RelationSummary occurrenceSummary : instantiated) {
-            int expected = firstInstance.equals(
-                    occurrenceSummary.regionInstanceId()) ? 1 : 2;
-            assertEquals(expected, occurrenceSummary.edgeBindings().size());
-            java.util.Set<String> ids = new java.util.LinkedHashSet<>();
-            for (JsonObject edge : occurrenceSummary.edgeBindings()) {
-                assertTrue(ids.add(edge.get("edgeId").getAsString()));
-            }
-        }
-
-        RelationSummary incomplete = logicalSummary(
-                summary("INCOMPLETE-BINDINGS", firstInstance, 10, 7,
-                        Collections.singletonList("REGION.1.in.0"),
-                        Arrays.asList(firstToSecond, secondToFatal)),
-                occurrence(firstInstance, 10, "REGION.1.in.0",
-                        "REGION.1.out.0", "EDGE.FIRST.SECOND"),
-                occurrence(secondInstance, 20, "REGION.1.in.1",
-                        "REGION.1.out.1", "EDGE.SECOND.FATAL"));
-        try {
-            expand.invoke(null, incomplete);
-            org.junit.Assert.fail("incomplete binding ledger must fail");
-        } catch (java.lang.reflect.InvocationTargetException expected) {
-            assertTrue(expected.getCause().getMessage().contains(
-                    "binding-id ledger is incomplete"));
-        }
-    }
-
-    @Test
-    public void malformedLogicalOccurrenceCatalogFailsClosed()
-            throws Exception {
-        String fatalInstance = "REGION.0@Test#call30";
-        String producerInstance = "REGION.1@Test#call10";
-        JsonObject edge = binding("EDGE.BAD", producerInstance,
-                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 10, 30);
-        JsonObject malformedOccurrence = occurrence(producerInstance, 10,
-                "REGION.1.in.0", "REGION.1.out.0", "EDGE.BAD");
-        malformedOccurrence.add("outputPortMap", new JsonArray());
-        RelationSummary logical = logicalSummary(summary("BAD",
-                producerInstance, 10, 7,
-                Collections.singletonList("REGION.1.in.0"),
-                Collections.singletonList(edge)), malformedOccurrence);
-
-        boolean rejected = false;
-        try {
-            compose(fatalInstance, Collections.singletonList(logical), edge);
-        } catch (java.io.IOException expected) {
-            rejected = expected.getMessage().contains(
-                    "Malformed relation summary");
-        }
-        assertTrue("malformed catalog must fail before SMT emission",
-                rejected);
-    }
-
-    @Test
     public void selectedSharedStateReadMustUseItsVmWriter()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -414,7 +224,7 @@ public class ConcolicSmtComposerTest {
         leafInputs.add("REGION.1.in.1");
         leafSlice.add("inputPorts", leafInputs);
         OutputClosureContract leaf = OutputClosureCodec.singleton(
-                "REGION.1", producerInstance, 20L,
+                "REL.REGION.1", "REGION.1", "CONTRACT.TEST",
                 "REGION.1.out.1", "<Test: int rolling>",
                 "REGION_OUTPUT", "int", leafSlice);
         OutputClosureContract joint = OutputClosureCodec.merge(Arrays.asList(
@@ -866,14 +676,13 @@ public class ConcolicSmtComposerTest {
         JsonObject slice = emptySlice("REGION.1.out.0",
                 "<Test: int output>");
         OutputClosureContract closure = OutputClosureCodec.singleton(
-                "REGION.1", instance, 20L, "REGION.1.out.0",
+                "REL.REGION.1", "REGION.1", "CONTRACT.TEST", "REGION.1.out.0",
                 "<Test: int output>", "REGION_OUTPUT", "int", slice);
 
         JsonObject row = new JsonObject();
         row.addProperty("summaryId", "SUMMARY.VERSIONSET");
-        row.addProperty("regionId", "REGION.1");
-        row.addProperty("regionInstanceId", instance);
-        row.addProperty("rootCallId", 20L);
+        row.addProperty("sourceKey", "TEST_DRIVER/test#epoch0");
+        row.addProperty("occurrenceId", instance);
         OutputClosureCodec.writeTo(row, closure);
         JsonArray encodedBindings = new JsonArray();
         for (JsonObject binding : bindings) {
@@ -951,7 +760,7 @@ public class ConcolicSmtComposerTest {
         JsonObject secondSlice = emptySlice("REGION.1.out.1",
                 "<Test: int other>");
         OutputClosureContract second = OutputClosureCodec.singleton(
-                "REGION.1", producerInstance, 10, "REGION.1.out.1",
+                "REL.REGION.1", "REGION.1", "CONTRACT.TEST", "REGION.1.out.1",
                 "<Test: int other>", "REGION_OUTPUT", "int",
                 secondSlice);
         OutputClosureContract joint = OutputClosureCodec.merge(Arrays.asList(
@@ -1334,13 +1143,13 @@ public class ConcolicSmtComposerTest {
                 edge);
 
         JsonArray catalog = result.manifest.getAsJsonArray(
-                "canonicalPortOccurrences");
+                "portOccurrences");
         assertEquals(result.manifest.toString(), 1, catalog.size());
         JsonObject occurrence = catalog.get(0).getAsJsonObject();
         assertEquals("REGION.1.in.0",
                 occurrence.get("portId").getAsString());
         assertEquals(producerInstance,
-                occurrence.get("regionInstanceId").getAsString());
+                occurrence.get("occurrenceId").getAsString());
         assertEquals("INT", occurrence.get("sort").getAsString());
         assertEquals(
                 "sym__port__REGION_1_Test_call20_REGION_1_in_0__int",
@@ -1393,7 +1202,7 @@ public class ConcolicSmtComposerTest {
         assertEquals("REGION.0.in.0",
                 operand.get("portId").getAsString());
         assertEquals(fatalInstance,
-                operand.get("regionInstanceId").getAsString());
+                operand.get("occurrenceId").getAsString());
         assertEquals("EXACT_TARGET_PORT_OCCURRENCE",
                 operand.get("producerLineageStatus").getAsString());
         assertEquals("EXACT_FATAL_PREFIX_EQUALITY_ALIAS_V1",
@@ -1433,7 +1242,7 @@ public class ConcolicSmtComposerTest {
                 .get(0).getAsJsonObject();
         assertEquals("REGION.0.in.0", operand.get("portId").getAsString());
         assertEquals(fatalInstance,
-                operand.get("regionInstanceId").getAsString());
+                operand.get("occurrenceId").getAsString());
         assertEquals("EXACT_TARGET_PORT_OCCURRENCE",
                 operand.get("producerLineageStatus").getAsString());
         assertEquals("Int", operand.get("pinSort").getAsString());
@@ -1449,7 +1258,7 @@ public class ConcolicSmtComposerTest {
         assertEquals("REGION.0.in.0",
                 version.get("targetPortId").getAsString());
         assertEquals(fatalInstance,
-                version.get("targetRegionInstanceId").getAsString());
+                version.get("targetOccurrenceId").getAsString());
     }
 
     @Test
@@ -1493,7 +1302,7 @@ public class ConcolicSmtComposerTest {
                 .get(0).getAsJsonObject();
         assertEquals("REGION.0.in.0", operand.get("portId").getAsString());
         assertEquals(fatalInstance,
-                operand.get("regionInstanceId").getAsString());
+                operand.get("occurrenceId").getAsString());
         assertEquals(solverSort, operand.get("solverSort").getAsString());
         assertEquals(solverSort, operand.get("pinSort").getAsString());
         assertEquals(operand.get("solverTerm").getAsString(),
@@ -1508,7 +1317,7 @@ public class ConcolicSmtComposerTest {
         assertEquals("REGION.0.in.0",
                 version.get("targetPortId").getAsString());
         assertEquals(fatalInstance,
-                version.get("targetRegionInstanceId").getAsString());
+                version.get("targetOccurrenceId").getAsString());
     }
 
     /**
@@ -1826,16 +1635,16 @@ public class ConcolicSmtComposerTest {
             closure = OutputClosureCodec.decode(joint(instance, slice,
                     leafSlice));
         } else {
-            closure = OutputClosureCodec.singleton("REGION.1", instance, 20,
+            closure = OutputClosureCodec.singleton("REL.REGION.1", "REGION.1",
+                    "CONTRACT.TEST",
                     "REGION.1.out.0", "<Test: int output>", "REGION_OUTPUT",
                     "int", slice);
         }
 
         JsonObject row = new JsonObject();
         row.addProperty("summaryId", "SUMMARY.REF");
-        row.addProperty("regionId", "REGION.1");
-        row.addProperty("regionInstanceId", instance);
-        row.addProperty("rootCallId", 20);
+        row.addProperty("sourceKey", "TEST_DRIVER/test#epoch0");
+        row.addProperty("occurrenceId", instance);
         OutputClosureCodec.writeTo(row, closure);
         JsonArray bindings = new JsonArray();
         bindings.add(edge.deepCopy());
@@ -1879,9 +1688,9 @@ public class ConcolicSmtComposerTest {
 
     private static JsonObject joint(String instance, JsonObject... slices) {
         JsonObject producer = new JsonObject();
+        producer.addProperty("relationKey", "REL.REGION.1");
         producer.addProperty("regionId", "REGION.1");
-        producer.addProperty("regionInstanceId", instance);
-        producer.addProperty("rootCallId", 20);
+        producer.addProperty("contractHash", "CONTRACT.TEST");
         JsonArray members = new JsonArray();
         for (JsonObject slice : slices) {
             JsonObject output = new JsonObject();
@@ -1901,10 +1710,9 @@ public class ConcolicSmtComposerTest {
             members.add(member);
         }
         JsonObject closure = new JsonObject();
-        closure.addProperty("schemaVersion", 2);
+        closure.addProperty("schemaVersion", 3);
         closure.addProperty("kind", "OUTPUT_CLOSURE_CONTRACT");
         closure.add("producer", producer);
-        closure.add("causalEdges", new JsonArray());
         closure.add("members", members);
         JsonObject row = new JsonObject();
         row.add("outputClosure", closure);
@@ -2498,7 +2306,7 @@ public class ConcolicSmtComposerTest {
                         "--output", output.toString(),
                         "--manifest", manifest.toString(),
                         "--fatal-region", "REGION.0",
-                        "--region-instance-id", fatalInstance));
+                        "--occurrence-id", fatalInstance));
         return ConcolicSmtComposer.compose(
                 ConcolicSmtComposer.Arguments.parse(
                         argv.toArray(new String[argv.size()])));
@@ -2561,15 +2369,14 @@ public class ConcolicSmtComposerTest {
         for (String input : inputPorts) inputs.add(input);
         slice.add("inputPorts", inputs);
         OutputClosureContract closure = OutputClosureCodec.singleton(
-                "REGION.1", instance, call, "REGION.1.out.0",
+                "REL.REGION.1", "REGION.1", "CONTRACT.TEST", "REGION.1.out.0",
                 "<Test: " + outputJavaType + " output>", "REGION_OUTPUT",
                 outputJavaType, slice);
 
         JsonObject row = new JsonObject();
         row.addProperty("summaryId", "SUMMARY." + id);
-        row.addProperty("regionId", "REGION.1");
-        row.addProperty("regionInstanceId", instance);
-        row.addProperty("rootCallId", call);
+        row.addProperty("sourceKey", "TEST_DRIVER/test#epoch0");
+        row.addProperty("occurrenceId", instance);
         OutputClosureCodec.writeTo(row, closure);
         JsonArray encodedBindings = new JsonArray();
         for (JsonObject binding : bindings) {
@@ -2660,15 +2467,14 @@ public class ConcolicSmtComposerTest {
         step.add("memberProjections", projections);
         slice.add("boundedContainerTimelineStep", step);
         OutputClosureContract closure = OutputClosureCodec.singleton(
-                "REGION.1", instance, 20L, "REGION.1.out.0",
+                "REL.REGION.1", "REGION.1", "CONTRACT.TEST", "REGION.1.out.0",
                 "<Test: java.util.Map output>", "HEAP_STATE",
                 "java.util.Map", slice);
 
         JsonObject row = new JsonObject();
         row.addProperty("summaryId", "SUMMARY.TIMELINE");
-        row.addProperty("regionId", "REGION.1");
-        row.addProperty("regionInstanceId", instance);
-        row.addProperty("rootCallId", 20L);
+        row.addProperty("sourceKey", "TEST_DRIVER/test#epoch0");
+        row.addProperty("occurrenceId", instance);
         LoopBoundPolicy.cfgBackedges(
                 LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS).writeTo(row);
         OutputClosureCodec.writeTo(row, closure);
@@ -2748,55 +2554,6 @@ public class ConcolicSmtComposerTest {
         return binding;
     }
 
-    private static RelationSummary logicalSummary(
-            RelationSummary canonical, JsonObject... occurrences) {
-        JsonObject row = canonical.toJson();
-        row.addProperty("logicalRegionId", "REGION.1@owner7");
-        row.addProperty("summaryReuseKey", "REGION.1@owner7");
-        JsonObject catalog = new JsonObject();
-        catalog.addProperty("schemaVersion", 1);
-        catalog.addProperty("kind",
-                "LOGICAL_SUMMARY_OCCURRENCE_CATALOG");
-        catalog.addProperty("logicalRegionId", "REGION.1@owner7");
-        catalog.addProperty("summaryReuseKey", "REGION.1@owner7");
-        catalog.addProperty("canonicalRegionInstanceId",
-                canonical.regionInstanceId());
-        catalog.addProperty("canonicalRootCallId",
-                canonical.outputClosure().producer().rootCallId());
-        JsonArray encoded = new JsonArray();
-        for (JsonObject occurrence : occurrences) encoded.add(occurrence);
-        catalog.add("occurrences", encoded);
-        row.add("occurrenceInstantiationCatalog", catalog);
-        return RelationSummary.decode(row);
-    }
-
-    private static JsonObject occurrence(
-            String instance, long rootCall, String exactInput,
-            String exactOutput, String... bindingIds) {
-        JsonObject occurrence = new JsonObject();
-        occurrence.addProperty("regionInstanceId", instance);
-        occurrence.addProperty("rootCallId", rootCall);
-        occurrence.addProperty("ownerId", 7);
-        occurrence.addProperty("laneId", rootCall);
-        occurrence.addProperty("spanId", rootCall + 100);
-        JsonObject input = new JsonObject();
-        input.addProperty("canonicalPort", "REGION.1.in.0");
-        input.addProperty("exactPort", exactInput);
-        JsonArray inputs = new JsonArray();
-        inputs.add(input);
-        occurrence.add("inputPortMap", inputs);
-        JsonObject output = new JsonObject();
-        output.addProperty("canonicalPort", "REGION.1.out.0");
-        output.addProperty("exactPort", exactOutput);
-        JsonArray outputs = new JsonArray();
-        outputs.add(output);
-        occurrence.add("outputPortMap", outputs);
-        JsonArray bindings = new JsonArray();
-        for (String id : bindingIds) bindings.add(id);
-        occurrence.add("bindingIds", bindings);
-        return occurrence;
-    }
-
     private static JsonObject emptySlice(String port, String cell) {
         JsonObject slice = new JsonObject();
         slice.addProperty("outputPort", port);
@@ -2808,7 +2565,6 @@ public class ConcolicSmtComposerTest {
         slice.add("causalEdgeIds", new JsonArray());
         slice.add("captureBindings", new JsonArray());
         slice.add("captureBindingIssues", new JsonArray());
-        slice.add("causalEdges", new JsonArray());
         return slice;
     }
 
@@ -2819,10 +2575,10 @@ public class ConcolicSmtComposerTest {
         fatal.addProperty("schemaVersion", 1);
         fatal.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
         fatal.addProperty("regionId", "REGION.0");
-        fatal.addProperty("regionInstanceId", fatalInstance);
+        fatal.addProperty("occurrenceId", fatalInstance);
         fatal.addProperty("targetSiteId", "<Test: void consume()>#u1");
         fatal.addProperty("constraintAuthority",
-                "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1");
+                "RECORDED_TARGET_PREFIX_V1");
         JsonObject path = new JsonObject();
         path.add("constraints", constraints.deepCopy());
         JsonArray paths = new JsonArray();
@@ -2858,7 +2614,7 @@ public class ConcolicSmtComposerTest {
             }
         }
         JsonObject context = new JsonObject();
-        context.addProperty("regionInstanceId", fatalInstance);
+        context.addProperty("occurrenceId", fatalInstance);
         context.add("equalityClasses", new JsonArray());
         context.add("equalityRelations", equalities);
         context.add("versionedStateMerges", merges);
@@ -2874,8 +2630,8 @@ public class ConcolicSmtComposerTest {
         binding.addProperty("edgeId", edgeId);
         binding.addProperty("fromRegion", "REGION.1");
         binding.addProperty("toRegion", regionOf(toPort));
-        binding.addProperty("fromRegionInstance", fromInstance);
-        binding.addProperty("toRegionInstance", toInstance);
+        binding.addProperty("fromOccurrenceId", fromInstance);
+        binding.addProperty("toOccurrenceId", toInstance);
         binding.addProperty("fromOutputPort", fromPort);
         binding.addProperty("toInputPort", toPort);
         binding.addProperty("evidenceKind",
@@ -2900,8 +2656,8 @@ public class ConcolicSmtComposerTest {
         binding.addProperty("edgeId", edgeId);
         binding.addProperty("fromRegion", "REGION.1");
         binding.addProperty("toRegion", regionOf(toPort));
-        binding.addProperty("fromRegionInstance", fromInstance);
-        binding.addProperty("toRegionInstance", toInstance);
+        binding.addProperty("fromOccurrenceId", fromInstance);
+        binding.addProperty("toOccurrenceId", toInstance);
         binding.addProperty("fromOutputPort", fromPort);
         binding.addProperty("toInputPort", toPort);
         binding.addProperty("evidenceKind",

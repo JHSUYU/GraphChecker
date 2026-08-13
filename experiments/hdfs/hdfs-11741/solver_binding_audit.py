@@ -374,7 +374,7 @@ def validate_manifest(manifest, smt_path, assertions):
             raise ValueError("operand has no supported producer lineage: %s" %
                              operand_id)
         exact_port = operand.get("portId", "")
-        exact_instance = operand.get("regionInstanceId", "")
+        exact_instance = operand.get("occurrenceId", "")
         versions = operand.get("producerVersions", [])
         if lineage == "UNAUDITABLE_NO_EXACT_PRODUCER_LINEAGE":
             if exact_port or exact_instance or versions:
@@ -396,7 +396,7 @@ def validate_manifest(manifest, smt_path, assertions):
             if name not in edge_catalog.get(edge_id, set()):
                 raise ValueError("edge/assertion ledger cross-link mismatch")
             if version.get("targetPortId") != exact_port or \
-                    version.get("targetRegionInstanceId") != exact_instance:
+                    version.get("targetOccurrenceId") != exact_instance:
                 raise ValueError("producer version targets another operand "
                                  "occurrence: %s" % operand_id)
             if version.get("solverSort") != operand.get("pinSort"):
@@ -483,7 +483,7 @@ def execute(args):
             "pinTerm": operand.get("pinTerm"),
             "pinSort": operand.get("pinSort"),
             "portId": operand.get("portId"),
-            "regionInstanceId": operand.get("regionInstanceId"),
+            "occurrenceId": operand.get("occurrenceId"),
             "producerLineageStatus": operand.get("producerLineageStatus"),
             "producerVersions": operand.get("producerVersions", []),
             "edgeAblations": [],

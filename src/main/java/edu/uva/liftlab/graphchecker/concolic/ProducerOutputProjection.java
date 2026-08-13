@@ -33,7 +33,7 @@ public final class ProducerOutputProjection {
         }
         require("campaignId");
         require("regionId");
-        require("logicalRegionId");
+        require("relationKey");
         require("goalId");
         require("pathSeedKey");
         outputPorts = strings(encoded, "outputPorts");
@@ -45,7 +45,7 @@ public final class ProducerOutputProjection {
     }
 
     public static ProducerOutputProjection create(
-            String campaignId, String regionId, String logicalRegionId,
+            String campaignId, String regionId, String relationKey,
             String goalId, String pathSeedKey, Set<String> outputPorts,
             Set<String> edgeIds) {
         JsonObject result = new JsonObject();
@@ -54,8 +54,8 @@ public final class ProducerOutputProjection {
         result.addProperty("campaignId", required(campaignId,
                 "campaignId"));
         result.addProperty("regionId", required(regionId, "regionId"));
-        result.addProperty("logicalRegionId", required(logicalRegionId,
-                "logicalRegionId"));
+        result.addProperty("relationKey", required(relationKey,
+                "relationKey"));
         result.addProperty("goalId", required(goalId, "goalId"));
         result.addProperty("pathSeedKey", required(pathSeedKey,
                 "pathSeedKey"));
@@ -84,8 +84,8 @@ public final class ProducerOutputProjection {
         if (goal == null || !goal.kind().capturesOutputRelation()
                 || !string(encoded, "regionId").equals(
                 goal.plan().regionId())
-                || !string(encoded, "logicalRegionId").equals(
-                goal.plan().logicalRegionId())
+                || !string(encoded, "relationKey").equals(
+                goal.plan().relationKey())
                 || !string(encoded, "goalId").equals(goal.goalId())
                 || !string(encoded, "pathSeedKey").equals(
                 firstNonBlank(goal.pathSeedKey(), goal.goalId()))) {

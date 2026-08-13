@@ -61,11 +61,11 @@ printf '%s\n' \
 printf '' | gzip -n \
   > "${fixture_root}/artifacts/runtime/refined_dataflow_edges.jsonl.gz"
 printf '%s\n' \
-  '{"schemaVersion":2,"kind":"CONCOLIC_RUNTIME_MODEL_CATALOG","regions":[{"schemaVersion":3,"kind":"SYMBOLIC_REGION","regionId":"REGION.0","symbolicInputs":[{"portId":"REGION.0.in.0"}],"outputs":[{"portId":"REGION.0.out.0"}]}],"edges":[{"schemaVersion":3,"kind":"RUNTIME_FIELD_FLOW","edgeId":"RF.0","fromRegion":"REGION.1","toRegion":"REGION.0","transportKind":"HEAP","fromOutputPort":"REGION.1.out.0","toInputPort":"REGION.0.in.0","state":"CONFIRMED_RUNTIME_IDENTITY"}]}' \
-  '{"schemaVersion":3,"kind":"CONCOLIC_REGION_PLAN","regionInstanceId":"REGION.0@fixture#call1","regionId":"REGION.0","rootSelector":{"kind":"GLOBAL_INVOCATION","method":"m","ordinal":1},"closureGoals":[]}' \
+  '{"schemaVersion":2,"kind":"CONCOLIC_RUNTIME_MODEL_CATALOG","regions":[{"schemaVersion":3,"kind":"SYMBOLIC_REGION","regionId":"REGION.0","symbolicInputs":[{"portId":"REGION.0.in.0"}],"outputs":[{"portId":"REGION.0.out.0"}]}],"edges":[{"schemaVersion":3,"kind":"RUNTIME_FIELD_FLOW","edgeId":"RF.0","fromRegion":"REGION.1","toRegion":"REGION.0","fromOccurrenceId":"fixture/source#epoch0/region/REGION.1#1","toOccurrenceId":"fixture/source#epoch0/region/REGION.0#1","transportKind":"HEAP","fromOutputPort":"REGION.1.out.0","toInputPort":"REGION.0.in.0","state":"CONFIRMED_RUNTIME_IDENTITY"}]}' \
+  '{"schemaVersion":3,"kind":"CONCOLIC_REGION_PLAN","sourceKey":"fixture/source#epoch0","occurrenceId":"fixture/source#epoch0/region/REGION.0#1","relationKey":"fixture/source/REGION.0","relationContractHash":"CONTRACT.0","regionId":"REGION.0","rootSelector":{"kind":"GLOBAL_INVOCATION","method":"m","ordinal":1},"closureGoals":[]}' \
   > "${fixture_root}/artifacts/runtime/concolic_region_plan.jsonl"
 printf '%s\n' \
-  '{"regionId":"REGION.0","relationallyComplete":true,"outputClosure":{"schemaVersion":2,"kind":"OUTPUT_CLOSURE_CONTRACT","producer":{"regionId":"REGION.0","regionInstanceId":"REGION.0@fixture#call1","rootCallId":1},"causalEdges":[],"members":[{"output":{"portId":"REGION.0.out.0","cell":"out-cell","kind":"RETURN","javaTypeDescriptor":"I"},"slice":{"outputPort":"REGION.0.out.0","outputCell":"out-cell","inputPorts":[],"sites":[],"staticSites":[],"methods":["m"],"causalEdgeIds":[],"captureBindings":[],"captureBindingIssues":[]}}]},"regionRelation":{"kind":"GUARDED_PATH_MERGE","cases":[{"caseId":"CASE.0","guard":{"kind":"PATH_CONDITION","conditions":[{"op":"="}]},"outputExpressions":{"REGION.0.out.0":{"exp":"x"}},"normalExit":true}]}}' \
+  '{"sourceKey":"fixture/source#epoch0","occurrenceId":"fixture/source#epoch0/region/REGION.0#1","relationKey":"fixture/source/REGION.0","relationContractHash":"CONTRACT.0","regionId":"REGION.0","relationallyComplete":true,"outputClosure":{"schemaVersion":3,"kind":"OUTPUT_CLOSURE_CONTRACT","producer":{"relationKey":"fixture/source/REGION.0","regionId":"REGION.0","contractHash":"CONTRACT.0"},"members":[{"output":{"portId":"REGION.0.out.0","cell":"out-cell","kind":"RETURN","javaTypeDescriptor":"I"},"slice":{"outputPort":"REGION.0.out.0","outputCell":"out-cell","inputPorts":[],"sites":[],"staticSites":[],"methods":["m"],"causalEdgeIds":[],"captureBindings":[],"captureBindingIssues":[]}}]},"regionRelation":{"kind":"GUARDED_PATH_MERGE","cases":[{"caseId":"CASE.0","guard":{"kind":"PATH_CONDITION","conditions":[{"op":"="}]},"outputExpressions":{"REGION.0.out.0":{"exp":"x"}},"normalExit":true}]}}' \
   > "${fixture_root}/artifacts/schedule/merged_region_summaries.jsonl"
 printf '%s\n' \
   '{"schemaVersion":2,"kind":"CONCOLIC_COMPOSED_SMT","state":"CANDIDATE_READY","trustState":"CANDIDATE_ONLY","fatalRegion":"REGION.0","fatalSite":"m#u0","gaps":[],"resolvedEdgeBindings":[],"suppliedInputs":[],"composedSmtArtifact":{"path":"artifacts/schedule/composed_fatal.smt2","sha256":"test"}}' \
@@ -174,11 +174,11 @@ assert_contains "${workload}" '--refined-graph'
   >"${debug_stdout}" 2>"${debug_stderr}"
 debug_text=$(<"${debug_stderr}")
 assert_contains "${debug_text}" 'artifact=refined_graph'
-assert_contains "${debug_text}" 'artifact=concolic_region_instance_plan'
+assert_contains "${debug_text}" 'artifact=concolic_region_occurrence_plan'
 assert_contains "${debug_text}" 'total=2 shown=2 truncated=false'
 assert_contains "${debug_text}" '"edgeCount":1'
 assert_contains "${debug_text}" \
-  '"regionInstanceId":"REGION.0@fixture#call1"'
+  '"occurrenceId":"fixture/source#epoch0/region/REGION.0#1"'
 assert_contains "${debug_text}" '"goalCount":0'
 assert_not_contains "${debug_text}" 'status=invalid-json'
 

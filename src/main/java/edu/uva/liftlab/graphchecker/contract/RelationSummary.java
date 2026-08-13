@@ -18,9 +18,7 @@ import java.util.TreeMap;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/**
- * Canonical wire carrier for one closed region relation.
- */
+/** Canonical wire carrier for one guarded region relation. */
 public final class RelationSummary {
     private final JsonObject row;
     private final OutputClosureContract outputClosure;
@@ -68,8 +66,14 @@ public final class RelationSummary {
             OutputClosureContract outputClosure,
             Collection<PathObservation> paths,
             Collection<JsonObject> edgeBindings,
+            String coverageState,
             String manifestState,
             boolean projectRelationGuards) {
+        if (!"PARTIAL".equals(coverageState)
+                && !"SEED_ONLY".equals(coverageState)) {
+            throw new IllegalArgumentException(
+                    "observed path merge requires incomplete coverage");
+        }
         List<String> pathKeys = new ArrayList<>();
         for (PathObservation path : paths) pathKeys.add(path.pathKey());
         Collections.sort(pathKeys);
@@ -81,6 +85,7 @@ public final class RelationSummary {
         coverage.addProperty("authority",
                 "IMPORTED_VM_PATH_UNDERAPPROX_V1");
         coverage.addProperty("complete", false);
+        coverage.addProperty("coverageState", coverageState);
         coverage.addProperty("manifestState", manifestState);
         coverage.addProperty("observedPathCount", pathKeys.size());
         coverage.addProperty("observedPathSetHash",
@@ -108,6 +113,15 @@ public final class RelationSummary {
                 Comparator.comparing(projectRelationGuards
                         ? PathObservation::relationKey
                         : PathObservation::pathKey));
+        String occurrenceId = orderedCases.get(0).occurrenceId();
+        String sourceKey = orderedCases.get(0).sourceKey();
+        for (PathObservation path : orderedCases) {
+            if (!occurrenceId.equals(path.occurrenceId())
+                    || !sourceKey.equals(path.sourceKey())) {
+                throw new IllegalArgumentException(
+                        "one relation summary requires one occurrence");
+            }
+        }
         JsonArray cases = new JsonArray();
         for (PathObservation path : orderedCases) {
             appendPathCases(cases, path, projectRelationGuards);
@@ -134,8 +148,8 @@ public final class RelationSummary {
         }
 
         String region = outputClosure.producer().regionId();
-        String closureIdentity = outputClosure.closureFingerprint();
-        JsonObject occurrenceCatalog = occurrenceCatalog(orderedCases);
+        String relationKey = outputClosure.producer().relationKey();
+        String contractHash = outputClosure.producer().contractHash();
         JsonObject relation = new JsonObject();
         relation.addProperty("schemaVersion", 1);
         relation.addProperty("kind", "GUARDED_PATH_MERGE");
@@ -148,33 +162,23 @@ public final class RelationSummary {
                 : "FULL_PATH_COLLISION_FALLBACK");
         relation.add("cases", cases);
         String relationHash = CanonicalJson.sha256(region + "\n"
-                + closureIdentity + "\n" + CanonicalJson.render(cases)
-                + "\n" + CanonicalJson.render(bindings)
-                + "\n" + CanonicalJson.render(occurrenceCatalog)
-                + "\n" + (coverage == null ? "CLOSED"
+                + relationKey + "\n" + contractHash + "\n"
+                + CanonicalJson.render(cases) + "\n"
+                + CanonicalJson.render(bindings) + "\n"
+                + (coverage == null ? "CLOSED"
                 : CanonicalJson.render(coverage)));
 
         JsonObject merged = new JsonObject();
         merged.addProperty("schemaVersion", 1);
         merged.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
+        merged.addProperty("sourceKey", sourceKey);
+        merged.addProperty("occurrenceId", occurrenceId);
         orderedCases.get(0).scope().loopBound().writeTo(merged);
         merged.addProperty("summaryId", "SUMMARY." + region
                 + ".MERGED." + relationHash);
+        merged.addProperty("pathCoverageState", coverage == null
+                ? "CLOSED" : string(coverage, "coverageState"));
         OutputClosureCodec.writeTo(merged, outputClosure);
-        if (occurrenceCatalog.size() > 0) {
-            String logicalRegionId = orderedCases.get(0)
-                    .logicalRegionId();
-            String summaryReuseKey = orderedCases.get(0)
-                    .summaryReuseKey();
-            if (!logicalRegionId.isEmpty()) {
-                merged.addProperty("logicalRegionId", logicalRegionId);
-            }
-            if (!summaryReuseKey.isEmpty()) {
-                merged.addProperty("summaryReuseKey", summaryReuseKey);
-            }
-            merged.add(RegionInstancePlan.OCCURRENCE_CATALOG,
-                    occurrenceCatalog);
-        }
         merged.add("edgeBindings", bindings);
         merged.add("regionRelation", relation);
         if (coverage != null) merged.add("pathCoverage", coverage);
@@ -185,74 +189,21 @@ public final class RelationSummary {
     public JsonObject toJson() { return row.deepCopy(); }
     public OutputClosureContract outputClosure() { return outputClosure; }
     public String summaryId() { return string(row, "summaryId"); }
+    public String sourceKey() { return string(row, "sourceKey"); }
+    public String occurrenceId() { return string(row, "occurrenceId"); }
     public String regionId() {
         return outputClosure.producer().regionId();
     }
-    public String regionInstanceId() {
-        return outputClosure.producer().regionInstanceId();
+    public String relationKey() {
+        return outputClosure.producer().relationKey();
+    }
+    public String relationContractHash() {
+        return outputClosure.producer().contractHash();
     }
     public List<JsonObject> edgeBindings() { return edgeBindings; }
-    public String logicalRegionId() {
-        return string(row, "logicalRegionId");
-    }
-    public String summaryReuseKey() {
-        return string(row, "summaryReuseKey");
-    }
-    public JsonObject occurrenceInstantiationCatalog() {
-        JsonElement value = row.get(RegionInstancePlan.OCCURRENCE_CATALOG);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject().deepCopy() : new JsonObject();
-    }
 
     public boolean same(RelationSummary other) {
         return other != null && summaryId().equals(other.summaryId());
-    }
-
-    private static JsonObject occurrenceCatalog(
-            List<PathObservation> paths) {
-        JsonObject selected = new JsonObject();
-        String logicalRegionId = "";
-        String summaryReuseKey = "";
-        boolean missingCatalog = false;
-        for (PathObservation path : paths) {
-            JsonObject catalog = path.occurrenceInstantiationCatalog();
-            if (catalog.size() == 0) {
-                if (!path.logicalRegionId().isEmpty()
-                        || !path.summaryReuseKey().isEmpty()
-                        || selected.size() > 0) {
-                    throw new IllegalArgumentException(
-                            "logical closed path is missing its occurrence "
-                                    + "catalog");
-                }
-                missingCatalog = true;
-                continue;
-            }
-            if (missingCatalog) {
-                throw new IllegalArgumentException(
-                        "closed paths mix legacy and logical occurrence "
-                                + "identity");
-            }
-            if (path.logicalRegionId().isEmpty()
-                    || path.summaryReuseKey().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "occurrence catalog requires logical summary "
-                                + "identity");
-            }
-            if (selected.size() == 0) {
-                selected = catalog;
-                logicalRegionId = path.logicalRegionId();
-                summaryReuseKey = path.summaryReuseKey();
-                continue;
-            }
-            if (!CanonicalJson.render(selected).equals(
-                    CanonicalJson.render(catalog))
-                    || !logicalRegionId.equals(path.logicalRegionId())
-                    || !summaryReuseKey.equals(path.summaryReuseKey())) {
-                throw new IllegalArgumentException(
-                        "closed paths have conflicting occurrence catalogs");
-            }
-        }
-        return selected.deepCopy();
     }
 
     /**

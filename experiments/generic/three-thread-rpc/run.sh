@@ -260,7 +260,7 @@ do_schedule_target() {
   if ! (cd "${graphchecker_dir}" && \
       CAUSYNTH_SCHEDULE_OUTPUT_DIR="${campaign}" \
       "${runner}" --config "${config}" schedule \
-        --region-id "${region}" --region-instance-id "${instance}" \
+        --region-id "${region}" --occurrence-id "${instance}" \
         --goal-id "${goal}"); then
     stage_error SCHEDULE ConcolicScheduler "${campaign_id}" "${region}" \
       "${instance}" "${goal}" "${region_plan}" \
@@ -284,7 +284,7 @@ do_schedule_producer() {
   if ! (cd "${graphchecker_dir}" && \
     CAUSYNTH_SCHEDULE_OUTPUT_DIR="${output}" \
     "${runner}" --config "${config}" schedule \
-      --region-id "${region}" --region-instance-id "${instance}" \
+      --region-id "${region}" --occurrence-id "${instance}" \
       --goal-id "${goal}"); then
     stage_error SCHEDULE ConcolicScheduler "${campaign_id}" "${region}" \
       "${instance}" "${goal}" "${region_plan}" \
@@ -665,7 +665,7 @@ run_path_task() {
       and ($raw | length) == 1
       and .[0].relationallyComplete == true
       and .[0].taskId == $executionTask[0].taskId
-      and .[0].regionInstanceId == $executionTask[0].regionInstanceId
+      and .[0].occurrenceId == $executionTask[0].occurrenceId
       and .[0].goalId == $executionTask[0].goalId
       and .[0].regionId == $executionTask[0].regionId
       and $raw[0].taskId == $executionTask[0].taskId
@@ -680,7 +680,7 @@ run_path_task() {
       queryKey: $executionTask[0].pathQueryKey,
       regionId: $executionTask[0].regionId,
       taskId: $executionTask[0].taskId,
-      regionInstanceId: $executionTask[0].regionInstanceId,
+      occurrenceId: $executionTask[0].occurrenceId,
       goalId: $executionTask[0].goalId,
       status: (if $executionTask[0].goalKind == "OUTPUT_RELATION_CLOSURE"
         then "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
@@ -978,7 +978,7 @@ do_explore_target() {
     length == 1
     and .[0].kind == "TARGET_REACH_PATH_SET_QUERY"
     and .[0].constraintAuthority
-      == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
+      == "RECORDED_TARGET_PREFIX_V1"
   ' "${reach_query}" >/dev/null \
     || stage_error MERGE TargetReachPathQueryBuilder "${campaign_id}" \
       "${region}" "${instance}" "${goal}" "${reach_query}" \
@@ -1093,7 +1093,7 @@ do_candidate_compose() {
     CAUSYNTH_COMPOSED_SMT="${candidate_root}/candidate.smt2" \
     CAUSYNTH_COMPOSITION_MANIFEST="${candidate_root}/candidate_composition_manifest.json" \
     CAUSYNTH_FATAL_REGION="${target_region}" \
-    CAUSYNTH_FATAL_REGION_INSTANCE_ID="${target_instance}" \
+    CAUSYNTH_FATAL_OCCURRENCE_ID="${target_instance}" \
     "${runner}" --config "${config}" compose); then
     stage_error COMPOSE ConcolicSmtComposer "${target_campaign_id}" \
       "${target_region}" "${target_instance}" "${target_goal}" \
@@ -1194,7 +1194,7 @@ do_seed_target() {
       --arg goal "${goal}" '
       length == 1
       and .[0].regionId == $region
-      and .[0].regionInstanceId == $instance
+      and .[0].occurrenceId == $instance
       and .[0].taskId == $task
       and .[0].goalId == $goal
       and .[0].relationallyComplete == true
@@ -1208,7 +1208,7 @@ do_seed_target() {
       CAUSYNTH_SCHEDULE_OUTPUT_DIR="${campaign}" \
       CAUSYNTH_SCHEDULE_SUMMARIES="${summary}" \
       "${runner}" --config "${config}" schedule \
-        --region-id "${region}" --region-instance-id "${instance}" \
+        --region-id "${region}" --occurrence-id "${instance}" \
         --goal-id "${goal}"); then
     stage_error SCHEDULE ConcolicScheduler "${campaign_id}" "${region}" \
       "${instance}" "${goal}" "${summary}" \
@@ -1218,7 +1218,7 @@ do_seed_target() {
       --arg goal "${goal}" '
       length == 1
       and .[0].regionId == $region
-      and .[0].regionInstanceId == $instance
+      and .[0].occurrenceId == $instance
       and .[0].goalId == $goal
       and .[0].schemaVersion == 1
       and .[0].kind == "TARGET_BRANCH_SOLVER_QUERY"

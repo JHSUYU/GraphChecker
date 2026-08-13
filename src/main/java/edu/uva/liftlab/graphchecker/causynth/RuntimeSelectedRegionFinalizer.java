@@ -1473,8 +1473,6 @@ public final class RuntimeSelectedRegionFinalizer {
         putIfMissing(edge, prefix + "OwnerId", instance.get("ownerId"));
         putIfMissing(edge, prefix + "LaneId", instance.get("laneId"));
         putIfMissing(edge, prefix + "SpanId", instance.get("spanId"));
-        putIfMissing(edge, prefix + "LogicalRegionId",
-                instance.get("logicalRegionId"));
     }
 
     private static void putIfMissing(Map<String, Object> target, String key,

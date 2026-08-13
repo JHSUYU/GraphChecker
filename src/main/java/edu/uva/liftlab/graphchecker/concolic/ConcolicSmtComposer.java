@@ -112,7 +112,7 @@ public final class ConcolicSmtComposer {
                         throw new IllegalArgumentException(
                                 "summary identity is required");
                     }
-                    summaries.addAll(OccurrenceInstantiator.expand(summary));
+                    summaries.add(summary);
                 } catch (IllegalArgumentException malformed) {
                     throw new IOException("Malformed relation summary "
                             + summaryFile + " row " + row, malformed);
@@ -128,8 +128,8 @@ public final class ConcolicSmtComposer {
         JsonObject fatal = selectFatalQuery(queryRows, arguments);
         if (fatal.size() == 0) {
             throw new IOException("No ready fatal query matches region="
-                    + arguments.fatalRegion + " instance="
-                    + arguments.regionInstanceId);
+                    + arguments.fatalRegion + " occurrence="
+                    + arguments.occurrenceId);
         }
         requireCanonicalFatalQuerySchema(fatal);
         String fatalSite = string(fatal, "targetSiteId");
@@ -145,7 +145,7 @@ public final class ConcolicSmtComposer {
         // and turn its consumer input into an unconstrained existential.
         JsonObject resolutionContext = rawContext.deepCopy();
         boolean instanceScopedContext = resolutionContext.size() > 0
-                && !string(resolutionContext, "regionInstanceId").isEmpty();
+                && !string(resolutionContext, "occurrenceId").isEmpty();
 
         ResolvedSummaryGraph resolved = resolveSummaryGraph(fatal,
                 resolutionContext, summaries);
@@ -161,7 +161,7 @@ public final class ConcolicSmtComposer {
                 resolved);
         Emitter emitter = new Emitter(ports,
                 new InvocationKey(string(fatal, "regionId"),
-                        string(resolutionContext, "regionInstanceId")),
+                        string(resolutionContext, "occurrenceId")),
                 failureWitness);
         emitter.begin(fatal);
         emitter.registerExactEqualityBoundExpressions(
@@ -175,7 +175,7 @@ public final class ConcolicSmtComposer {
         List<String> fatalTerms = new ArrayList<>();
         List<String> fatalPrefixTerms = new ArrayList<>();
         String previousFatalScope = emitter.enterSymbolScope("fatal:"
-                + firstNonBlank(string(fatal, "regionInstanceId"),
+                + firstNonBlank(string(fatal, "occurrenceId"),
                 string(fatal, "queryId"), fatalSite,
                 string(fatal, "regionId"), "selected"));
         try {
@@ -257,8 +257,7 @@ public final class ConcolicSmtComposer {
                 failureWitness.manifest());
         manifest.add("suppliedInputs",
                 GSON.toJsonTree(emitter.suppliedInputs));
-        manifest.add("canonicalPortOccurrences",
-                emitter.canonicalPortOccurrences());
+        manifest.add("portOccurrences", emitter.portOccurrences());
         manifest.add("operandBindingLedger",
                 emitter.operandBindingLedger());
         manifest.addProperty("droppedEdgeEvidenceAudit",
@@ -384,7 +383,7 @@ public final class ConcolicSmtComposer {
                 || !"TARGET_REACH_PATH_SET_QUERY".equals(kind)) {
             throw new IOException("Unsupported canonical fatal query schema");
         }
-        if (!"CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1".equals(
+        if (!"RECORDED_TARGET_PREFIX_V1".equals(
                 string(fatal, "constraintAuthority"))
                 || string(fatal, "targetSiteId").isEmpty()) {
             throw new IOException(
@@ -409,9 +408,9 @@ public final class ConcolicSmtComposer {
                     "regionId"))) {
                 continue;
             }
-            if (!arguments.regionInstanceId.isEmpty()
-                    && !arguments.regionInstanceId.equals(string(row,
-                    "regionInstanceId"))) {
+            if (!arguments.occurrenceId.isEmpty()
+                    && !arguments.occurrenceId.equals(string(row,
+                    "occurrenceId"))) {
                 continue;
             }
             if ("TARGET_REACH_PATH_SET_QUERY".equals(
@@ -455,7 +454,7 @@ public final class ConcolicSmtComposer {
             List<JsonObject> equalities, List<JsonObject> readFrom,
             List<JsonObject> alternatives) {
         String fatalRegion = string(fatal, "regionId");
-        String fatalInstance = string(context, "regionInstanceId");
+        String fatalInstance = string(context, "occurrenceId");
         ResolvedSummaryGraph result = new ResolvedSummaryGraph(fatalRegion,
                 fatalInstance, knownDemands);
 
@@ -669,7 +668,7 @@ public final class ConcolicSmtComposer {
                 demandedOutputs)) {
             if (!requestedInstance.isEmpty()
                     && !requestedInstance.equals(
-                    summary.regionInstanceId())) {
+                    summary.occurrenceId())) {
                 continue;
             }
             unique.put(summary.summaryId(), summary);
@@ -698,7 +697,7 @@ public final class ConcolicSmtComposer {
         }
         RelationSummary selected = unique.values().iterator().next();
         String instance = firstNonBlank(requestedInstance,
-                selected.regionInstanceId());
+                selected.occurrenceId());
         ProducerKey key = new ProducerKey(region, instance, output);
         invocation = key.invocation();
         regionSelection = graph.selectedRegionSummaries.get(invocation);
@@ -846,11 +845,11 @@ public final class ConcolicSmtComposer {
     }
 
     private static String bindingSourceInstance(JsonObject binding) {
-        return string(binding, "fromRegionInstance");
+        return string(binding, "fromOccurrenceId");
     }
 
     private static String bindingTargetInstance(JsonObject binding) {
-        return string(binding, "toRegionInstance");
+        return string(binding, "toOccurrenceId");
     }
 
     private static String bindingSourceOutput(JsonObject binding) {
@@ -859,199 +858,6 @@ public final class ConcolicSmtComposer {
 
     private static String bindingTargetInput(JsonObject binding) {
         return string(binding, "toInputPort");
-    }
-
-    /**
-     * Expands one logical VM relation into exact invocation-scoped views.
-     * The relation is still imported and stored once; these copies are an
-     * in-memory alpha-renaming adapter used only by composition.  In
-     * particular, exact edge rows are selected by the compact binding-id
-     * ledger instead of copying the planner's full occurrence plans into the
-     * execution task or relation summary.
-     */
-    private static final class OccurrenceInstantiator {
-        private static final String KIND =
-                "LOGICAL_SUMMARY_OCCURRENCE_CATALOG";
-
-        private static List<RelationSummary> expand(
-                RelationSummary summary) {
-            JsonObject catalog = summary.occurrenceInstantiationCatalog();
-            if (catalog.size() == 0) {
-                return Collections.singletonList(summary);
-            }
-            if (integer(catalog, "schemaVersion", -1) != 1
-                    || !KIND.equals(string(catalog, "kind"))) {
-                throw malformed(summary, "unsupported catalog schema");
-            }
-            String logicalRegion = string(catalog, "logicalRegionId");
-            String reuseKey = string(catalog, "summaryReuseKey");
-            if (logicalRegion.isEmpty() || reuseKey.isEmpty()
-                    || !logicalRegion.equals(summary.logicalRegionId())
-                    || !reuseKey.equals(summary.summaryReuseKey())) {
-                throw malformed(summary, "logical region mismatch");
-            }
-            String canonicalInstance = string(catalog,
-                    "canonicalRegionInstanceId");
-            if (!summary.regionInstanceId().equals(canonicalInstance)) {
-                throw malformed(summary,
-                        "canonical invocation does not own the relation");
-            }
-            long canonicalRoot = longInteger(catalog,
-                    "canonicalRootCallId", -1L);
-            if (canonicalRoot >= 0L && canonicalRoot
-                    != summary.outputClosure().producer().rootCallId()) {
-                throw malformed(summary, "canonical root mismatch");
-            }
-
-            Set<String> canonicalInputs = new LinkedHashSet<>(
-                    summary.outputClosure().executionScope().inputPorts());
-            Set<String> canonicalOutputs = new LinkedHashSet<>(
-                    summary.outputClosure().outputPorts());
-            List<RelationSummary> result = new ArrayList<>();
-            Set<String> instances = new LinkedHashSet<>();
-            boolean foundCanonical = false;
-            for (JsonElement element : array(catalog, "occurrences")) {
-                if (!element.isJsonObject()) {
-                    throw malformed(summary, "non-object occurrence");
-                }
-                JsonObject occurrence = element.getAsJsonObject();
-                String instance = string(occurrence, "regionInstanceId");
-                long rootCall = longInteger(occurrence, "rootCallId", -1L);
-                if (instance.isEmpty() || rootCall < 0L
-                        || !instances.add(instance)) {
-                    throw malformed(summary,
-                            "missing or duplicate exact invocation "
-                                    + instance);
-                }
-                foundCanonical |= canonicalInstance.equals(instance);
-                Map<String, String> inputs = portMap(summary, occurrence,
-                        "inputPortMap", canonicalInputs);
-                Map<String, String> outputs = portMap(summary, occurrence,
-                        "outputPortMap", canonicalOutputs);
-                Set<String> exactPorts = new LinkedHashSet<>(inputs.values());
-                if (!exactPorts.addAll(outputs.values())) {
-                    throw malformed(summary,
-                            "exact input/output port collision at " + instance);
-                }
-                Map<String, String> ports = new LinkedHashMap<>();
-                ports.putAll(inputs);
-                ports.putAll(outputs);
-                List<JsonObject> bindings = exactBindings(summary,
-                        occurrence, instance);
-                result.add(instantiate(summary, occurrence, ports,
-                        bindings, rootCall));
-            }
-            if (result.isEmpty() || !foundCanonical) {
-                throw malformed(summary,
-                        "catalog has no canonical exact occurrence");
-            }
-            return result;
-        }
-
-        private static Map<String, String> portMap(
-                RelationSummary summary, JsonObject occurrence,
-                String field, Set<String> requiredCanonical) {
-            Map<String, String> result = new LinkedHashMap<>();
-            Set<String> exact = new LinkedHashSet<>();
-            for (JsonElement element : array(occurrence, field)) {
-                if (!element.isJsonObject()) {
-                    throw malformed(summary, "malformed " + field);
-                }
-                JsonObject row = element.getAsJsonObject();
-                String canonical = string(row, "canonicalPort");
-                String actual = string(row, "exactPort");
-                if (canonical.isEmpty() || actual.isEmpty()
-                        || result.putIfAbsent(canonical, actual) != null
-                        || !exact.add(actual)
-                        || !summary.regionId().equals(regionOf(actual))) {
-                    throw malformed(summary, "ambiguous " + field);
-                }
-            }
-            if (!result.keySet().containsAll(requiredCanonical)) {
-                throw malformed(summary, field
-                        + " does not cover the relation ports");
-            }
-            return result;
-        }
-
-        private static List<JsonObject> exactBindings(
-                RelationSummary summary, JsonObject occurrence,
-                String instance) {
-            Set<String> ids = new LinkedHashSet<>();
-            for (JsonElement element : array(occurrence, "bindingIds")) {
-                if (!element.isJsonPrimitive()
-                        || !element.getAsJsonPrimitive().isString()
-                        || firstNonBlank(element.getAsString()).isEmpty()
-                        || !ids.add(element.getAsString().trim())) {
-                    throw malformed(summary,
-                            "ambiguous exact binding id at " + instance);
-                }
-            }
-            Set<String> touchingIds = new LinkedHashSet<>();
-            List<JsonObject> result = new ArrayList<>();
-            for (JsonObject binding : summary.edgeBindings()) {
-                if (!instance.equals(bindingSourceInstance(binding))
-                        && !instance.equals(bindingTargetInstance(binding))) {
-                    continue;
-                }
-                String edgeId = string(binding, "edgeId");
-                if (edgeId.isEmpty()) {
-                    throw malformed(summary,
-                            "exact edge binding has no id at " + instance);
-                }
-                touchingIds.add(edgeId);
-                if (ids.contains(edgeId)) result.add(binding.deepCopy());
-            }
-            if (!ids.equals(touchingIds)) {
-                throw malformed(summary,
-                        "binding-id ledger is incomplete at " + instance);
-            }
-            return result;
-        }
-
-        private static RelationSummary instantiate(
-                RelationSummary summary, JsonObject occurrence,
-                Map<String, String> ports, List<JsonObject> bindings,
-                long rootCall) {
-            JsonObject row = summary.toJson();
-            String instance = string(occurrence, "regionInstanceId");
-            row.addProperty("summaryId", summary.summaryId() + ".OCC."
-                    + sha256(instance).substring(0, 16));
-            row.addProperty("regionInstanceId", instance);
-            row.addProperty("rootCallId", rootCall);
-
-            JsonObject closure = remap(row.get(
-                    OutputClosureContract.FIELD), ports).getAsJsonObject();
-            JsonObject producer = object(closure, "producer");
-            producer.addProperty("regionInstanceId", instance);
-            producer.addProperty("rootCallId", rootCall);
-            row.add(OutputClosureContract.FIELD, closure);
-            if (row.has("regionRelation")) {
-                row.add("regionRelation", remap(row.get("regionRelation"),
-                        ports));
-            }
-            if (row.has("outputExpressions")) {
-                row.add("outputExpressions", remap(
-                        row.get("outputExpressions"), ports));
-            }
-            JsonArray exact = new JsonArray();
-            for (JsonObject binding : bindings) exact.add(binding);
-            row.add("edgeBindings", exact);
-            return RelationSummary.decode(row);
-        }
-
-        private static JsonElement remap(JsonElement value,
-                                         Map<String, String> ports) {
-            return PortAlphaRenaming.remap(value, ports,
-                    "occurrence port remap collides at ");
-        }
-
-        private static IllegalArgumentException malformed(
-                RelationSummary summary, String issue) {
-            return new IllegalArgumentException(
-                    "malformed occurrence catalog for "
-                            + summary.summaryId() + ": " + issue);
-        }
     }
 
     private static final class SummaryIndex {
@@ -1311,9 +1117,9 @@ public final class ConcolicSmtComposer {
                 pathOrdinal++;
             }
             String fatalInstance = firstNonBlank(
-                    string(fatal, "regionInstanceId"),
+                    string(fatal, "occurrenceId"),
                     string(object(fatal, "symbolicContext"),
-                            "regionInstanceId"));
+                            "occurrenceId"));
             Map<String, Demand> selected = new LinkedHashMap<>();
             for (AbsenceRead read : reads) {
                 PortOccurrence target = new PortOccurrence(
@@ -1989,7 +1795,7 @@ public final class ConcolicSmtComposer {
             // This identity is local to the exact selected occurrence.  The
             // member token names one put inside the state; it must never
             // split one container timeline into a channel per member.
-            return summary.regionInstanceId() + "\n" + preStatePort
+            return summary.occurrenceId() + "\n" + preStatePort
                     + "\n" + postStatePort;
         }
     }
@@ -2050,7 +1856,7 @@ public final class ConcolicSmtComposer {
         private final Set<String> suppliedInputs = new LinkedHashSet<>();
         private final Set<PortOccurrence> suppliedInputOccurrences =
                 new LinkedHashSet<>();
-        private final Map<String, JsonObject> canonicalPortOccurrences =
+        private final Map<String, JsonObject> portOccurrences =
                 new LinkedHashMap<>();
         /**
          * Solver terms read by the final branch condition of each fatal
@@ -3049,7 +2855,7 @@ public final class ConcolicSmtComposer {
                 String nullnessSolverTerm) {
             JsonObject row = new JsonObject();
             row.addProperty("portId", occurrence.portId);
-            row.addProperty("regionInstanceId",
+            row.addProperty("occurrenceId",
                     occurrence.invocation.instanceId);
             row.addProperty("sort", sort.name());
             row.addProperty("portTerm", portName(occurrence));
@@ -3058,13 +2864,13 @@ public final class ConcolicSmtComposer {
                     && !"false".equals(nullnessSolverTerm)) {
                 row.addProperty("nullnessSolverTerm", nullnessSolverTerm);
             }
-            canonicalPortOccurrences.put(occurrence + "\u0000" + sort.name(),
+            portOccurrences.put(occurrence + "\u0000" + sort.name(),
                     row);
         }
 
-        private JsonArray canonicalPortOccurrences() {
+        private JsonArray portOccurrences() {
             List<Map.Entry<String, JsonObject>> rows = new ArrayList<>(
-                    canonicalPortOccurrences.entrySet());
+                    portOccurrences.entrySet());
             rows.sort(Map.Entry.comparingByKey());
             JsonArray result = new JsonArray();
             for (Map.Entry<String, JsonObject> row : rows) {
@@ -3139,7 +2945,7 @@ public final class ConcolicSmtComposer {
                                 operand.pathOrdinal, "true"));
                 if (exactOccurrence) {
                     row.addProperty("portId", exactLineage.portId);
-                    row.addProperty("regionInstanceId",
+                    row.addProperty("occurrenceId",
                             exactLineage.invocation.instanceId);
                     row.addProperty("producerLineageStatus",
                             "EXACT_TARGET_PORT_OCCURRENCE");
@@ -4312,7 +4118,7 @@ public final class ConcolicSmtComposer {
             }
 
             InvocationKey canonical = new InvocationKey(
-                    selected.regionId(), selected.regionInstanceId());
+                    selected.regionId(), selected.occurrenceId());
             Map<String, String> recurrence = timelineRecurrencePairs(
                     selected, timeline);
             Set<String> frozen = timelineFrozenInputs(selected,
@@ -4335,7 +4141,7 @@ public final class ConcolicSmtComposer {
             for (int ordinal = 0; ordinal < timeline.bound; ordinal++) {
                 InvocationKey invocation = ordinal == 0 ? canonical
                         : new InvocationKey(selected.regionId(),
-                        selected.regionInstanceId() + "#boundedStep"
+                        selected.occurrenceId() + "#boundedStep"
                                 + ordinal);
                 regionSummary(selected, invocation, "bounded-step-"
                         + ordinal);
@@ -4568,7 +4374,7 @@ public final class ConcolicSmtComposer {
 
         private void regionSummary(RelationSummary selected) {
             regionSummary(selected, new InvocationKey(selected.regionId(),
-                    selected.regionInstanceId()), "selected");
+                    selected.occurrenceId()), "selected");
         }
 
         private void regionSummary(RelationSummary selected,
@@ -4786,9 +4592,7 @@ public final class ConcolicSmtComposer {
                 if (!element.isJsonObject()) continue;
                 JsonObject access = element.getAsJsonObject();
                 if (longInteger(access, "eventSeq", -1L)
-                        != selectedEvent
-                        || longInteger(access, "rootCallId", -1L)
-                        != closure.producer().rootCallId()) {
+                        != selectedEvent) {
                     continue;
                 }
                 selectedAccess = access;
@@ -5574,7 +5378,7 @@ public final class ConcolicSmtComposer {
                 result.addProperty("solverSort", solverSort.smt);
                 result.addProperty("assertionName", assertionName);
                 result.addProperty("targetPortId", target.portId);
-                result.addProperty("targetRegionInstanceId",
+                result.addProperty("targetOccurrenceId",
                         target.invocation.instanceId);
                 return result;
             }
@@ -5643,7 +5447,7 @@ public final class ConcolicSmtComposer {
             for (RelationSummary selection : selections) {
                 InvocationKey previous = enterInvocation(new InvocationKey(
                         selection.regionId(),
-                        selection.regionInstanceId()));
+                        selection.occurrenceId()));
                 try {
                     JsonObject summary = selection.toJson();
                     for (String output
@@ -5658,7 +5462,7 @@ public final class ConcolicSmtComposer {
                         collectExpressionInputPorts(expression,
                                 selection.regionId(), consumedInputs);
                         emitExactCausalInputAliasesForMember(selection, slice,
-                                selection.outputClosure().causalEdges(),
+                                selection.edgeBindings(),
                                 consumedInputs);
                     }
                 } finally {
@@ -5681,7 +5485,7 @@ public final class ConcolicSmtComposer {
 
             List<PortOccurrence> sources = new ArrayList<>();
             for (PortOccurrence input : validatedIncomingEdgeInputs) {
-                if (selection.regionInstanceId().equals(
+                if (selection.occurrenceId().equals(
                         input.invocation.instanceId)
                         && selection.regionId().equals(regionOf(input.portId))
                         && exactCells.containsKey(input.portId)) {
@@ -6677,7 +6481,7 @@ public final class ConcolicSmtComposer {
         private Path manifest;
         private Path runtimePlan;
         private String fatalRegion = "";
-        private String regionInstanceId = "";
+        private String occurrenceId = "";
         private String compositionMode = "CLOSED_PATH_SET";
 
         public static Arguments parse(String[] argv) {
@@ -6703,8 +6507,8 @@ public final class ConcolicSmtComposer {
                     result.runtimePlan = Paths.get(value);
                 } else if ("fatal-region".equals(key)) {
                     result.fatalRegion = firstNonBlank(value);
-                } else if ("region-instance-id".equals(key)) {
-                    result.regionInstanceId = firstNonBlank(value);
+                } else if ("occurrence-id".equals(key)) {
+                    result.occurrenceId = firstNonBlank(value);
                 } else if ("composition-mode".equals(key)) {
                     result.compositionMode = firstNonBlank(value);
                 } else {

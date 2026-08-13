@@ -75,6 +75,33 @@ public class RelationSummaryTest {
     }
 
     @Test
+    public void partialMergeContainsOnlySuccessfulGuardedCases() {
+        JsonObject summary = versionedSummary(1);
+        PathObservation path = PathObservation.decode(summary, null);
+
+        JsonObject merged = RelationSummary.observedPathMerge(
+                OutputClosureCodec.decode(summary),
+                Collections.singletonList(path),
+                Collections.<JsonObject>emptyList(),
+                "PARTIAL", "CLOSED", true).toJson();
+
+        assertEquals("PARTIAL",
+                merged.get("pathCoverageState").getAsString());
+        JsonObject coverage = merged.getAsJsonObject("pathCoverage");
+        assertEquals("PARTIAL",
+                coverage.get("coverageState").getAsString());
+        JsonArray cases = merged.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases");
+        assertEquals(1, cases.size());
+        assertTrue(cases.get(0).getAsJsonObject()
+                .getAsJsonObject("outputExpressions").has(port()));
+        assertEquals("CONTRACT.V",
+                RelationSummary.decode(merged).relationContractHash());
+        assertEquals("RELATION.V",
+                RelationSummary.decode(merged).relationKey());
+    }
+
+    @Test
     public void referenceIdentityPortsCountTowardTheExactOutputSet() {
         JsonObject summary = versionedSummary(2);
         JsonObject identity = new JsonObject();
@@ -231,7 +258,6 @@ public class RelationSummaryTest {
 
     private static JsonObject versionedSummary(int versionCount) {
         String region = "REGION.V";
-        String instance = region + "@test#call1";
         String cell = "<test.State: int value0>";
         String site = "<test.Worker: void run()>#u1";
 
@@ -245,19 +271,19 @@ public class RelationSummaryTest {
         slice.add("causalEdgeIds", new JsonArray());
         slice.add("captureBindings", new JsonArray());
         slice.add("captureBindingIssues", new JsonArray());
-        slice.add("causalEdges", new JsonArray());
 
         JsonObject summary = new JsonObject();
         summary.addProperty("taskId", "TASK.V");
         summary.addProperty("goalId", "GOAL.V");
         summary.addProperty("regionId", region);
-        summary.addProperty("regionInstanceId", instance);
+        summary.addProperty("sourceKey", "NAMENODE/active/epoch-0");
+        summary.addProperty("occurrenceId", "REGION.V/occurrence-1");
         ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(summary);
         LoopBoundPolicy.cfgBackedges(
                 LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS).writeTo(summary);
         OutputClosureCodec.writeTo(summary, OutputClosureCodec.singleton(
-                region, instance, 1L, port(), cell, "HEAP_STATE", "int",
-                slice));
+                "RELATION.V", region, "CONTRACT.V", port(), cell,
+                "HEAP_STATE", "int", slice));
         summary.add("symbolicInputs", new JsonArray());
         summary.add("edgeBindings", new JsonArray());
         summary.add("pathCondition", new JsonArray());

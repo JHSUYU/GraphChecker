@@ -60,14 +60,16 @@ public class RegionPathWorklistTest {
         assertTrue(complemented.tasks.isEmpty());
 
         fatal.addProperty("selectedOccurrence", 2);
-        RegionPathWorklist.Result pending = RegionPathWorklist.plan(
+        RegionPathWorklist.Result recordOnly = RegionPathWorklist.plan(
                 Collections.singletonList(reached),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
-        assertEquals(RegionPathWorklist.State.PENDING.name(),
-                pending.manifest.get("state").getAsString());
-        assertEquals(1, pending.tasks.size());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                recordOnly.manifest.get("state").getAsString());
+        assertEquals("CLOSED", recordOnly.manifest.get(
+                "coverageState").getAsString());
+        assertTrue(recordOnly.tasks.isEmpty());
     }
 
     @Test
@@ -152,6 +154,10 @@ public class RegionPathWorklistTest {
         assertEquals("IMPORTED_VM_PATH_UNDERAPPROX_V1",
                 coverage.get("authority").getAsString());
         assertFalse(coverage.get("complete").getAsBoolean());
+        assertEquals("SEED_ONLY",
+                coverage.get("coverageState").getAsString());
+        assertEquals("SEED_ONLY", result.manifest.get(
+                "coverageState").getAsString());
         assertEquals(1, coverage.get("observedPathCount").getAsInt());
         JsonObject observedRelation = observed.getAsJsonObject(
                 "regionRelation");
@@ -190,12 +196,9 @@ public class RegionPathWorklistTest {
                 Collections.singletonList(targetTask),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
-        assertEquals(2, targetResult.tasks.size());
-        for (JsonObject task : targetResult.tasks) {
-            assertEquals("TARGET_REACH_CLOSURE",
-                    task.get("goalKind").getAsString());
-            assertFalse(task.has("outputClosure"));
-        }
+        assertTrue(targetResult.tasks.isEmpty());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                targetResult.manifest.get("state").getAsString());
         assertTrue(targetResult.relations.isEmpty());
         assertTrue(targetResult.observedRelations.isEmpty());
         assertEquals("TARGET_REACH_CLOSURE",
@@ -227,7 +230,8 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(result.tasks.isEmpty());
-        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+        assertEquals(result.manifest.toString(),
+                RegionPathWorklist.State.CLOSED.name(),
                 result.manifest.get("state").getAsString());
         assertEquals(1, result.relations.size());
         JsonObject merged = result.relations.get(0);
@@ -263,9 +267,7 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void closedManifestNamesTheUniqueCanonicalActivation() {
-        // Reach-query construction attests that the closure and its seed
-        // query describe one canonical replay activation.
+    public void closedManifestDoesNotPublishTransientActivationIdentity() {
         JsonObject targetSummary = summary("ACT.MANIFEST.INSTANCE",
                 ClosureGoalKind.TARGET_REACH_CLOSURE);
         JsonObject targetTask = executionTask("ACT.MANIFEST.INSTANCE",
@@ -283,10 +285,37 @@ public class RegionPathWorklistTest {
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
-        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+        assertEquals(result.manifest.toString(),
+                RegionPathWorklist.State.CLOSED.name(),
                 result.manifest.get("state").getAsString());
-        assertEquals("REGION.3@canonical#call7",
-                result.manifest.get("regionInstanceId").getAsString());
+        assertFalse(result.manifest.has("regionInstanceId"));
+    }
+
+    @Test
+    public void distinctTargetOccurrencesAreNotMerged() {
+        JsonObject first = summary("ACT.TARGET.OCCURRENCE.A",
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        JsonObject firstTask = executionTask("ACT.TARGET.OCCURRENCE.A",
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        JsonObject second = summary("ACT.TARGET.OCCURRENCE.B",
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        JsonObject secondTask = executionTask("ACT.TARGET.OCCURRENCE.B",
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        for (JsonObject value : Arrays.asList(first, firstTask, second,
+                secondTask)) value.remove("outputClosure");
+        shareGoal(first, firstTask, second, secondTask);
+        second.addProperty("occurrenceId", "REGION.3/occurrence-2");
+        secondTask.addProperty("occurrenceId", "REGION.3/occurrence-2");
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Arrays.asList(first, second), Arrays.asList(firstTask,
+                        secondTask), Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                result.manifest.get("state").getAsString());
+        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
+                .contains("MULTIPLE_EXPLORATION_SCOPE"));
     }
 
     @Test
@@ -453,7 +482,7 @@ public class RegionPathWorklistTest {
                 incomplete.manifest.get("state").getAsString());
         assertTrue(incomplete.relations.isEmpty());
         assertTrue(incomplete.manifest.getAsJsonArray("gaps").toString()
-                .contains("JOINT_OUTPUT_EXPRESSION_SET_MISMATCH"));
+                .contains("OUTPUT_EXPRESSION_SET_MISMATCH"));
 
         summary.getAsJsonObject("outputExpressions").add(
                 "REGION.3.out.1", binary("-", 1));
@@ -562,13 +591,13 @@ public class RegionPathWorklistTest {
         assertEquals("SITE.1", sourceSite(task));
         assertTrue(task.has("outputClosure"));
         assertFalse(task.has("requestedOutput"));
-        assertEquals("REGION.3@test#call7",
+        assertEquals("RELATION.REGION.3",
                 OutputClosureCodec.decodeEnvelope(task.getAsJsonObject(
                         "outputClosure")).producer()
-                        .regionInstanceId());
-        assertEquals(7, OutputClosureCodec.decodeEnvelope(
+                        .relationKey());
+        assertEquals("CONTRACT.REGION.3", OutputClosureCodec.decodeEnvelope(
                 task.getAsJsonObject("outputClosure")).producer()
-                .rootCallId());
+                .contractHash());
         assertEquals(OutputClosureCodec.decodeEnvelope(
                         task.getAsJsonObject("outputClosure")).demandKey(),
                 OutputClosureCodec.decode(result.manifest).demandKey());
@@ -680,6 +709,10 @@ public class RegionPathWorklistTest {
                 "<P: int y>", "PROOF.A", "SITE.1");
         attachClosure(otherDemandSummary, otherDemand);
         attachClosure(otherDemandTask, otherDemand);
+        otherDemandSummary.getAsJsonObject("outputExpressions")
+                .add("REGION.3.out.1", otherDemandSummary
+                        .getAsJsonObject("outputExpressions")
+                        .remove("REGION.3.out.0"));
         RegionPathWorklist.Result third = RegionPathWorklist.plan(
                 Collections.singletonList(otherDemandSummary),
                 Collections.singletonList(otherDemandTask),
@@ -696,7 +729,7 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void unsupportedFlipClosesAsNamedExplorationGap() {
+    public void unsupportedFlipKeepsSeedOnlyRelationWithNamedGap() {
         JsonObject summary = summary("ACT.CLOSURE.UNSUPPORTED",
                 ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         JsonObject task = executionTask("ACT.CLOSURE.UNSUPPORTED",
@@ -732,7 +765,17 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
         assertEquals(RegionPathWorklist.State.CLOSED.name(),
                 closed.manifest.get("state").getAsString());
+        assertEquals("SEED_ONLY", closed.manifest.get(
+                "coverageState").getAsString());
         assertTrue(closed.tasks.isEmpty());
+        assertTrue(closed.relations.isEmpty());
+        assertEquals(1, closed.observedRelations.size());
+        assertEquals("SEED_ONLY", closed.observedRelations.get(0)
+                .getAsJsonObject("pathCoverage")
+                .get("coverageState").getAsString());
+        assertEquals(1, closed.observedRelations.get(0)
+                .getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").size());
         assertTrue(closed.manifest.getAsJsonArray("gaps").isEmpty());
         JsonArray explorationGaps = closed.manifest
                 .getAsJsonArray("explorationGaps");
@@ -748,7 +791,7 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void rejectedFlipReplayClosesAsNamedExplorationGap() {
+    public void rejectedFlipReplayKeepsSeedOnlyRelationWithNamedGap() {
         JsonObject summary = summary("ACT.CLOSURE.REJECTED",
                 ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         JsonObject task = executionTask("ACT.CLOSURE.REJECTED",
@@ -781,7 +824,11 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
         assertEquals(RegionPathWorklist.State.CLOSED.name(),
                 closed.manifest.get("state").getAsString());
+        assertEquals("SEED_ONLY", closed.manifest.get(
+                "coverageState").getAsString());
         assertTrue(closed.tasks.isEmpty());
+        assertTrue(closed.relations.isEmpty());
+        assertEquals(1, closed.observedRelations.size());
         assertTrue(closed.manifest.getAsJsonArray("gaps").isEmpty());
         JsonArray explorationGaps = closed.manifest
                 .getAsJsonArray("explorationGaps");
@@ -793,6 +840,48 @@ public class RegionPathWorklistTest {
                 gap.get("queryKey").getAsString());
         assertEquals("bounded replay produced no output relation",
                 gap.get("reason").getAsString());
+    }
+
+    @Test
+    public void successfulReplayWithAlignmentGapsFormsPartialRelation() {
+        JsonObject seed = summary("ACT.PARTIAL.SEED",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject seedTask = executionTask("ACT.PARTIAL.SEED",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject replay = summary("ACT.PARTIAL.REPLAY",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject replayTask = executionTask("ACT.PARTIAL.REPLAY",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        shareGoal(seed, seedTask, replay, replayTask);
+        replayTask.addProperty("pathQueryKey", "QUERY.REPLAY");
+        replay.getAsJsonObject("outputExpressions").add(
+                "REGION.3.out.0", binary("+", 6));
+        JsonArray alignment = new JsonArray();
+        for (String kind : Arrays.asList("LOOP_ALIGNMENT_GAP",
+                "READ_FROM_ALIGNMENT_GAP", "RPC_SHAPE_GAP")) {
+            JsonObject gap = new JsonObject();
+            gap.addProperty("kind", kind);
+            gap.addProperty("reason", "best-effort skeleton deviation");
+            alignment.add(gap);
+        }
+        replay.add("alignmentGaps", alignment);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Arrays.asList(seed, replay), Arrays.asList(seedTask,
+                        replayTask), Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals("PARTIAL",
+                result.manifest.get("coverageState").getAsString());
+        assertEquals(3, result.manifest.getAsJsonArray(
+                "coverageGaps").size());
+        assertTrue(result.relations.isEmpty());
+        assertEquals(1, result.observedRelations.size());
+        JsonObject merged = result.observedRelations.get(0);
+        assertEquals("PARTIAL", merged.getAsJsonObject("pathCoverage")
+                .get("coverageState").getAsString());
+        assertEquals(2, merged.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").size());
     }
 
     @Test
@@ -910,24 +999,6 @@ public class RegionPathWorklistTest {
         slice.add("inputBindings", bindings);
         slice.getAsJsonArray("sites").add("SITE.RUNTIME.ONLY");
 
-        JsonArray edges = new JsonArray();
-        JsonObject value = new JsonObject();
-        value.addProperty("edgeId", "DF.INPUT");
-        value.addProperty("transferKind", "VALUE_PASS");
-        value.addProperty("fromCell", "<P: int input>");
-        value.addProperty("toCell", "<P: int result>::symbolic");
-        edges.add(value);
-        JsonObject guard = new JsonObject();
-        guard.addProperty("edgeId", "DF.LOOP.GUARD");
-        guard.addProperty("transferKind", "GUARD");
-        guard.addProperty("siteId", "SITE.LOOP");
-        guard.addProperty("guardSiteId", "SITE.LOOP");
-        guard.addProperty("fromCell", symbolicGuard
-                ? "<P: int result>::symbolic"
-                : "<P: int result>::loopIndex");
-        guard.addProperty("toCell", "<P: int result>");
-        edges.add(guard);
-        closure.add("causalEdges", edges);
         JsonArray edgeIds = new JsonArray();
         edgeIds.add("DF.INPUT");
         edgeIds.add("DF.LOOP.GUARD");
@@ -961,10 +1032,9 @@ public class RegionPathWorklistTest {
     private static JsonObject outputClosure(
             String port, String cell, String proofTag, String... sites) {
         JsonObject producer = new JsonObject();
+        producer.addProperty("relationKey", "RELATION.REGION.3");
         producer.addProperty("regionId", "REGION.3");
-        producer.addProperty("regionInstanceId",
-                "REGION.3@test#call7");
-        producer.addProperty("rootCallId", 7);
+        producer.addProperty("contractHash", "CONTRACT.REGION.3");
 
         JsonObject output = new JsonObject();
         output.addProperty("portId", port);
@@ -993,10 +1063,9 @@ public class RegionPathWorklistTest {
         JsonArray members = new JsonArray();
         members.add(member);
         JsonObject closure = new JsonObject();
-        closure.addProperty("schemaVersion", 2);
+        closure.addProperty("schemaVersion", 3);
         closure.addProperty("kind", "OUTPUT_CLOSURE_CONTRACT");
         closure.add("producer", producer);
-        closure.add("causalEdges", new JsonArray());
         closure.add("members", members);
         return closure;
     }
@@ -1004,9 +1073,10 @@ public class RegionPathWorklistTest {
     private static void attachClosure(JsonObject artifact,
                                       JsonObject closure) {
         artifact.remove("requestedOutput");
-        artifact.addProperty("regionInstanceId",
-                "REGION.3@test#call7");
-        artifact.addProperty("rootCallId", 7);
+        artifact.addProperty("relationKey", closure.getAsJsonObject(
+                "producer").get("relationKey").getAsString());
+        artifact.addProperty("relationContractHash", closure.getAsJsonObject(
+                "producer").get("contractHash").getAsString());
         artifact.add("outputClosure", closure.deepCopy());
     }
 
@@ -1024,6 +1094,8 @@ public class RegionPathWorklistTest {
         task.addProperty("goalId", id + ".GOAL");
         task.addProperty("taskId", "TASK." + id);
         task.addProperty("regionId", "REGION.3");
+        task.addProperty("sourceKey", "NAMENODE/active/epoch-0");
+        task.addProperty("occurrenceId", "REGION.3/occurrence-1");
         LoopBoundPolicy.cfgBackedges(8).writeTo(task);
         goal.writeToTask(task);
         attachClosure(task, outputClosure("REGION.3.out.0",
@@ -1038,6 +1110,8 @@ public class RegionPathWorklistTest {
         summary.addProperty("goalId", id + ".GOAL");
         summary.addProperty("taskId", "TASK." + id);
         summary.addProperty("regionId", "REGION.3");
+        summary.addProperty("sourceKey", "NAMENODE/active/epoch-0");
+        summary.addProperty("occurrenceId", "REGION.3/occurrence-1");
         LoopBoundPolicy.cfgBackedges(8).writeTo(summary);
         summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", true);
@@ -1054,7 +1128,13 @@ public class RegionPathWorklistTest {
         mappings.add(mapping("SITE.0", 0));
         mappings.add(mapping("SITE.1", 1));
         summary.add("branchMappings", mappings);
-        summary.add("outputExpressions", new JsonObject());
+        JsonObject outputs = new JsonObject();
+        JsonObject value = new JsonObject();
+        value.addProperty("_type", "ConstExpr");
+        value.addProperty("_java_type", "I");
+        value.addProperty("_exp", "Y_I_0");
+        outputs.add("REGION.3.out.0", value);
+        summary.add("outputExpressions", outputs);
         authorizeVmPcMappings(summary);
         return summary;
     }

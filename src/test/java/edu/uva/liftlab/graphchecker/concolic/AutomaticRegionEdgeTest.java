@@ -139,10 +139,10 @@ public class AutomaticRegionEdgeTest {
         binding.addProperty("mappingId", "example.rpc.response");
         binding.addProperty("fromRegion", "REGION.server");
         binding.addProperty("toRegion", "REGION.client");
-        binding.addProperty("fromRegionInstance",
-                "REGION.server@test#call22");
-        binding.addProperty("toRegionInstance",
-                "REGION.client@test#call11");
+        binding.addProperty("fromOccurrenceId",
+                "cluster/server#epoch0/region/REGION.server#1");
+        binding.addProperty("toOccurrenceId",
+                "cluster/client#epoch0/region/REGION.client#1");
         binding.addProperty("fromOutputPort", "REGION.server.out.response");
         binding.addProperty("toInputPort", "REGION.client.in.response");
         binding.addProperty("correlationAuthority",
@@ -158,8 +158,10 @@ public class AutomaticRegionEdgeTest {
         binding.addProperty("schemaVersion", 3);
         binding.addProperty("evidenceKind",
                 "FIELD_ASSIGNMENT_READ_FROM_V1");
-        binding.addProperty("fromRegionInstance", "REGION.writer@call1");
-        binding.addProperty("toRegionInstance", "REGION.reader@call2");
+        binding.addProperty("fromOccurrenceId",
+                "cluster/writer#epoch0/region/REGION.writer#1");
+        binding.addProperty("toOccurrenceId",
+                "cluster/reader#epoch0/region/REGION.reader#1");
         binding.addProperty("fromOutputPort", "REGION.writer.out.value");
         binding.addProperty("toInputPort", "REGION.reader.in.value");
         binding.addProperty("correlationAuthority",

@@ -72,10 +72,9 @@ public class ConcolicInstrumentationSelectionsTest {
         captures.add(capture);
         slice.add("captureBindings", captures);
         slice.add("captureBindingIssues", new JsonArray());
-        slice.add("causalEdges", new JsonArray());
 
         OutputClosureContract closure = OutputClosureCodec.singleton(
-                "REGION.P", "REGION.P@test#call1", 1,
+                "REL.REGION.P", "REGION.P", "CONTRACT.TEST",
                 "REGION.P.out.key-id", LEAF, "HEAP_STATE", "int", slice);
         return OutputClosureCodec.captureSpecs(closure).get(0);
     }

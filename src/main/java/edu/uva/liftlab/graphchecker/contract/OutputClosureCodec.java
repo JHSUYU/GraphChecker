@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -15,6 +16,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.UUID;
 
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.validFieldDescriptor;
@@ -22,9 +25,9 @@ import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.va
 /**
  * Versioned structural codec for {@link OutputClosureContract}.
  *
- * <p>The codec proves wire shape, invocation identity and direct endpoint
- * consistency.  It intentionally does not repeat Scheduler/Importer dynamic
- * capture and materialization proofs.</p>
+ * <p>The codec proves wire shape, relation identity and direct endpoint
+ * consistency. Dynamic occurrence identity belongs to the causal skeleton,
+ * not to this reusable relation contract.</p>
  */
 public final class OutputClosureCodec {
     private static final Set<String> OUTPUT_KINDS = set(
@@ -71,6 +74,11 @@ public final class OutputClosureCodec {
                                 + field);
             }
         }
+        rejectField(artifact, "occurrenceInstantiationCatalog");
+        rejectField(artifact, "executionOccurrence");
+        rejectField(artifact, "logicalRegionId");
+        rejectField(artifact, "logicalInstanceCount");
+        rejectField(artifact, "summaryReuseKey");
     }
 
     public static OutputClosureContract decodeEnvelope(JsonObject envelope) {
@@ -78,13 +86,15 @@ public final class OutputClosureCodec {
                 OutputClosureContract.SCHEMA_VERSION);
         requireText(envelope, "kind", OutputClosureContract.KIND);
         JsonObject scope = requireObject(envelope, "producer");
+        rejectField(scope, "regionInstanceId");
+        rejectField(scope, "rootCallId");
+        rejectField(envelope, "causalEdges");
         OutputClosureContract.Producer producer =
                 new OutputClosureContract.Producer(
+                        requireText(scope, "relationKey"),
                         requireText(scope, "regionId"),
-                        requireText(scope, "regionInstanceId"),
-                        requireLong(scope, "rootCallId"));
+                        requireText(scope, "contractHash"));
 
-        List<JsonObject> causalEdges = causalEdges(envelope);
         JsonArray rows = requireArray(envelope, "members");
         if (rows.size() == 0) {
             throw new IllegalArgumentException(
@@ -101,12 +111,12 @@ public final class OutputClosureCodec {
             producer.requireOutputPort(member.portId());
             members.add(member);
         }
-        return new OutputClosureContract(producer, members, causalEdges);
+        return new OutputClosureContract(producer, members);
     }
 
     /**
-     * Combines already decoded singleton contracts without hand-building JSON.
-     * Exact duplicate members collapse; conflicting duplicates fail closed.
+     * Combines already decoded contracts. Exact duplicates collapse; observed
+     * versions of one port become alternate captures plus an alignment gap.
      */
     public static OutputClosureContract merge(
             Collection<OutputClosureContract> contracts) {
@@ -117,7 +127,6 @@ public final class OutputClosureCodec {
         OutputClosureContract.Producer producer = null;
         Map<String, OutputClosureContract.Member> members =
                 new LinkedHashMap<>();
-        Map<String, JsonObject> causalEdges = new LinkedHashMap<>();
         for (OutputClosureContract contract : contracts) {
             if (contract == null) {
                 throw new IllegalArgumentException(
@@ -126,29 +135,120 @@ public final class OutputClosureCodec {
             if (producer == null) producer = contract.producer();
             else if (!producer.sameAs(contract.producer())) {
                 throw new IllegalArgumentException(
-                        "cannot merge different producer invocations");
+                    "cannot merge different producer relations");
             }
             for (OutputClosureContract.Member member : contract.members()) {
                 OutputClosureContract.Member prior =
                         members.putIfAbsent(member.portId(), member);
-                if (prior != null && !CanonicalJson.render(prior.toJson())
-                        .equals(CanonicalJson.render(member.toJson()))) {
-                    throw new IllegalArgumentException(
-                            "conflicting output member " + member.portId());
-                }
-            }
-            for (JsonObject edge : contract.causalEdges()) {
-                String id = requireText(edge, "edgeId");
-                JsonObject prior = causalEdges.putIfAbsent(id, edge);
-                if (prior != null && !CanonicalJson.render(prior)
-                        .equals(CanonicalJson.render(edge))) {
-                    throw new IllegalArgumentException(
-                            "conflicting causal edge " + id);
+                if (prior != null) {
+                    members.put(member.portId(), mergeMember(prior,
+                            member));
                 }
             }
         }
-        return new OutputClosureContract(producer, members.values(),
-                causalEdges.values());
+        return new OutputClosureContract(producer, members.values());
+    }
+
+    private static OutputClosureContract.Member mergeMember(
+            OutputClosureContract.Member left,
+            OutputClosureContract.Member right) {
+        JsonObject first = left.toJson();
+        JsonObject second = right.toJson();
+        JsonObject firstOutput = first.getAsJsonObject("output");
+        JsonObject secondOutput = second.getAsJsonObject("output");
+        for (String field : Arrays.asList("outputSiteId",
+                "outputOccurrence", "replayOccurrence")) {
+            firstOutput.remove(field);
+            secondOutput.remove(field);
+        }
+        if (!firstOutput.equals(secondOutput)) {
+            throw new IllegalArgumentException(
+                    "conflicting output member " + left.portId());
+        }
+        JsonObject firstSlice = first.getAsJsonObject("slice");
+        JsonObject secondSlice = second.getAsJsonObject("slice");
+        TreeSet<String> changed = new TreeSet<>();
+        for (String field : SCOPE_ARRAYS) {
+            mergeStringArray(firstSlice, secondSlice, field);
+        }
+        mergeStringArray(firstSlice, secondSlice, "captureBindingIssues");
+        mergeCaptureBindings(firstSlice, secondSlice);
+        for (String field : Arrays.asList("activationLocalOccurrence",
+                "selectedRuntimeEventSeq", "captureAnchorPort",
+                "selectedFieldReceiverObjectId", "selectedProcess",
+                "branchReplay")) {
+            JsonElement a = firstSlice.remove(field);
+            JsonElement b = secondSlice.remove(field);
+            if (a == null ? b != null : !a.equals(b)) changed.add(field);
+        }
+        for (String field : differingFields(firstSlice, secondSlice)) {
+            if (!"alignmentGaps".equals(field)) changed.add(field);
+        }
+        if (!changed.isEmpty()) {
+            JsonArray gaps = firstSlice.has("alignmentGaps")
+                    ? firstSlice.getAsJsonArray("alignmentGaps")
+                    : new JsonArray();
+            JsonObject gap = new JsonObject();
+            gap.addProperty("kind", "OUTPUT_VERSION_ALIGNMENT_GAP");
+            gap.addProperty("reason", "observed output versions use "
+                    + "different replay details");
+            JsonArray fields = new JsonArray();
+            for (String field : changed) fields.add(field);
+            gap.add("fields", fields);
+            gaps.add(gap);
+            firstSlice.add("alignmentGaps", gaps);
+        }
+        return decodeMember(first, 0);
+    }
+
+    private static void mergeStringArray(JsonObject target,
+                                         JsonObject source, String field) {
+        TreeSet<String> values = new TreeSet<>();
+        for (JsonElement value : requireArray(target, field)) {
+            values.add(value.getAsString());
+        }
+        for (JsonElement value : requireArray(source, field)) {
+            values.add(value.getAsString());
+        }
+        JsonArray merged = new JsonArray();
+        for (String value : values) merged.add(value);
+        target.add(field, merged);
+        source.add(field, merged.deepCopy());
+    }
+
+    private static void mergeCaptureBindings(JsonObject target,
+                                             JsonObject source) {
+        Map<String, JsonObject> bindings = new LinkedHashMap<>();
+        for (JsonArray rows : Arrays.asList(
+                requireArray(target, "captureBindings"),
+                requireArray(source, "captureBindings"))) {
+            for (JsonElement element : rows) {
+                JsonObject binding = element.getAsJsonObject().deepCopy();
+                binding.remove("captureBindingId");
+                String key = CanonicalJson.render(binding);
+                binding.addProperty("captureBindingId", "CAPTURE."
+                        + UUID.nameUUIDFromBytes(key.getBytes(
+                        StandardCharsets.UTF_8)));
+                bindings.putIfAbsent(key, binding);
+            }
+        }
+        JsonArray merged = new JsonArray();
+        for (JsonObject binding : bindings.values()) merged.add(binding);
+        target.add("captureBindings", merged);
+        source.add("captureBindings", merged.deepCopy());
+    }
+
+    private static Set<String> differingFields(JsonObject left,
+                                                JsonObject right) {
+        TreeSet<String> result = new TreeSet<>();
+        TreeSet<String> fields = new TreeSet<>(left.keySet());
+        fields.addAll(right.keySet());
+        for (String field : fields) {
+            JsonElement a = left.get(field);
+            JsonElement b = right.get(field);
+            if (a == null ? b != null : !a.equals(b)) result.add(field);
+        }
+        return result;
     }
 
     /**
@@ -157,24 +257,17 @@ public final class OutputClosureCodec {
      * separate value; it never creates or decodes singular activation mirrors.
      */
     public static OutputClosureContract singleton(
-            String regionId, String regionInstanceId, long rootCallId,
+            String relationKey, String regionId, String contractHash,
             String portId, String cell, String kind,
             String javaType, JsonObject slice) {
         JsonObject normalizedSlice = slice == null
                 ? null : slice.deepCopy();
         JsonArray captures = requireArray(normalizedSlice,
                 "captureBindings");
-        JsonArray encodedEdges = requireArray(normalizedSlice,
-                "causalEdges");
-        List<JsonObject> causalEdges = new ArrayList<>();
-        for (int i = 0; i < encodedEdges.size(); i++) {
-            if (!encodedEdges.get(i).isJsonObject()) {
-                throw new IllegalArgumentException(
-                        "causalEdges[" + i + "] must be an object");
-            }
-            causalEdges.add(encodedEdges.get(i).getAsJsonObject());
+        if (normalizedSlice.has("causalEdges")) {
+            throw new IllegalArgumentException(
+                    "slice must reference external edges by causalEdgeIds");
         }
-        normalizedSlice.remove("causalEdges");
         String descriptor = javaTypeDescriptor(javaType);
         requireFieldDescriptor(descriptor, "requested output");
 
@@ -199,12 +292,12 @@ public final class OutputClosureCodec {
         member.add("slice", normalizedSlice);
 
         OutputClosureContract.Producer producer =
-                new OutputClosureContract.Producer(regionId,
-                        regionInstanceId, rootCallId);
+                new OutputClosureContract.Producer(relationKey, regionId,
+                        contractHash);
         OutputClosureContract.Member decoded = decodeMember(member, 0);
         producer.requireOutputPort(decoded.portId());
         return new OutputClosureContract(producer,
-                Collections.singletonList(decoded), causalEdges);
+                Collections.singletonList(decoded));
     }
 
     public static void writeTo(JsonObject activation,
@@ -258,19 +351,13 @@ public final class OutputClosureCodec {
     }
 
     /**
-     * Optional compatibility extension for repeated output/capture endpoints.
-     * Once any part declares it, the output and every capture must agree on
-     * the same positive activation-local ordinal and static site.  Dynamic
-     * call/event/object/value identifiers are intentionally not involved.
+     * If the reusable output endpoint itself declares one occurrence, every
+     * capture must agree. A merged best-effort member omits that declaration
+     * and lets each capture retain its own observed occurrence.
      */
     private static void validateOutputOccurrenceIdentity(
             JsonObject output, JsonArray bindings, String path) {
-        boolean declared = hasOutputOccurrenceIdentity(output);
-        for (JsonElement element : bindings) {
-            declared |= hasOutputOccurrenceIdentity(
-                    element.getAsJsonObject());
-        }
-        if (!declared) return;
+        if (!hasOutputOccurrenceIdentity(output)) return;
 
         String siteId = requireText(output, "outputSiteId");
         int occurrence = requireIntAtLeast(output,
@@ -458,34 +545,26 @@ public final class OutputClosureCodec {
         return result;
     }
 
-    private static List<JsonObject> causalEdges(JsonObject envelope) {
-        JsonArray encoded = requireArray(envelope, "causalEdges");
-        List<JsonObject> result = new ArrayList<>();
-        for (int i = 0; i < encoded.size(); i++) {
-            if (!encoded.get(i).isJsonObject()) {
-                throw new IllegalArgumentException(
-                        "causalEdges[" + i + "] must be an object");
-            }
-            JsonObject edge = encoded.get(i).getAsJsonObject();
-            requireText(edge, "edgeId");
-            result.add(edge);
-        }
-        return result;
-    }
-
     private static void validateOuterScope(
             JsonObject activation, OutputClosureContract.Producer producer) {
         if ((activation.has("regionId")
                 && !producer.regionId().equals(
                 requireText(activation, "regionId")))
-                || (activation.has("regionInstanceId")
-                && !producer.regionInstanceId().equals(
-                requireText(activation, "regionInstanceId")))
-                || (activation.has("rootCallId")
-                && producer.rootCallId()
-                != requireLong(activation, "rootCallId"))) {
+                || (activation.has("relationKey")
+                && !producer.relationKey().equals(
+                requireText(activation, "relationKey")))
+                || (activation.has("relationContractHash")
+                && !producer.contractHash().equals(
+                requireText(activation, "relationContractHash")))) {
             throw new IllegalArgumentException(
                     "outputClosure producer conflicts with artifact scope");
+        }
+    }
+
+    private static void rejectField(JsonObject object, String field) {
+        if (object != null && object.has(field)) {
+            throw new IllegalArgumentException(
+                    "retired output closure field " + field);
         }
     }
 

@@ -40,7 +40,11 @@ public class ConcolicSummaryImporterTest {
         task.addProperty("taskId", "TASK.CUT");
         task.addProperty("goalId", "GOAL.CUT");
         task.addProperty("regionId", "REGION.CUT");
-        task.addProperty("regionInstanceId", "REGION.CUT@test#call1");
+        task.addProperty("sourceKey", "test/source#epoch0");
+        task.addProperty("occurrenceId",
+                "test/source#epoch0/region/REGION.CUT#1");
+        task.addProperty("relationKey", "test/source/REGION.CUT");
+        task.addProperty("relationContractHash", "CONTRACT.CUT");
         ClosureGoalKind.TARGET_REACH_CLOSURE.writeToTask(task);
         task.add("inputActions", new JsonArray());
         task.add("branches", new JsonArray());
@@ -481,6 +485,36 @@ public class ConcolicSummaryImporterTest {
         assertTrue(diagnostic.get("detail").getAsString()
                 .contains("OUTPUT_CAPTURE_VERSION_COLLISION:"
                         + "REGION.BOUNDARY.out.0:1"));
+    }
+
+    @Test
+    public void identicalOutputVersionOrdinalsAreDeduplicated()
+            throws Exception {
+        Path directory = folder.newFolder("version-duplicate").toPath();
+        Path results = directory.resolve("results.jsonl");
+        Path tasks = directory.resolve("tasks.jsonl");
+        Path regions = directory.resolve("regions.jsonl");
+        Path output = directory.resolve("summaries.jsonl");
+        Path diagnostics = directory.resolve("diagnostics.jsonl");
+        JsonObject raw = outputBoundaryResult(0);
+        JsonArray captures = versionedCaptures(2, true);
+        captures.get(1).getAsJsonObject().add("expression",
+                captures.get(0).getAsJsonObject().get("expression")
+                        .deepCopy());
+        raw.add("outputCaptures", captures);
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", "REGION.BOUNDARY");
+        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
+                outputBoundaryTask(1)));
+        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
+        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+
+        ConcolicSummaryImporter.ImportResult imported =
+                ConcolicSummaryImporter.importSummaries(results, tasks,
+                        regions, output, diagnostics);
+
+        assertEquals(1, imported.validSummaryCount);
+        assertEquals(0, imported.diagnosticCount);
     }
 
     private static JsonArray versionedCaptures(int count,
@@ -940,7 +974,11 @@ public class ConcolicSummaryImporterTest {
         task.addProperty("taskId", replay ? "TASK.REPLAY" : "TASK.SEED");
         task.addProperty("goalId", "GOAL.SEED");
         task.addProperty("regionId", "REGION.SEED");
-        task.addProperty("regionInstanceId", "REGION.SEED@canonical");
+        task.addProperty("sourceKey", "test/source#epoch0");
+        task.addProperty("occurrenceId",
+                "test/source#epoch0/region/REGION.SEED#1");
+        task.addProperty("relationKey", "test/source/REGION.SEED");
+        task.addProperty("relationContractHash", "CONTRACT.SEED");
         task.addProperty("pathSeedKey", "PATH.SEED.STABLE");
         ClosureGoalKind.TARGET_REACH_CLOSURE.writeToTask(task);
         task.add("inputActions", new JsonArray());
@@ -1112,10 +1150,10 @@ public class ConcolicSummaryImporterTest {
             slice.add("staticSites", strings(site));
             slice.add("methods", strings(method));
             slice.add("causalEdgeIds", new JsonArray());
-            slice.add("causalEdges", new JsonArray());
             slice.add("captureBindings", bindings);
             slice.add("captureBindingIssues", new JsonArray());
-            members.add(OutputClosureCodec.singleton(region, instance, 1L,
+            members.add(OutputClosureCodec.singleton("REL." + region, region,
+                    "CONTRACT.TEST",
                     port, cell, "HEAP_STATE", "int", slice));
         }
 
@@ -1123,8 +1161,10 @@ public class ConcolicSummaryImporterTest {
         task.addProperty("taskId", "TASK.BOUNDARY");
         task.addProperty("goalId", "GOAL.BOUNDARY");
         task.addProperty("regionId", region);
-        task.addProperty("regionInstanceId", instance);
-        task.addProperty("rootCallId", 1L);
+        task.addProperty("sourceKey", "test/source#epoch0");
+        task.addProperty("occurrenceId", instance);
+        task.addProperty("relationKey", "REL." + region);
+        task.addProperty("relationContractHash", "CONTRACT.TEST");
         ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(task);
         task.add("inputActions", new JsonArray());
         task.add("branches", new JsonArray());

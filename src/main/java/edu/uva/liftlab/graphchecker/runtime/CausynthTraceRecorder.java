@@ -163,7 +163,9 @@ public final class CausynthTraceRecorder {
                         threadName, tid, method, objectId,
                         runtimeType(receiver), id, parentCallId, parentSiteId,
                         context.ownerId, context.laneId, context.spanId,
-                        context.parentSpanId, context.remoteParentSpanId);
+                        context.parentSpanId, context.remoteParentSpanId,
+                        context.source, context.requestKey,
+                        context.requestApi);
         calls.push(new ActiveCall(id, parentSiteId, method,
                 context.spanId, parent == null));
         if (contextOnlyConcolicReplay) {
@@ -203,7 +205,8 @@ public final class CausynthTraceRecorder {
                         thread.getId(), method, 0, "", id,
                         parentCallId, 0L, context.ownerId, context.laneId,
                         context.spanId, context.parentSpanId,
-                        context.remoteParentSpanId);
+                        context.remoteParentSpanId, context.source,
+                        context.requestKey, context.requestApi);
         if (!contextOnlyConcolicReplay) {
             synchronized (LOCK) {
                 writeTraceLine(event);
@@ -472,9 +475,9 @@ public final class CausynthTraceRecorder {
             return;
         }
         initialize();
-        if (contextOnlyConcolicReplay) {
-            return;
-        }
+        RuntimeTraceContext.View context = RuntimeTraceContext.rpc(direction,
+                transport, correlationId, localOwner);
+        if (contextOnlyConcolicReplay) return;
         long id = EVENT_COUNTER.incrementAndGet();
         if (id > maxEvents) {
             return;
@@ -483,8 +486,6 @@ public final class CausynthTraceRecorder {
         ActiveCall call = ACTIVE_CALLS.get().peek();
         ActiveCallSite site = ACTIVE_CALL_SITES.get().peek();
         String method = call == null ? "" : call.method;
-        RuntimeTraceContext.View context = RuntimeTraceContext.rpc(direction,
-                transport, correlationId, localOwner);
         RuntimeRegionPlanner.ProtocolEvent event =
                 new RuntimeRegionPlanner.ProtocolEvent(id,
                         safe(direction).toUpperCase(), safe(transport),
@@ -495,10 +496,61 @@ public final class CausynthTraceRecorder {
                         site == null ? 0L : site.invocationId,
                         site == null ? "" : site.declaredCallee,
                         context.ownerId, context.laneId, context.spanId,
-                        context.parentSpanId, context.remoteParentSpanId);
+                        context.parentSpanId, context.remoteParentSpanId,
+                        context.source, context.requestKey,
+                        context.requestApi);
         synchronized (LOCK) {
             writeProtocolTraceLine(event);
         }
+    }
+
+    /** Registers one stable cluster/application source for trace discovery. */
+    public static void registerSource(Object anchor, String kind,
+                                      String role, String sourceId,
+                                      long epoch) {
+        initialize();
+        SourceRef source = RuntimeTraceContext.registerSource(anchor,
+                new SourceRef(kind, role, sourceId, epoch));
+        writeSourceTraceLine("SOURCE_REGISTER", source, null, 0L, "");
+    }
+
+    /** Binds a service/handler object to an already registered source. */
+    public static void registerSourceAlias(Object alias, Object anchor) {
+        initialize();
+        SourceRef source = RuntimeTraceContext.registerSourceAlias(alias,
+                anchor);
+        writeSourceTraceLine("SOURCE_ALIAS", source, null, 0L,
+                alias == null ? "" : alias.getClass().getName());
+    }
+
+    /** Starts an external API request without changing the application data. */
+    public static long beginSourceRequest(Object sourceAnchor,
+                                          String apiName) {
+        initialize();
+        long requestId = RuntimeTraceContext.beginRequest(sourceAnchor,
+                apiName);
+        writeSourceTraceLine("REQUEST_BEGIN",
+                RuntimeTraceContext.currentSource(), null, requestId,
+                safe(apiName));
+        return requestId;
+    }
+
+    public static void endSourceRequest(long requestId, String apiName) {
+        SourceRef source = RuntimeTraceContext.currentSource();
+        writeSourceTraceLine("REQUEST_END", source, null, requestId,
+                safe(apiName));
+        RuntimeTraceContext.endRequest(requestId);
+    }
+
+    /** Advances a stable logical source slot to a new lifecycle epoch. */
+    public static void restartSource(Object stableAnchor, String kind,
+                                     String role, String sourceId,
+                                     long epoch) {
+        initialize();
+        SourceRef before = RuntimeTraceContext.sourceFor(stableAnchor);
+        SourceRef after = RuntimeTraceContext.restartSource(stableAnchor,
+                new SourceRef(kind, role, sourceId, epoch));
+        writeSourceTraceLine("SOURCE_RESTART", before, after, 0L, "");
     }
 
     /**
@@ -953,6 +1005,57 @@ public final class CausynthTraceRecorder {
         return value == null ? "" : value;
     }
 
+    private static String sourceKind(SourceRef source) {
+        return source == null ? "" : source.kind();
+    }
+
+    private static String sourceRole(SourceRef source) {
+        return source == null ? "" : source.role();
+    }
+
+    private static String sourceId(SourceRef source) {
+        return source == null ? "" : source.id();
+    }
+
+    private static Object sourceEpoch(SourceRef source) {
+        return source == null ? null : source.epoch();
+    }
+
+    private static String sourceKey(SourceRef source) {
+        return source == null ? "" : source.key();
+    }
+
+    private static SourceRef sourceRef(FlatJsonRow row) throws IOException {
+        return sourceRef(row, "source");
+    }
+
+    private static SourceRef relatedSourceRef(FlatJsonRow row)
+            throws IOException {
+        return sourceRef(row, "relatedSource");
+    }
+
+    private static SourceRef sourceRef(FlatJsonRow row, String prefix)
+            throws IOException {
+        String key = row.stringValue(prefix + "Key");
+        String kind = row.stringValue(prefix + "Kind");
+        String role = row.stringValue(prefix + "Role");
+        String id = row.stringValue(prefix + "Id");
+        if (key.isEmpty() && kind.isEmpty() && role.isEmpty() && id.isEmpty()) {
+            return null;
+        }
+        long epoch = row.longValue(prefix + "Epoch", -1L);
+        try {
+            SourceRef source = new SourceRef(kind, role, id, epoch);
+            if (!key.isEmpty() && !source.key().equals(key)) {
+                throw new IOException("sourceKey does not match source id/epoch: "
+                        + key);
+            }
+            return source;
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("invalid source identity " + key, invalid);
+        }
+    }
+
     private static void initialize() {
         if (INITIALIZED.get()) {
             return;
@@ -1100,6 +1203,7 @@ public final class CausynthTraceRecorder {
             TraceData trace = loadExistingTrace(new File(directory,
                     "runtime_trace.jsonl"), test, false);
             trace.sort();
+            writeSourceEvents(planOutputDirectory, trace.sources);
             requireConfiguredBoundaryScalarEvidence(trace);
             long traceLoadMillis = elapsedMillis(traceLoadStart);
             Set<String> observedMethods = new LinkedHashSet<>();
@@ -1856,6 +1960,7 @@ public final class CausynthTraceRecorder {
             trace.arrays.addAll(part.arrays);
             trace.execution.addAll(part.execution);
             trace.protocol.addAll(part.protocol);
+            trace.sources.addAll(part.sources);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException("trace parse interrupted", interrupted);
@@ -1950,7 +2055,9 @@ public final class CausynthTraceRecorder {
                     row.longValue("laneId", 0L),
                     row.longValue("spanId", 0L),
                     row.longValue("parentSpanId", 0L),
-                    row.longValue("remoteParentSpanId", 0L)));
+                    row.longValue("remoteParentSpanId", 0L),
+                    sourceRef(row), row.stringValue("requestKey"),
+                    row.stringValue("requestApi")));
         } else if (!skeletonOnly && ("FIELD_READ".equals(eventKind)
                 || "FIELD_WRITE".equals(eventKind))) {
             trace.fields.add(
@@ -1995,7 +2102,23 @@ public final class CausynthTraceRecorder {
                     row.longValue("laneId", 0L),
                     row.longValue("spanId", 0L),
                     row.longValue("parentSpanId", 0L),
-                    row.longValue("remoteParentSpanId", 0L)));
+                    row.longValue("remoteParentSpanId", 0L),
+                    sourceRef(row), row.stringValue("requestKey"),
+                    row.stringValue("requestApi")));
+        } else if ("SOURCE_REGISTER".equals(eventKind)
+                || "SOURCE_ALIAS".equals(eventKind)
+                || "SOURCE_RESTART".equals(eventKind)
+                || "REQUEST_BEGIN".equals(eventKind)
+                || "REQUEST_END".equals(eventKind)) {
+            trace.sources.add(new SourceTraceEvent(
+                    row.longValue("seq", 0L), eventKind,
+                    sourceRef(row), relatedSourceRef(row),
+                    row.longValue("requestId", 0L),
+                    row.stringValue("requestKey"),
+                    row.stringValue("apiName"),
+                    row.stringValue("aliasClass"),
+                    row.longValue("laneId", 0L),
+                    row.longValue("spanId", 0L)));
         } else if (!skeletonOnly && ("RPC_BOUNDARY_SCALAR".equals(eventKind)
                 || "RPC_BOUNDARY_SCALAR_GAP".equals(eventKind))) {
             trace.protocol.add(new RuntimeRegionPlanner.ProtocolEvent(
@@ -2083,7 +2206,14 @@ public final class CausynthTraceRecorder {
                 "laneId", event.laneId,
                 "spanId", event.spanId,
                 "parentSpanId", event.parentSpanId,
-                "remoteParentSpanId", event.remoteParentSpanId);
+                "remoteParentSpanId", event.remoteParentSpanId,
+                "sourceKind", sourceKind(event.source),
+                "sourceRole", sourceRole(event.source),
+                "sourceId", sourceId(event.source),
+                "sourceEpoch", sourceEpoch(event.source),
+                "sourceKey", sourceKey(event.source),
+                "requestKey", event.requestKey,
+                "requestApi", event.requestApi);
     }
 
     private static void writeFieldTraceLine(
@@ -2137,7 +2267,45 @@ public final class CausynthTraceRecorder {
                 "laneId", event.laneId,
                 "spanId", event.spanId,
                 "parentSpanId", event.parentSpanId,
-                "remoteParentSpanId", event.remoteParentSpanId);
+                "remoteParentSpanId", event.remoteParentSpanId,
+                "sourceKind", sourceKind(event.source),
+                "sourceRole", sourceRole(event.source),
+                "sourceId", sourceId(event.source),
+                "sourceEpoch", sourceEpoch(event.source),
+                "sourceKey", sourceKey(event.source),
+                "requestKey", event.requestKey,
+                "requestApi", event.requestApi);
+    }
+
+    private static void writeSourceTraceLine(String event, SourceRef source,
+                                             SourceRef related,
+                                             long requestId, String detail) {
+        if (contextOnlyConcolicReplay || traceWriter == null) return;
+        RuntimeTraceContext.View context = RuntimeTraceContext.current();
+        long seq = EVENT_COUNTER.incrementAndGet();
+        synchronized (LOCK) {
+            writeTraceRow(
+                    "schemaVersion", 3,
+                    "event", event,
+                    "seq", seq,
+                    "sourceKind", sourceKind(source),
+                    "sourceRole", sourceRole(source),
+                    "sourceId", sourceId(source),
+                    "sourceEpoch", sourceEpoch(source),
+                    "sourceKey", sourceKey(source),
+                    "relatedSourceKind", sourceKind(related),
+                    "relatedSourceRole", sourceRole(related),
+                    "relatedSourceId", sourceId(related),
+                    "relatedSourceEpoch", sourceEpoch(related),
+                    "relatedSourceKey", sourceKey(related),
+                    "requestId", requestId <= 0L ? null : requestId,
+                    "requestKey", context.requestKey,
+                    "requestApi", context.requestApi,
+                    event.startsWith("REQUEST_") ? "apiName" : "aliasClass",
+                    detail,
+                    "laneId", context.laneId,
+                    "spanId", context.spanId);
+        }
     }
 
     private static void writeExecutionTraceLine(ExecutionEvent event) {
@@ -2290,6 +2458,37 @@ public final class CausynthTraceRecorder {
                 "runtime_region_edge_validation.jsonl").toPath());
     }
 
+    private static void writeSourceEvents(File directory,
+                                          List<SourceTraceEvent> events)
+            throws IOException {
+        StringBuilder encoded = new StringBuilder();
+        for (SourceTraceEvent event : events) {
+            encoded.append(CausynthJson.objectWithoutNulls(
+                    "schemaVersion", 1,
+                    "kind", event.kind,
+                    "seq", event.seq,
+                    "sourceKind", sourceKind(event.source),
+                    "sourceRole", sourceRole(event.source),
+                    "sourceId", sourceId(event.source),
+                    "sourceEpoch", sourceEpoch(event.source),
+                    "sourceKey", sourceKey(event.source),
+                    "relatedSourceKind", sourceKind(event.relatedSource),
+                    "relatedSourceRole", sourceRole(event.relatedSource),
+                    "relatedSourceId", sourceId(event.relatedSource),
+                    "relatedSourceEpoch", sourceEpoch(event.relatedSource),
+                    "relatedSourceKey", sourceKey(event.relatedSource),
+                    "requestId", event.requestId <= 0L
+                            ? null : event.requestId,
+                    "requestKey", event.requestKey,
+                    "apiName", event.apiName,
+                    "aliasClass", event.aliasClass,
+                    "laneId", event.laneId,
+                    "spanId", event.spanId)).append('\n');
+        }
+        writeFile(new File(directory, "causal_source_events.jsonl"),
+                encoded.toString());
+    }
+
     private static void writeFile(File file, String value) throws IOException {
         File parent = file.getParentFile();
         if (parent != null) {
@@ -2366,6 +2565,7 @@ public final class CausynthTraceRecorder {
                 new ArrayList<>();
         private final List<RuntimeRegionPlanner.ProtocolEvent> protocol =
                 new ArrayList<>();
+        private final List<SourceTraceEvent> sources = new ArrayList<>();
 
         private void sort() {
             methods.sort((left, right) -> Long.compare(left.seq, right.seq));
@@ -2374,6 +2574,37 @@ public final class CausynthTraceRecorder {
             execution.sort((left, right) ->
                     Long.compare(left.seq, right.seq));
             protocol.sort((left, right) -> Long.compare(left.seq, right.seq));
+            sources.sort((left, right) -> Long.compare(left.seq, right.seq));
+        }
+    }
+
+    private static final class SourceTraceEvent {
+        private final long seq;
+        private final String kind;
+        private final SourceRef source;
+        private final SourceRef relatedSource;
+        private final long requestId;
+        private final String requestKey;
+        private final String apiName;
+        private final String aliasClass;
+        private final long laneId;
+        private final long spanId;
+
+        private SourceTraceEvent(long seq, String kind, SourceRef source,
+                                 SourceRef relatedSource, long requestId,
+                                 String requestKey, String apiName,
+                                 String aliasClass,
+                                 long laneId, long spanId) {
+            this.seq = seq;
+            this.kind = safe(kind);
+            this.source = source;
+            this.relatedSource = relatedSource;
+            this.requestId = requestId;
+            this.requestKey = safe(requestKey);
+            this.apiName = safe(apiName);
+            this.aliasClass = safe(aliasClass);
+            this.laneId = laneId;
+            this.spanId = spanId;
         }
     }
 

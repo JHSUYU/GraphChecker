@@ -166,7 +166,7 @@ class Query(object):
                 'solverTerm': entry['solverTerm'],
                 'portId': entry.get('portId'),
                 'javaTypeDescriptor': entry.get('javaTypeDescriptor'),
-                'regionInstanceId': entry.get('regionInstanceId'),
+                'occurrenceId': entry.get('occurrenceId'),
             })
         return roots
 

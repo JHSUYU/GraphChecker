@@ -29,6 +29,41 @@ public class CausynthTraceRecorderTest {
     public final TemporaryFolder folder = new TemporaryFolder();
 
     @Test
+    public void concolicReplayStillPropagatesRpcSourceContext()
+            throws Exception {
+        String results = System.getProperty("causynth.concolic.results");
+        String output = System.getProperty("causynth.trace.output.dir");
+        try {
+            clear();
+            System.clearProperty("causynth.trace.output.dir");
+            System.setProperty("causynth.concolic.results",
+                    folder.newFile("results.jsonl").getAbsolutePath());
+            Object client = new Object();
+            Object server = new Object();
+            CausynthTraceRecorder.registerSource(client, "EXTERNAL_APP",
+                    "CLIENT", "client0", 0L);
+            CausynthTraceRecorder.registerSource(server, "CLUSTER_NODE",
+                    "SERVER", "server0", 0L);
+            long request = CausynthTraceRecorder.beginSourceRequest(client,
+                    "call");
+            CausynthTraceRecorder.recordRpc("SEND", "TEST_RPC", "1", null);
+            CausynthTraceRecorder.recordRpc("RECEIVE", "TEST_RPC", "1",
+                    server);
+
+            assertEquals("server0#epoch0",
+                    RuntimeTraceContext.currentSource().key());
+            assertTrue(RuntimeTraceContext.current().requestKey
+                    .startsWith("client0#epoch0/request/call#"));
+            CausynthTraceRecorder.endSourceRequest(request, "call");
+        } finally {
+            shutdown();
+            clear();
+            restore("causynth.concolic.results", results);
+            restore("causynth.trace.output.dir", output);
+        }
+    }
+
+    @Test
     public void stateTraceRecordsReceiverAndValueIdentity() throws Exception {
         String previous = System.getProperty("causynth.trace.output.dir");
         Path output = folder.newFolder("trace").toPath();

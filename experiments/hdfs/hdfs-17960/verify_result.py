@@ -95,7 +95,7 @@ def selected_config_candidates(audits):
 
 def join_config_root(selected, plans, composition, report):
     roots = report.get("roots", {}).get("booleanInputs", [])
-    occurrences = composition.get("canonicalPortOccurrences", [])
+    occurrences = composition.get("portOccurrences", [])
     supplied = set(composition.get("suppliedInputs", []))
     joined = []
 
@@ -106,20 +106,20 @@ def join_config_root(selected, plans, composition, report):
                 continue
             if root.get("javaTypeDescriptor") != "Z":
                 continue
-            instance = root.get("regionInstanceId")
+            instance = root.get("occurrenceId")
             solver_term = root.get("solverTerm")
             matching_occurrences = [
                 row
                 for row in occurrences
                 if row.get("portId") == symbol
-                and row.get("regionInstanceId") == instance
+                and row.get("occurrenceId") == instance
                 and row.get("sort") == "BOOL"
                 and row.get("solverTerm") == solver_term
             ]
             actions = [
                 (task, action)
                 for task in plans
-                if task.get("regionInstanceId") == instance
+                if task.get("occurrenceId") == instance
                 for action in task.get("inputActions", [])
                 if action.get("symbol") == symbol
             ]
@@ -151,7 +151,7 @@ def join_config_root(selected, plans, composition, report):
     return joined[0]
 
 
-def verify_valuation_table(report, config_root):
+def verify_valuation_table(report, config_root, closed):
     roots = report.get("roots", {}).get("booleanInputs", [])
     indices = [index for index, root in enumerate(roots) if root == config_root]
     require(len(indices) == 1, "ordered-deletion root is not unique")
@@ -179,10 +179,11 @@ def verify_valuation_table(report, config_root):
         row for row in valuations if row["values"][index] is True
     ]
     require(false_sat, "ordered deletion false has no SAT valuation")
-    require(
-        true_rows and all(row["status"] == "unsat" for row in true_rows),
-        "ordered deletion true is not unreachable for every valuation",
-    )
+    if closed:
+        require(
+            true_rows and all(row["status"] == "unsat" for row in true_rows),
+            "ordered deletion true is not unreachable for every valuation",
+        )
 
 
 def direct_solver_check(smt_path, report, solver_override, root, value):
@@ -235,12 +236,18 @@ def verify(repo_root, work_root, solver_override):
     report = read_json(z3_path)
 
     require(composition.get("state") == "CANDIDATE_READY", "composition is incomplete")
-    require(composition.get("trustState") == "CANDIDATE_ONLY", "unexpected composition trust state")
-    require(
-        composition.get("compositionMode") == "CLOSED_PATH_SET"
-        and composition.get("pathSetComplete") is True,
-        "composition is not a closed path set",
+    closed = (
+        composition.get("trustState") == "CANDIDATE_ONLY"
+        and composition.get("compositionMode") == "CLOSED_PATH_SET"
+        and composition.get("pathSetComplete") is True
     )
+    partial = (
+        composition.get("trustState") == "OBSERVED_PATH_UNDERAPPROX"
+        and composition.get("compositionMode")
+        == "EXISTENTIAL_OBSERVED_PATHS"
+        and composition.get("pathSetComplete") is False
+    )
+    require(closed or partial, "composition has an unsupported coverage state")
     require(composition.get("gaps") == [], "composition contains gaps")
     fatal_site = composition.get("fatalSite", "")
     require(
@@ -249,7 +256,10 @@ def verify(repo_root, work_root, solver_override):
         "composition names the wrong fatal site",
     )
     require(report.get("state") == "CANDIDATE_READY", "reach report is incomplete")
-    require(report.get("trustState") == "CANDIDATE_ONLY", "unexpected reach-report trust state")
+    require(
+        report.get("trustState") == composition.get("trustState"),
+        "reach-report coverage authority differs from composition",
+    )
     require(report.get("gaps") == [], "reach report contains gaps")
     reach = report.get("reachCondition", {})
     require(reach.get("reachability") == "REACHABLE", "reach report is not REACHABLE")
@@ -268,17 +278,20 @@ def verify(repo_root, work_root, solver_override):
     audit, candidate, config_root, actions = join_config_root(
         selected, plans, composition, report
     )
-    verify_valuation_table(report, config_root)
+    verify_valuation_table(report, config_root, closed)
     require(
         direct_solver_check(smt_path, report, solver_override, config_root, "false")
         == "sat",
         "direct SMT check for ordered deletion false is not SAT",
     )
-    require(
-        direct_solver_check(smt_path, report, solver_override, config_root, "true")
-        == "unsat",
-        "direct SMT check for ordered deletion true is not UNSAT",
+    true_status = direct_solver_check(
+        smt_path, report, solver_override, config_root, "true"
     )
+    if closed:
+        require(
+            true_status == "unsat",
+            "direct SMT check for ordered deletion true is not UNSAT",
+        )
 
     evidence = {
         "status": "PASS",
@@ -286,11 +299,15 @@ def verify(repo_root, work_root, solver_override):
         "selectorDecisionId": audit["decisionId"],
         "candidateId": candidate["candidateId"],
         "configPortId": config_root["portId"],
-        "regionInstanceId": config_root["regionInstanceId"],
+        "occurrenceId": config_root["occurrenceId"],
         "solverTerm": config_root["solverTerm"],
         "taskIds": sorted(set(task["taskId"] for task, _ in actions)),
         "orderedDeletionFalse": "sat",
-        "orderedDeletionTrue": "unsat",
+        "orderedDeletionTrue": true_status,
+        "coverageState": "CLOSED" if closed else "PARTIAL",
+        "coverageConclusion": (
+            "COMPLETE" if closed else "SAT_WITNESS_ONLY"
+        ),
         "reachability": reach["reachability"],
         "degeneracyCheck": reach["degeneracyCheck"],
     }

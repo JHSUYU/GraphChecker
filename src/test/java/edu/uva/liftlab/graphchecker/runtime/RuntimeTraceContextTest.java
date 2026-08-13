@@ -16,6 +16,71 @@ public class RuntimeTraceContextTest {
         RuntimeTraceContext.resetForTests();
     }
 
+    @Test
+    public void sourceRefHasStableLogicalAndEpochIdentity() {
+        SourceRef source = new SourceRef(
+                "CLUSTER_NODE", "NAMENODE", "cluster0/nn0", 3L);
+
+        assertEquals("CLUSTER_NODE", source.kind());
+        assertEquals("NAMENODE", source.role());
+        assertEquals("cluster0/nn0", source.id());
+        assertEquals(3L, source.epoch());
+        assertEquals("cluster0/nn0#epoch3", source.key());
+    }
+
+    @Test
+    public void requestScopeOverridesActiveRootAndRestoresItsSource() {
+        Object testAnchor = new Object();
+        Object clientAnchor = new Object();
+        SourceRef test = new SourceRef(
+                "TEST_DRIVER", "JUNIT", "test/driver", 0L);
+        SourceRef client = new SourceRef(
+                "EXTERNAL_APP", "HDFS_CLIENT", "app/client0", 0L);
+        RuntimeTraceContext.registerSource(testAnchor, test);
+        RuntimeTraceContext.registerSource(clientAnchor, client);
+
+        RuntimeTraceContext.View root =
+                RuntimeTraceContext.enterRoot(testAnchor);
+        assertEquals(test, root.source);
+
+        long request = RuntimeTraceContext.beginRequest(clientAnchor);
+        assertEquals(client, RuntimeTraceContext.currentSource());
+        RuntimeTraceContext.endRequest(request);
+
+        assertEquals(test, RuntimeTraceContext.currentSource());
+        assertEquals(2, RuntimeTraceContext.sourceEventsForTests().size());
+        assertEquals(RuntimeTraceContext.SourceEventKind.REQUEST_BEGIN,
+                RuntimeTraceContext.sourceEventsForTests().get(0).kind);
+        assertEquals(RuntimeTraceContext.SourceEventKind.REQUEST_END,
+                RuntimeTraceContext.sourceEventsForTests().get(1).kind);
+    }
+
+    @Test
+    public void restartMovesStableAnchorButKeepsOldRuntimeAliasInOldEpoch() {
+        Object stableSlot = new Object();
+        Object oldNameNode = new Object();
+        Object newNameNode = new Object();
+        SourceRef before = new SourceRef(
+                "CLUSTER_NODE", "NAMENODE", "cluster0/nn0", 0L);
+        SourceRef after = new SourceRef(
+                "CLUSTER_NODE", "NAMENODE", "cluster0/nn0", 1L);
+        RuntimeTraceContext.registerSource(stableSlot, before);
+        RuntimeTraceContext.registerSourceAlias(oldNameNode, stableSlot);
+
+        RuntimeTraceContext.restartSource(stableSlot, after);
+        RuntimeTraceContext.registerSourceAlias(newNameNode, stableSlot);
+
+        assertEquals(before, RuntimeTraceContext.sourceFor(oldNameNode));
+        assertEquals(after, RuntimeTraceContext.sourceFor(stableSlot));
+        assertEquals(after, RuntimeTraceContext.sourceFor(newNameNode));
+        RuntimeTraceContext.SourceEvent restart =
+                RuntimeTraceContext.sourceEventsForTests().get(0);
+        assertEquals(RuntimeTraceContext.SourceEventKind.RESTART,
+                restart.kind);
+        assertEquals(before, restart.source);
+        assertEquals(after, restart.relatedSource);
+    }
+
     @After
     public void tearDown() {
         RuntimeTraceContext.resetForTests();
@@ -42,6 +107,50 @@ public class RuntimeTraceContextTest {
         assertEquals(parent.ownerId, observed.get().ownerId);
         assertEquals(parent.spanId, observed.get().parentSpanId);
         assertNotEquals(parent.laneId, observed.get().laneId);
+    }
+
+    @Test
+    public void spawnedThreadAlsoInheritsStableSource() throws Exception {
+        Object node = new Object();
+        SourceRef source = new SourceRef(
+                "CLUSTER_NODE", "DATANODE", "cluster0/dn0", 0L);
+        RuntimeTraceContext.registerSource(node, source);
+        RuntimeTraceContext.View parent = RuntimeTraceContext.enterRoot(node);
+        AtomicReference<RuntimeTraceContext.View> observed =
+                new AtomicReference<>();
+        Thread child = new Thread(() -> observed.set(
+                RuntimeTraceContext.enterRoot(Thread.currentThread())));
+
+        RuntimeTraceContext.captureAsync(child);
+        child.start();
+        child.join();
+
+        assertEquals(source, observed.get().source);
+        assertEquals(parent.ownerId, observed.get().ownerId);
+        assertEquals(parent.spanId, observed.get().parentSpanId);
+        assertNotEquals(parent.laneId, observed.get().laneId);
+    }
+
+    @Test
+    public void newThreadCarriesSourceAndRequestWithoutTraceHooks()
+            throws Exception {
+        Object client = new Object();
+        SourceRef source = new SourceRef(
+                "EXTERNAL_APP", "CLIENT", "app/client0", 0L);
+        RuntimeTraceContext.registerSource(client, source);
+        long request = RuntimeTraceContext.beginRequest(client, "api");
+        String requestKey = RuntimeTraceContext.current().requestKey;
+        AtomicReference<RuntimeTraceContext.View> observed =
+                new AtomicReference<>();
+
+        Thread child = new Thread(() -> observed.set(
+                RuntimeTraceContext.current()));
+        child.start();
+        child.join();
+        RuntimeTraceContext.endRequest(request);
+
+        assertEquals(source, observed.get().source);
+        assertEquals(requestKey, observed.get().requestKey);
     }
 
     @Test
@@ -74,6 +183,33 @@ public class RuntimeTraceContextTest {
         assertEquals(caller.spanId, receive.get().remoteParentSpanId);
         assertTrue(receive.get().ownerId > 0L);
         assertNotEquals(caller.ownerId, receive.get().ownerId);
+    }
+
+    @Test
+    public void rpcReceiveSwitchesToRegisteredServerSource() throws Exception {
+        Object client = new Object();
+        Object nameNode = new Object();
+        SourceRef clientSource = new SourceRef(
+                "EXTERNAL_APP", "HDFS_CLIENT", "app/client0", 0L);
+        SourceRef serverSource = new SourceRef(
+                "CLUSTER_NODE", "NAMENODE", "cluster0/nn0", 1L);
+        RuntimeTraceContext.registerSource(client, clientSource);
+        RuntimeTraceContext.registerSource(nameNode, serverSource);
+        RuntimeTraceContext.View caller = RuntimeTraceContext.enterRoot(client);
+        RuntimeTraceContext.rpc("SEND", "RPC", "call-source", null);
+
+        AtomicReference<RuntimeTraceContext.View> receive =
+                new AtomicReference<>();
+        Thread server = new Thread(() -> receive.set(
+                RuntimeTraceContext.rpc("RECEIVE", "RPC", "call-source",
+                        nameNode)));
+        server.start();
+        server.join();
+
+        assertEquals(serverSource, receive.get().source);
+        assertEquals(caller.spanId, receive.get().remoteParentSpanId);
+        assertNotEquals(caller.ownerId, receive.get().ownerId);
+        assertEquals(clientSource, RuntimeTraceContext.currentSource());
     }
 
     @Test

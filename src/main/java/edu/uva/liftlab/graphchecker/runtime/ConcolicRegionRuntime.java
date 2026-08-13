@@ -6592,47 +6592,72 @@ public final class ConcolicRegionRuntime {
 
 
     private static final class RootContextSelector {
-        private final boolean present;
+        private final boolean receiverScoped;
         private final String receiverRuntimeClass;
         private final String threadName;
+        private final boolean sourceRequired;
+        private final String sourceKey;
+        private final String requestKey;
+        private final int occurrenceIndex;
 
-        private RootContextSelector(boolean present,
+        private RootContextSelector(boolean receiverScoped,
                                     String receiverRuntimeClass,
-                                    String threadName) {
-            this.present = present;
+                                    String threadName,
+                                    boolean sourceRequired,
+                                    String sourceKey, String requestKey,
+                                    int occurrenceIndex) {
+            this.receiverScoped = receiverScoped;
             this.receiverRuntimeClass = safe(receiverRuntimeClass);
             this.threadName = stableReplayThreadContext(threadName);
+            this.sourceRequired = sourceRequired;
+            this.sourceKey = safe(sourceKey);
+            this.requestKey = safe(requestKey);
+            this.occurrenceIndex = occurrenceIndex;
         }
 
         private static RootContextSelector from(JsonObject selector) {
             String kind = string(selector, "kind");
-            if ("GLOBAL_INVOCATION".equals(kind)) {
-                return new RootContextSelector(false, "", "");
-            }
+            boolean global = "GLOBAL_INVOCATION".equals(kind);
             String receiverClass = string(selector, "receiverClass");
             String thread = selector.has("thread")
                     ? string(selector, "thread") : "";
-            if (receiverClass.isEmpty()
+            String sourceKey = string(selector, "sourceKey");
+            boolean sourceRequired = bool(selector, "sourceRequired",
+                    false);
+            String requestKey = string(selector, "requestKey");
+            int occurrenceIndex = integer(selector, "occurrenceIndex", 1);
+            if (!global && (receiverClass.isEmpty()
                     || !receiverClass.equals(receiverClass.trim())
                     || !"RECEIVER_CONTEXT".equals(kind)
                     || selector.has("thread") && (thread.isEmpty()
-                    || !thread.equals(thread.trim()))) {
+                    || !thread.equals(thread.trim())))
+                    || sourceRequired && sourceKey.isEmpty()
+                    || occurrenceIndex <= 0) {
                 throw new IllegalArgumentException(
-                        "rootSelector requires GLOBAL_INVOCATION or an exact "
-                                + "RECEIVER_CONTEXT");
+                        "rootSelector requires a positive occurrence and an "
+                                + "exact source/receiver context");
             }
-            return new RootContextSelector(true, receiverClass, thread);
+            return new RootContextSelector(!global, receiverClass, thread,
+                    sourceRequired, sourceKey, requestKey, occurrenceIndex);
         }
 
         private boolean matches(Object receiver, String actualThreadName) {
-            if (!present || receiver == null
-                    || !receiverRuntimeClass.equals(
-                    receiver.getClass().getName())) {
-                return false;
+            if (sourceRequired) {
+                RuntimeTraceContext.View current =
+                        RuntimeTraceContext.current();
+                if (current.source == null
+                        || !sourceKey.equals(current.source.key())
+                        || !requestKey.isEmpty()
+                        && !requestKey.equals(current.requestKey)) {
+                    return false;
+                }
             }
-            return threadName.isEmpty()
+            if (!receiverScoped) return true;
+            return receiver != null
+                    && receiverRuntimeClass.equals(receiver.getClass().getName())
+                    && (threadName.isEmpty()
                     || threadName.equals(stableReplayThreadContext(
-                    actualThreadName));
+                    actualThreadName)));
         }
 
         private static String stableReplayThreadContext(String value) {
@@ -7190,18 +7215,25 @@ public final class ConcolicRegionRuntime {
     private static final class Configuration {
         private final Path resultFile;
         private final RuntimeTask task;
+        private int compatibleRootCount;
 
         private Configuration(Path resultFile, RuntimeTask task) {
             this.resultFile = resultFile;
             this.task = task;
         }
 
-        private RuntimeTask select(String rootMethod, Object receiver,
+        private synchronized RuntimeTask select(String rootMethod,
+                                     Object receiver,
                                      Object[] rootArguments) {
-            return compatibleRoot(task.rootMethod, rootMethod,
+            if (!compatibleRoot(task.rootMethod, rootMethod,
                     task.rootContextSelector, task.rootArgumentSelector,
-                    receiver, rootArguments, Thread.currentThread().getName())
-                    ? task : null;
+                    receiver, rootArguments,
+                    Thread.currentThread().getName())) {
+                return null;
+            }
+            compatibleRootCount++;
+            return compatibleRootCount
+                    == task.rootContextSelector.occurrenceIndex ? task : null;
         }
 
         private static Configuration load() {
@@ -7291,7 +7323,7 @@ public final class ConcolicRegionRuntime {
             RootContextSelector context, RootArgumentSelector arguments,
             Object receiver, Object[] rootArguments, String threadName) {
         if (!safe(selectedMethod).equals(safe(actualMethod))) return false;
-        if (context.present && !context.matches(receiver, threadName)) {
+        if (!context.matches(receiver, threadName)) {
             return false;
         }
         return !arguments.present || arguments.matches(rootArguments);

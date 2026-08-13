@@ -19,8 +19,6 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Builds bounded branch-flip work for one region closure. */
@@ -55,6 +53,8 @@ public final class RegionPathWorklist {
         private final List<JsonObject> tasks = new ArrayList<>();
         private final List<JsonObject> gaps = new ArrayList<>();
         private final Set<String> gapKeys = new LinkedHashSet<>();
+        private final List<JsonObject> coverageGaps = new ArrayList<>();
+        private final Set<String> coverageGapKeys = new LinkedHashSet<>();
         private final Set<String> emitted = new LinkedHashSet<>();
         private final Set<String> observedFlipKeys = new LinkedHashSet<>();
         private final List<JsonObject> abandonedFlips = new ArrayList<>();
@@ -74,8 +74,10 @@ public final class RegionPathWorklist {
                 if (!key.isEmpty()) this.records.put(key, record);
             }
             for (JsonObject summary : summaries) {
-                paths.add(PathObservation.decode(summary, taskById.get(
-                        string(summary, "taskId"))));
+                PathObservation path = PathObservation.decode(summary,
+                        taskById.get(string(summary, "taskId")));
+                paths.add(path);
+                collectAlignmentGaps(summary);
             }
             Collections.sort(paths, Comparator.comparing(value ->
                     value.regionId() + "\n" + value.pathKey()));
@@ -112,7 +114,7 @@ public final class RegionPathWorklist {
                     continue;
                 }
                 if (pathCountByRegion.get(region) > bounds.maxPathsPerRegion) {
-                    gap("BOUND_REACHED", "MAX_PATHS_PER_REGION", region,
+                    coverageGap("BOUND_REACHED", "MAX_PATHS_PER_REGION", region,
                             pathKey, "", -1);
                     continue;
                 }
@@ -123,29 +125,37 @@ public final class RegionPathWorklist {
             int remainingPathSlots = bounds.maxPathsPerRegion
                     - seenPaths.size();
             if (!tasks.isEmpty() && remainingPathSlots <= 0) {
-                gap("BOUND_REACHED", "MAX_PATHS_PER_REGION",
+                coverageGap("BOUND_REACHED", "MAX_PATHS_PER_REGION",
                         manifestRegionId(observedRegions),
                         "", "", -1);
             } else if (tasks.size() > remainingPathSlots) {
+                coverageGap("BOUND_REACHED", "MAX_PATHS_PER_REGION",
+                        manifestRegionId(observedRegions),
+                        "", "", -1);
                 tasks.subList(remainingPathSlots, tasks.size()).clear();
             }
 
             JsonObject manifest = manifest(!seenPaths.isEmpty(),
                     observedRegions, observedScopes);
+            String coverageState = string(manifest, "coverageState");
+            String worklistState = string(manifest, "state");
             List<JsonObject> relations = new ArrayList<>();
             List<JsonObject> observedRelations = new ArrayList<>();
-            if (State.PENDING.name().equals(string(manifest, "state"))) {
+            if (State.CLOSED.name().equals(worklistState)
+                    && "CLOSED".equals(coverageState)) {
+                relations.addAll(outputRelations(observedScopes,
+                        false, coverageState));
+            } else if (State.PENDING.name().equals(worklistState)
+                    || State.CLOSED.name().equals(worklistState)) {
                 observedRelations.addAll(outputRelations(observedScopes,
-                        true));
-            }
-            if (State.CLOSED.name().equals(string(manifest, "state"))) {
-                relations.addAll(outputRelations(observedScopes, false));
+                        true, coverageState));
             }
             if (!gaps.isEmpty()) {
                 tasks.clear();
                 relations.clear();
                 observedRelations.clear();
                 manifest.addProperty("state", State.GAPPED.name());
+                manifest.remove("coverageState");
                 manifest.add("gaps", GSON.toJsonTree(gaps));
             }
             return new Result(tasks, manifest, relations,
@@ -154,7 +164,7 @@ public final class RegionPathWorklist {
 
         private List<JsonObject> outputRelations(
                 Map<String, PathObservation.Scope> observedScopes,
-                boolean observedOnly) {
+                boolean observedOnly, String coverageState) {
             if (observedScopes.size() != 1) {
                 return Collections.emptyList();
             }
@@ -188,10 +198,8 @@ public final class RegionPathWorklist {
                     continue;
                 }
 
-                if (contract.members().size() > 1
-                        && !path.hasExactOutputSet(
-                        contract.outputPorts())) {
-                    gap("JOINT_OUTPUT_EXPRESSION_SET_MISMATCH",
+                if (!path.hasExactOutputSet(contract.outputPorts())) {
+                    gap("OUTPUT_EXPRESSION_SET_MISMATCH",
                             "OUTPUT_EXPRESSION_SET_DOES_NOT_MATCH_DEMAND",
                             region, path.pathKey(), "", -1);
                 } else {
@@ -233,7 +241,9 @@ public final class RegionPathWorklist {
             RelationSummary merged = observedOnly
                     ? RelationSummary.observedPathMerge(
                     scope.outputClosure(), caseByPath.values(), bindings,
-                    State.PENDING.name(), projectRelationGuards)
+                    coverageState, tasks.isEmpty()
+                            ? State.CLOSED.name() : State.PENDING.name(),
+                    projectRelationGuards)
                     : RelationSummary.guardedPathMerge(
                     scope.outputClosure(), caseByPath.values(), bindings,
                     projectRelationGuards);
@@ -241,6 +251,13 @@ public final class RegionPathWorklist {
         }
 
         private void planSummary(PathObservation path) {
+            // Target exploration has one degree of freedom: the annotated
+            // fatal decision. TargetReachPathQueryBuilder complements that
+            // decision symbolically while retaining this observed prefix.
+            // Prefix and same-method branches are evidence, not replay work.
+            if (path.scope().goalKind().capturesTargetReach()) {
+                return;
+            }
             List<SummaryBranchMapping> candidates = new ArrayList<>();
             JsonObject task = taskById.get(path.sourceTaskId());
             Set<String> explicitFaultSymbols = explicitFaultSymbols(task);
@@ -253,9 +270,6 @@ public final class RegionPathWorklist {
                     continue;
                 }
                 if (!mapping.isExplore()) continue;
-                if (isSelectedTargetDecision(path, task, mapping)) {
-                    continue;
-                }
                 if (!explicitFaultSymbols.isEmpty()
                         && !dependsOnAny(mapping.witness()
                         .sourceSatisfiedPredicate(),
@@ -281,47 +295,19 @@ public final class RegionPathWorklist {
 
             int limit = Math.min(candidates.size(), bounds.maxFlipsPerPath);
             if (candidates.size() > limit) {
-                gap("BOUND_REACHED", "MAX_FLIPS_PER_PATH", path.regionId(),
+                coverageGap("BOUND_REACHED", "MAX_FLIPS_PER_PATH",
+                        path.regionId(),
                         path.pathKey(), "", -1);
             }
             for (int index = 0; index < limit; index++) {
                 if (tasks.size() >= bounds.maxTasks) {
-                    gap("BOUND_REACHED", "MAX_TASKS", path.regionId(),
+                    coverageGap("BOUND_REACHED", "MAX_TASKS",
+                            path.regionId(),
                             path.pathKey(), "", -1);
                     return;
                 }
                 emitTask(path, candidates.get(index));
             }
-        }
-
-        /**
-         * The exact selected target decision is kept symbolic by the fatal
-         * reach query.  A witnessed required successor is used directly; an
-         * opposite witness contributes its decided prefix plus the symbolic
-         * complement.  Replaying this sibling therefore adds no target path
-         * and may mutate an earlier activation before its prefix is known.
-         */
-        private boolean isSelectedTargetDecision(
-                PathObservation path, JsonObject task,
-                SummaryBranchMapping mapping) {
-            if (!path.scope().goalKind().capturesTargetReach()
-                    || task == null) {
-                return false;
-            }
-            for (JsonElement element : array(task, "branches")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject branch = element.getAsJsonObject();
-                if (!mapping.siteId().equals(string(branch, "siteId"))
-                        || !bool(branch, "failureTarget", false)
-                        || integer(branch, "selectedOccurrence", -1)
-                        != mapping.occurrence()) {
-                    continue;
-                }
-                JsonElement required = branch.get("requiredOutcome");
-                return required != null && required.isJsonPrimitive()
-                        && required.getAsJsonPrimitive().isBoolean();
-            }
-            return false;
         }
 
         /**
@@ -496,6 +482,23 @@ public final class RegionPathWorklist {
             result.addProperty("schemaVersion", 1);
             result.addProperty("kind", "REGION_PATH_WORKLIST");
             result.addProperty("state", state.name());
+            Set<String> sources = new TreeSet<>();
+            Set<String> occurrences = new TreeSet<>();
+            for (PathObservation path : paths) {
+                if (!path.sourceKey().isEmpty()) {
+                    sources.add(path.sourceKey());
+                }
+                if (!path.occurrenceId().isEmpty()) {
+                    occurrences.add(path.occurrenceId());
+                }
+            }
+            if (sources.size() == 1) {
+                result.addProperty("sourceKey", sources.iterator().next());
+            }
+            if (occurrences.size() == 1) {
+                result.addProperty("occurrenceId",
+                        occurrences.iterator().next());
+            }
             if (scopes.size() != 1 || scopes.values().iterator().next()
                     .outputClosure() == null) {
                 result.addProperty("regionId", regionId);
@@ -511,43 +514,40 @@ public final class RegionPathWorklist {
                     scope.goalKind().writeToTask(result);
                 }
             }
-            // Downstream reach-query construction attests that its seed
-            // query and this closure describe the same canonical replay
-            // activation, so a uniquely observed instance is named here.
-            Set<String> observedInstances = new LinkedHashSet<>();
-            for (PathObservation path : paths) {
-                String instance = path.regionInstanceId();
-                if (!instance.isEmpty()) observedInstances.add(instance);
-            }
-            if (observedInstances.size() == 1) {
-                result.addProperty("regionInstanceId",
-                        observedInstances.iterator().next());
-            }
             result.add("gaps", GSON.toJsonTree(gaps));
-            // A flip the exploration could not carry through is an
-            // explored-and-abandoned proposal, not a planning failure: the
-            // flip solver only proposes fresh paths, while the fatal branch
-            // condition itself stays symbolic for the reach stage.  That
-            // covers a query the flip encoder cannot lower and a flip whose
-            // bounded replay reached no output relation, which the importer
-            // rightly refuses.  Naming each such flip keeps the closure
-            // auditable without blocking candidates/compose/reach.
             List<JsonObject> explorationGaps = new ArrayList<>();
             for (JsonObject record : records.values()) {
+                collectAlignmentGaps(record);
                 String kind = explorationGapKind(string(record, "status"));
                 if (kind.isEmpty()) continue;
                 JsonObject gap = new JsonObject();
                 gap.addProperty("kind", kind);
                 gap.addProperty("queryKey", string(record, "queryKey"));
                 gap.addProperty("reason", string(record, "reason"));
-                if (record.get("unsupported") != null) {
+                if (record.has("unsupported")) {
                     gap.add("unsupported", record.get("unsupported"));
                 }
                 explorationGaps.add(gap);
             }
             explorationGaps.addAll(abandonedFlips);
             result.add("explorationGaps", GSON.toJsonTree(explorationGaps));
+            coverageGaps.addAll(explorationGaps);
+            result.add("coverageGaps", GSON.toJsonTree(coverageGaps));
+            if (state != State.GAPPED && state != State.NOT_STARTED) {
+                result.addProperty("coverageState",
+                        tasks.isEmpty() && coverageGaps.isEmpty()
+                                ? "CLOSED" : hasReplayPath()
+                                ? "PARTIAL" : "SEED_ONLY");
+            }
             return result;
+        }
+
+        private boolean hasReplayPath() {
+            for (PathObservation path : paths) {
+                JsonObject task = taskById.get(path.sourceTaskId());
+                if (!string(task, "pathQueryKey").isEmpty()) return true;
+            }
+            return false;
         }
 
         private String manifestRegionId(Set<String> observedRegions) {
@@ -586,6 +586,31 @@ public final class RegionPathWorklist {
                          String pathKey, String site, int occurrence) {
             addIssue(gaps, gapKeys, kind, reason, region, pathKey, site,
                     occurrence);
+        }
+
+        private void coverageGap(String kind, String reason, String region,
+                                 String pathKey, String site,
+                                 int occurrence) {
+            addIssue(coverageGaps, coverageGapKeys, kind, reason, region,
+                    pathKey, site, occurrence);
+        }
+
+        private void collectAlignmentGaps(JsonObject source) {
+            for (JsonElement element : array(source, "alignmentGaps")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject imported = element.getAsJsonObject().deepCopy();
+                String kind = string(imported, "kind");
+                if (!"LOOP_ALIGNMENT_GAP".equals(kind)
+                        && !"READ_FROM_ALIGNMENT_GAP".equals(kind)
+                        && !"RPC_SHAPE_GAP".equals(kind)
+                        && !"OUTPUT_VERSION_ALIGNMENT_GAP".equals(kind)) {
+                    continue;
+                }
+                String key = CanonicalJson.render(imported);
+                if (coverageGapKeys.add(key)) {
+                    coverageGaps.add(imported);
+                }
+            }
         }
 
         private void addIssue(List<JsonObject> destination, Set<String> keys,

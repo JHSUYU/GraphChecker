@@ -700,9 +700,8 @@ public class CausynthPipelineTest {
         captures.add(capture);
         slice.add("captureBindings", captures);
         slice.add("captureBindingIssues", new JsonArray());
-        slice.add("causalEdges", new JsonArray());
         OutputClosureContract closure = OutputClosureCodec.singleton(
-                "REGION.P", "REGION.P@test#call1", 1,
+                "REL.REGION.P", "REGION.P", "CONTRACT.TEST",
                 "REGION.P.out.state", fieldSignature,
                 "HEAP_STATE", javaType, slice);
         OutputCaptureSpec spec = OutputClosureCodec.captureSpecs(closure)

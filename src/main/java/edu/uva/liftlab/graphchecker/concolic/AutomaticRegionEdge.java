@@ -103,8 +103,8 @@ public final class AutomaticRegionEdge {
                 || integer(evidence, "schemaVersion", -1) != 3
                 || !CONFIGURED_PROTOCOL_EQUALITY.equals(string(evidence,
                 "evidenceKind"))
-                || string(evidence, "fromRegionInstance").isEmpty()
-                || string(evidence, "toRegionInstance").isEmpty()
+                || string(evidence, "fromOccurrenceId").isEmpty()
+                || string(evidence, "toOccurrenceId").isEmpty()
                 || string(evidence, "fromOutputPort").isEmpty()
                 || string(evidence, "toInputPort").isEmpty()
                 || string(evidence, "mappingId").isEmpty()
@@ -133,8 +133,8 @@ public final class AutomaticRegionEdge {
             return integer(evidence, "schemaVersion", -1) == 3
                     && "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1".equals(
                     string(evidence, "correlationAuthority"))
-                    && !string(evidence, "fromRegionInstance").isEmpty()
-                    && !string(evidence, "toRegionInstance").isEmpty()
+                    && !string(evidence, "fromOccurrenceId").isEmpty()
+                    && !string(evidence, "toOccurrenceId").isEmpty()
                     && !string(evidence, "fromOutputPort").isEmpty()
                     && !string(evidence, "toInputPort").isEmpty()
                     && longInteger(evidence, "receiverObjectId", 0L) != 0L

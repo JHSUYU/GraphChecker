@@ -197,10 +197,8 @@ public final class ConcolicSummaryImporter {
             JsonObject referenceIdentities = new JsonObject();
             JsonObject outputs = outputExpressions(raw, task, issues,
                     referenceIdentities);
+            JsonArray alignmentGaps = alignmentGaps(task);
             JsonArray symbolicInputs = symbolicInputs(raw);
-            JsonObject occurrenceCatalog =
-                    task.occurrenceInstantiationCatalog();
-            validateOccurrenceCatalog(task, occurrenceCatalog, issues);
             JsonElement replayContract = task.replayContract();
 
             JsonObject summary = new JsonObject();
@@ -208,23 +206,14 @@ public final class ConcolicSummaryImporter {
             summary.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
             summary.addProperty("goalId", task.goalId());
             summary.addProperty("taskId", task.taskId());
+            summary.addProperty("sourceKey", task.sourceKey());
             summary.addProperty("regionId", task.regionId());
-            summary.addProperty("regionInstanceId",
-                    task.regionInstanceId());
-            if (!task.logicalRegionId().isEmpty()) {
-                summary.addProperty("logicalRegionId",
-                        task.logicalRegionId());
-            }
-            if (!task.summaryReuseKey().isEmpty()) {
-                summary.addProperty("summaryReuseKey",
-                        task.summaryReuseKey());
-            }
+            summary.addProperty("occurrenceId", task.occurrenceId());
+            summary.addProperty("relationKey", task.relationKey());
+            summary.addProperty("relationContractHash",
+                    task.relationContractHash());
             if (!task.pathSeedKey().isEmpty()) {
                 summary.addProperty("pathSeedKey", task.pathSeedKey());
-            }
-            if (occurrenceCatalog.size() > 0) {
-                summary.add(RegionInstancePlan.OCCURRENCE_CATALOG,
-                        occurrenceCatalog.deepCopy());
             }
             task.loopBound().writeTo(summary);
             task.goalKind().writeToTask(summary);
@@ -237,6 +226,9 @@ public final class ConcolicSummaryImporter {
             summary.add("pathCondition", path.expressions);
             summary.add("branchMappings", mappings);
             summary.add("outputExpressions", outputs);
+            if (alignmentGaps.size() > 0) {
+                summary.add("alignmentGaps", alignmentGaps);
+            }
             if (referenceIdentities.size() > 0) {
                 summary.add("outputReferenceIdentities",
                         referenceIdentities);
@@ -279,6 +271,19 @@ public final class ConcolicSummaryImporter {
         ArtifactIO.replaceJsonl(diagnosticFile, diagnostics);
         return new ImportResult(rawResults.size(), summaries.size(),
                 diagnostics.size());
+    }
+
+    private static JsonArray alignmentGaps(ExecutionTask task) {
+        JsonArray result = new JsonArray();
+        if (task.outputClosure() == null) return result;
+        for (OutputClosureContract.Member member
+                : task.outputClosure().members()) {
+            for (JsonElement gap : array(member.slice(),
+                    "alignmentGaps")) {
+                result.add(gap.deepCopy());
+            }
+        }
+        return result;
     }
 
     /**
@@ -695,155 +700,6 @@ public final class ConcolicSummaryImporter {
         }
     }
 
-    private static void validateOccurrenceCatalog(
-            ExecutionTask task, JsonObject catalog, List<String> issues) {
-        if (catalog.size() == 0) {
-            if (!task.logicalRegionId().isEmpty()) {
-                issues.add("MISSING_OCCURRENCE_INSTANTIATION_CATALOG");
-            }
-            return;
-        }
-        if (integer(catalog, "schemaVersion", -1) != 1
-                || !"LOGICAL_SUMMARY_OCCURRENCE_CATALOG".equals(
-                string(catalog, "kind"))
-                || !task.logicalRegionId().equals(
-                string(catalog, "logicalRegionId"))
-                || !task.regionInstanceId().equals(string(catalog,
-                "canonicalRegionInstanceId"))
-                || !task.summaryReuseKey().equals(
-                string(catalog, "summaryReuseKey"))
-                || longInteger(task.json(), "rootCallId", -1L) >= 0L
-                && longInteger(catalog, "canonicalRootCallId", -1L)
-                != longInteger(task.json(), "rootCallId", -1L)) {
-            issues.add("MALFORMED_OCCURRENCE_INSTANTIATION_CATALOG");
-            return;
-        }
-        Set<String> canonicalInputs = new LinkedHashSet<>();
-        for (JsonElement element : task.inputActions().all()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject action = element.getAsJsonObject();
-            String port = firstNonBlank(string(action, "portId"),
-                    string(action, "symbol"));
-            if (!port.isEmpty()) canonicalInputs.add(port);
-        }
-        Set<String> canonicalOutputs = task.outputClosure() == null
-                ? new LinkedHashSet<>() : new LinkedHashSet<>(
-                task.outputClosure().outputPorts());
-        Map<String, List<JsonObject>> bindingsById = new LinkedHashMap<>();
-        for (JsonElement element : task.edgeBindings()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject binding = element.getAsJsonObject();
-            String edgeId = string(binding, "edgeId");
-            if (!edgeId.isEmpty()) {
-                bindingsById.computeIfAbsent(edgeId,
-                        ignored -> new ArrayList<>()).add(binding);
-            }
-        }
-        Set<String> instances = new LinkedHashSet<>();
-        boolean canonicalFound = false;
-        for (JsonElement element : array(catalog, "occurrences")) {
-            if (!element.isJsonObject()) {
-                issues.add("MALFORMED_SUMMARY_OCCURRENCE");
-                continue;
-            }
-            JsonObject occurrence = element.getAsJsonObject();
-            String instance = string(occurrence, "regionInstanceId");
-            long rootCall = longInteger(occurrence, "rootCallId", -1L);
-            boolean requiresRoot = task.outputClosure() != null
-                    || longInteger(task.json(), "rootCallId", -1L) >= 0L;
-            boolean inconsistentRoot = (requiresRoot && rootCall < 0L)
-                    || (rootCall >= 0L
-                    && !instance.endsWith("#call" + rootCall));
-            if (instance.isEmpty() || inconsistentRoot
-                    || !instances.add(instance)) {
-                issues.add("AMBIGUOUS_SUMMARY_OCCURRENCE:" + instance);
-                continue;
-            }
-            canonicalFound |= task.regionInstanceId().equals(instance);
-            validatePortMap(occurrence, "inputPortMap", instance,
-                    canonicalInputs, issues);
-            validatePortMap(occurrence, "outputPortMap", instance,
-                    canonicalOutputs, issues);
-            Set<String> declaredBindings = new LinkedHashSet<>();
-            for (JsonElement id : array(occurrence, "bindingIds")) {
-                if (!id.isJsonPrimitive()
-                        || !id.getAsJsonPrimitive().isString()
-                        || stringValue(id).isEmpty()
-                        || !declaredBindings.add(stringValue(id))) {
-                    issues.add("MALFORMED_OCCURRENCE_BINDING_ID:"
-                            + instance);
-                    continue;
-                }
-                String edgeId = stringValue(id);
-                List<JsonObject> bindings = bindingsById.get(edgeId);
-                boolean exact = false;
-                if (bindings != null) {
-                    for (JsonObject binding : bindings) {
-                        exact |= instance.equals(string(binding,
-                                "fromRegionInstance"))
-                                || instance.equals(string(binding,
-                                "toRegionInstance"));
-                    }
-                }
-                if (!exact) {
-                    issues.add("UNKNOWN_OCCURRENCE_BINDING_ID:"
-                            + instance + ":" + edgeId);
-                }
-            }
-            Set<String> touchingBindings = new LinkedHashSet<>();
-            for (Map.Entry<String, List<JsonObject>> entry
-                    : bindingsById.entrySet()) {
-                for (JsonObject binding : entry.getValue()) {
-                    if (instance.equals(string(binding,
-                            "fromRegionInstance"))
-                            || instance.equals(string(binding,
-                            "toRegionInstance"))) {
-                        touchingBindings.add(entry.getKey());
-                    }
-                }
-            }
-            if (!declaredBindings.equals(touchingBindings)) {
-                issues.add("INCOMPLETE_OCCURRENCE_BINDING_IDS:"
-                        + instance);
-            }
-        }
-        if (!canonicalFound) {
-            issues.add("MISSING_CANONICAL_SUMMARY_OCCURRENCE");
-        }
-    }
-
-    private static void validatePortMap(
-            JsonObject occurrence, String field, String instance,
-            Set<String> expectedCanonical, List<String> issues) {
-        Set<String> canonical = new LinkedHashSet<>();
-        Set<String> exact = new LinkedHashSet<>();
-        for (JsonElement element : array(occurrence, field)) {
-            if (!element.isJsonObject()) {
-                issues.add("MALFORMED_OCCURRENCE_PORT_MAP:" + instance
-                        + ":" + field);
-                continue;
-            }
-            JsonObject mapping = element.getAsJsonObject();
-            String from = string(mapping, "canonicalPort");
-            String to = string(mapping, "exactPort");
-            if (from.isEmpty() || to.isEmpty()
-                    || !canonical.add(from) || !exact.add(to)) {
-                issues.add("AMBIGUOUS_OCCURRENCE_PORT_MAP:" + instance
-                        + ":" + field);
-            }
-        }
-        if (!canonical.equals(expectedCanonical)) {
-            issues.add("INCOMPLETE_OCCURRENCE_PORT_MAP:" + instance
-                    + ":" + field);
-        }
-    }
-
-    private static String stringValue(JsonElement value) {
-        return value == null || !value.isJsonPrimitive()
-                || !value.getAsJsonPrimitive().isString()
-                ? "" : value.getAsString().trim();
-    }
-
     private static boolean boundedOutputExit(JsonObject raw,
                                              ExecutionTask task) {
         if (!task.goalKind().capturesOutputRelation()
@@ -1138,7 +994,7 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             if (admitted.size() > 1) {
-                JsonObject versionSet = siteLocalBoundedVersions(port,
+                JsonElement versionSet = siteLocalBoundedVersions(port,
                         admitted, issues);
                 if (versionSet != null) result.add(port, versionSet);
                 continue;
@@ -1197,7 +1053,7 @@ public final class ConcolicSummaryImporter {
      * restarts inside each definition invocation and so cannot separate the
      * successive states one activation publishes at the same port.</p>
      */
-    private static JsonObject siteLocalBoundedVersions(
+    private static JsonElement siteLocalBoundedVersions(
             String port, List<JsonObject> admitted, List<String> issues) {
         String site = null;
         NavigableMap<Integer, JsonElement> byOrdinal = new TreeMap<>();
@@ -1218,14 +1074,17 @@ public final class ConcolicSummaryImporter {
                         + ":" + site + ":" + captureSite);
                 return null;
             }
-            if (byOrdinal.put(occurrence,
-                    capture.get("expression")) != null) {
+            JsonElement expression = capture.get("expression");
+            JsonElement prior = byOrdinal.get(occurrence);
+            if (prior != null && !prior.equals(expression)) {
                 issues.add("OUTPUT_CAPTURE_VERSION_COLLISION:" + port + ":"
                         + occurrence);
                 return null;
             }
+            if (prior == null) byOrdinal.put(occurrence, expression);
         }
-        return BoundedOutputVersions.encodeVersionSet(site, byOrdinal);
+        return byOrdinal.size() == 1 ? byOrdinal.firstEntry().getValue()
+                : BoundedOutputVersions.encodeVersionSet(site, byOrdinal);
     }
 
     /** Names a reference output the custom VM never symbolised. */
@@ -1342,7 +1201,7 @@ public final class ConcolicSummaryImporter {
         }
         JsonObject scoped = identity.deepCopy();
         scoped.addProperty("outputPort", member.portId());
-        scoped.addProperty("regionInstanceId", task.regionInstanceId());
+        scoped.addProperty("occurrenceId", task.occurrenceId());
         return scoped;
     }
 

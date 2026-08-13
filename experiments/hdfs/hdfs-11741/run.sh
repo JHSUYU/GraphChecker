@@ -415,11 +415,16 @@ apply_patch_once() {
 }
 
 apply_runtime_patch() {
-  if patch_is_applied "${runtime_patch_file}"; then
+  if runtime_patch_is_applied; then
     echo "[hdfs-11741] runtime trace/workload patch is already applied"
     return
   fi
   apply_patch_once "runtime trace/workload" "${runtime_patch_file}"
+}
+
+runtime_patch_is_applied() {
+  patch_is_applied "${runtime_patch_file}" \
+    || (verify_runtime_patch_content >/dev/null 2>&1)
 }
 
 verify_runtime_patch_content() {
@@ -481,7 +486,7 @@ verify_marker() {
   if [[ "${variant}" == external ]]; then
     return
   fi
-  patch_is_applied "${runtime_patch_file}" \
+  runtime_patch_is_applied \
     || die "runtime trace/workload patch is not applied; run: $0 prepare"
   marker_is_applied \
     || die "fatal-target patch is not applied; run: $0 prepare"
@@ -681,33 +686,19 @@ verify_task_artifacts() {
   local schedule="${work_root}/schedule"
   local tasks="${schedule}/execution_task_plan.jsonl"
   local workflow_index="${schedule}/runtime_workflow_schedule_index.json"
-  local target_campaign target_region target_instance
-  local target_goal plan_sha task_sha plan_size task_size
+  local plan_sha task_sha plan_size task_size
   require_command jq
   require_nonempty_file "concolic execution task plan" "${tasks}"
   require_file "branch query plan" "${schedule}/branch_queries.jsonl"
-  # This index is the target-first schedule's commit record.  Missing it is
-  # an incomplete publication, not permission to rediscover against a
-  # potentially different region plan.
   require_nonempty_file "target-first workflow index" "${workflow_index}"
-  IFS=$'\t' read -r target_campaign target_region target_instance \
-    target_goal <<<"$(jq -er '[.target.campaignId, .target.regionId,
-      .target.regionInstanceId, .target.goalId]
-      | if all(.[]; type == "string" and length > 0)
-        then join("\t") else error("incomplete target") end' \
-      "${workflow_index}")"
-  [[ -n "${target_campaign}" && -n "${target_region}" \
-      && -n "${target_instance}" && -n "${target_goal}" ]] \
-    || die "target-first index contains an incomplete target: ${workflow_index}"
   reject_coordination_candidates "${tasks}"
   jq -e -s '
     length > 0 and
     any(.[]; .admission.state == "EXECUTABLE") and
     all(.[];
-      (.taskId | type == "string" and length > 0) and
-      (.goalId | type == "string" and length > 0) and
-      (.regionId | type == "string" and length > 0) and
-      (.regionInstanceId | type == "string" and length > 0) and
+      all([.taskId, .goalId, .regionId, .sourceKey, .occurrenceId,
+           .relationKey, .relationContractHash][];
+          type == "string" and length > 0) and
       (.goalKind == "TARGET_REACH_CLOSURE" or
         .goalKind == "OUTPUT_RELATION_CLOSURE") and
       (.inputActions | type == "array") and
@@ -730,18 +721,19 @@ verify_task_artifacts() {
   task_sha=$(sha256sum "${tasks}" | cut -d' ' -f1)
   plan_size=$(stat -c '%s' "${region_plan}")
   task_size=$(stat -c '%s' "${tasks}")
-  jq -e --arg campaign "${target_campaign}" \
-      --arg region "${target_region}" \
-      --arg instance "${target_instance}" \
-      --arg goal "${target_goal}" \
-      --arg planSha "${plan_sha}" --arg taskSha "${task_sha}" \
+  jq -e --arg planSha "${plan_sha}" --arg taskSha "${task_sha}" \
       --argjson planSize "${plan_size}" \
       --argjson taskSize "${task_size}" \
       --slurpfile tasks "${tasks}" '
-      def nonempty_unique_strings:
-        type == "array" and length > 0 and
-        all(.[]; type == "string" and length > 0) and
-        length == (unique | length);
+      def matches($entry; $kind):
+        ([$tasks[] | select(.taskId == $entry.taskId)]) as $matched
+        | ($matched | length) == 1
+          and $matched[0].regionId == $entry.regionId
+          and $matched[0].relationKey == $entry.relationKey
+          and $matched[0].occurrenceId == $entry.occurrenceId
+          and $matched[0].goalId == $entry.goalId
+          and $matched[0].goalKind == $kind
+          and $matched[0].admission.state == "EXECUTABLE";
       .schemaVersion == 1 and
       .kind == "RUNTIME_TARGET_FIRST_SCHEDULE_INDEX" and
       .selectionAuthority ==
@@ -750,10 +742,9 @@ verify_task_artifacts() {
       .regionPlan.sizeBytes == $planSize and
       .executionTaskPlan.sha256 == $taskSha and
       .executionTaskPlan.sizeBytes == $taskSize and
-      .target.campaignId == $campaign and
-      .target.regionId == $region and
-      .target.regionInstanceId == $instance and
-      .target.goalId == $goal and
+      all([.target.campaignId, .target.regionId, .target.relationKey,
+           .target.occurrenceId, .target.goalId, .target.taskId][];
+          type == "string" and length > 0) and
       (.producers | type == "array" and length > 0) and
       (([.target.taskId] + [.producers[].taskId]) as $indexedIds
         | ($indexedIds | length) == ($indexedIds | unique | length)) and
@@ -761,96 +752,8 @@ verify_task_artifacts() {
         ($tasks | map(.taskId) | unique | length)) and
       (([.target.taskId] + [.producers[].taskId] | sort) ==
         ($tasks | map(.taskId) | sort)) and
-      (.target as $target
-        | ([$tasks[] | select(.taskId == $target.taskId)]) as $matched
-        | ($matched | length) == 1 and
-          $matched[0].regionId == $target.regionId and
-          $matched[0].logicalRegionId == $target.logicalRegionId and
-          $matched[0].goalId == $target.goalId and
-          $matched[0].goalKind == "TARGET_REACH_CLOSURE" and
-          $matched[0].admission.state == "EXECUTABLE" and
-          any($matched[0].occurrenceInstantiationCatalog.occurrences[]?;
-            .regionInstanceId == $target.regionInstanceId)) and
-      (all(.producers[];
-        . as $producer
-        | ([$tasks[] | select(.taskId == $producer.taskId)]) as $matched
-        | ($matched | length) == 1 and
-          $matched[0].regionId == $producer.regionId and
-          $matched[0].logicalRegionId == $producer.logicalRegionId and
-          $matched[0].goalId == $producer.goalId and
-          $matched[0].goalKind == "OUTPUT_RELATION_CLOSURE" and
-          $matched[0].admission.state == "EXECUTABLE" and
-          any($matched[0].occurrenceInstantiationCatalog.occurrences[]?;
-            .regionInstanceId == $producer.regionInstanceId) and
-          $matched[0].producerProjection ==
-            $producer.producerProjection and
-          ($producer.producerProjection as $groupProjection
-            | $groupProjection.schemaVersion == 1 and
-              $groupProjection.kind ==
-                "SELECTED_PRODUCER_OUTPUT_PROJECTION" and
-              $groupProjection.campaignId == $producer.campaignId and
-              $groupProjection.goalId == $producer.goalId and
-              $groupProjection.regionId == $producer.regionId and
-              $groupProjection.logicalRegionId ==
-                $producer.logicalRegionId and
-              ($groupProjection.pathSeedKey | type == "string" and
-                length > 0) and
-              ($groupProjection.outputPorts |
-                nonempty_unique_strings) and
-              ($groupProjection.edgeIds |
-                nonempty_unique_strings) and
-              (((($producer.goalId | type == "string") and
-                  ($producer.goalId |
-                    startswith("GOAL.OUTPUT_RELATION.ATOMIC."))) or
-                 (($producer.campaignId | type == "string") and
-                  ($producer.campaignId |
-                    test("-atomic-[0-9a-f]{64}$")))) as $isAtomic
-               | if $isAtomic then
-                 ($producer | has("selectedGoals")) and
-                 (($producer.goalId |
-                    sub("^GOAL\\.OUTPUT_RELATION\\.ATOMIC\\."; "")) as
-                    $atomicDigest
-                   | ($atomicDigest | test("^[0-9a-f]{64}$")) and
-                     $producer.campaignId ==
-                       ($producer.regionId + "-atomic-" + $atomicDigest)) and
-                 ($producer.selectedGoals | type == "array" and
-                   length > 1) and
-                 ([$producer.selectedGoals[].campaignId] as $campaigns
-                   | all($campaigns[];
-                       type == "string" and length > 0) and
-                     (($campaigns | length) ==
-                       ($campaigns | unique | length))) and
-                 ([$producer.selectedGoals[].goalId] as $goals
-                   | all($goals[];
-                       type == "string" and length > 0) and
-                     (($goals | length) ==
-                       ($goals | unique | length))) and
-                 (all($producer.selectedGoals[];
-                   . as $selected
-                   | ($selected.producerProjection as $projection
-                     | $projection.schemaVersion == 1 and
-                       $projection.kind ==
-                         "SELECTED_PRODUCER_OUTPUT_PROJECTION" and
-                       $projection.campaignId == $selected.campaignId and
-                       $projection.goalId == $selected.goalId and
-                       $projection.regionId == $producer.regionId and
-                       $projection.logicalRegionId ==
-                         $producer.logicalRegionId and
-                       $projection.pathSeedKey ==
-                         $groupProjection.pathSeedKey and
-                       ($projection.outputPorts |
-                         nonempty_unique_strings) and
-                       ($projection.edgeIds |
-                         nonempty_unique_strings)))) and
-                 (([$producer.selectedGoals[]
-                     .producerProjection.outputPorts[]] | unique | sort) ==
-                   ($groupProjection.outputPorts | unique | sort)) and
-                 (([$producer.selectedGoals[]
-                     .producerProjection.edgeIds[]] | unique | sort) ==
-                   ($groupProjection.edgeIds | unique | sort))
-               else
-                 ($producer | has("selectedGoals") | not)
-               end))))
+      matches(.target; "TARGET_REACH_CLOSURE") and
+      all(.producers[]; matches(.; "OUTPUT_RELATION_CLOSURE"))
   ' "${workflow_index}" >/dev/null \
     || die "target-first workflow index failed integrity validation: ${workflow_index}"
 }
@@ -1370,7 +1273,7 @@ run_seed_tasks_parallel() {
     for spec in "${failures[@]}"; do
       echo "[hdfs-11741] unseeded region campaign: ${spec}" >&2
     done
-    die "${#failures[@]} of ${#unique[@]} region seed campaign(s) failed"
+    echo "[hdfs-11741] continuing with observed relations; ${#failures[@]} of ${#unique[@]} region seed campaign(s) are coverage gaps" >&2
   fi
   if command -v hardlink >/dev/null 2>&1; then
     hardlink --quiet --content --include '\.class$' \
@@ -1464,7 +1367,7 @@ prepare_target_branch_query() {
   CAUSYNTH_SCHEDULE_OUTPUT_DIR="${query_dir}" \
     CAUSYNTH_SCHEDULE_SUMMARIES="${campaign}/seed-summaries.jsonl" \
     do_engine_config schedule --region-id "${region}" \
-      --region-instance-id "${instance}" --goal-id "${goal}" \
+      --occurrence-id "${instance}" --goal-id "${goal}" \
       --target-edge-ids "${target_edge_ids}"
   require_nonempty_file "target branch query" \
     "${query_dir}/branch_queries.jsonl"
@@ -1592,7 +1495,7 @@ run_path_query() {
     then {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD",
       queryKey: .[0].pathQueryKey, regionId: .[0].regionId,
       taskId: .[0].taskId,
-      regionInstanceId: .[0].regionInstanceId,
+      occurrenceId: .[0].occurrenceId,
       goalId: .[0].goalId,
       status: (if .[0].goalKind == "OUTPUT_RELATION_CLOSURE"
         then "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
@@ -1664,8 +1567,8 @@ prepare_observed_seed_relation() {
   local published="${campaign}/observed_summary.jsonl"
   local planner="${campaign}/observed-seed"
   if [[ -s "${campaign}/path_closure.json" \
-      && -s "${campaign}/merged_summary.jsonl" ]]; then
-    cp -f "${campaign}/merged_summary.jsonl" "${published}"
+      && -s "${campaign}/relation_summary.jsonl" ]]; then
+    cp -f "${campaign}/relation_summary.jsonl" "${published}"
     return
   fi
   mkdir -p "${planner}"
@@ -1676,9 +1579,15 @@ prepare_observed_seed_relation() {
     --output-dir "${planner}" --region-id "${region}" --goal-id "${goal}"
   if jq -e '.state == "CLOSED"' \
       "${planner}/region_path_manifest.json" >/dev/null; then
-    require_nonempty_file "closed producer seed relation" \
-      "${planner}/merged_region_summaries.jsonl"
-    cp -f "${planner}/merged_region_summaries.jsonl" "${published}"
+    local relation_source
+    if jq -e '.coverageState == "CLOSED"' \
+        "${planner}/region_path_manifest.json" >/dev/null; then
+      relation_source="${planner}/merged_region_summaries.jsonl"
+    else
+      relation_source="${planner}/observed_region_summaries.jsonl"
+    fi
+    require_nonempty_file "producer seed relation" "${relation_source}"
+    cp -f "${relation_source}" "${published}"
     return
   fi
   jq -e '.state == "PENDING"' \
@@ -1745,7 +1654,7 @@ probe_observed_candidate() {
     CAUSYNTH_COMPOSED_SMT="${attempt}/candidate.smt2" \
     CAUSYNTH_COMPOSITION_MANIFEST="${attempt}/composition.json" \
     CAUSYNTH_FATAL_REGION="${partial_probe_target_region}" \
-    CAUSYNTH_FATAL_REGION_INSTANCE_ID="${partial_probe_target_instance}" \
+    CAUSYNTH_FATAL_OCCURRENCE_ID="${partial_probe_target_instance}" \
     do_engine_config compose \
       --composition-mode EXISTENTIAL_OBSERVED_PATHS
   # Exploration can finish while this probe is still armed: once every
@@ -1802,12 +1711,27 @@ probe_observed_candidate() {
     echo "[hdfs-11741] observed-path reach condition not proven to constrain (${degeneracy}); continuing exploration"
     return 1
   fi
+  run_graphchecker_main \
+    edu.uva.liftlab.graphchecker.concolic.CausalGraphWriter \
+    "${region_plan}" \
+    "${work_root}/runtime/causal_source_events.jsonl" \
+    "${workflow_index}" \
+    "${attempt}/composition.json" \
+    "${attempt}/z3-result.json" \
+    "${attempt}" "${snapshot_summaries[@]}"
   cp -f "${attempt}/candidate.smt2" \
     "${partial_probe_output}/candidate.smt2"
   cp -f "${attempt}/composition.json" \
     "${partial_probe_output}/composition.json"
   cp -f "${attempt}/z3-result.json" \
     "${partial_probe_output}/z3-result.json"
+  for artifact in causal_skeleton.json causal_witness.json \
+      causal_witness.dot; do
+    require_nonempty_file "observed-path ${artifact}" \
+      "${attempt}/${artifact}"
+    cp -f "${attempt}/${artifact}" \
+      "${partial_probe_output}/${artifact}"
+  done
   jq -n --arg campaign "${partial_probe_target_campaign}" \
     --arg region "${partial_probe_target_region}" \
     --arg instance "${partial_probe_target_instance}" \
@@ -1815,13 +1739,18 @@ probe_observed_candidate() {
     --arg degeneracy "${degeneracy}" \
     --arg smt "${partial_probe_output}/candidate.smt2" \
     --arg z3 "${partial_probe_output}/z3-result.json" \
+    --arg graph "${partial_probe_output}/causal_skeleton.json" \
+    --arg witness "${partial_probe_output}/causal_witness.json" \
+    --arg dot "${partial_probe_output}/causal_witness.dot" \
     '{schemaVersion: 1, kind: "HDFS11741_BOUNDED_CANDIDATE",
       target: {campaign: $campaign, regionId: $region,
-        regionInstanceId: $instance, goalId: $goal},
+        occurrenceId: $instance, goalId: $goal},
       reachability: "REACHABLE", degeneracyCheck: $degeneracy,
       pathSetComplete: false,
       proofScope: "OBSERVED_IMPORTED_VM_PATH_UNDERAPPROX_V1",
-      artifacts: {smt: $smt, z3Result: $z3}}' \
+      artifacts: {smt: $smt, z3Result: $z3,
+        causalSkeleton: $graph, causalWitness: $witness,
+        causalWitnessDot: $dot}}' \
     >"${partial_probe_output}/result.json"
   cp -f "${partial_probe_output}/result.json" \
     "${candidate_root}/sat-result.json"
@@ -1849,14 +1778,11 @@ close_region_paths() {
   goal_kind=$(jq -er --arg goal "${goal}" \
     'select(.goalId == $goal) | .goalKind' \
     "${campaign}/execution_task_plan.jsonl")
-  if [[ -s "${campaign}/path_closure.json" \
-      && -f "${campaign}/merged_summary.jsonl" ]] \
+  if [[ -s "${campaign}/path_closure.json" ]] \
       && jq -e '.state == "CLOSED"' \
         "${campaign}/path_closure.json" >/dev/null \
       && { [[ "${goal_kind}" == "TARGET_REACH_CLOSURE" ]] \
-        || [[ -s "${campaign}/merged_summary.jsonl" ]]; }; then
-    cp -f "${campaign}/merged_summary.jsonl" \
-      "${campaign}/observed_summary.jsonl"
+        || [[ -s "${campaign}/relation_summary.jsonl" ]]; }; then
     echo "[hdfs-11741] reuse closed ${label} path campaign"
     return
   fi
@@ -1893,13 +1819,24 @@ close_region_paths() {
         "${planner}/region_path_manifest.json" >/dev/null; then
       cp -f "${planner}/region_path_manifest.json" \
         "${campaign}/path_closure.json"
-      cp -f "${planner}/merged_region_summaries.jsonl" \
-        "${campaign}/merged_summary.jsonl"
-      if [[ -s "${campaign}/merged_summary.jsonl" ]]; then
-        publish_file_atomically "${campaign}/merged_summary.jsonl" \
+      if [[ "${goal_kind}" != "TARGET_REACH_CLOSURE" ]]; then
+        local coverage relation_source
+        coverage=$(jq -r '.coverageState // "CLOSED"' \
+          "${planner}/region_path_manifest.json")
+        if [[ "${coverage}" == "CLOSED" ]]; then
+          relation_source="${planner}/merged_region_summaries.jsonl"
+        else
+          relation_source="${planner}/observed_region_summaries.jsonl"
+        fi
+        require_nonempty_file "${coverage} ${label} relation" \
+          "${relation_source}"
+        publish_file_atomically "${relation_source}" \
+          "${campaign}/relation_summary.jsonl"
+        publish_file_atomically "${relation_source}" \
           "${campaign}/observed_summary.jsonl"
       fi
-      echo "[hdfs-11741] closed ${label} paths in ${replay_count} replay(s), $((iteration - 1)) wave(s)"
+      echo "[hdfs-11741] ${label} coverage $(jq -r \
+        '.coverageState // "CLOSED"' "${campaign}/path_closure.json") after ${replay_count} replay(s)"
       return
     fi
     jq -e '.state == "PENDING"' \
@@ -1956,20 +1893,20 @@ close_region_paths() {
 build_target_reach_query() {
   local campaign=$1
   local selected_target_instance=$2
-  local exception_type target_region canonical_instance
+  local exception_type target_region target_occurrence
   target_region=$(jq -er '.regionId' \
     "${campaign}/execution_task_plan.jsonl")
-  canonical_instance=$(jq -er '.regionInstanceId' \
+  target_occurrence=$(jq -er '.occurrenceId' \
     "${campaign}/execution_task_plan.jsonl")
   if [[ -s "${campaign}/reach_query.jsonl" ]] \
       && jq -e --arg region "${target_region}" \
         --arg instance "${selected_target_instance}" \
-        --arg canonical "${canonical_instance}" \
+        --arg occurrence "${target_occurrence}" \
         '.kind == "TARGET_REACH_PATH_SET_QUERY"
           and .constraintAuthority
-            == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
-          and .regionId == $region and .regionInstanceId == $instance
-          and .canonicalRegionInstanceId == $canonical
+            == "RECORDED_TARGET_PREFIX_V1"
+          and .regionId == $region and .occurrenceId == $instance
+          and .occurrenceId == $occurrence
           and (.paths | length) > 0' \
         "${campaign}/reach_query.jsonl" >/dev/null; then
     echo "[hdfs-11741] reuse closed target reach query"
@@ -2065,11 +2002,13 @@ run_candidate_for_target() {
   local target_task target_campaign output producer_id
   local producer_region producer_instance producer_goal producer_task
   local producer_campaign producer_summary compose_summaries reachability
-  local index degeneracy producer_row
+  local index degeneracy producer_row coverage any_partial=false
   local -a producer_ids=() producer_regions=()
   local -a producer_goals=() producer_tasks=() producer_campaigns=()
-  local -a merged_inputs=() seed_specs=() producer_closure_specs=()
-  declare -A probe_seen=() merged_seen=()
+  local -a relation_inputs=() seed_specs=() producer_closure_specs=()
+  local -a usable_producer_indices=()
+  local -a compose_args=()
+  declare -A probe_seen=() relation_seen=()
 
   IFS=$'\t' read -r target_campaign_id target_region target_instance \
     target_goal <<< "${binding}"
@@ -2082,7 +2021,7 @@ run_candidate_for_target() {
       --arg goal "${target_goal}" '
         select(.target.campaignId == $campaign and
           .target.regionId == $region and
-          .target.regionInstanceId == $instance and
+          .target.occurrenceId == $instance and
           .target.goalId == $goal) | .target.taskId
     ' "${workflow_index}") \
     || die "workflow index does not match selected target: ${workflow_index}"
@@ -2102,7 +2041,7 @@ run_candidate_for_target() {
     producer_tasks+=("${producer_task}")
     producer_campaigns+=("${producer_campaign}")
   done < <(jq -r '.producers[] |
-    [.campaignId,.regionId,.regionInstanceId,.goalId,.taskId] | @tsv' \
+    [.campaignId,.regionId,.occurrenceId,.goalId,.taskId] | @tsv' \
     "${workflow_index}")
   (( ${#producer_ids[@]} > 0 )) \
     || die "target ${target_campaign_id} has no runtime-confirmed producer"
@@ -2116,6 +2055,19 @@ run_candidate_for_target() {
   run_seed_tasks_parallel "${schedule_plan}" "${seed_specs[@]}"
 
   target_campaign=$(seed_campaign_directory TARGET_REACH_CLOSURE "${target_task}")
+  require_nonempty_file "target seed summary" \
+    "${target_campaign}/seed-summaries.jsonl"
+  for index in "${!producer_ids[@]}"; do
+    producer_campaign=${producer_campaigns[$index]}
+    if [[ -s "${producer_campaign}/seed-summaries.jsonl" ]]; then
+      usable_producer_indices+=("${index}")
+    else
+      any_partial=true
+      echo "[hdfs-11741] producer coverage gap: ${producer_ids[$index]}" >&2
+    fi
+  done
+  (( ${#usable_producer_indices[@]} > 0 )) \
+    || die "target ${target_campaign_id} has no observed producer relation"
   prepare_target_branch_query "${target_campaign}" "${target_region}" \
     "${target_instance}" "${target_goal}"
   close_region_paths "target ${target_campaign_id}" "${target_region}" \
@@ -2148,7 +2100,7 @@ run_candidate_for_target() {
     (( ${#partial_probe_required_true_ports[@]} > 0 )) \
       || die "explicit-fault experiment has no scheduled fault input"
   fi
-  for index in "${!producer_ids[@]}"; do
+  for index in "${usable_producer_indices[@]}"; do
     producer_campaign=${producer_campaigns[$index]}
     if [[ -z "${probe_seen[${producer_campaign}]+x}" ]]; then
       probe_seen[${producer_campaign}]=1
@@ -2169,23 +2121,31 @@ run_candidate_for_target() {
   if [[ "${partial_probe_sat}" == true ]]; then
     return 0
   fi
-  for index in "${!producer_ids[@]}"; do
-    producer_summary="${producer_campaigns[$index]}/merged_summary.jsonl"
-    require_nonempty_file "merged producer summary" "${producer_summary}"
-    if [[ -z "${merged_seen[${producer_summary}]+x}" ]]; then
-      merged_seen[${producer_summary}]=1
-      merged_inputs+=("${producer_summary}")
+  for index in "${usable_producer_indices[@]}"; do
+    producer_summary="${producer_campaigns[$index]}/relation_summary.jsonl"
+    require_nonempty_file "producer relation summary" "${producer_summary}"
+    coverage=$(jq -r '.coverageState // "CLOSED"' \
+      "${producer_campaigns[$index]}/path_closure.json")
+    if [[ "${coverage}" != "CLOSED" ]]; then
+      any_partial=true
+    fi
+    if [[ -z "${relation_seen[${producer_summary}]+x}" ]]; then
+      relation_seen[${producer_summary}]=1
+      relation_inputs+=("${producer_summary}")
     fi
   done
   partial_probe_enabled=false
-  compose_summaries=$(IFS=:; printf '%s' "${merged_inputs[*]}")
+  compose_summaries=$(IFS=:; printf '%s' "${relation_inputs[*]}")
+  if [[ "${any_partial}" == true ]]; then
+    compose_args+=(--composition-mode EXISTENTIAL_OBSERVED_PATHS)
+  fi
   CAUSYNTH_FATAL_QUERIES="${target_campaign}/reach_query.jsonl" \
     CAUSYNTH_COMPOSE_SUMMARIES="${compose_summaries}" \
     CAUSYNTH_COMPOSED_SMT="${output}/candidate.smt2" \
     CAUSYNTH_COMPOSITION_MANIFEST="${output}/composition.json" \
     CAUSYNTH_FATAL_REGION="${target_region}" \
-    CAUSYNTH_FATAL_REGION_INSTANCE_ID="${target_instance}" \
-    do_engine_config compose
+    CAUSYNTH_FATAL_OCCURRENCE_ID="${target_instance}" \
+    do_engine_config compose "${compose_args[@]}"
   require_nonempty_file "composed candidate SMT" "${output}/candidate.smt2"
   if [[ "${CAUSYNTH_REQUIRE_COMPLETE_CANDIDATE:-false}" == true ]]; then
     jq -e '.state == "CANDIDATE_READY" and
@@ -2200,6 +2160,22 @@ run_candidate_for_target() {
     CAUSYNTH_REACH_REPORT="${output}/z3-result.json" \
     do_engine_config reach
   require_nonempty_file "Z3 candidate result" "${output}/z3-result.json"
+  require_file "causal source events" \
+    "${work_root}/runtime/causal_source_events.jsonl"
+  run_graphchecker_main \
+    edu.uva.liftlab.graphchecker.concolic.CausalGraphWriter \
+    "${region_plan}" \
+    "${work_root}/runtime/causal_source_events.jsonl" \
+    "${workflow_index}" \
+    "${output}/composition.json" \
+    "${output}/z3-result.json" \
+    "${output}" "${relation_inputs[@]}"
+  require_nonempty_file "causal skeleton" \
+    "${output}/causal_skeleton.json"
+  require_nonempty_file "causal witness" \
+    "${output}/causal_witness.json"
+  require_nonempty_file "causal witness DOT" \
+    "${output}/causal_witness.dot"
   reach_satisfies_required_true_ports "${output}/z3-result.json" \
     || die "candidate does not admit every required explicit fault as true"
   reachability=$(jq -er '.reachCondition.reachability' \
@@ -2220,13 +2196,22 @@ run_candidate_for_target() {
     --arg region "${target_region}" --arg instance "${target_instance}" \
     --arg goal "${target_goal}" --arg reachability "${reachability}" \
     --arg degeneracy "${degeneracy}" \
+    --arg coverage "$(jq -r '.pathSetComplete
+      | if . then "CLOSED" else "PARTIAL" end' \
+      "${output}/composition.json")" \
     --arg smt "${output}/candidate.smt2" \
     --arg z3 "${output}/z3-result.json" \
+    --arg graph "${output}/causal_skeleton.json" \
+    --arg witness "${output}/causal_witness.json" \
+    --arg dot "${output}/causal_witness.dot" \
     '{schemaVersion: 1, kind: "HDFS11741_BOUNDED_CANDIDATE",
       target: {campaign: $campaign, regionId: $region,
-        regionInstanceId: $instance, goalId: $goal},
-      reachability: $reachability, degeneracyCheck: $degeneracy,
-      artifacts: {smt: $smt, z3Result: $z3}}' >"${output}/result.json"
+        occurrenceId: $instance, goalId: $goal},
+      reachability: $reachability, coverageState: $coverage,
+      degeneracyCheck: $degeneracy,
+      artifacts: {smt: $smt, z3Result: $z3,
+        causalSkeleton: $graph, causalWitness: $witness,
+        causalWitnessDot: $dot}}' >"${output}/result.json"
   if [[ "${reachability}" == "REACHABLE" ]] \
       && jq -e 'any(.valuations[]?; .status == "sat")' \
         "${output}/z3-result.json" >/dev/null; then
@@ -2239,6 +2224,12 @@ run_candidate_for_target() {
     esac
     cp -f "${output}/result.json" "${candidate_root}/sat-result.json"
     echo "[hdfs-11741] SAT: ${output}/candidate.smt2"
+    return 0
+  fi
+  if [[ "${reachability}" == "UNKNOWN" && "${any_partial}" == true ]]; then
+    cp -f "${output}/result.json" \
+      "${candidate_root}/inconclusive-result.json"
+    echo "[hdfs-11741] partial SMT published with an inconclusive reach report: ${output}/candidate.smt2"
     return 0
   fi
   [[ "${reachability}" == "UNREACHABLE" ]] \
@@ -2257,7 +2248,7 @@ do_candidates() {
   initialize_replay_engine_fingerprint
   workflow_index="${work_root}/schedule/runtime_workflow_schedule_index.json"
   binding=$(jq -er '[.target.campaignId, .target.regionId,
-    .target.regionInstanceId, .target.goalId]
+    .target.occurrenceId, .target.goalId]
     | if all(.[]; type == "string" and length > 0)
       then join("\t") else error("incomplete target") end' \
     "${workflow_index}")

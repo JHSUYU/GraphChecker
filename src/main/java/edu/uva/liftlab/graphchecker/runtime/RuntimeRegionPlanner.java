@@ -9,6 +9,7 @@ import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
+import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
 import edu.uva.liftlab.graphchecker.contract.BoundedPathSeed;
@@ -183,8 +184,6 @@ final class RuntimeRegionPlanner {
         activation.put("kind", "RUNTIME_REGION_ACTIVATION");
         activation.put("activationId", activationId(root));
         activation.put("regionId", skeleton.get("regionId"));
-        activation.put("logicalRegionId", logicalRegionId(
-                text(skeleton.get("regionId")), root.ownerId));
         activation.put("regionIds", new ArrayList<>(Collections.singletonList(
                 skeleton.get("regionId"))));
         activation.put("rootCallId", root.callId);
@@ -229,8 +228,6 @@ final class RuntimeRegionPlanner {
             activation.put("kind", "RUNTIME_REGION_ACTIVATION");
             activation.put("activationId", activationId(owner));
             activation.put("regionId", ownerSkeleton.get("regionId"));
-            activation.put("logicalRegionId", logicalRegionId(
-                    text(ownerSkeleton.get("regionId")), owner.ownerId));
             activation.put("regionIds", new ArrayList<>(
                     Collections.singletonList(ownerSkeleton.get("regionId"))));
             activation.put("rootCallId", owner.callId);
@@ -368,11 +365,13 @@ final class RuntimeRegionPlanner {
             }
             regionById.put(text(region.get("regionId")), region);
         }
-        Map<String, String> instanceByRegionAndCall = new LinkedHashMap<>();
-        Map<String, Map<String, Object>> goalByInstance =
+        Map<String, String> occurrenceByRegionAndCall = new LinkedHashMap<>();
+        Map<String, Map<String, Object>> goalByOccurrence =
                 new LinkedHashMap<>();
-        Map<String, Map<String, Object>> planByInstance =
+        Map<String, Map<String, Object>> planByOccurrence =
                 new LinkedHashMap<>();
+        Map<String, Integer> occurrenceCounts = new LinkedHashMap<>();
+        Map<String, Integer> rootOccurrenceCounts = new LinkedHashMap<>();
         Map<String, String> exactPorts = new LinkedHashMap<>();
         for (Map<String, Object> seed : runtimeSeeds == null
                 ? Collections.<Map<String, Object>>emptyList()
@@ -421,8 +420,6 @@ final class RuntimeRegionPlanner {
             activation.put("kind", "RUNTIME_REGION_ACTIVATION");
             activation.put("activationId", activationId(root));
             activation.put("regionId", region.get("regionId"));
-            activation.put("logicalRegionId", logicalRegionId(regionId,
-                    root.ownerId));
             activation.put("rootCallId", root.callId);
             activation.put("rootMethod", root.method);
             activation.put("selection", region.get("selection"));
@@ -436,8 +433,6 @@ final class RuntimeRegionPlanner {
                     new ArrayList<>(observedMethods));
             result.runtimeInstances.add(activation);
 
-            String instanceId = regionId + "@"
-                    + safe(root.test) + "#call" + rootCallId;
             boolean target = text(region.get("selection"))
                     .startsWith("EXCEPTION");
             List<Map<String, Object>> symbolize = symbolize(
@@ -445,6 +440,21 @@ final class RuntimeRegionPlanner {
             List<Map<String, Object>> branches = branches(
                     rows(region.get("branchPolicies")),
                     trace.runtime(calls));
+            MethodEvent semanticContext = target
+                    ? trace.selectedTargetContext(root, calls, branches)
+                    : root;
+            SourceRef source = source(semanticContext);
+            SourceRef rootSource = source(root);
+            String relationKey = source.id() + "/relation/" + regionId;
+            String occurrenceScope = source.key() + "\n" + root.requestKey
+                    + "\n" + regionId;
+            int occurrenceIndex = occurrenceCounts.merge(
+                    occurrenceScope, 1, Integer::sum);
+            int rootOccurrenceIndex = rootOccurrenceCounts.merge(
+                    rootSource.key() + "\n" + root.requestKey + "\n"
+                            + regionId, 1, Integer::sum);
+            String occurrenceId = source.key() + "/region/" + regionId
+                    + "#" + occurrenceIndex;
             long targetBoundaryUpperSeq = target
                     ? targetBoundaryUpperSeq(branches, seed) : -1L;
             ReturnSlice targetSlice = target
@@ -474,10 +484,10 @@ final class RuntimeRegionPlanner {
                             : Collections.emptyList();
             Map<String, Object> goal = new LinkedHashMap<>();
             goal.put("goalId", target ? "GOAL.TARGET_REACH."
-                        + UUID.nameUUIDFromBytes(instanceId.getBytes(
+                        + UUID.nameUUIDFromBytes(occurrenceId.getBytes(
                         StandardCharsets.UTF_8))
                         : "GOAL.OUTPUT_RELATION."
-                        + UUID.nameUUIDFromBytes(instanceId.getBytes(
+                        + UUID.nameUUIDFromBytes(occurrenceId.getBytes(
                         StandardCharsets.UTF_8)));
             goal.put("kind", target ? "TARGET_REACH_CLOSURE"
                     : "OUTPUT_RELATION_CLOSURE");
@@ -499,32 +509,43 @@ final class RuntimeRegionPlanner {
                 Map<String, Object> plan = new LinkedHashMap<>();
                 plan.put("schemaVersion", 3);
                 plan.put("kind", "CONCOLIC_REGION_PLAN");
-                plan.put("regionInstanceId", instanceId);
+                plan.put("sourceKey", source.key());
+                plan.put("sourceKind", source.kind());
+                plan.put("sourceRole", source.role());
+                plan.put("sourceId", source.id());
+                plan.put("sourceEpoch", source.epoch());
+                plan.put("sourceAuthority", semanticContext.source == null
+                        ? "WORKLOAD_FALLBACK"
+                        : target && semanticContext != root
+                        ? "SELECTED_TARGET_EVENT_SOURCE"
+                        : "EXPLICIT_TRACE_SOURCE");
+                if (!root.requestKey.isEmpty()) {
+                    plan.put("requestKey", root.requestKey);
+                    plan.put("requestApi", root.requestApi);
+                }
+                plan.put("occurrenceId", occurrenceId);
                 plan.put("regionId", region.get("regionId"));
-                plan.put("logicalRegionId", logicalRegionId(regionId,
-                        root.ownerId));
-                putTraceContext(plan, root);
-                plan.put("rootCallId", root.callId);
-                plan.put("logicalRootCallIds", new ArrayList<>(
-                        Collections.singletonList(rootCallId)));
-                plan.put("logicalActivationIds", new ArrayList<>(
-                        Collections.singletonList(activation.get(
-                                "activationId"))));
-                plan.put("logicalInstanceCount", 1);
-                plan.put("rootSelector", rootSelector(root));
+                plan.put("relationKey", relationKey);
+                plan.put("relationContractHash", relationContractHash(
+                        region, allowedMethods));
+                putTraceContext(plan, semanticContext);
+                plan.put("traceEvidence", object("rootCallId", root.callId,
+                        "activationId", activation.get("activationId")));
+                plan.put("rootSelector", rootSelector(root, rootSource,
+                        rootOccurrenceIndex, root.source != null));
                 plan.put("targetMethod", region.get("anchorMethod"));
                 plan.put("closureGoals", Collections.singletonList(goal));
                 result.regionPlans.add(plan);
                 String exactInstance = instanceKey(regionId, rootCallId);
-                if (instanceByRegionAndCall.putIfAbsent(exactInstance,
-                        instanceId) != null
-                        || goalByInstance.putIfAbsent(instanceId,
+                if (occurrenceByRegionAndCall.putIfAbsent(exactInstance,
+                        occurrenceId) != null
+                        || goalByOccurrence.putIfAbsent(occurrenceId,
                         goal) != null) {
                     throw new IllegalArgumentException(
                             "duplicate runtime activation: " + regionId
                                     + "#call" + rootCallId);
                 }
-                planByInstance.put(instanceId, plan);
+                planByOccurrence.put(occurrenceId, plan);
                 registerExactPorts(region, regionId, rootCallId,
                         exactPorts);
         }
@@ -536,13 +557,13 @@ final class RuntimeRegionPlanner {
                 throw new IllegalArgumentException("invalid runtime region "
                         + "flow row in " + regionEdgeFile);
             }
-            String fromInstance = instanceByRegionAndCall.get(instanceKey(
+            String fromOccurrence = occurrenceByRegionAndCall.get(instanceKey(
                     text(edge.get("fromRegion")),
                     longNumber(edge.get("fromRootCallId"), -1L)));
-            String toInstance = instanceByRegionAndCall.get(instanceKey(
+            String toOccurrence = occurrenceByRegionAndCall.get(instanceKey(
                     text(edge.get("toRegion")),
                     longNumber(edge.get("toRootCallId"), -1L)));
-            if (fromInstance == null || toInstance == null) {
+            if (fromOccurrence == null || toOccurrence == null) {
                 throw new IllegalArgumentException(
                         "runtime field flow has no selected activation: "
                                 + text(edge.get("edgeId")));
@@ -590,10 +611,8 @@ final class RuntimeRegionPlanner {
                             : containerMutation
                             ? "CONTAINER_MUTATION_READ_FROM_V1"
                             : "FIELD_ASSIGNMENT_READ_FROM_V1",
-                    "fromRegionInstance", fromInstance,
-                    "toRegionInstance", toInstance,
-                    "fromRootCallId", edge.get("fromRootCallId"),
-                    "toRootCallId", edge.get("toRootCallId"),
+                    "fromOccurrenceId", fromOccurrence,
+                    "toOccurrenceId", toOccurrence,
                     "fromOutputPort", fromPort,
                     "toInputPort", toPort,
                     "dependencyRole", edge.get("dependencyRole"),
@@ -652,8 +671,8 @@ final class RuntimeRegionPlanner {
                 copyIfPresent(binding, edge, field);
             }
             copyBindingContext(binding, edge,
-                    planByInstance.get(fromInstance),
-                    planByInstance.get(toInstance));
+                    planByOccurrence.get(fromOccurrence),
+                    planByOccurrence.get(toOccurrence));
             // One exact dynamic relation is the canonical edge.  The old
             // wrapper repeated the same endpoint/evidence fields outside a
             // singleton bindings array; keep the union once instead.
@@ -667,15 +686,20 @@ final class RuntimeRegionPlanner {
                     : coordinated
                     ? "CANDIDATE_COORDINATED_STATE"
                     : "CONFIRMED_RUNTIME_IDENTITY");
+            evidence.put("evidenceState", coordinated
+                    ? "APPROXIMATE" : "OBSERVED_BASELINE");
+            evidence.put("alignment", "ALIGNED");
+            evidence.put("evidenceIds", Collections.singletonList(
+                    text(edge.get("edgeId"))));
             result.edgeValidations.add(evidence);
-            Map<String, Object> producerGoal = goalByInstance.get(
-                    fromInstance);
+            Map<String, Object> producerGoal = goalByOccurrence.get(
+                    fromOccurrence);
             if (producerGoal != null && "OUTPUT_RELATION_CLOSURE".equals(
                     text(producerGoal.get("kind")))) {
                 appendGoalBinding(producerGoal, evidence);
             }
-            Map<String, Object> consumerGoal = goalByInstance.get(
-                    toInstance);
+            Map<String, Object> consumerGoal = goalByOccurrence.get(
+                    toOccurrence);
             if (consumerGoal != null && consumerGoal != producerGoal) {
                 // Consumer protocol arguments are symbolic expressions only
                 // when this exact trusted incoming edge is present.  They are
@@ -686,7 +710,6 @@ final class RuntimeRegionPlanner {
         finalizeProducerGoals(result.regionPlans, regionById, refinedFlow,
                 trace);
         assignPathSeedKeys(result.regionPlans);
-        aggregateLogicalPlans(result.regionPlans);
         return result;
     }
 
@@ -697,10 +720,10 @@ final class RuntimeRegionPlanner {
         for (Map<String, Object> prior : bindings) {
             if (!edgeId.isEmpty()
                     && edgeId.equals(text(prior.get("edgeId")))
-                    && text(binding.get("fromRegionInstance")).equals(
-                    text(prior.get("fromRegionInstance")))
-                    && text(binding.get("toRegionInstance")).equals(
-                    text(prior.get("toRegionInstance")))) {
+                    && text(binding.get("fromOccurrenceId")).equals(
+                    text(prior.get("fromOccurrenceId")))
+                    && text(binding.get("toOccurrenceId")).equals(
+                    text(prior.get("toOccurrenceId")))) {
                 return;
             }
         }
@@ -729,160 +752,6 @@ final class RuntimeRegionPlanner {
             List<Map<String, Object>> branches) {
         return BoundedPathSeed.key(
                 toJsonTreeFast(branches).getAsJsonArray());
-    }
-
-    /**
-     * Reuses one VM summary plan for repeated activations of the same
-     * template/owner pair without weakening the exact runtime evidence.
-     *
-     * <p>All causal edges are bound before this method runs.  The original
-     * invocation plans are therefore copied into {@code occurrences} before
-     * executable goals are coalesced.  A retained goal records the exact
-     * invocation that must be replayed in {@code executionOccurrence}; the
-     * remaining invocations are consumers of that summary, not additional VM
-     * jobs.</p>
-     */
-    private static void aggregateLogicalPlans(
-            List<Map<String, Object>> plans) {
-        Map<String, List<Map<String, Object>>> byLogicalRegion =
-                new LinkedHashMap<>();
-        for (Map<String, Object> plan : plans) {
-            String logical = text(plan.get("logicalRegionId"));
-            if (logical.isEmpty()) {
-                logical = text(plan.get("regionInstanceId"));
-            }
-            byLogicalRegion.computeIfAbsent(logical,
-                    ignored -> new ArrayList<>()).add(plan);
-        }
-
-        List<Map<String, Object>> aggregated = new ArrayList<>();
-        for (Map.Entry<String, List<Map<String, Object>>> entry
-                : byLogicalRegion.entrySet()) {
-            List<Map<String, Object>> occurrences = entry.getValue();
-            occurrences.sort(Comparator
-                    .comparingLong((Map<String, Object> value) ->
-                            longNumber(value.get("rootCallId"), Long.MAX_VALUE))
-                    .thenComparing(value -> text(value.get(
-                            "regionInstanceId"))));
-            Map<String, Object> representative = occurrences.get(0);
-            List<Long> rootCalls = new ArrayList<>();
-            List<String> activationIds = new ArrayList<>();
-            List<Map<String, Object>> ledger = new ArrayList<>();
-            for (Map<String, Object> occurrence : occurrences) {
-                rootCalls.add(longNumber(occurrence.get("rootCallId"), -1L));
-                activationIds.addAll(strings(occurrence.get(
-                        "logicalActivationIds")));
-                ledger.add(occurrenceLedger(occurrence));
-            }
-
-            representative.put("logicalRegionId", entry.getKey());
-            representative.put("logicalRootCallIds", rootCalls);
-            representative.put("logicalActivationIds", activationIds);
-            representative.put("logicalInstanceCount", occurrences.size());
-            representative.put("summaryReuseKey", entry.getKey());
-            representative.put("occurrences", ledger);
-            representative.put("closureGoals", aggregateLogicalGoals(
-                    entry.getKey(), occurrences));
-            aggregated.add(representative);
-        }
-        plans.clear();
-        plans.addAll(aggregated);
-    }
-
-    private static Map<String, Object> occurrenceLedger(
-            Map<String, Object> plan) {
-        Map<String, Object> occurrence = deepCopy(plan);
-        occurrence.remove("schemaVersion");
-        occurrence.remove("kind");
-        occurrence.remove("logicalRootCallIds");
-        occurrence.remove("logicalActivationIds");
-        occurrence.remove("logicalInstanceCount");
-        occurrence.remove("summaryReuseKey");
-        occurrence.remove("occurrences");
-        List<String> activationIds = strings(plan.get(
-                "logicalActivationIds"));
-        if (!activationIds.isEmpty()) {
-            occurrence.put("activationId", activationIds.get(0));
-        }
-        return occurrence;
-    }
-
-    private static List<Map<String, Object>> aggregateLogicalGoals(
-            String logicalRegionId,
-            List<Map<String, Object>> occurrencePlans) {
-        Map<String, Map<String, Object>> bySemanticGoal =
-                new LinkedHashMap<>();
-        for (Map<String, Object> plan : occurrencePlans) {
-            for (Map<String, Object> encoded
-                    : rows(plan.get("closureGoals"))) {
-                Map<String, Object> goal = deepCopy(encoded);
-                goal.put("executionOccurrence", executionOccurrence(plan));
-                String semanticKey = semanticGoalKey(goal, plan);
-                Map<String, Object> retained = bySemanticGoal.get(
-                        semanticKey);
-                if (retained == null) {
-                    bySemanticGoal.put(semanticKey, goal);
-                    continue;
-                }
-                List<Map<String, Object>> bindings = rows(
-                        retained.get("edgeBindings"));
-                bindings.addAll(rows(goal.get("edgeBindings")));
-                retained.put("edgeBindings", bindings);
-            }
-        }
-
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map.Entry<String, Map<String, Object>> entry
-                : bySemanticGoal.entrySet()) {
-            Map<String, Object> goal = entry.getValue();
-            String kind = text(goal.get("kind"));
-            String prefix = "TARGET_REACH_CLOSURE".equals(kind)
-                    ? "GOAL.TARGET_REACH." : "GOAL.OUTPUT_RELATION.";
-            goal.put("goalId", prefix + UUID.nameUUIDFromBytes(
-                    (logicalRegionId + "\n" + entry.getKey()).getBytes(
-                            StandardCharsets.UTF_8)));
-            result.add(goal);
-        }
-        return result;
-    }
-
-    private static Map<String, Object> executionOccurrence(
-            Map<String, Object> plan) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        copyIfPresent(result, plan, "regionInstanceId");
-        copyIfPresent(result, plan, "rootCallId");
-        copyIfPresent(result, plan, "rootSelector");
-        copyIfPresent(result, plan, "targetMethod");
-        copyIfPresent(result, plan, "ownerId");
-        copyIfPresent(result, plan, "laneId");
-        copyIfPresent(result, plan, "spanId");
-        copyIfPresent(result, plan, "parentSpanId");
-        copyIfPresent(result, plan, "remoteParentSpanId");
-        copyIfPresent(result, plan, "process");
-        copyIfPresent(result, plan, "thread");
-        copyIfPresent(result, plan, "threadId");
-        return result;
-    }
-
-    private static String semanticGoalKey(Map<String, Object> goal,
-                                          Map<String, Object> plan) {
-        String kind = text(goal.get("kind"));
-        if ("TARGET_REACH_CLOSURE".equals(kind)) {
-            return RegionInstancePlan.Goal.semanticGoalKey(
-                    toJsonTreeFast(goal).getAsJsonObject(),
-                    text(plan.get("regionId")));
-        }
-        Map<String, Object> closure = row(goal.get("outputClosure"));
-        if (closure.isEmpty()) {
-            // Pending goals are diagnostics and never become VM jobs.  Keep
-            // them exact until a structural output closure exists.
-            return kind + "\nPENDING\n"
-                    + text(plan.get("regionInstanceId")) + "\n"
-                    + text(goal.get("goalId"));
-        }
-        return RegionInstancePlan.Goal.semanticGoalKey(
-                toJsonTreeFast(goal).getAsJsonObject(),
-                text(plan.get("regionId")));
     }
 
     @SuppressWarnings("unchecked")
@@ -1102,24 +971,23 @@ final class RuntimeRegionPlanner {
             Map<String, Object> base = goals.get(0);
             Map<String, Object> producerRegion = regionById.get(
                     text(plan.get("regionId")));
-            long producerRootCallId = longNumber(
-                    plan.get("rootCallId"), -1L);
+            long producerRootCallId = traceRootCallId(plan);
             Map<String, List<Map<String, Object>>> byEndpoint =
                     new LinkedHashMap<>();
             Map<String, String> canonicalOutputPort =
                     canonicalAliasedOutputPorts(producerRegion,
                             producerRootCallId);
             List<Map<String, Object>> incomingBindings = new ArrayList<>();
-            String producerInstance = text(plan.get("regionInstanceId"));
+            String producerOccurrence = text(plan.get("occurrenceId"));
             Set<String> carrierOnly = replyCarrierOutputPorts(
                     rows(base.get("edgeBindings")), canonicalOutputPort);
             List<String> carrierFreedoms = new ArrayList<>();
             for (Map<String, Object> binding
                     : rows(base.get("edgeBindings"))) {
-                boolean outgoing = producerInstance.equals(
-                        text(binding.get("fromRegionInstance")));
-                boolean incoming = producerInstance.equals(
-                        text(binding.get("toRegionInstance")));
+                boolean outgoing = producerOccurrence.equals(
+                        text(binding.get("fromOccurrenceId")));
+                boolean incoming = producerOccurrence.equals(
+                        text(binding.get("toOccurrenceId")));
                 String output = outgoing
                         ? text(binding.get("fromOutputPort")) : "";
                 if (outgoing && !output.isEmpty()) {
@@ -1168,7 +1036,7 @@ final class RuntimeRegionPlanner {
                 if (!carrierFreedoms.isEmpty()) {
                     goal.put("undemandedOutputFreedoms", carrierFreedoms);
                 }
-                String identity = text(plan.get("regionInstanceId"))
+                String identity = text(plan.get("occurrenceId"))
                         + "\n" + demandedEndpoints + "\n" + alternative
                         + "\n" + bindingAlternativeIdentity(selected);
                 goal.put("goalId", "GOAL.OUTPUT_RELATION."
@@ -1281,7 +1149,7 @@ final class RuntimeRegionPlanner {
                     projectionBlockers.addAll(
                             selectedRegionBoundaryGapBlockers(
                                     producerRegion,
-                                    longNumber(plan.get("rootCallId"), -1L),
+                                    traceRootCallId(plan),
                                     demandedHeapCutoffs(closure)));
                     if (!projectionBlockers.isEmpty()) {
                         goal.put("admission", object("state", "BLOCKED",
@@ -1652,7 +1520,7 @@ final class RuntimeRegionPlanner {
             return null;
         }
 
-        long rootCallId = longNumber(plan.get("rootCallId"), -1L);
+        long rootCallId = traceRootCallId(plan);
         Map<String, Object> outputPortRow = uniquePort(
                 rows(region.get("outputs")), outputPort, rootCallId);
         Map<String, Object> output = exactDemandedHeapOutput(
@@ -2007,29 +1875,23 @@ final class RuntimeRegionPlanner {
             slice.addProperty("outputBoundaryKind",
                     "EXACT_FIELD_WRITE_AFTER_ASSIGNMENT");
         }
-        if (!exactBranches.isEmpty()) {
-            slice.add("branchReplay", toJsonTreeFast(exactBranches));
-        }
         addConcretePrimitiveCallReturns(slice, trace, invocationCalls,
                 stateSlice.staticSites, inputPorts, regionInputs,
                 relationBoundarySeq);
 
         JsonArray edgeIds = new JsonArray();
-        JsonArray causalEdges = new JsonArray();
         Set<String> seenEdges = new LinkedHashSet<>();
         for (Map<String, Object> binding : trusted) {
             String edgeId = text(binding.get("edgeId"));
             if (edgeId.isEmpty() || !seenEdges.add(edgeId)) continue;
             edgeIds.add(edgeId);
-            causalEdges.add(toJsonTreeFast(binding).getAsJsonObject());
         }
         if (edgeIds.size() == 0) return null;
         slice.add("causalEdgeIds", edgeIds);
-        slice.add("causalEdges", causalEdges);
 
         JsonObject capture = new JsonObject();
         String captureId = "CAPTURE." + UUID.nameUUIDFromBytes((
-                text(plan.get("regionInstanceId")) + "\n" + outputPort
+                text(plan.get("occurrenceId")) + "\n" + outputPort
                         + "\n" + staticAccessSiteId)
                 .getBytes(StandardCharsets.UTF_8));
         capture.addProperty("captureBindingId", captureId);
@@ -2126,8 +1988,9 @@ final class RuntimeRegionPlanner {
         slice.add("captureBindingIssues", new JsonArray());
 
         return OutputClosureCodec.singleton(
+                text(plan.get("relationKey")),
                 text(plan.get("regionId")),
-                text(plan.get("regionInstanceId")), rootCallId,
+                text(plan.get("relationContractHash")),
                 outputPort, semanticDeclaration, "HEAP_STATE",
                 semanticJavaType, slice);
     }
@@ -2650,7 +2513,7 @@ final class RuntimeRegionPlanner {
             return null;
         }
 
-        long rootCallId = longNumber(plan.get("rootCallId"), -1L);
+        long rootCallId = traceRootCallId(plan);
         Map<String, Object> output = uniquePort(
                 rows(region.get("outputs")), outputPort, rootCallId);
         if (output == null
@@ -2745,17 +2608,14 @@ final class RuntimeRegionPlanner {
                 protocolOccurrenceSeq);
 
         JsonArray edgeIds = new JsonArray();
-        JsonArray causalEdges = new JsonArray();
         Set<String> seenEdges = new LinkedHashSet<>();
         for (Map<String, Object> binding : trusted) {
             String edgeId = text(binding.get("edgeId"));
             if (edgeId.isEmpty() || !seenEdges.add(edgeId)) continue;
             edgeIds.add(edgeId);
-            causalEdges.add(toJsonTreeFast(binding).getAsJsonObject());
         }
         if (edgeIds.size() == 0) return null;
         slice.add("causalEdgeIds", edgeIds);
-        slice.add("causalEdges", causalEdges);
         JsonArray captures = new JsonArray();
         String javaType;
         String outputKind;
@@ -2765,7 +2625,7 @@ final class RuntimeRegionPlanner {
             JsonObject capture = new JsonObject();
             capture.addProperty("captureBindingId", "CAPTURE."
                     + UUID.nameUUIDFromBytes((text(plan.get(
-                    "regionInstanceId")) + "\n" + outputPort + "\n"
+                    "occurrenceId")) + "\n" + outputPort + "\n"
                     + captureSite + "\n" + captureArgument).getBytes(
                     StandardCharsets.UTF_8)));
             capture.addProperty("captureKind", "CALL_ARGUMENT");
@@ -2786,8 +2646,9 @@ final class RuntimeRegionPlanner {
         slice.add("captureBindings", captures);
         slice.add("captureBindingIssues", new JsonArray());
         return OutputClosureCodec.singleton(
+                text(plan.get("relationKey")),
                 text(plan.get("regionId")),
-                text(plan.get("regionInstanceId")), rootCallId,
+                text(plan.get("relationContractHash")),
                 outputPort, outputCell, outputKind, javaType, slice);
     }
 
@@ -3478,18 +3339,16 @@ final class RuntimeRegionPlanner {
         return region + "\n" + rootCallId;
     }
 
-    private static String logicalRegionId(String regionId, long ownerId) {
-        return ownerId > 0L ? regionId + "@owner" + ownerId : regionId;
-    }
-
     private static void copyBindingContext(Map<String, Object> binding,
                                            Map<String, Object> edge,
                                            Map<String, Object> fromPlan,
                                            Map<String, Object> toPlan) {
-        copyContextLong(binding, "fromOwnerId", edge, fromPlan, "ownerId");
+        copyContextLong(binding, "fromOwnerId", edge, fromPlan,
+                "traceOwnerId");
         copyContextLong(binding, "fromLaneId", edge, fromPlan, "laneId");
         copyContextLong(binding, "fromSpanId", edge, fromPlan, "spanId");
-        copyContextLong(binding, "toOwnerId", edge, toPlan, "ownerId");
+        copyContextLong(binding, "toOwnerId", edge, toPlan,
+                "traceOwnerId");
         copyContextLong(binding, "toLaneId", edge, toPlan, "laneId");
         copyContextLong(binding, "toSpanId", edge, toPlan, "spanId");
         copyContextLong(binding, "receiveRemoteParentSpanId", edge, null,
@@ -3516,7 +3375,19 @@ final class RuntimeRegionPlanner {
 
     private static void putTraceContext(Map<String, Object> target,
                                         MethodEvent event) {
-        if (event.ownerId > 0L) target.put("ownerId", event.ownerId);
+        SourceRef source = source(event);
+        target.put("sourceKey", source.key());
+        target.put("sourceKind", source.kind());
+        target.put("sourceRole", source.role());
+        target.put("sourceId", source.id());
+        target.put("sourceEpoch", source.epoch());
+        if (!event.requestKey.isEmpty()) {
+            target.put("requestKey", event.requestKey);
+        }
+        if (!event.requestApi.isEmpty()) {
+            target.put("requestApi", event.requestApi);
+        }
+        if (event.ownerId > 0L) target.put("traceOwnerId", event.ownerId);
         if (event.laneId > 0L) target.put("laneId", event.laneId);
         if (event.spanId > 0L) target.put("spanId", event.spanId);
         if (event.parentSpanId > 0L) {
@@ -3832,8 +3703,16 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
-    private static Map<String, Object> rootSelector(MethodEvent root) {
+    private static Map<String, Object> rootSelector(
+            MethodEvent root, SourceRef source, int occurrenceIndex,
+            boolean sourceRequired) {
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sourceKey", source.key());
+        result.put("sourceRequired", sourceRequired);
+        result.put("occurrenceIndex", occurrenceIndex);
+        if (!root.requestKey.isEmpty()) {
+            result.put("requestKey", root.requestKey);
+        }
         result.put("method", root.method);
         if (root.receiverType.isEmpty()) {
             result.put("kind", "GLOBAL_INVOCATION");
@@ -3842,6 +3721,29 @@ final class RuntimeRegionPlanner {
             result.put("receiverClass", root.receiverType);
         }
         return result;
+    }
+
+    private static SourceRef source(MethodEvent event) {
+        if (event.source != null) return event.source;
+        String seed = event.test.isEmpty() ? event.method : event.test;
+        String id = "workload/" + UUID.nameUUIDFromBytes(seed.getBytes(
+                StandardCharsets.UTF_8));
+        return new SourceRef("TEST_DRIVER", "WORKLOAD", id, 0L);
+    }
+
+    private static String relationContractHash(
+            Map<String, Object> region, Set<String> methods) {
+        JsonObject contract = new JsonObject();
+        contract.add("region", toJsonTreeFast(region));
+        List<String> ordered = new ArrayList<>(methods);
+        Collections.sort(ordered);
+        contract.add("methods", toJsonTreeFast(ordered));
+        return CanonicalJson.sha256(contract);
+    }
+
+    private static long traceRootCallId(Map<String, Object> plan) {
+        return longNumber(row(plan.get("traceEvidence")).get("rootCallId"),
+                -1L);
     }
 
     static final class RefinedFlowIndex {
@@ -4839,8 +4741,7 @@ final class RuntimeRegionPlanner {
         String runtimePlanJsonl() {
             List<JsonObject> plans = new ArrayList<>();
             for (Map<String, Object> plan : regionPlans) {
-                plans.add(RegionInstancePlan.compactOccurrences(
-                        toJsonTreeFast(plan).getAsJsonObject()));
+                plans.add(toJsonTreeFast(plan).getAsJsonObject());
             }
             List<JsonObject> edges = new ArrayList<>();
             for (Map<String, Object> edge : edgeValidations) {
@@ -4872,6 +4773,9 @@ final class RuntimeRegionPlanner {
         final long spanId;
         final long parentSpanId;
         final long remoteParentSpanId;
+        final SourceRef source;
+        final String requestKey;
+        final String requestApi;
 
         MethodEvent(long seq, String test, String process, String threadName,
                     long tid, String method, int objectId, String receiverType,
@@ -4886,6 +4790,30 @@ final class RuntimeRegionPlanner {
                     long callId, long parentCallId, long parentSiteId,
                     long ownerId, long laneId, long spanId,
                     long parentSpanId, long remoteParentSpanId) {
+            this(seq, test, process, threadName, tid, method, objectId,
+                    receiverType, callId, parentCallId, parentSiteId,
+                    ownerId, laneId, spanId, parentSpanId,
+                    remoteParentSpanId, null);
+        }
+
+        MethodEvent(long seq, String test, String process, String threadName,
+                    long tid, String method, int objectId, String receiverType,
+                    long callId, long parentCallId, long parentSiteId,
+                    long ownerId, long laneId, long spanId,
+                    long parentSpanId, long remoteParentSpanId,
+                    SourceRef source) {
+            this(seq, test, process, threadName, tid, method, objectId,
+                    receiverType, callId, parentCallId, parentSiteId,
+                    ownerId, laneId, spanId, parentSpanId,
+                    remoteParentSpanId, source, "", "");
+        }
+
+        MethodEvent(long seq, String test, String process, String threadName,
+                    long tid, String method, int objectId, String receiverType,
+                    long callId, long parentCallId, long parentSiteId,
+                    long ownerId, long laneId, long spanId,
+                    long parentSpanId, long remoteParentSpanId,
+                    SourceRef source, String requestKey, String requestApi) {
             this.seq = seq;
             this.test = safe(test);
             this.process = safe(process);
@@ -4902,6 +4830,9 @@ final class RuntimeRegionPlanner {
             this.spanId = spanId;
             this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
+            this.source = source;
+            this.requestKey = safe(requestKey);
+            this.requestApi = safe(requestApi);
         }
     }
 
@@ -4922,6 +4853,9 @@ final class RuntimeRegionPlanner {
         final long spanId;
         final long parentSpanId;
         final long remoteParentSpanId;
+        final SourceRef source;
+        final String requestKey;
+        final String requestApi;
         /** Non-empty only for RPC_BOUNDARY_SCALAR(_GAP) rows. */
         final String mappingId;
         final String protocolDirection;
@@ -4961,6 +4895,32 @@ final class RuntimeRegionPlanner {
                       long invocationId, String declaredCallee,
                       long ownerId, long laneId, long spanId,
                       long parentSpanId, long remoteParentSpanId) {
+            this(seq, direction, transport, correlationId, process,
+                    threadName, tid, method, callId, invocationId,
+                    declaredCallee, ownerId, laneId, spanId, parentSpanId,
+                    remoteParentSpanId, null);
+        }
+
+        ProtocolEvent(long seq, String direction, String transport,
+                      String correlationId, String process,
+                      String threadName, long tid, String method, long callId,
+                      long invocationId, String declaredCallee,
+                      long ownerId, long laneId, long spanId,
+                      long parentSpanId, long remoteParentSpanId,
+                      SourceRef source) {
+            this(seq, direction, transport, correlationId, process,
+                    threadName, tid, method, callId, invocationId,
+                    declaredCallee, ownerId, laneId, spanId, parentSpanId,
+                    remoteParentSpanId, source, "", "");
+        }
+
+        ProtocolEvent(long seq, String direction, String transport,
+                      String correlationId, String process,
+                      String threadName, long tid, String method, long callId,
+                      long invocationId, String declaredCallee,
+                      long ownerId, long laneId, long spanId,
+                      long parentSpanId, long remoteParentSpanId,
+                      SourceRef source, String requestKey, String requestApi) {
             this.seq = seq;
             this.direction = safe(direction);
             this.transport = safe(transport);
@@ -4977,6 +4937,9 @@ final class RuntimeRegionPlanner {
             this.spanId = spanId;
             this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
+            this.source = source;
+            this.requestKey = safe(requestKey);
+            this.requestApi = safe(requestApi);
             this.mappingId = "";
             this.protocolDirection = "";
             this.side = "";
@@ -5048,6 +5011,9 @@ final class RuntimeRegionPlanner {
             this.spanId = 0L;
             this.parentSpanId = 0L;
             this.remoteParentSpanId = 0L;
+            this.source = null;
+            this.requestKey = "";
+            this.requestApi = "";
             this.mappingId = safe(mappingId);
             this.protocolDirection = safe(protocolDirection);
             this.side = safe(side);
@@ -5476,6 +5442,24 @@ final class RuntimeRegionPlanner {
             }
             result.sort(Comparator.comparingLong(value -> value.seq));
             return result;
+        }
+
+        private MethodEvent selectedTargetContext(
+                MethodEvent root, Set<Long> calls,
+                List<Map<String, Object>> branches) {
+            for (Map<String, Object> branch : branches) {
+                if (!Boolean.TRUE.equals(branch.get("failureTarget"))) {
+                    continue;
+                }
+                long seq = longNumber(
+                        branch.get("selectedRuntimeEventSeq"), -1L);
+                long callId = eventCallIdBySeq.uniqueValue(seq);
+                MethodEvent selected = methodByCall.get(callId);
+                if (selected != null && calls.contains(callId)) {
+                    return selected;
+                }
+            }
+            return root;
         }
 
         private MethodEvent nearestAuthoritativeAncestor(

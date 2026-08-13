@@ -54,7 +54,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|refined_regions|candidate_graph|refined_graph|runtime_region_plan|schedule_output_dir|schedule_summaries|symbolic_selector_command|symbolic_selector_context|symbolic_selector_required|symbolic_selector_timeout_ms|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_region_instance_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|refined_regions|candidate_graph|refined_graph|runtime_region_plan|schedule_output_dir|schedule_summaries|symbolic_selector_command|symbolic_selector_context|symbolic_selector_required|symbolic_selector_timeout_ms|raw_concolic_results|import_task_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|reach_report|fatal_region|fatal_occurrence_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -108,7 +108,7 @@ reset_config() {
   composition_manifest=""
   reach_report=""
   fatal_region=""
-  fatal_region_instance_id=""
+  fatal_occurrence_id=""
   solver_timeout_ms=""
   reach_max_inputs=""
   reach_max_valuations=""
@@ -195,8 +195,7 @@ apply_environment_overrides() {
   apply_env_override composition_manifest CAUSYNTH_COMPOSITION_MANIFEST
   apply_env_override reach_report CAUSYNTH_REACH_REPORT
   apply_env_override fatal_region CAUSYNTH_FATAL_REGION
-  apply_env_override fatal_region_instance_id \
-    CAUSYNTH_FATAL_REGION_INSTANCE_ID
+  apply_env_override fatal_occurrence_id CAUSYNTH_FATAL_OCCURRENCE_ID
   apply_env_override solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS
   apply_env_override reach_max_inputs CAUSYNTH_REACH_MAX_INPUTS
   apply_env_override reach_max_valuations CAUSYNTH_REACH_MAX_VALUATIONS
@@ -627,8 +626,8 @@ do_compose() {
   local -a selection
   selection=()
   [[ -z "${fatal_region}" ]] || selection+=(--fatal-region "${fatal_region}")
-  [[ -z "${fatal_region_instance_id}" ]] \
-    || selection+=(--region-instance-id "${fatal_region_instance_id}")
+  [[ -z "${fatal_occurrence_id}" ]] \
+    || selection+=(--occurrence-id "${fatal_occurrence_id}")
   require_file "runtime region plan" "${runtime_region_plan}"
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
     --fatal-query "${fatal_queries}" \
@@ -916,13 +915,13 @@ debug_runtime_artifacts() {
     select(type == "object")
     | {id, kind, transferKind, fromCell, toCell, method, siteId,
        runtimeObserved, fieldPath, runtimeFieldBindings}'
-  debug_jsonl_projection concolic_region_instance_plan \
+  debug_jsonl_projection concolic_region_occurrence_plan \
     "${runtime_region_plan}" '
     select(type == "object")
     | if .kind == "CONCOLIC_RUNTIME_MODEL_CATALOG" then
         {kind, regionCount: ((.regions // []) | length),
          edgeCount: ((.edges // []) | length)}
-      else {regionInstanceId, regionId, rootSelector,
+      else {sourceKey, occurrenceId, relationKey, regionId, rootSelector,
        goalCount: ((.closureGoals // []) | length),
        goals: ((.closureGoals // [])
          | map({goalId, kind, admission})[:$max])}

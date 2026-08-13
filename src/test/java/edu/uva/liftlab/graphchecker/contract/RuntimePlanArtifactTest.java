@@ -136,21 +136,23 @@ public class RuntimePlanArtifactTest {
         JsonObject plan = new JsonObject();
         plan.addProperty("schemaVersion", 3);
         plan.addProperty("kind", RuntimePlanArtifact.PLAN_KIND);
+        plan.addProperty("sourceKey", "TEST_DRIVER/test#epoch0");
+        plan.addProperty("occurrenceId", "TEST_DRIVER/test#epoch0/region/REGION.1#1");
+        plan.addProperty("relationKey", "test/relation/REGION.1");
+        plan.addProperty("relationContractHash", "CONTRACT.1");
         plan.addProperty("regionId", "REGION.1");
-        plan.addProperty("regionInstanceId", "REGION.1@test#call1");
-        plan.addProperty("rootCallId", 1L);
         JsonArray goals = new JsonArray();
         goals.add(goal);
         plan.add("closureGoals", goals);
-        return RegionInstancePlan.compactOccurrences(plan);
+        return plan;
     }
 
     private static JsonObject binding(String edgeId) {
         JsonObject binding = new JsonObject();
         binding.addProperty("edgeId", edgeId);
-        binding.addProperty("fromRegionInstance", "REGION.2@test#call2");
+        binding.addProperty("fromOccurrenceId", "TEST_DRIVER/test#epoch0/region/REGION.2#1");
         binding.addProperty("fromOutputPort", "REGION.2.out.value");
-        binding.addProperty("toRegionInstance", "REGION.1@test#call1");
+        binding.addProperty("toOccurrenceId", "TEST_DRIVER/test#epoch0/region/REGION.1#1");
         binding.addProperty("toInputPort", "REGION.1.in.value");
         return binding;
     }

@@ -12,31 +12,22 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.SortedSet;
-import java.util.TreeMap;
 import java.util.TreeSet;
 
-/**
- * Immutable wire value for one producer invocation and its demanded outputs.
- *
- * <p>This class preserves the complete slice payload.  It does not certify
- * dynamic materialization or capture: Scheduler and Importer remain the two
- * semantic trust boundaries for those proofs.</p>
- */
+/** Immutable output contract shared by every occurrence of one relation. */
 public final class OutputClosureContract {
     public static final String FIELD = "outputClosure";
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 3;
     public static final String KIND = "OUTPUT_CLOSURE_CONTRACT";
 
     private final Producer producer;
     private final List<Member> members;
-    private final List<JsonObject> causalEdges;
     private final Map<String, Member> byPort;
     private final ExecutionScope executionScope;
     private final String demandKey;
     private final String closureFingerprint;
 
-    OutputClosureContract(Producer producer, Collection<Member> source,
-                          Collection<JsonObject> edgeSource) {
+    OutputClosureContract(Producer producer, Collection<Member> source) {
         if (producer == null || source == null || source.isEmpty()) {
             throw new IllegalArgumentException(
                     "producer and at least one output member are required");
@@ -64,31 +55,10 @@ public final class OutputClosureContract {
                 }
             }
         }
-        TreeMap<String, JsonObject> edgeIndex = new TreeMap<>();
-        if (edgeSource != null) {
-            for (JsonObject edge : edgeSource) {
-                String id = text(edge, "edgeId");
-                JsonObject prior = edgeIndex.putIfAbsent(id,
-                        edge.deepCopy());
-                if (id.isEmpty() || prior != null
-                        && !CanonicalJson.render(prior).equals(
-                        CanonicalJson.render(edge))) {
-                    throw new IllegalArgumentException(
-                            "duplicate, conflicting or missing causal edge");
-                }
-            }
-        }
         this.producer = producer;
         this.members = Collections.unmodifiableList(ordered);
-        this.causalEdges = Collections.unmodifiableList(
-                new ArrayList<>(edgeIndex.values()));
         this.byPort = Collections.unmodifiableMap(index);
         this.executionScope = new ExecutionScope(ordered);
-        if (!edgeIndex.keySet().containsAll(
-                this.executionScope.causalEdgeIds())) {
-            throw new IllegalArgumentException(
-                    "output closure cites a missing causal edge");
-        }
         this.demandKey = CanonicalJson.sha256(demandIdentity());
         this.closureFingerprint = CanonicalJson.sha256(toJson());
     }
@@ -96,12 +66,6 @@ public final class OutputClosureContract {
     public Producer producer() { return producer; }
 
     public List<Member> members() { return members; }
-
-    public List<JsonObject> causalEdges() {
-        List<JsonObject> result = new ArrayList<>();
-        for (JsonObject edge : causalEdges) result.add(edge.deepCopy());
-        return Collections.unmodifiableList(result);
-    }
 
     public Member member(String portId) { return byPort.get(trim(portId)); }
 
@@ -121,9 +85,6 @@ public final class OutputClosureContract {
         result.addProperty("schemaVersion", SCHEMA_VERSION);
         result.addProperty("kind", KIND);
         result.add("producer", producer.toJson());
-        JsonArray edges = new JsonArray();
-        for (JsonObject edge : causalEdges) edges.add(edge.deepCopy());
-        result.add("causalEdges", edges);
         JsonArray encoded = new JsonArray();
         for (Member member : members) encoded.add(member.toJson());
         result.add("members", encoded);
@@ -131,9 +92,8 @@ public final class OutputClosureContract {
     }
 
     private JsonObject demandIdentity() {
-        JsonObject result = new JsonObject();
+        JsonObject result = producer.toJson();
         result.addProperty("schemaVersion", SCHEMA_VERSION);
-        result.addProperty("producerRegionId", producer.regionId);
         JsonArray outputs = new JsonArray();
         for (Member member : members) {
             JsonObject output = new JsonObject();
@@ -160,34 +120,29 @@ public final class OutputClosureContract {
     }
 
     public static final class Producer {
+        private final String relationKey;
         private final String regionId;
-        private final String regionInstanceId;
-        private final long rootCallId;
+        private final String contractHash;
 
-        Producer(String regionId, String regionInstanceId, long rootCallId) {
+        Producer(String relationKey, String regionId, String contractHash) {
+            this.relationKey = required(relationKey,
+                    "producer.relationKey");
             this.regionId = required(regionId, "producer.regionId");
-            this.regionInstanceId = required(regionInstanceId,
-                    "producer.regionInstanceId");
-            if (rootCallId < 0
-                    || !this.regionInstanceId.startsWith(this.regionId + "@")
-                    || !this.regionInstanceId.endsWith(
-                    "#call" + rootCallId)) {
-                throw new IllegalArgumentException(
-                        "producer invocation scope is inconsistent");
-            }
-            this.rootCallId = rootCallId;
+            this.contractHash = required(contractHash,
+                    "producer.contractHash");
         }
+
+        public String relationKey() { return relationKey; }
 
         public String regionId() { return regionId; }
 
-        public String regionInstanceId() { return regionInstanceId; }
-
-        public long rootCallId() { return rootCallId; }
+        public String contractHash() { return contractHash; }
 
         boolean sameAs(Producer other) {
-            return other != null && regionId.equals(other.regionId)
-                    && regionInstanceId.equals(other.regionInstanceId)
-                    && rootCallId == other.rootCallId;
+            return other != null
+                    && relationKey.equals(other.relationKey)
+                    && regionId.equals(other.regionId)
+                    && contractHash.equals(other.contractHash);
         }
 
         void requireOutputPort(String portId) {
@@ -201,9 +156,9 @@ public final class OutputClosureContract {
 
         JsonObject toJson() {
             JsonObject result = new JsonObject();
+            result.addProperty("relationKey", relationKey);
             result.addProperty("regionId", regionId);
-            result.addProperty("regionInstanceId", regionInstanceId);
-            result.addProperty("rootCallId", rootCallId);
+            result.addProperty("contractHash", contractHash);
             return result;
         }
     }
@@ -227,13 +182,7 @@ public final class OutputClosureContract {
             return text(output, "javaTypeDescriptor");
         }
 
-        /**
-         * The exact program site this port is published at, empty when the
-         * port names none.  The encoded identity is
-         * {@code KIND:<method>#u<n>...}; only that leading unit position is a
-         * control-flow location, the rest names the argument, callee or field
-         * the capture reads there.
-         */
+        /** Static publication site, when the capture exposes one. */
         public String outputSite() {
             String encoded = text(output, "outputSiteId");
             int start = encoded.indexOf('<');
@@ -296,7 +245,6 @@ public final class OutputClosureContract {
 
         public SortedSet<String> staticSites() { return staticSites; }
 
-        /** Unit positions the demanded outputs are published at. */
         public SortedSet<String> outputSites() { return outputSites; }
 
         public SortedSet<String> methods() { return methods; }

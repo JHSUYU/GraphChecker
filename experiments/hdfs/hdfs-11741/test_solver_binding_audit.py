@@ -151,7 +151,7 @@ class SolverBindingAuditTest(unittest.TestCase):
                 manifest = json.load(handle)
             operand = manifest["operandBindingLedger"]["operands"][0]
             operand.pop("portId")
-            operand.pop("regionInstanceId")
+            operand.pop("occurrenceId")
             operand["producerLineageStatus"] = \
                 "UNAUDITABLE_NO_EXACT_PRODUCER_LINEAGE"
             operand["producerVersions"] = []
@@ -197,7 +197,9 @@ class SolverBindingAuditTest(unittest.TestCase):
                 manifest = json.load(handle)
             version = manifest["operandBindingLedger"]["operands"][0][
                 "producerVersions"][0]
-            version["targetRegionInstanceId"] = "REGION.OTHER@test#call9"
+            version["targetOccurrenceId"] = (
+                "test/source#epoch0/region/REGION.OTHER#1"
+            )
 
             with self.assertRaisesRegex(ValueError, "another operand"):
                 AUDIT.validate_manifest(
@@ -467,7 +469,7 @@ class SolverBindingAuditTest(unittest.TestCase):
                     "pinTerm": "operand",
                     "pinSort": "Int",
                     "portId": "REGION.T.in.operand",
-                    "regionInstanceId": "REGION.T@test#call1",
+                    "occurrenceId": "test/source#epoch0/region/REGION.T#1",
                     "producerLineageStatus":
                         "EXACT_TARGET_PORT_OCCURRENCE",
                     "pathPrefixTerm": path_prefix,
@@ -478,8 +480,8 @@ class SolverBindingAuditTest(unittest.TestCase):
                         "assertionName": "edge_value",
                         "guardTerm": "true",
                         "targetPortId": "REGION.T.in.operand",
-                        "targetRegionInstanceId":
-                            "REGION.T@test#call1",
+                        "targetOccurrenceId":
+                            "test/source#epoch0/region/REGION.T#1",
                     }],
                 }],
                 "edgeAssertions": [{

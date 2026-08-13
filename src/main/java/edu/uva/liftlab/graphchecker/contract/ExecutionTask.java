@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+
 import java.util.Collections;
 import java.util.List;
 
@@ -10,22 +11,32 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/** Canonical scheduled task emitted from one typed region goal. */
+/** Scheduled work for one causal-skeleton occurrence and one relation. */
 public final class ExecutionTask {
+    private static final String[] RETIRED_FIELDS = {
+            "regionInstanceId", "rootCallId", "logicalRegionId",
+            "logicalInstanceCount", "summaryReuseKey",
+            "occurrenceInstantiationCatalog", "executionOccurrence",
+            "producerProjection"
+    };
+
     private final JsonObject encoded;
     private final InputActionCatalog inputActions;
     private final LoopBoundPolicy loopBound;
     private final OutputClosureContract outputClosure;
     private final List<OutputCaptureSpec> outputCaptures;
 
-    private ExecutionTask(JsonObject encoded) {
-        this.encoded = encoded;
-        if (taskId().isEmpty() || goalId().isEmpty()
-                || regionId().isEmpty() || regionInstanceId().isEmpty()) {
-            throw new IllegalArgumentException(
-                    "execution task requires taskId, goalId, regionId and "
-                            + "regionInstanceId");
-        }
+    private ExecutionTask(JsonObject source) {
+        encoded = source.deepCopy();
+        rejectRetired(encoded);
+        require(taskId(), "taskId");
+        require(goalId(), "goalId");
+        require(sourceKey(), "sourceKey");
+        require(occurrenceId(), "occurrenceId");
+        require(relationKey(), "relationKey");
+        require(relationContractHash(), "relationContractHash");
+        require(regionId(), "regionId");
+
         inputActions = InputActionCatalog.decode(encoded);
         loopBound = LoopBoundPolicy.decode(encoded);
         outputClosure = encoded.has(OutputClosureContract.FIELD)
@@ -43,7 +54,7 @@ public final class ExecutionTask {
         if (encoded == null) {
             throw new IllegalArgumentException("execution task is required");
         }
-        return new ExecutionTask(encoded.deepCopy());
+        return new ExecutionTask(encoded);
     }
 
     public static ExecutionTask create(
@@ -54,13 +65,39 @@ public final class ExecutionTask {
             JsonArray edgeBindings,
             LoopBoundPolicy loopBound,
             boolean ready) {
+        return create(goal, taskId, inputActions, branches, edgeBindings,
+                loopBound, ready, goal.outputClosure());
+    }
+
+    /** Creates a task with a scheduler-selected subset of the goal closure. */
+    public static ExecutionTask create(
+            RegionInstancePlan.Goal goal,
+            String taskId,
+            JsonArray inputActions,
+            JsonArray branches,
+            JsonArray edgeBindings,
+            LoopBoundPolicy loopBound,
+            boolean ready,
+            OutputClosureContract selectedClosure) {
+        if (goal == null || inputActions == null || branches == null
+                || edgeBindings == null || loopBound == null) {
+            throw new IllegalArgumentException(
+                    "goal and task contract values are required");
+        }
+        if (goal.kind().capturesOutputRelation()
+                != (selectedClosure != null)) {
+            throw new IllegalArgumentException(
+                    "goal kind and selected output closure disagree");
+        }
         JsonObject task = new JsonObject();
         goal.writeTaskIdentityTo(task);
         goal.writeTaskPayloadTo(task);
-        task.add(RegionInstancePlan.OCCURRENCE_CATALOG,
-                goal.occurrenceInstantiationCatalog());
+        if (selectedClosure != null) {
+            task.add(OutputClosureContract.FIELD,
+                    selectedClosure.toJson());
+        }
         task.addProperty("taskId", taskId);
-        task.addProperty("goalKind", goal.kind().name());
+        goal.kind().writeToTask(task);
         task.add(InputActionCatalog.FIELD, compactInputActions(inputActions));
         task.add("branches", branches.deepCopy());
         bindPathSeedToBranches(task);
@@ -74,7 +111,7 @@ public final class ExecutionTask {
         return new ExecutionTask(task);
     }
 
-    /** Drops planner-only access histories after the exact replay site wins. */
+    /** Drops planner-only access histories after the replay site is chosen. */
     private static JsonArray compactInputActions(JsonArray actions) {
         JsonArray result = new JsonArray();
         for (JsonElement element : actions) {
@@ -96,73 +133,29 @@ public final class ExecutionTask {
         return result;
     }
 
-    public static ExecutionTask createProjectedOutput(
-            RegionInstancePlan.Goal goal,
-            String taskId,
-            JsonArray inputActions,
-            JsonArray branches,
-            JsonArray edgeBindings,
-            LoopBoundPolicy loopBound,
-            boolean ready,
-            OutputClosureContract outputClosure,
-            JsonObject occurrenceCatalog,
-            JsonObject producerProjection) {
-        if (goal == null || !goal.kind().capturesOutputRelation()
-                || outputClosure == null || occurrenceCatalog == null
-                || producerProjection == null) {
-            throw new IllegalArgumentException("projected output task "
-                    + "requires goal, closure, occurrence catalog and "
-                    + "producer projection");
-        }
-        JsonObject task = create(goal, taskId, inputActions, branches,
-                edgeBindings, loopBound, ready).json();
-        task.add(OutputClosureContract.FIELD, outputClosure.toJson());
-        task.add(RegionInstancePlan.OCCURRENCE_CATALOG,
-                occurrenceCatalog.deepCopy());
-        task.add("producerProjection", producerProjection.deepCopy());
-        return new ExecutionTask(task);
-    }
-
-    /**
-     * Renames the bounded path after the branch contract this task publishes.
-     *
-     * <p>A goal's key names the goal's whole branch list, but a task may carry
-     * a narrower one: projecting a producer onto a subset of its output ports
-     * keeps only the guards that sub-closure names.  Carrying the goal's key
-     * beside the projected contract publishes a name for a path the task does
-     * not describe -- two tasks whose contracts are byte-identical then claim
-     * to be different paths, and a valuation solved under one name has no
-     * standing on the other even though the decisions are the same.</p>
-     *
-     * <p>A task with no seed contract at all keeps none: an empty key is how
-     * a caller says there is no bounded path to attest, and inventing the
-     * key of an empty branch list would claim one.</p>
-     */
     private static void bindPathSeedToBranches(JsonObject task) {
         if (string(task, "pathSeedKey").isEmpty()) return;
         task.addProperty("pathSeedKey",
                 BoundedPathSeed.key(array(task, "branches")));
     }
 
-    public JsonObject json() {
-        return encoded;
+    public JsonObject json() { return encoded; }
+
+    public String goalId() { return string(encoded, "goalId"); }
+
+    public String taskId() { return string(encoded, "taskId"); }
+
+    public String sourceKey() { return string(encoded, "sourceKey"); }
+
+    public String occurrenceId() { return string(encoded, "occurrenceId"); }
+
+    public String relationKey() { return string(encoded, "relationKey"); }
+
+    public String relationContractHash() {
+        return string(encoded, "relationContractHash");
     }
 
-    public String goalId() {
-        return string(encoded, "goalId");
-    }
-
-    public String taskId() {
-        return string(encoded, "taskId");
-    }
-
-    public String regionInstanceId() {
-        return string(encoded, "regionInstanceId");
-    }
-
-    public String regionId() {
-        return string(encoded, "regionId");
-    }
+    public String regionId() { return string(encoded, "regionId"); }
 
     public ClosureGoalKind goalKind() {
         return ClosureGoalKind.fromTask(encoded);
@@ -177,25 +170,19 @@ public final class ExecutionTask {
         return string(object(encoded, "rootSelector"), "method");
     }
 
-    public String targetMethod() {
-        return string(encoded, "targetMethod");
-    }
+    public String targetMethod() { return string(encoded, "targetMethod"); }
 
     public JsonObject rootSelector() {
         return object(encoded, "rootSelector").deepCopy();
     }
 
-    public InputActionCatalog inputActions() {
-        return inputActions;
-    }
+    public InputActionCatalog inputActions() { return inputActions; }
 
     public JsonArray branches() {
         return array(encoded, "branches").deepCopy();
     }
 
-    public LoopBoundPolicy loopBound() {
-        return loopBound;
-    }
+    public LoopBoundPolicy loopBound() { return loopBound; }
 
     public JsonArray modelAssignments() {
         return array(encoded, "modelAssignments").deepCopy();
@@ -205,37 +192,34 @@ public final class ExecutionTask {
         return array(encoded, "edgeBindings").deepCopy();
     }
 
-    public String logicalRegionId() {
-        return string(encoded, "logicalRegionId");
-    }
-
-    public String summaryReuseKey() {
-        return string(encoded, "summaryReuseKey");
-    }
-
-    public String pathSeedKey() {
-        return string(encoded, "pathSeedKey");
-    }
-
-    public JsonObject occurrenceInstantiationCatalog() {
-        return object(encoded, RegionInstancePlan.OCCURRENCE_CATALOG)
-                .deepCopy();
-    }
-
-    public JsonObject producerProjection() {
-        return object(encoded, "producerProjection").deepCopy();
-    }
+    public String pathSeedKey() { return string(encoded, "pathSeedKey"); }
 
     public JsonElement replayContract() {
         JsonElement contract = encoded.get("replayContract");
         return contract == null ? null : contract.deepCopy();
     }
 
-    public OutputClosureContract outputClosure() {
-        return outputClosure;
-    }
+    public OutputClosureContract outputClosure() { return outputClosure; }
 
     public List<OutputCaptureSpec> outputCaptures() {
         return outputCaptures;
+    }
+
+    private static void rejectRetired(JsonObject value) {
+        for (String field : RETIRED_FIELDS) {
+            if (value.has(field)) {
+                throw new IllegalArgumentException(
+                        "execution task contains retired field " + field);
+            }
+        }
+    }
+
+    private static String require(String value, String field) {
+        String result = value == null ? "" : value.trim();
+        if (result.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "execution task requires " + field);
+        }
+        return result;
     }
 }

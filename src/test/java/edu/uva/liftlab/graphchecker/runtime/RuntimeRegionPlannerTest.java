@@ -269,11 +269,11 @@ public class RuntimeRegionPlannerTest {
 
         assertEquals(1, result.regionPlans.size());
         assertTrue(String.valueOf(result.regionPlans.get(0)
-                .get("regionInstanceId")).contains("#call1"));
+                .get("occurrenceId")).endsWith("#1"));
     }
 
     @Test
-    public void repeatedRootActivationsShareOneLogicalVmPlan()
+    public void repeatedRootActivationsRemainDistinctOccurrences()
             throws Exception {
         Map<String, Object> region = fullRegion();
         region.put("runtimeRootCallIds", Arrays.asList(1, 3));
@@ -324,45 +324,70 @@ public class RuntimeRegionPlannerTest {
                                 Arrays.asList(3L, 4L))),
                 events, runtime, Collections.emptyList());
 
-        assertEquals(1, result.regionPlans.size());
+        assertEquals(2, result.regionPlans.size());
         assertEquals(2, result.runtimeInstances.size());
         assertEquals(1, result.edgeValidations.size());
-        Map<String, Object> plan = result.regionPlans.get(0);
-        assertEquals("REGION.1@owner99", plan.get("logicalRegionId"));
-        assertEquals(Arrays.asList(1L, 3L), plan.get("logicalRootCallIds"));
-        assertEquals(2, plan.get("logicalInstanceCount"));
-        assertTrue(String.valueOf(plan.get("regionInstanceId"))
-                .endsWith("#call1"));
-        List<Map<String, Object>> occurrences = rows(plan.get(
-                "occurrences"));
-        assertEquals(2, occurrences.size());
-        assertEquals(Arrays.asList(1L, 3L), Arrays.asList(
-                ((Number) occurrences.get(0).get("rootCallId")).longValue(),
-                ((Number) occurrences.get(1).get("rootCallId")).longValue()));
-        assertEquals(Arrays.asList(7L, 8L), Arrays.asList(
-                ((Number) occurrences.get(0).get("laneId")).longValue(),
-                ((Number) occurrences.get(1).get("laneId")).longValue()));
-        assertEquals(Arrays.asList(101L, 201L), Arrays.asList(
-                ((Number) occurrences.get(0).get("spanId")).longValue(),
-                ((Number) occurrences.get(1).get("spanId")).longValue()));
-        assertEquals(1, rows(plan.get("closureGoals")).size());
-        Map<String, Object> sharedGoal = rows(
-                plan.get("closureGoals")).get(0);
-        assertTrue(String.valueOf(sharedGoal.get("pathSeedKey"))
-                .startsWith("PATH.SEED."));
-        assertEquals(2, RegionInstancePlan.decode(
-                RegionInstancePlan.compactOccurrences(
-                        GSON.toJsonTree(plan).getAsJsonObject()))
-                .goals().get(0)
-                .occurrenceInstantiationCatalog()
-                .getAsJsonArray("occurrences").size());
+        Map<String, Object> first = result.regionPlans.get(0);
+        Map<String, Object> second = result.regionPlans.get(1);
+        assertEquals(first.get("sourceKey"), second.get("sourceKey"));
+        assertEquals(first.get("relationKey"), second.get("relationKey"));
+        assertTrue(!first.get("occurrenceId").equals(
+                second.get("occurrenceId")));
+        assertEquals(1, rows(first.get("closureGoals")).size());
+        assertEquals(1, rows(second.get("closureGoals")).size());
+        assertFalse(first.containsKey("occurrences"));
+        assertFalse(first.containsKey("logicalRegionId"));
         String binding = String.valueOf(result.edgeValidations.get(0));
-        assertTrue(binding.contains("REGION.1@test#call1"));
-        assertTrue(binding.contains("REGION.1@test#call3"));
+        assertTrue(binding.contains(String.valueOf(first.get("occurrenceId"))));
+        assertTrue(binding.contains(String.valueOf(second.get("occurrenceId"))));
         assertTrue(binding.contains("REGION.1.out.call1"));
         assertTrue(binding.contains("REGION.1.in.call3"));
         assertTrue(binding.contains("fromLaneId=7"));
         assertTrue(binding.contains("toLaneId=8"));
+    }
+
+    @Test
+    public void targetOccurrenceUsesSelectedTargetSource() throws Exception {
+        Map<String, Object> region = fullRegion();
+        rows(region.get("branchPolicies")).get(0).put(
+                "failureTarget", true);
+        File regions = jsonl("target-source-regions.jsonl", region);
+        File edges = jsonl("target-source-edges.jsonl");
+        Map<String, Object> refined = candidateEdge();
+        refined.put("refinementSchemaVersion", 1);
+        refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
+        File refinedFile = jsonl("target-source-refined.jsonl", refined);
+        SourceRef client = new SourceRef("EXTERNAL_APP", "CLIENT",
+                "cluster0/client0", 0);
+        SourceRef server = new SourceRef("CLUSTER_NODE", "DATANODE",
+                "cluster0/dn1", 1);
+        List<RuntimeRegionPlanner.MethodEvent> events = Arrays.asList(
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "p", "t",
+                        7, ROOT, 10, "example.Root", 1, 0, 0,
+                        99, 7, 101, 0, 0, client, "request#1", "api"),
+                new RuntimeRegionPlanner.MethodEvent(2, "test", "p", "t",
+                        7, TARGET, 20, "example.Target", 2, 1, 0,
+                        100, 8, 202, 101, 150, server,
+                        "request#1", "api"));
+        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                regions, edges, refinedFile, Collections.singletonList(
+                        activation("REGION.1", 1, ROOT,
+                                Arrays.asList(1L, 2L))), events,
+                Collections.singletonList(
+                        new RuntimeRegionPlanner.RuntimeEvent(5, "BRANCH",
+                                TARGET, 2, 0, 0, TARGET + "#u4", -1,
+                                "", 0, "", true, false)),
+                Collections.emptyList());
+
+        Map<String, Object> plan = result.regionPlans.get(0);
+        assertEquals(server.key(), plan.get("sourceKey"));
+        assertTrue(String.valueOf(plan.get("occurrenceId"))
+                .startsWith(server.key() + "/region/"));
+        assertEquals("SELECTED_TARGET_EVENT_SOURCE",
+                plan.get("sourceAuthority"));
+        Map<String, Object> selector = (Map<String, Object>) plan.get(
+                "rootSelector");
+        assertEquals(client.key(), selector.get("sourceKey"));
     }
 
     @Test
@@ -405,22 +430,16 @@ public class RuntimeRegionPlannerTest {
                                 Arrays.asList(3L, 4L))),
                 events, runtime, Collections.emptyList());
 
-        assertEquals(1, result.regionPlans.size());
-        Map<String, Object> plan = result.regionPlans.get(0);
-        List<Map<String, Object>> goals = rows(plan.get("closureGoals"));
-        assertEquals(2, goals.size());
+        assertEquals(2, result.regionPlans.size());
         Set<String> seeds = new LinkedHashSet<>();
-        for (Map<String, Object> goal : goals) {
-            seeds.add(String.valueOf(goal.get("pathSeedKey")));
+        for (Map<String, Object> plan : result.regionPlans) {
+            List<Map<String, Object>> goals = rows(plan.get("closureGoals"));
+            assertEquals(1, goals.size());
+            seeds.add(String.valueOf(goals.get(0).get("pathSeedKey")));
+            RegionInstancePlan.decode(
+                    GSON.toJsonTree(plan).getAsJsonObject());
         }
         assertEquals(2, seeds.size());
-        RegionInstancePlan decoded = RegionInstancePlan.decode(
-                RegionInstancePlan.compactOccurrences(
-                        GSON.toJsonTree(plan).getAsJsonObject()));
-        for (RegionInstancePlan.Goal goal : decoded.goals()) {
-            assertEquals(1, goal.occurrenceInstantiationCatalog()
-                    .getAsJsonArray("occurrences").size());
-        }
     }
 
     @Test
@@ -464,14 +483,18 @@ public class RuntimeRegionPlannerTest {
                 events, runtime, Collections.emptyList());
 
         assertEquals(2, result.regionPlans.size());
-        Set<String> logical = new LinkedHashSet<>();
+        Set<String> occurrences = new LinkedHashSet<>();
+        Set<String> sources = new LinkedHashSet<>();
+        Set<String> relations = new LinkedHashSet<>();
         for (Map<String, Object> plan : result.regionPlans) {
-            logical.add(String.valueOf(plan.get("logicalRegionId")));
-            assertEquals(1, plan.get("logicalInstanceCount"));
-            assertEquals(1, rows(plan.get("occurrences")).size());
+            occurrences.add(String.valueOf(plan.get("occurrenceId")));
+            sources.add(String.valueOf(plan.get("sourceKey")));
+            relations.add(String.valueOf(plan.get("relationKey")));
+            assertFalse(plan.containsKey("logicalRegionId"));
         }
-        assertEquals(new LinkedHashSet<>(Arrays.asList(
-                "REGION.1@owner99", "REGION.1@owner100")), logical);
+        assertEquals(2, occurrences.size());
+        assertEquals(1, sources.size());
+        assertEquals(1, relations.size());
     }
 
 
@@ -571,10 +594,14 @@ public class RuntimeRegionPlannerTest {
         assertEquals(1, result.edgeValidations.size());
         Map<String, Object> validation = result.edgeValidations.get(0);
         assertEquals("CONFIRMED_RUNTIME_IDENTITY", validation.get("state"));
-        assertTrue(String.valueOf(validation)
-                .contains("REGION.2@test#call3"));
-        assertTrue(String.valueOf(validation)
-                .contains("REGION.1@test#call1"));
+        Set<String> selected = new LinkedHashSet<>();
+        for (Map<String, Object> plan : result.regionPlans) {
+            selected.add(String.valueOf(plan.get("occurrenceId")));
+        }
+        assertTrue(selected.contains(String.valueOf(
+                validation.get("fromOccurrenceId"))));
+        assertTrue(selected.contains(String.valueOf(
+                validation.get("toOccurrenceId"))));
 
         Map<String, Object> writerPlan = null;
         for (Map<String, Object> candidate : result.regionPlans) {
@@ -952,9 +979,9 @@ public class RuntimeRegionPlannerTest {
                 capture.get("occurrenceScope"));
         assertEquals(1, ((Number) capture.get(
                 "replayOccurrence")).intValue());
-        Map<String, Object> replay = rows(slice.get("branchReplay")).get(0);
-        assertEquals(2, ((Number) replay.get(
-                "selectedOccurrence")).intValue());
+        assertTrue(String.valueOf(slice.get("sites"))
+                .contains(definition + "#u3"));
+        assertTrue(!slice.containsKey("branchReplay"));
     }
 
     @Test
@@ -1564,33 +1591,7 @@ public class RuntimeRegionPlannerTest {
         assertTrue(sites.contains(update + "#u3"));
         assertTrue(!sites.contains(sibling + "#u2"));
         assertTrue(String.valueOf(slice.get("methods")).contains(expiry));
-        List<Map<String, Object>> exactBranches = rows(
-                slice.get("branchReplay"));
-        assertEquals(2, exactBranches.size());
-        Map<String, Object> exactExpiry = exactBranches.stream()
-                .filter(branch -> (expiry + "#u2").equals(
-                        branch.get("siteId")))
-                .findFirst().get();
-        Map<String, Object> exactFault = exactBranches.stream()
-                .filter(branch -> (update + "#u3").equals(
-                        branch.get("siteId")))
-                .findFirst().get();
-        assertEquals(19L, ((Number) exactFault.get(
-                "selectedRuntimeEventSeq")).longValue());
-        assertEquals(expiry + "#u2", exactExpiry.get("siteId"));
-        assertEquals(1, ((Number) exactExpiry.get(
-                "selectedOccurrence")).intValue());
-        assertEquals(12L, ((Number) exactExpiry.get(
-                "selectedRuntimeEventSeq")).longValue());
-        assertEquals(6L, ((Number) exactExpiry.get(
-                "selectedCallId")).longValue());
-        for (Map<String, Object> occurrence
-                : rows(exactExpiry.get("occurrences"))) {
-            assertTrue(((Number) occurrence.get("eventSeq")).longValue()
-                    <= 20L);
-            assertEquals(6L,
-                    ((Number) occurrence.get("callId")).longValue());
-        }
+        assertTrue(!slice.containsKey("branchReplay"));
     }
 
     @Test
@@ -2378,9 +2379,8 @@ public class RuntimeRegionPlannerTest {
                 if (!"TARGET_REACH_CLOSURE".equals(goal.get("kind"))) {
                     continue;
                 }
-                Map<?, ?> occurrence = (Map<?, ?>) goal.get(
-                        "executionOccurrence");
-                states.put(String.valueOf(occurrence.get("rootCallId")),
+                Map<?, ?> evidence = (Map<?, ?>) plan.get("traceEvidence");
+                states.put(String.valueOf(evidence.get("rootCallId")),
                         String.valueOf(((Map<?, ?>) goal.get("admission"))
                                 .get("state")));
             }

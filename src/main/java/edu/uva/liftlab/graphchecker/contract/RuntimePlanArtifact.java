@@ -27,8 +27,8 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 /**
  * Canonical runtime-planning artifact.
  *
- * <p>The first JSONL row owns the compact region-port catalog and runtime edge
- * evidence exactly once. Region goals store only edge ids on disk;
+ * <p>The first JSONL row owns the region-port catalog and runtime edge
+ * evidence exactly once. Occurrence goals store only edge ids on disk;
  * {@link #read(Path)} hydrates those ids into the in-memory
  * {@code edgeBindings} view consumed by scheduling. This keeps the semantic
  * APIs unchanged without maintaining separate region/edge artifacts or
@@ -83,10 +83,6 @@ public final class RuntimePlanArtifact {
         StringBuilder output = new StringBuilder();
         output.append(encodeCatalog(edges, regions));
         for (JsonObject source : encodedPlans) {
-            if (!RegionInstancePlan.hasCompactOccurrenceCatalogs(source)) {
-                throw new IllegalArgumentException(
-                        "runtime plan must use compact occurrence catalogs");
-            }
             JsonObject plan = compactBindings(source, edgeById);
             RegionInstancePlan.decode(hydrateBindings(plan, edgeById));
             output.append(CanonicalJson.render(plan)).append('\n');
@@ -140,10 +136,6 @@ public final class RuntimePlanArtifact {
         List<JsonObject> hydrated = new ArrayList<>();
         try {
             for (JsonObject plan : compactPlans) {
-                if (!RegionInstancePlan.hasCompactOccurrenceCatalogs(plan)) {
-                    throw new IllegalArgumentException(
-                            "runtime plan row uses expanded occurrences");
-                }
                 JsonObject value = hydrateBindings(plan, edgeById);
                 RegionInstancePlan.decode(value);
                 hydrated.add(value);

@@ -85,10 +85,9 @@ public final class PathObservation {
                 : scope.outputClosure.producer().regionId();
     }
     public String sourceTaskId() { return string(raw, "taskId"); }
-    /** Canonical replay activation this path was imported against. */
-    public String regionInstanceId() {
-        return string(raw, "regionInstanceId");
-    }
+    /** Causal-skeleton occurrence this path was imported against. */
+    public String occurrenceId() { return string(raw, "occurrenceId"); }
+    public String sourceKey() { return string(raw, "sourceKey"); }
     public boolean relationallyComplete() {
         return bool(raw, "relationallyComplete", false);
     }
@@ -117,19 +116,6 @@ public final class PathObservation {
         return array(raw, "edgeBindings").deepCopy();
     }
 
-    public String logicalRegionId() {
-        return string(raw, "logicalRegionId");
-    }
-
-    public String summaryReuseKey() {
-        return string(raw, "summaryReuseKey");
-    }
-
-    public JsonObject occurrenceInstantiationCatalog() {
-        return object(raw, RegionInstancePlan.OCCURRENCE_CATALOG)
-                .deepCopy();
-    }
-
     public boolean hasExactOutputSet(Set<String> outputPorts) {
         Set<String> covered = new TreeSet<>(
                 object(raw, "outputExpressions").keySet());
@@ -150,6 +136,8 @@ public final class PathObservation {
                           boolean desiredOutcome) {
         StringBuilder value = new StringBuilder();
         component(value, regionId());
+        component(value, sourceKey());
+        component(value, occurrenceId());
         component(value, scope.identity);
         component(value, alphaCanonical(
                 prefixBefore(mapping.summaryPcIndex()), alpha));
@@ -213,12 +201,12 @@ public final class PathObservation {
                 }
                 String region = firstNonBlank(string(source, "regionId"),
                         string(canonical, "regionId"));
-                String instance = firstNonBlank(string(source,
-                        "regionInstanceId"), string(canonical,
-                        "regionInstanceId"));
+                String occurrence = firstNonBlank(string(source,
+                        "occurrenceId"), string(canonical,
+                        "occurrenceId"));
                 return new Scope(goalKind, goalId, loopBound, null, sites,
                         "TARGET_REACH_CLOSURE_V1\n" + goalId + "\n"
-                                + region + "\n" + instance + "\n"
+                                + region + "\n" + occurrence + "\n"
                                 + targetMethod + "\n"
                                 + loopBound.identity());
             }
@@ -254,6 +242,8 @@ public final class PathObservation {
         component(value, scope.outputClosure == null
                 ? string(summary, "regionId")
                 : scope.outputClosure.producer().regionId());
+        component(value, string(summary, "sourceKey"));
+        component(value, string(summary, "occurrenceId"));
         component(value, scope.identity);
         component(value, alphaCanonical(pathCondition, alpha));
         component(value, alphaCanonical(summary.get("outputExpressions"),

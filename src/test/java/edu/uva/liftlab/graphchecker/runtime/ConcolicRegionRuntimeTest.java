@@ -70,6 +70,37 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void explicitSourceMustMatchBeforeReplayCanSelectARoot() {
+        RuntimeTraceContext.resetForTests();
+        try {
+            String method = "<test.Worker: void run()>";
+            Object nameNode = new Object();
+            SourceRef source = new SourceRef(
+                    "CLUSTER_NODE", "NAMENODE", "cluster0/nn0", 1L);
+            RuntimeTraceContext.registerSource(nameNode, source);
+            RuntimeTraceContext.enterRoot(nameNode);
+
+            JsonObject selector = new JsonObject();
+            selector.addProperty("kind", "RECEIVER_CONTEXT");
+            selector.addProperty("method", method);
+            selector.addProperty("receiverClass", Object.class.getName());
+            selector.addProperty("sourceRequired", true);
+            selector.addProperty("sourceKey", source.key());
+            selector.addProperty("occurrenceIndex", 1);
+
+            assertTrue(ConcolicRegionRuntime.compatibleRootForTests(
+                    selector, method, method, nameNode,
+                    new Object[0], "worker"));
+            selector.addProperty("sourceKey", "cluster0/nn1#epoch1");
+            assertFalse(ConcolicRegionRuntime.compatibleRootForTests(
+                    selector, method, method, nameNode,
+                    new Object[0], "worker"));
+        } finally {
+            RuntimeTraceContext.resetForTests();
+        }
+    }
+
+    @Test
     public void replayMatchesStableBranchPrefixInsideAnyCompatibleRoot() {
         BranchReplayContract contract = BranchReplayContract.flip(
                 Collections.singletonList(replayWitness(
@@ -943,10 +974,10 @@ public class ConcolicRegionRuntimeTest {
             slice.add("staticSites", strings(site));
             slice.add("methods", strings(method));
             slice.add("causalEdgeIds", new JsonArray());
-            slice.add("causalEdges", new JsonArray());
             slice.add("captureBindings", captureBindings);
             slice.add("captureBindingIssues", new JsonArray());
-            members.add(OutputClosureCodec.singleton(region, instance, 1L,
+            members.add(OutputClosureCodec.singleton("REL." + region, region,
+                    "CONTRACT.TEST",
                     port, cell, "HEAP_STATE", "int", slice));
         }
 
@@ -954,8 +985,10 @@ public class ConcolicRegionRuntimeTest {
         task.addProperty("taskId", "TASK.BOUNDARY");
         task.addProperty("goalId", "GOAL.BOUNDARY");
         task.addProperty("regionId", region);
-        task.addProperty("regionInstanceId", instance);
-        task.addProperty("rootCallId", 1L);
+        task.addProperty("sourceKey", "test/source#epoch0");
+        task.addProperty("occurrenceId", instance);
+        task.addProperty("relationKey", "REL." + region);
+        task.addProperty("relationContractHash", "CONTRACT.TEST");
         ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(task);
         JsonObject admission = new JsonObject();
         admission.addProperty("state", "EXECUTABLE");
