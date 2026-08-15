@@ -1,346 +1,522 @@
 # GraphChecker
 
-> **Project scope and affiliation.** GraphChecker is a purely academic,
-> non-commercial software-engineering and program-analysis research project
-> maintained by a PhD student at the University of Virginia. Its static,
-> runtime, concolic, symbolic-execution, SMT, and fault-modeling components are
-> used only on open-source systems and authorized local test workloads to
-> understand, reproduce, and repair software defects. It has no commercial
-> purpose and is not an offensive-security, exploitation, penetration-testing,
-> malware, or unauthorized-access project.
+> GraphChecker is an academic software-engineering and program-analysis
+> project maintained by a University of Virginia PhD student. It studies
+> distributed-system behavior with authorized, local, open-source unit-test
+> workloads.
 
-Automatic bounded concolic pipeline that synthesises an SMT witness for a
-distributed-systems fault from a **passing** workload, and checks it with Z3.
-HDFS-11741 is the case it is developed against; the engine carries no knowledge
-of it. This README is the project handoff: it records the engineering doctrine,
-build/run entry points, witness acceptance criteria, current state, and queue.
-
----
-
-## Active HDFS-17897/HDFS-17899 handoff
-
-The four-case key-rotation/RPC-failure campaign is in progress.  Its complete
-case matrix, implemented design, current bug-3 artifacts, rejected false-only
-Z3 result, dirty Hadoop worktree locations, exact remaining TODOs, and
-acceptance commands are maintained in
-[`experiments/hdfs/hdfs-key-rotation/README.md`](experiments/hdfs/hdfs-key-rotation/README.md).
-That document is authoritative for the next agent; no HDFS-17897/17899 case is
-yet marked accepted.
-
----
-
-## What a correct witness looks like
-
-The fault is two readers of one rolling table disagreeing. The heartbeat chain
-decides what the DataNode **has**; the getBlockKeys chain decides what the
-Balancer **presents**; the fault is the Balancer presenting a key the DataNode
-has already rolled away. A witness means something exactly when **both operands
-of the fatal membership test are bound to the same producer timeline**.
-
-```
-NN updateKeys()              S' = put(remove(S, expired), fresh)   one writer lane
-  │
-  ├─ shared field ─► getBlockKeys handler ── RPC ──► BlockKeyUpdater: addKeys
-  │                                                    │ balancer's own table   [cell 1]
-  │                                                    ▼
-  │                                     newDataEncryptionKey (SASL send path)
-  │                                                    │ cached DataEncryptionKey [cell 2]
-  │                                                    ▼
-  │                                     later handshakes ─► presented keyId
-  │
-  └─ shared field ─► sendHeartbeat handler ─ RPC ──► BPServiceActor ─► DN allKeys
-                                                       │
-                                                       ▼
-                              DataXceiver: (assoc_has allKeys keyId) — flipped
-```
-
-Readers pick cut points on the timeline independently: Balancer at roll *i*, DN
-at roll *j*, and `i < j` **is** the divergence. Cell 2 is why the lag is stable
-rather than lucky — the encryption key is generated once and reused, so the
-Balancer's read is pinned at the roll of its *first* handshake while the DN's
-table keeps advancing.
-
-**This paragraph is a reading, never a specification.** The relations it
-describes have to fall out of symbolic execution and merging — the lifetime
-arithmetic in particular is whatever executing `updateKeys` produces. Writing
-that formula down instead of deriving it would skip the only thing worth
-proving. Nothing in `src/` may encode a lag between readers, a lifetime
-expression, or a ranking tuned to reach this story. Build the model without it
-and ask whether the model admits such a solution at all. UNSAT is data, not
-failure; a different story is a result to report, not a deviation to correct.
-
-### Three evidence layers, each with its own authority
-
-| Layer | Grounded in | Authority in the artifact |
-|---|---|---|
-| Relations inside a region | symbolic execution | the summary itself |
-| Transport and boundary scalar fields | configured declaration + schema-4 trace evidence | `TRUSTED_CONFIGURED_RPC_MAPPING_V1`, `TRUSTED_CONFIGURED_RPC_BOUNDARY_SCALAR_V1` |
-| Shared state | recording + solver-chosen schedule | versioned state channel, cut points |
-
-An auditor must be able to tell them apart; that is why the configured scalar
-projection carries its own authority rather than reusing the transport's.
-
-### Current bounded composition design
-
-The implementation is deliberately mechanical and case-agnostic:
-
-1. **Trace exact occurrences.** Static control/data-flow supplies candidate
-   regions and ports. Runtime activations, field accesses, RPC boundaries, and
-   schema-4 scalar rows select exact producer/consumer occurrences, array
-   indices, field declarations, and program-order coordinates.
-2. **Build one target-first closure.** Discovery starts at an observed fatal
-   target, follows only trusted exact edges, and retains the cold/warm state
-   occurrences needed by that target. Ranking prefers an observed
-   inter-occurrence state handoff before raw guard count; it contains no HDFS
-   method-name or call-id heuristic.
-3. **Keep one invocation atomic.** Scalar goals selected from the same exact
-   producer invocation and path seed become one task with a `selectedGoals`
-   provenance ledger and the union of their real outputs and edges. The
-   composer never substitutes a Cartesian product of singleton summaries for
-   one multi-output invocation.
-4. **Replay relations, not guessed formulas.** The runtime symbolizes the
-   selected exact input hooks and captures outputs at their semantic region or
-   definition boundary. The importer keeps the complete relation-boundary path
-   condition. When a selected producer edge defines a field input, it removes
-   only the VM equality used to seed that replay heap; later branch and
-   container predicates remain in the relation.
-5. **Treat accessors as ordinary field flow.** Within one exact atomic region,
-   an earlier selected field output and a later symbolic accessor input are
-   joined only when receiver identity and full field declaration match and the
-   write precedes the read. `getKeyId()` has no special rule. The resulting
-   trusted read-from edge is validated and composed like any other heap edge.
-6. **Compose and audit exact lineage.** RPC/state/read-from edges bind producer
-   outputs to consumer inputs. Fatal-prefix equalities, including structurally
-   proven `String.split`/`Integer.parseInt` aliases, carry engine temporaries
-   back to exact target-port occurrences; the binding audit then checks that
-   those edges are load-bearing in Z3.
-7. **State the remaining freedom honestly.** Boolean roots are exhaustively
-   enumerated. Non-Boolean roots stay existential; the report labels that
-   projection explicitly and perturbs one integral coordinate of a satisfying
-   witness. A rejected neighbor proves `CONSTRAINED_ROOT_SPACE` without
-   pretending to enumerate an infinite scalar domain.
-
-The soundness boundary is correspondingly small: never invent a producer,
-never merge different exact invocations, never discard a confirmed edge, and
-never interpret a finite scalar probe as exhaustive. Bounds restrict the
-observed/replayed path and container state; they do not grant authority to
-relations that were not recorded or symbolically executed.
-
-### Three mechanical acceptance checks, none of them case knowledge
-
-1. **Per-symbol binding.** For each operand of the fatal condition, find the
-   assertion that binds it — *with the solver, not with grep*. A symbol whose
-   only assertion is its own type range is unconstrained. Pin it to a value
-   outside the recorded producer versions: a bound operand goes `unsat`.
-2. **Dropped-evidence audit.** For each unconstrained operand, search the
-   validated runtime edges for a `CONFIRMED` edge that could have bound it.
-   A hit is a named gap, never silence.
-3. **Oracle rank.** The engine must rank `removeExpiredKeys()`'s removal guard
-   as a flip candidate without being told what HDFS is. It reads
-   `region_path_worklist.jsonl` and costs seconds — run it *before* the
-   expensive stages. **Currently passing at rank 1** in both regions that carry
-   the site, with all four candidates on that site.
-
----
-
-## Where the work stands
-
-The vulnerable baseline is a frozen historical measurement. Everything in
-this first table came from that baseline's automatic pipeline; it is not the
-current patched schedule described below.
-
-| | |
-|---|---|
-| Target-first campaigns | **7 / 7** — one fatal target and six exact producers |
-| Core regions | **7** — NameNode, Balancer, and DataNode |
-| Closed path sets | **7 / 7** |
-| Oracle rank | **1** — passing |
-| Encoding faithfulness | proven: forcing the removal branch, the control `expiryDate > now` is **UNSAT** |
-| `keyId` binding | proven load-bearing by Z3 ablation — delete the one line carrying the shared-state edge and the query flips to `sat` |
-| Fatal absence witness | **PINNED** — one exact fatal absence/removal clause |
-| NN in the `.smt` | **yes** — `updateKeys`, `getBlockKeys`, and `sendHeartbeat` relations are composed |
-| Composition gaps | **0** |
-| Standard Z3 result | **SAT / REACHABLE** from `run.sh candidates` |
-
-The standard automatic entry point now completes discovery, bounded two-level
-replay, path merge, closed-path composition, SMT emission, and Z3.  The SAT
-query includes the exact fatal lookup and an execution-derived removal case whose
-removed member key is constrained to that lookup key.  The general
-root-enumeration degeneracy probe does not enumerate all 54 existential roots;
-the semantic acceptance gate is instead the pinned mutation witness above.
-
-### Patched HDFS-11741 result (2026-08-10)
-
-The CLOSED-trace rebuild and the completion queue above are finished.  The
-current schedule contains one exact target plus eight producer tasks across
-seven region templates.  It selects target `call3191805`, the cold-to-cached
-Dispatcher chain `3180179 -> 3186426`, the atomic NameNode `updateKeys`
-invocation `call2454593`, both configured block-key RPC reader chains, and the
-exact key construction at `call3079981`.  The schedule commit record binds a
-29-row region plan (`217,414,890` bytes, SHA-256
-`d8236a112980bce34ee55276d7ba3c458d27734c19a70e12fe55ccbb56fba0e1`)
-to a 9-row task plan (`2,116,700` bytes, SHA-256
-`3e21255bb6002d65a32e2f103cd48df50efc67e878a2a854d04c2e7d22f94548`).
-
-All nine bounded replays and path sets closed.  The canonical composition is
-`CANDIDATE_READY`, `pathSetComplete=true`, has zero gaps, resolves all 20
-selected edges plus two exact same-invocation field read-from edges (22 total),
-and reports `droppedEdgeEvidenceAudit=AUDITED`.  The exact
-trace-grounded `DelegationKey.keyId` write at event `3157904` is encoded as
-`11746`; the selected-state edge carries it into the cold Dispatcher relation
-instead of replaying an unstable service-loop occurrence.
-
-The canonical four artifacts are under
-`experiments-output/hdfs-11741-patched/candidates/REGION.61e62f41-34c6-3a5d-b610-b639dc3f4838-call3191805-c5b0d5ca/`:
-
-| Artifact | Bytes | SHA-256 |
-|---|---:|---|
-| `candidate.smt2` | 2,146,869 | `37f3dbb1aea5069b9a6a6fa7c5a25846a9b8f4820315afa2faf1a53ed3c4ea94` |
-| `composition.json` | 83,245 | `92df12fa68e634b5887635415311a829a9bf980dd79fcce824a323b5b7604403` |
-| `z3-result.json` | 6,115 | `efff53b9074ac7d825354a279ba85dcbbfac77dba3e4d046284fd86cf76fafaa` |
-| `result.json` | 833 | `b0d58e384d8c0c55a076665ac532179b7a94a10aa533de8e58d039c2eb94ee60` |
-
-The real `/usr/bin/z3` returns `SAT / REACHABLE` in about 0.62 seconds.  The
-automatic Boolean projection is `true` because this exact closure has no free
-Boolean root; it is explicitly labelled
-`BOOLEAN_PROJECTION_EXISTS_NON_BOOLEAN_ROOTS` rather than presented as the
-whole input condition.  The extractor fixes the complete satisfying scalar
-tuple and perturbs one integral root at a time.  Changing the first
-`expiryDate` witness from `Long.MAX_VALUE` to `Long.MAX_VALUE-1` makes the
-query `unsat`, so the solver-backed degeneracy verdict is
-`CONSTRAINED_ROOT_SPACE`.  This is still a bounded observed-path candidate,
-not by itself a real-world HDFS-11741 counterexample.  The independent
-solver-binding audit is `AUDITED`: its relation-only baseline is `sat`, its
-vacuity guard passes, and both fatal operands are exact target-port
-occurrences bound to recorded producer versions with load-bearing edges.  The
-canonical result retains `trustState=CANDIDATE_ONLY`: the neighbor rejection
-proves the scalar root space is constrained, but does not exhaustively project
-that infinite space.  There is no missing producer lineage or composition
-gap.
-
-The patched checkout and reusable evidence are:
+GraphChecker performs **failure-directed compositional symbolic reasoning**.
+It does not symbolically execute an entire distributed system or enumerate all
+thread schedules. Instead, it keeps the local behavior and cross-component
+relations that can affect one target condition, then asks whether they admit a
+consistent bounded execution:
 
 ```text
-Hadoop checkout: /tmp/hdfs-11741-patched-worktree
-work root:       /opt/GraphChecker/experiments-output/hdfs-11741-patched
-runtime trace:   runtime/runtime_trace.jsonl             (closed, 2,477,526,886 bytes)
-static graph:    analysis/candidate_dataflow_edges.jsonl (legacy run, 2,028,773,031 bytes; new runs use .jsonl.gz)
+local symbolic transitions
+  + symbolic value handoffs
+  + read-from / RPC / partial-order constraints
+  = bounded global candidate
 ```
 
-The stated call ids are evidence read from the current trace and schedule, not
-selection heuristics.  No Hadoop method name, call id, or line number
-participates in the generic ranking rule.
+The next architecture milestone is a workload-wide symbolic session in which
+related threads share symbolic expressions and selected heap state. RPC and
+shared-field values will then cross execution boundaries while the workload is
+running, rather than being reconstructed only by post-processing. HDFS-11741 is
+the first experiment for this design because it combines concurrent `while`
+loops, shared state, RPC propagation, and a downstream target condition.
 
-## Reproduce and verify the patched result
+## Current status versus target architecture
 
-1. **Build and verify the source.** Do not run Maven while a discovery
-   or replay JVM is reading the GraphChecker jar. Run:
+| Area | Implemented baseline | Planned architecture |
+|---|---|---|
+| VM execution | one serialized concolic region and owner thread | one workload-wide symbolic session shared by participating threads |
+| Thread state | activation-local stack, locals, heap shadows, and PC | thread-local stack/locals/PC inside a session-wide expression universe |
+| Shared fields | runtime-confirmed edges composed after replay | live versioned symbolic heap and guarded read-from choices |
+| RPC | configured boundary values joined by offline equality/order constraints | application-traced symbolic value handoff at send/receive |
+| Ordering | program order plus per-channel/per-RPC constraints | one event ledger for program, field, RPC, async, and synchronization edges |
+| SMT | composition of selected region summaries and observed edges | direct target slice of the symbolic expression/event graph, plus bounded merges |
+| Result | bounded candidate over a selected causal graph | replay-checked candidate with explicit coverage gaps |
 
-   ```bash
-   mvn -q test
-   mvn -q -DskipTests package
-   git diff --check
-   ```
+The current implementation already has source/epoch identity, occurrence-scoped
+region plans, guarded local summaries, bounded choices among admitted writers,
+and a causal-graph writer. The global multi-thread VM session, live RPC
+expression handoff, session-wide heap, unified event order, and replay gates are
+roadmap items; current artifacts must not be described as if those pieces were
+already present.
 
-2. **Rebuild refinement and the region plan from the existing closed trace.**
-   This does not rerun Hadoop. It should print that both pass-1 and pass-2
-   traces are reused:
+## Target architecture
 
-   ```bash
-   HDFS_CP=$(tr -d '\r\n' < experiments-output/hdfs-11741-patched/project-classpath.txt)
-   CAUSYNTH_REUSE_RUNTIME_TRACES=true \
-   CAUSYNTH_REPO=/tmp/hdfs-11741-patched-worktree \
-   CAUSYNTH_CLASSPATH="$HDFS_CP" \
-   CAUSYNTH_OUTPUT_DIR=/opt/GraphChecker/experiments-output/hdfs-11741-patched/analysis \
-   CAUSYNTH_INSTRUMENTED_CLASSES_DIR=/opt/GraphChecker/experiments-output/hdfs-11741-patched/instrumented-classes \
-   CAUSYNTH_REGION_PLAN=/opt/GraphChecker/experiments-output/hdfs-11741-patched/runtime/concolic_region_plan.jsonl \
-   CAUSYNTH_SCHEDULE_OUTPUT_DIR=/opt/GraphChecker/experiments-output/hdfs-11741-patched/schedule \
-   ./run_engine.sh --config experiments/hdfs/hdfs-11741/workflow.properties workload
-   ```
+```text
+target + unit-test workload
+          |
+          v
+static target slice and hook selection
+          |
+          v
+application tracing control plane
+  source / region / async / RPC identity
+          |
+          v
+per-JVM GlobalSymbolicSession
+  + shared ExprArena
+  + versioned symbolic heap
+  + unified event ledger
+  + one ThreadSymbolicState per JavaThread
+          |
+          +---- shared-field expression flow
+          +---- symbolic RPC handoff
+          +---- local region IN / PC / OUT
+          |
+          v
+target-directed slice and symbolic merging
+          |
+          v
+candidate.smt2 + result + causal graph + coverage gaps
+          |
+          v
+sparse concolic replay validation
+```
 
-3. **Rebuild the exact target-first schedule and inspect it before replay.**
+Static analysis remains useful for locating the target, selecting relevant
+regions and fields, and bounding instrumentation. Application tracing provides
+runtime identity and communication correlation. The VM owns symbolic value
+semantics. The final composer should project and merge this recorded symbolic
+graph; it should not guess RPC endpoints or pair fields by concrete-value
+similarity.
 
-   ```bash
-   HDFS11741_VARIANT=patched \
-   HADOOP_REPO=/tmp/hdfs-11741-patched-worktree \
-   experiments/hdfs/hdfs-11741/run.sh schedule
-   ```
+An observed run cannot reveal a writer, RPC endpoint, or path that never
+occurred. Unseen alternatives still require another replay or a statically
+identified candidate. The design therefore reduces dependence on the original
+causal skeleton for formula construction, but does not claim completeness over
+all distributed executions.
 
-   Required checks: the selected fatal occurrence is `call3191805`; the
-   closure contains Dispatcher calls `3180179` and `3186426`; and the commit
-   index names exactly one target plus its complete exact producer closure.
-   Record the actual producer count from the newly published index rather than
-   copying an older count. Only demanded
-   scalar/guard leaves are symbolic. The second Dispatcher summary carries the
-   cached `expiryDate`, `keyId`, and recorded clock expression; endpoints,
-   protobuf bookkeeping, buffer lengths, and unrelated payload stay concrete.
+Everything below through the HDFS-11741 acceptance plan describes the target
+architecture unless a statement is explicitly labelled as implemented.
 
-4. **Run bounded two-level execution, merge, compose, and Z3.** Keep the product
-   of the two job counts within available memory (each replay JVM is roughly
-   1 GB); four region jobs by two path jobs is a safe starting point here:
+## Planned core runtime model
 
-   ```bash
-   HDFS11741_VARIANT=patched \
-   HADOOP_REPO=/tmp/hdfs-11741-patched-worktree \
-   HDFS11741_REGION_JOBS=4 \
-   HDFS11741_PATH_JOBS=2 \
-   experiments/hdfs/hdfs-11741/run.sh candidates
-   ```
+### One session, separate thread states
 
-   Accept only the schedule commit record and the campaign-local artifacts:
+`GlobalSymbolicSession` will span the complete unit-test workload in one JVM.
+Every traced cluster/application thread can attach to that same session; only
+selected regions record PCs, while any selected symbolic carrier continues to
+propagate. The session will own the expression arena, session-scoped object
+identities, selected heap versions, and causal events. Each thread will retain
+its own frames, shadow operand stack, symbolic locals, path condition, and
+region stack. Threads will share expressions, never execution stacks or one
+global path condition.
 
-   ```text
-   experiments-output/hdfs-11741-patched/schedule/runtime_workflow_schedule_index.json
-   experiments-output/hdfs-11741-patched/campaigns/auto-seeds/{target,producer}/<task>/merged_summary.jsonl
-   experiments-output/hdfs-11741-patched/candidates/<campaign>/candidate.smt2
-   experiments-output/hdfs-11741-patched/candidates/<campaign>/composition.json
-   experiments-output/hdfs-11741-patched/candidates/<campaign>/z3-result.json
-   experiments-output/hdfs-11741-patched/candidates/<campaign>/result.json
-   ```
+For multiple JVMs, one `runId` will federate one session per JVM. Raw VM
+pointers will never cross a process boundary; portable expression DAGs will.
+MiniDFSCluster runs its logical nodes as threads in one JVM, so HDFS-11741 will
+exercise the same-JVM design first.
 
-   A summary truncated before its terminating newline is invalid, not a
-   partial success.
+### Stable identity
 
-5. **Audit the result semantically.** The SMT must contain both NN reader
-   chains (`updateKeys -> getBlockKeys -> Balancer` and
-   `updateKeys -> sendHeartbeat -> DataNode`), the first-to-second Dispatcher
-   cached-state edge, the repair guard from a real execution summary, and the fatal DN
-   lookup. RPC transport may use the configured logical mapping directly; do
-   not add value fingerprints or descend into protobuf. Do not handwrite key
-   lifetime, rolling-key, or HDFS-specific SMT formulas. Run the existing
-   solver pin/ablation checks and explain either `SAT` or `UNSAT`.  A bare
-   `true` reach formula or `NOT_APPLICABLE`/zero-clause fatal mutation witness
-   is a failed acceptance check even when Z3 prints `sat`.
+The minimal identity model is:
 
-Concolic seed replay keeps the broad 2400-second emergency budget. Path flips
-have a separate 180-second default because a flip that never publishes a
-selected result contributes no relation; it is recorded as
-`REPLAY_PRODUCED_NO_RESULT` without changing the workload or HDFS semantics.
+- `sourceKey = kind / role / sourceId / epoch`: a NameNode, DataNode, client,
+  or test driver incarnation;
+- `occurrenceId`: one dynamic activation of a region on one source;
+- `relationKey`: the reusable local transition contract;
+- `exchangeId` and `attemptId`: one concrete RPC exchange and retry attempt;
+- `eventId` and `fieldVersionId`: session-local runtime evidence.
 
----
+A restart preserves the logical `sourceId` and advances `epoch`. Different
+nodes and different epochs never merge implicitly. Dynamic object IDs, thread
+IDs, owner IDs, call IDs, and event IDs may remain trace evidence, but they are
+not cross-replay addresses or logical identity.
 
-## Traps that cost whole rounds
+### Region and target semantics
 
-Each of these once looked like a semantic failure.
+A region occurrence will retain the existing local transition relation:
 
-- **A malformed cache is not reusable evidence.** `prepare_seed_campaign`
-  automatically invalidates a safely scoped `TASK.SEED.*` directory when its
-  replay-cache marker is absent or stale. A directory whose marker still
-  matches but whose payload is malformed fails closed for manual inspection;
-  the runner never silently blesses it.
-- **Rebuilding the jar during a live run corrupts that run.** Discovery JVMs
-  mmap the jar, not just campaign JVMs; one took `SIGBUS` in `libzip.so` and a
-  scheduler answer came back as a literal `#`.
-- **Job counts left pinned at 1** cost hours of serial execution, silently,
-  because stdout never reached the work root. Both are fixed — the fan-outs
-  follow the host and announce their width, and long stages log beside their
-  artifacts — but the class recurs.
-- **Deciding boundness by reading the SMT.** Binding equalities hide inside the
-  single large fatal assert, and a channel's name carries the reader port twice
-  rather than writer and reader. Both readings condemned a query that was fine.
-  Ask the solver.
-- **Counting policy metadata as executed relation evidence.** Producer seeds
-  export the symbolic input-to-output relation observed at their semantic
-  boundary. Target reachability retains its exact path condition; producer
-  branch-policy entries are not additional relation cases unless a replay
-  actually publishes one.
+```text
+T_r(IN, OUT) = OR_k (pathGuard_k(IN) AND OUT = expr_k(IN))
+```
+
+Compatible paths from repeated concolic runs are merged by `relationKey`, while
+their source and occurrence evidence remains distinct. Multiple occurrences of
+the target region are handled the same way as other regions; they are not
+collapsed into one runtime event.
+
+For a target replay, only the selected branch inside the target method is
+flipped; its earlier reachability prefix is record-only. Producer regions may
+still explore selected output-relevant branches in their own bounded
+worklists. Reaching the target and capturing a valid target relation matters;
+whether the enclosing JUnit method ultimately passes is not the acceptance
+criterion.
+
+## Planned RPC symbolic propagation
+
+Application tracing will be the RPC control plane. It will identify the local
+source, logical call, attempt, exchange, direction, endpoint, and serialized
+leaf path. The VM will be the symbolic data plane: it will export an expression
+at the sender and attach it to the deserialized value at the receiver.
+
+For example:
+
+```java
+x = getRPC(a, b);
+y = x + 1;
+```
+
+The intended flow is:
+
+1. Before request serialization, tracing allocates an `exchangeId`; the VM
+   exports the symbolic leaves of `a` and `b`.
+2. At server deserialization or handler entry, tracing matches that exchange
+   and the VM attaches the imported expressions to the server arguments.
+3. The server executes normally and derives a response expression `E(a,b)`.
+4. The response hook exports `E`; the client return hook attaches it to `x`.
+5. The caller executes `x + 1`, and the VM directly builds `E(a,b) + 1`.
+
+The client and server remain separate source-local region occurrences. Only
+selected values and provenance continue across RPC; the sender's stack, heap
+identity, source, and path condition do not.
+
+The symbolic sidecar for one exchange needs only the run/session identity,
+exchange and attempt IDs, direction, endpoint/schema mapping, and symbolic
+leaves `(path, sort, shape, expression reference, concrete fingerprint)`.
+Same-JVM RPC uses an expression reference through a session broker. Cross-JVM
+RPC later uses a content-addressed portable DAG. Schema-aware Protobuf/Writable
+adapters should discover symbolic leaves generically; explicit mappings are
+reserved for real serialization transformations.
+
+Retries, timeouts, cancellation, late responses, fan-out, and response
+aggregation create distinct exchange events. A unique exchange propagates one
+expression directly. Several compatible messages become a guarded message
+choice; they are never merged solely because their concrete payloads match.
+Missing metadata or incompatible shape produces an explicit RPC handoff gap
+and a fresh/concrete fallback, not a silent guessed binding.
+
+Protocol boundaries that transform values may provide a small semantic
+adapter. The adapter still uses the same `exportExpression`/`attachExpression`
+VM interface, but declares the real transformation instead of asking the VM to
+symbolically execute a protocol library. HDFS-11741 needs one such adapter for
+its SASL data-transfer handshake.
+
+## Planned shared fields and concurrent writes
+
+Selected field, static-field, array, container, volatile, and atomic writes
+will publish a new expression version after the concrete write succeeds. A
+read will capture its concrete value and compatible symbolic versions in the
+same VM access hook.
+
+For example:
+
+```text
+T1: W1(x) = A + 1     concrete 10
+T2: W2(x) = B * 2     concrete 10
+T3: R3(x)             concrete 10
+```
+
+One concrete execution still performs one real read. If synchronization or a
+unique version proves its provenance, `R3` immediately receives that writer's
+expression. If an ordinary concurrent read cannot distinguish equal-valued
+writes, the VM must not guess. It attaches a bounded guarded expression:
+
+```text
+exactlyOne(rf1, rf2, rf_unknown)
+R3 = ite(rf1, A + 1, ite(rf2, B * 2, Unknown_x))
+```
+
+Each candidate also carries its writer path guard and legal order constraints.
+`rf_unknown` prevents an incomplete writer set from turning an under-approximate
+UNSAT result into a global conclusion. Volatile, monitor-ordered, and modeled
+atomic operations can provide stronger provenance. `AtomicInteger`/`AtomicLong`
+RMW operations must publish one linearized relation such as
+`new = old + delta`; CAS publishes only the concretely observed arm.
+
+Shared-field propagation will be automatic for symbolic values in the
+session-wide shadow heap. Static analysis will select the bounded carrier set
+to control cost; it will not reconstruct a write/read equality afterward.
+
+## Planned symbolic merging and SMT construction
+
+Merging will happen at three different levels:
+
+1. **Local path merge:** guarded cases from repeated executions form one local
+   transition relation.
+2. **Read/message merge:** compatible writer or RPC versions use exactly-one
+   selectors plus value and order constraints.
+3. **Global target slice:** the final formula contains only expression and event
+   nodes that can reach the target predicate.
+
+All causal channels will share one event-order domain. Program order, thread start
+and join, executor handoff, RPC send/receive, monitor/volatile/atomic order,
+read-from, restart, and persistence edges therefore participate in the same
+cycle check. GraphChecker does not construct or enumerate a total schedule.
+
+The target formula is conceptually:
+
+```text
+AND local region transitions
+AND symbolic value handoffs
+AND guarded read-from/message selections
+AND failure-relevant partial order
+AND target predicate
+```
+
+The causal graph and SMT are two views of this same selected model. The graph
+keeps source/epoch, region occurrences, external API roots, key branches,
+observed candidate edges, solver-selected edges, replay evidence, and gaps.
+
+## Planned concolic replay policy
+
+Replay will be best effort and start from a fresh unit-test cluster. The first
+workload provides the observed loop unroll, read-from relations, RPC exchanges,
+and array/container shape as an alignment reference, not a full deterministic
+replay contract.
+
+Hard admission will be limited to the correct source/region occurrence and a valid
+target/output relation. A different worker thread, harmless loop-count change,
+extra RPC attempt, or approximate compatible shape is accepted when the
+selected symbolic flow remains valid; the deviation is recorded as a coverage
+gap. Missing target flow retains every usable local relation but makes the
+result partial.
+
+When the solver selects a competing writer, replay will enforce only the sparse
+read cut required by that model: the selected writer precedes the read, and
+other writers occur before it or after the read. Gates will be placed before
+the selected access or lifted outside an application lock. GraphChecker will
+never park while holding an application lock, overwrite a program field, or
+replace an RPC return value. The concrete read version and exchange must still
+be observed.
+
+SAT means the selected bounded model has a consistent assignment. UNSAT means
+unreachability only within a closed selected model. UNSAT from a partial or
+seed-only model is inconclusive. Every unsupported operation, unknown writer,
+shape mismatch, unsafe gate, missing exchange, or import failure remains a
+named gap.
+
+## HDFS-11741 first experiment
+
+The source of truth is the Hadoop checkout at `/opt/hadoop`. Its current branch
+is `analysis/hdfs-11741-before-fix` at
+`529147b5640fcb2a0d733385148be4e8b0b901ce`, built on the upstream pre-fix
+baseline `ece33208b89a6a06c1b362d10fab31343fe5df13`. The two later tracing
+commits are source candidates to re-audit, not specifications for the new
+architecture. The old
+HDFS-11741 workflow scripts, generated patches, and prior artifact trees are
+not inputs to the new design and must not define its regions, bounds, or
+acceptance checks. We will inspect and modify the Hadoop source directly, then
+create one minimal source-driven test launcher after the new runtime APIs are
+stable.
+
+The starting workload is the existing source test:
+
+```text
+hadoop-hdfs-project/hadoop-hdfs/src/test/java/
+  org/apache/hadoop/hdfs/server/balancer/
+  TestBalancerWithEncryptedTransfer.testEncryptedBalancer1
+```
+
+The production source already exposes the end-to-end behavior to model:
+
+1. `HeartbeatManager.Monitor.run()` loops while the NameNode is running and
+   calls `BlockManager.shouldUpdateBlockKey()`. The master
+   `BlockTokenSecretManager.updateKeys()` changes `currentKey`, `nextKey`, and
+   `allKeys`; `removeExpiredKeys()` contains the relevant iterator loop.
+2. `KeyManager.BlockKeyUpdater.run()` loops while the Balancer is active,
+   invokes the NameNode `getBlockKeys()` RPC, and feeds the result to
+   `BlockTokenSecretManager.addKeys()`. `KeyManager.newDataEncryptionKey()`
+   caches the selected `DataEncryptionKey`.
+3. `BPServiceActor.offerService()` loops on the DataNode heartbeat path.
+   A key-update command reaches `BPOfferService`, which calls `addKeys()` on
+   the DataNode's local table.
+4. The Balancer then opens a data-transfer SASL handshake. The client encodes
+   `DataEncryptionKey.keyId`, `blockPoolId`, and `nonce` into the SASL user
+   name. The DataNode parses them, calls
+   `BlockPoolTokenSecretManager.retrieveDataEncryptionKey(keyId,
+   blockPoolId, nonce)` to select the block-pool manager, then delegates to
+   `BlockTokenSecretManager.retrieveDataEncryptionKey(keyId, nonce)`.
+5. The selected target is the `allKeys.get(keyId) == null` branch in the final
+   method. `nonce` is consumed only after that lookup succeeds; `blockPoolId`
+   selects the manager but is not an operand of the target branch.
+
+MiniDFSCluster supplies distinct logical sources for the NameNode, each
+DataNode, the Balancer/client, and the test driver, although they execute as
+threads in one JVM. A fresh concrete source run will establish the initial
+loop unroll and container/RPC shapes. The new harness will bound only the
+target-relevant loops and will then vary at least one loop count to ensure that
+replay follows symbolic flow rather than an exact historical unroll.
+
+### HDFS SASL symbolic adapter
+
+Hadoop IPC propagation alone is insufficient: the value selected by the
+Balancer crosses a SASL transformation before the DataNode target. A dedicated
+HDFS adapter is therefore allowed and required:
+
+```text
+Balancer DataEncryptionKey
+  keyId, blockPoolId, nonce
+          |
+          | SASL_HANDSHAKE exchangeId
+          v
+DataNode parsed keyId, blockPoolId, nonce
+          |
+          +---- blockPoolId ---> select block-pool manager
+          |
+          +---- keyId ---------> allKeys.get(keyId) target
+          |
+          +---- nonce ---------> createPassword after lookup
+```
+
+This adapter will live in the Hadoop integration layer. GraphChecker's core
+will see only a generic typed symbolic handoff.
+
+At the client, the adapter will export expressions immediately before
+`getUserNameFromEncryptionKey()`. At the server, it will correlate the
+handshake attempt and attach the expressions after
+`split`/`parseInt`/Base64 decode. `blockPoolId` will flow into manager
+selection, while `keyId` and `nonce` will flow into the delegated manager
+call. This preserves the actual mapping without requiring the VM to model the
+entire SASL implementation. It will not propagate the sender stack or PC, or
+attach fields absent from the handshake. A malformed three-component shape,
+unmatched attempt, or inconsistent concrete fingerprint will become a named
+SASL handoff gap.
+
+The ablation sequence is:
+
+1. rebuild the current offline region-composition baseline from the same
+   Hadoop source workload, without reusing old artifacts;
+2. global session with live communication handoff (Hadoop RPC plus SASL);
+3. live RPC plus session-wide shared-field/atomic propagation;
+4. unified event ledger and sparse read-cut replay;
+5. the patched HDFS variant as a semantic control.
+
+Acceptance requires:
+
+- all selected HDFS threads attach to one same-JVM symbolic session without
+  mixing thread-local path conditions;
+- NameNode expressions reach the Balancer/DataNode receiver regions through
+  the traced RPC exchanges without post-hoc concrete-value matching;
+- the cached Balancer `DataEncryptionKey.keyId` expression crosses the SASL
+  adapter and is the expression used by the DataNode target lookup;
+- selected shared-state reads use an exact or explicit guarded writer choice;
+- only the target replay flips the selected target-method branch; its prefix
+  remains observed, while producer worklists remain independently bounded;
+- the target-sliced SMT and causal graph agree on source, occurrence, value
+  flow, order, selected branch, and coverage gaps;
+- loop-count variation either preserves the selected flow or produces a named
+  partial result; it never silently binds a different occurrence.
+
+Report target reach, resolved value flows, gap classes, SMT size and solve time,
+replay attempts, runtime, peak memory, and symbolic sidecar bytes for every
+ablation. A SAT result is reported as a bounded candidate until the selected
+flows are confirmed by replay.
+
+There is intentionally no experiment command yet. The first implementation
+deliverable is a new source-first launcher; the legacy HDFS-11741 scripts will
+be retired rather than extended.
+
+## Implementation TODO
+
+### Phase 0 — Preserve and simplify the baseline
+
+- [ ] Re-audit `/opt/hadoop` from the pre-fix source revision, keeping only
+  source hooks that match the new session/handoff interfaces.
+- [ ] Retire the old HDFS-11741 script/patch pipeline and create no compatibility
+  path for its artifact schemas.
+- [x] Use `sourceKey`, `occurrenceId`, `relationKey`, and contract hash in the
+  public plan/task/summary path.
+- [x] Keep local guarded transition summaries, bounded path worklists, current
+  Composer behavior, and causal-graph output as the regression baseline.
+- [ ] Finish removing logical dependence on owner ID, process-name inference,
+  root call ID, representative occurrence, expanded occurrence catalogs,
+  canonical/exact port bijections, root-bound output closures, and duplicate
+  edge/goal/closure artifacts. Trace-only evidence may remain internal.
+- [ ] Converge on one canonical causal-model artifact plus `.smt2`, result, and
+  a generated graph view; do not add compatibility schemas.
+
+### Phase 1 — Global VM session
+
+- [ ] Split the current VM `ThreadContext` into session-owned state and
+  thread-owned execution state.
+- [ ] Replace the single-active-region mutex with attach/detach membership for
+  relevant Java threads.
+- [ ] Add session-wide atomic expression/object IDs and immutable expression
+  lifetime; clean them only at session teardown.
+- [ ] Preserve independent shadow stacks, locals, PCs, branch events, and
+  region frames for every thread.
+- [ ] Keep object identity stable across GC and prevent one thread/region exit
+  from clearing another thread's symbolic state.
+
+### Phase 2 — Shared field and synchronization propagation
+
+- [ ] Add versioned hooks for selected instance/static fields and fixed-shape
+  arrays/containers, pairing each symbolic update with the concrete access.
+- [ ] Add global linearization records for volatile, monitor, thread lifecycle,
+  `AtomicInteger`/`AtomicLong`, Unsafe, and VarHandle operations.
+- [ ] Implement exact writer propagation when justified and guarded candidate
+  expressions with an unknown fallback for ambiguous plain reads.
+- [ ] Add one unified event-order ledger and reject cyclic candidate orders.
+
+### Phase 3 — Application-traced RPC and async handoff
+
+- [ ] Replace object-keyed/FIFO correlation with unique async handoff,
+  logical-RPC, attempt, and exchange IDs.
+- [ ] Add framework-level request/response hooks around serialization,
+  deserialization, and handler entry/exit.
+- [ ] Add `exportExpression`, same-JVM broker, `importExpression`, and
+  `attachExpression` VM APIs.
+- [ ] Implement generic Protobuf/Writable leaf discovery, shape validation,
+  retries, timeouts, late responses, fan-out, and response aggregation.
+- [ ] Implement the HDFS SASL adapter from `DataEncryptionKey` leaves to
+  block-pool manager selection and the delegated `(keyId, nonce)` lookup, with
+  one exchange ID per handshake attempt.
+- [ ] Add portable, content-addressed expression envelopes for cross-JVM runs
+  only after the same-JVM HDFS experiment is stable.
+
+### Phase 4 — Merge, SMT, causal graph, and replay
+
+- [ ] Build the target slice directly from the session expression/event graph.
+- [ ] Reuse local relation merging, but replace offline RPC/field discovery with
+  recorded expression identities and guarded version choices.
+- [ ] Emit one order domain across field, RPC, async, synchronization, and
+  region events.
+- [ ] Compile a solver-selected read/message cut into lock-safe sparse gates;
+  validate actual versions and exchanges without changing program values.
+- [ ] Classify target, flow, shape, import, gate, and source-epoch divergence;
+  retain partial relations and emit SMT with honest coverage state whenever
+  the target relation remains usable.
+
+### Phase 5 — Tests and HDFS-11741 evaluation
+
+- [ ] Build a minimal launcher directly around the Hadoop source test; do not
+  call the legacy HDFS-11741 workflow scripts.
+- [ ] Unit-test simultaneous thread contexts and path-condition isolation.
+- [ ] Test one writer, equal-valued competing writers, unknown writer,
+  volatile/monitor ordering, atomic RMW/CAS, and lock-safe gates.
+- [ ] Test synchronous RPC, retry/timeout, response flow, async executor
+  handoff, shape drift, and source restart/epoch separation.
+- [ ] Run the HDFS-11741 ablations, loop-count variation, and patched control.
+- [ ] Compare the new graph/SMT against the preserved offline baseline and
+  publish gaps and costs, not only SAT/UNSAT.
+
+## Non-goals and invariants
+
+- Do not enumerate all thread schedules, message orders, or system executions.
+- Do not share operand stacks, locals, or one global PC between threads.
+- Do not copy a sender's PC or source identity into an RPC receiver.
+- Do not infer a plain-race writer from equal concrete values or event IDs.
+- Do not treat a static candidate as an observed causal edge.
+- Do not use transient trace IDs as replay identity.
+- Do not hide unsupported semantics behind an unconstrained SAT result.
+- Do not require exact replay of unrelated loop iterations or events.
+- Do not introduce HDFS method names, formulas, or branch outcomes into the
+  generic VM, runtime, merger, or SMT semantics.
+
+## Build
+
+GraphChecker's current Java baseline is built with:
+
+```bash
+mvn -q test
+mvn -q -DskipTests package
+```
+
+The custom-JDK and experiment-specific instructions are documented under
+[`docs/`](docs/). The HDFS-11741 instructions will be rewritten when the new
+source-first launcher exists.
