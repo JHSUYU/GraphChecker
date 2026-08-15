@@ -1,0 +1,561 @@
+diff --git a/hadoop-common-project/hadoop-annotations/pom.xml b/hadoop-common-project/hadoop-annotations/pom.xml
+index 893bf0310e8..26be319221e 100644
+--- a/hadoop-common-project/hadoop-annotations/pom.xml
++++ b/hadoop-common-project/hadoop-annotations/pom.xml
+@@ -47,12 +47,9 @@
+         <configuration combine.self="override">
+           <source>${javac.version}</source>
+           <target>${javac.version}</target>
+-          <compilerArgs>
+-            <arg>--add-modules</arg>
+-            <arg>jdk.javadoc</arg>
+-            <arg>--add-exports</arg>
+-            <arg>jdk.javadoc/jdk.javadoc.internal.tool=ALL-UNNAMED</arg>
+-          </compilerArgs>
++          <excludes>
++            <exclude>org/apache/hadoop/classification/tools/**</exclude>
++          </excludes>
+         </configuration>
+       </plugin>
+     </plugins>
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/WritableComparator.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/WritableComparator.java
+index e0a2edf1162..3c798deecd2 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/WritableComparator.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/WritableComparator.java
+@@ -230,7 +230,16 @@ public int compare(Object a, Object b) {
+    */
+   public static int compareBytes(byte[] b1, int s1, int l1,
+                                  byte[] b2, int s2, int l2) {
+-    return Arrays.compareUnsigned(b1, s1, s1 + l1, b2, s2, s2 + l2);
++    int end1 = s1 + l1;
++    int end2 = s2 + l2;
++    for (int i = s1, j = s2; i < end1 && j < end2; i++, j++) {
++      int a = b1[i] & 0xff;
++      int b = b2[j] & 0xff;
++      if (a != b) {
++        return a - b;
++      }
++    }
++    return l1 - l2;
+   }
+ 
+   /**
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/NativeIO.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/NativeIO.java
+index 0a469e3024b..e984e5e0068 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/NativeIO.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/NativeIO.java
+@@ -45,7 +45,6 @@
+ 
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+-import sun.misc.Unsafe;
+ 
+ import org.apache.hadoop.classification.VisibleForTesting;
+ 
+@@ -898,10 +897,12 @@ static long getMemlockLimit() {
+    */
+   static long getOperatingSystemPageSize() {
+     try {
+-      Field f = Unsafe.class.getDeclaredField("theUnsafe");
++      Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
++      Field f = unsafeClass.getDeclaredField("theUnsafe");
+       f.setAccessible(true);
+-      Unsafe unsafe = (Unsafe)f.get(null);
+-      return unsafe.pageSize();
++      Object unsafe = f.get(null);
++      return ((Number) unsafeClass.getMethod("pageSize").invoke(unsafe))
++          .longValue();
+     } catch (Throwable e) {
+       LOG.warn("Unable to get operating system page size.  Guessing 4096.", e);
+       return 4096;
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java
+index b036caedfa3..f0ff285249f 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java
+@@ -1524,6 +1524,10 @@ Writable call(RPC.RpcKind rpcKind, Writable rpcRequest,
+       checkAsyncCall();
+       try {
+         connection.sendRpcRequest(call);                 // send the rpc request
++        if (CausynthRpcTrace.isEnabled()) {
++          CausynthRpcTrace.emitHadoopIpc("SEND", clientId, call.id,
++              call.retry);
++        }
+       } catch (RejectedExecutionException e) {
+         throw new IOException("connection has been closed", e);
+       } catch (InterruptedException ie) {
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/ProtobufRpcEngine.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/ProtobufRpcEngine.java
+index 2b0bc69bb00..f863f8ce0ef 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/ProtobufRpcEngine.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/ProtobufRpcEngine.java
+@@ -491,6 +491,8 @@ static RpcWritable processCall(RPC.Server server,
+         server.rpcDetailedMetrics.init(protocolImpl.protocolClass);
+         CURRENT_CALL_INFO.set(new CallInfo(server, methodName));
+         currentCall.setDetailedMetricsName(methodName);
++        CausynthRpcTrace.emitHadoopIpc("RECEIVE", Server.getClientId(),
++            Server.getCallId(), Server.getCallRetryCount(), service);
+         result = service.callBlockingMethod(methodDescriptor, null, param);
+         // Check if this needs to be a deferred response,
+         // by checking the ThreadLocal callback being set
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/ProtobufRpcEngine2.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/ProtobufRpcEngine2.java
+index b9b17b4702b..a7f2a18d72f 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/ProtobufRpcEngine2.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/ProtobufRpcEngine2.java
+@@ -628,6 +628,8 @@ private RpcWritable call(RPC.Server server,
+           server.rpcDetailedMetrics.init(protocolImpl.protocolClass);
+           CURRENT_CALL_INFO.set(new CallInfo(server, methodName));
+           currentCall.setDetailedMetricsName(methodName);
++          CausynthRpcTrace.emitHadoopIpc("RECEIVE", Server.getClientId(),
++              Server.getCallId(), Server.getCallRetryCount(), service);
+           result = service.callBlockingMethod(methodDescriptor, null, param);
+           // Check if this needs to be a deferred response,
+           // by checking the ThreadLocal callback being set
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java
+index 21bc8853580..ebfd997f8e2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java
+@@ -17,6 +17,8 @@
+  */
+ package org.apache.hadoop.hdfs;
+ 
++import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;
++import edu.uva.liftlab.graphchecker.annotation.CausynthFault;
+ import org.apache.hadoop.fs.CompositeCrcFileChecksum;
+ import org.apache.hadoop.fs.FileChecksum;
+ import org.apache.hadoop.fs.MD5MD5CRC32CastagnoliFileChecksum;
+@@ -627,7 +629,7 @@ void checksumBlocks() throws IOException {
+         LocatedStripedBlock blockGroup = (LocatedStripedBlock) locatedBlock;
+ 
+         if (!checksumBlockGroup(blockGroup)) {
+-          throw new PathIOException(
++          throw new @CausynthExceptionTarget("hdfs-17897") PathIOException(
+               getSrc(), "Fail to get block checksum for " + locatedBlock);
+         }
+       }
+@@ -647,11 +649,17 @@ private boolean checksumBlockGroup(
+           blockGroup.getLocations(), blockGroup.getBlockTokens(),
+           blockGroup.getBlockIndices(), ecPolicy);
+       DatanodeInfo[] datanodes = blockGroup.getLocations();
++      final boolean rpcFails =
++          CausynthFault.makeSymbolicBoolean("rpcFails");
+ 
+       //try each datanode in the block group.
+       boolean done = false;
+       for (int j = 0; !done && j < datanodes.length; j++) {
+         try {
++          if (rpcFails) {
++            throw new InvalidEncryptionKeyException(
++                "symbolic data-transfer RPC failure");
++          }
+           tryDatanode(blockGroup, stripedBlockInfo, datanodes[j],
+               requestedNumBytes);
+           done = true;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
+index dd1da77af1e..9de9c6555e1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
+@@ -57,6 +57,7 @@
+ import org.apache.hadoop.hdfs.protocol.datatransfer.TrustedChannelResolver;
+ import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
+ import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
++import org.apache.hadoop.ipc.CausynthRpcTrace;
+ import org.apache.hadoop.security.SaslPropertiesResolver;
+ import org.apache.hadoop.security.SecurityUtil;
+ import org.apache.hadoop.security.UserGroupInformation;
+@@ -503,6 +504,8 @@ private IOStreamPair doSaslHandshake(InetAddress addr,
+       Map<String, String> saslProps, CallbackHandler callbackHandler,
+       Token<BlockTokenIdentifier> accessToken) throws IOException {
+ 
++    CausynthRpcTrace.emit("SEND", "SASL_HANDSHAKE", "");
++
+     DataOutputStream out = new DataOutputStream(underlyingOut);
+     DataInputStream in = new DataInputStream(underlyingIn);
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/shortcircuit/ShortCircuitShm.java b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/shortcircuit/ShortCircuitShm.java
+index c6f7a503681..de5b37e15c0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/shortcircuit/ShortCircuitShm.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/shortcircuit/ShortCircuitShm.java
+@@ -37,8 +37,6 @@
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+-import sun.misc.Unsafe;
+-
+ import org.apache.hadoop.util.Preconditions;
+ import org.apache.hadoop.thirdparty.com.google.common.collect.ComparisonChain;
+ import org.apache.hadoop.thirdparty.com.google.common.primitives.Ints;
+@@ -54,19 +52,60 @@ public class ShortCircuitShm {
+ 
+   protected static final int BYTES_PER_SLOT = 64;
+ 
+-  private static final Unsafe unsafe = safetyDance();
++  private static final UnsafeAccess unsafe = safetyDance();
+ 
+-  private static Unsafe safetyDance() {
++  private static UnsafeAccess safetyDance() {
+     try {
+-      Field f = Unsafe.class.getDeclaredField("theUnsafe");
++      Class<?> unsafeClass = Class.forName("sun.misc.Unsafe");
++      Field f = unsafeClass.getDeclaredField("theUnsafe");
+       f.setAccessible(true);
+-      return (Unsafe)f.get(null);
++      return new UnsafeAccess(unsafeClass, f.get(null));
+     } catch (Throwable e) {
+       LOG.error("failed to load misc.Unsafe", e);
+     }
+     return null;
+   }
+ 
++  /** Java-8-compatible reflective view of the three Unsafe operations used. */
++  private static final class UnsafeAccess {
++    private final Object delegate;
++    private final java.lang.reflect.Method putLongVolatile;
++    private final java.lang.reflect.Method getLongVolatile;
++    private final java.lang.reflect.Method compareAndSwapLong;
++
++    UnsafeAccess(Class<?> type, Object delegate) throws NoSuchMethodException {
++      this.delegate = delegate;
++      putLongVolatile = type.getMethod("putLongVolatile", Object.class,
++          long.class, long.class);
++      getLongVolatile = type.getMethod("getLongVolatile", Object.class,
++          long.class);
++      compareAndSwapLong = type.getMethod("compareAndSwapLong", Object.class,
++          long.class, long.class, long.class);
++    }
++
++    void putLongVolatile(Object object, long offset, long value) {
++      invoke(putLongVolatile, object, offset, value);
++    }
++
++    long getLongVolatile(Object object, long offset) {
++      return ((Number) invoke(getLongVolatile, object, offset)).longValue();
++    }
++
++    boolean compareAndSwapLong(Object object, long offset, long expected,
++        long value) {
++      return (Boolean) invoke(compareAndSwapLong, object, offset, expected,
++          value);
++    }
++
++    private Object invoke(java.lang.reflect.Method method, Object... args) {
++      try {
++        return method.invoke(delegate, args);
++      } catch (ReflectiveOperationException e) {
++        throw new IllegalStateException("Unable to invoke sun.misc.Unsafe", e);
++      }
++    }
++  }
++
+   /**
+    * Calculate the usable size of a shared memory segment.
+    * We round down to a multiple of the slot size and do some validation.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
+index 949f99af897..656801e6da6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
+@@ -58,6 +58,7 @@
+ import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
+ import org.apache.hadoop.hdfs.security.token.block.InvalidBlockTokenException;
+ import org.apache.hadoop.hdfs.server.datanode.DNConf;
++import org.apache.hadoop.ipc.CausynthRpcTrace;
+ import org.apache.hadoop.security.CustomizedCallbackHandler;
+ import org.apache.hadoop.security.SaslPropertiesResolver;
+ import org.apache.hadoop.security.SecurityUtil;
+@@ -281,6 +282,7 @@ public void handle(Callback[] callbacks) throws IOException,
+    */
+   private byte[] getEncryptionKeyFromUserName(String userName)
+       throws IOException {
++    CausynthRpcTrace.emit("RECEIVE", "SASL_HANDSHAKE", "", this);
+     String[] nameComponents = userName.split(NAME_DELIMITER);
+     if (nameComponents.length != 3) {
+       throw new IOException("Provided name '" + userName + "' has " +
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
+index d2c3fe6eae9..9b484e88fd1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
+@@ -151,7 +151,10 @@ private BlockTokenSecretManager(boolean isMaster, long keyUpdateInterval,
+     this.useProto = useProto;
+     this.shouldWrapQOP = shouldWrapQOP;
+     this.timer = new Timer();
+-    setSerialNo(new SecureRandom().nextInt(Integer.MAX_VALUE));
++    Integer replaySerialSeed = Integer.getInteger(
++        "causynth.replay.block.key.serial.seed");
++    setSerialNo(replaySerialSeed == null
++        ? new SecureRandom().nextInt(Integer.MAX_VALUE) : replaySerialSeed);
+     LOG.info("Block token key range: [{}, {})",
+         nnRangeStart, nnRangeStart + intRange);
+     generateKeys();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/diskbalancer/planner/NodePlan.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/diskbalancer/planner/NodePlan.java
+index 127456bd7e3..9495d297307 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/diskbalancer/planner/NodePlan.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/diskbalancer/planner/NodePlan.java
+@@ -32,6 +32,7 @@
+ import java.util.LinkedList;
+ import java.util.List;
+ import java.util.Map;
++import java.util.stream.Collectors;
+ 
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.SUPPORTED_PACKAGES_CONFIG_NAME;
+ 
+@@ -194,7 +195,8 @@ private static void checkNodes(JsonNode node) throws IOException {
+         Map.Entry<String, JsonNode> entry = fieldsIterator.next();
+         if ("@class".equals(entry.getKey())) {
+           String textValue = entry.getValue().asText();
+-          if (textValue != null && !textValue.isBlank() && !stepClassIsAllowed(textValue)) {
++          if (textValue != null && !textValue.trim().isEmpty()
++              && !stepClassIsAllowed(textValue)) {
+             throw new IOException("Invalid @class value in NodePlan JSON: " + textValue);
+           }
+         }
+@@ -249,6 +251,6 @@ private static Collection<String> getAllowedPackages() {
+         .stream()
+         .map(String::trim)
+         .filter(s -> !s.isEmpty())
+-        .toList();
++        .collect(Collectors.toList());
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptedTransfer.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptedTransfer.java
+index 3f57913eadf..862ee1c0eae 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptedTransfer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptedTransfer.java
+@@ -19,6 +19,7 @@
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ import static org.junit.jupiter.api.Assertions.fail;
+ import static org.mockito.Mockito.times;
+@@ -47,6 +48,8 @@
+ import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
+ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+ import org.apache.hadoop.hdfs.protocol.LocatedBlock;
++import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
++import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
+ import org.apache.hadoop.hdfs.protocol.datatransfer.TrustedChannelResolver;
+ import org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataTransferSaslUtil;
+ import org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferServer;
+@@ -57,6 +60,7 @@
+ import org.apache.hadoop.test.GenericTestUtils.LogCapturer;
+ import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
+ import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
+ import org.mockito.Mockito;
+ import org.slf4j.event.Level;
+ 
+@@ -113,6 +117,44 @@ public void setup() throws IOException {
+     conf = new Configuration();
+   }
+ 
++  @Test
++  public void testCausynthStripedFileChecksumRpcFailure()
++      throws IOException {
++    initTestEncryptedTransfer(null);
++    setEncryptionConfigKeys();
++    try {
++      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
++      cluster.waitActive();
++      fs = getFileSystem(conf);
++      DistributedFileSystem dfs = (DistributedFileSystem) fs;
++
++      ErasureCodingPolicy policy = SystemErasureCodingPolicies.getByID(
++          SystemErasureCodingPolicies.XOR_2_1_POLICY_ID);
++      dfs.enableErasureCodingPolicy(policy.getName());
++      Path ecDir = new Path("/causynth-ec");
++      dfs.mkdirs(ecDir);
++      dfs.setErasureCodingPolicy(ecDir, policy.getName());
++
++      Path ecFile = new Path(ecDir, "striped-file");
++      byte[] data = new byte[
++          policy.getCellSize() * policy.getNumDataUnits()];
++      Arrays.fill(data, (byte) 'a');
++      try (FSDataOutputStream out = dfs.create(ecFile)) {
++        out.write(data);
++      }
++      assertNotNull(dfs.getFileChecksum(ecFile));
++    } finally {
++      if (fs != null) {
++        fs.close();
++        fs = null;
++      }
++      if (cluster != null) {
++        cluster.shutdown();
++        cluster = null;
++      }
++    }
++  }
++
+   @AfterEach
+   public void teardown() throws IOException {
+     if (fs != null) {
+diff --git a/hadoop-common-project/hadoop-annotations/src/main/java/edu/uva/liftlab/graphchecker/annotation/CausynthExceptionTarget.java b/hadoop-common-project/hadoop-annotations/src/main/java/edu/uva/liftlab/graphchecker/annotation/CausynthExceptionTarget.java
+new file mode 100644
+index 00000000000..8b115b14f80
+--- /dev/null
++++ b/hadoop-common-project/hadoop-annotations/src/main/java/edu/uva/liftlab/graphchecker/annotation/CausynthExceptionTarget.java
+@@ -0,0 +1,31 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package edu.uva.liftlab.graphchecker.annotation;
++
++import java.lang.annotation.Documented;
++import java.lang.annotation.ElementType;
++import java.lang.annotation.Retention;
++import java.lang.annotation.RetentionPolicy;
++import java.lang.annotation.Target;
++
++@Documented
++@Retention(RetentionPolicy.CLASS)
++@Target(ElementType.TYPE_USE)
++public @interface CausynthExceptionTarget {
++  String value() default "";
++}
+diff --git a/hadoop-common-project/hadoop-annotations/src/main/java/edu/uva/liftlab/graphchecker/annotation/CausynthFault.java b/hadoop-common-project/hadoop-annotations/src/main/java/edu/uva/liftlab/graphchecker/annotation/CausynthFault.java
+new file mode 100644
+index 00000000000..09d55776eb9
+--- /dev/null
++++ b/hadoop-common-project/hadoop-annotations/src/main/java/edu/uva/liftlab/graphchecker/annotation/CausynthFault.java
+@@ -0,0 +1,28 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package edu.uva.liftlab.graphchecker.annotation;
++
++/** Explicit fault input recognized by GraphChecker selective replay. */
++public final class CausynthFault {
++  private CausynthFault() {
++  }
++
++  public static boolean makeSymbolicBoolean(String name) {
++    return false;
++  }
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthRpcTrace.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthRpcTrace.java
+new file mode 100644
+index 00000000000..0bdf1d94f4e
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthRpcTrace.java
+@@ -0,0 +1,94 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.ipc;
++
++import java.lang.reflect.Method;
++
++/** Optional bridge to GraphChecker's runtime tracer. */
++public final class CausynthRpcTrace {
++  private static volatile Method recorderWithOwner;
++  private static volatile boolean recorderResolved;
++  private static volatile boolean unavailable;
++
++  private CausynthRpcTrace() {
++  }
++
++  public static String hadoopIpcId(byte[] clientId, int callId,
++      int retryCount) {
++    final char[] hex = "0123456789abcdef".toCharArray();
++    StringBuilder result = new StringBuilder();
++    if (clientId != null) {
++      for (byte value : clientId) {
++        int unsigned = value & 0xff;
++        result.append(hex[unsigned >>> 4]).append(hex[unsigned & 0x0f]);
++      }
++    }
++    return result.append(':').append(callId).append(':')
++        .append(retryCount).toString();
++  }
++
++  public static void emitHadoopIpc(String direction, byte[] clientId,
++      int callId, int retryCount) {
++    emitHadoopIpc(direction, clientId, callId, retryCount, null);
++  }
++
++  public static void emitHadoopIpc(String direction, byte[] clientId,
++      int callId, int retryCount, Object localOwner) {
++    if (enabled()) {
++      emit(direction, "HADOOP_IPC",
++          hadoopIpcId(clientId, callId, retryCount), localOwner);
++    }
++  }
++
++  public static boolean isEnabled() {
++    return enabled();
++  }
++
++  public static void emit(String direction, String transport, String wireId) {
++    emit(direction, transport, wireId, null);
++  }
++
++  public static void emit(String direction, String transport, String wireId,
++      Object localOwner) {
++    if (!enabled() || unavailable) {
++      return;
++    }
++    try {
++      resolveRecorder();
++      recorderWithOwner.invoke(null, direction, transport, wireId, localOwner);
++    } catch (Throwable ignored) {
++      unavailable = true;
++    }
++  }
++
++  private static synchronized void resolveRecorder() throws Exception {
++    if (recorderResolved) {
++      return;
++    }
++    Class<?> recorderClass = Class.forName(
++        "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder");
++    recorderWithOwner = recorderClass.getMethod("recordRpc",
++        String.class, String.class, String.class, Object.class);
++    recorderResolved = true;
++  }
++
++  private static boolean enabled() {
++    String output = System.getProperty("causynth.trace.output.dir");
++    return output != null && !output.trim().isEmpty();
++  }
++}

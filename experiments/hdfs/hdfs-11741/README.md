@@ -228,6 +228,18 @@ in that state, which prevents an already-unsatisfiable final query from
 vacuously passing every binding check. The command exits 0 only for `AUDITED`,
 1 for `AUDITED_WITH_FINDINGS`, and 2 for an inconclusive/non-auditable run.
 
+To expand a SAT path-flip result into the concrete DataNode time ordering,
+run the branch reporter on that task's query:
+
+```bash
+experiments/hdfs/hdfs-11741/branch_relation_report.py \
+  --smt <path-flip-task>/path_flip_query.smt2
+```
+
+It restores the Java comparison to `expiry < T_recv`, labels the final
+predicate as the flipped target, and prints only the expiry/time values needed
+to explain the branch. It reports UNSAT without requesting a model.
+
 Concolic execution keeps two bounded parallelism levels. Independent logical
 region campaigns run in parallel (`HDFS11741_REGION_JOBS`), and one campaign
 executes the sorted semantic path-seed/branch-flip frontier in parallel

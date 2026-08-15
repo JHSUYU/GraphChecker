@@ -17,24 +17,28 @@ case_config() {
     hdfs-17897)
       hadoop_dir=${HADOOP_REPO:-/tmp/hdfs-17897-vulnerable}
       expected_head=156dd3b276457e49736638f1b57b05d78b558a7e
+      hadoop_patch=${experiment_dir}/patches/hdfs-17897-experiment.patch
       test_class=org.apache.hadoop.hdfs.TestEncryptedTransfer
       test_method=testCausynthStripedFileChecksumRpcFailure
       ;;
     hdfs-17899-bug1)
       hadoop_dir=${HADOOP_REPO:-/tmp/hdfs-17899-vulnerable}
       expected_head=734dd8a67cd6df56b59ff75aa43de57834a0d248
+      hadoop_patch=${experiment_dir}/patches/hdfs-17899-experiments.patch
       test_class=org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer
       test_method=testEncryptedBalancer1
       ;;
     hdfs-17899-bug2)
       hadoop_dir=${HADOOP_REPO:-/tmp/hdfs-17899-vulnerable}
       expected_head=734dd8a67cd6df56b59ff75aa43de57834a0d248
+      hadoop_patch=${experiment_dir}/patches/hdfs-17899-experiments.patch
       test_class=org.apache.hadoop.hdfs.server.sps.TestExternalStoragePolicySatisfier
       test_method=testCausynthSpsKeyRefreshRpcFailure
       ;;
     hdfs-17899-bug3)
       hadoop_dir=${HADOOP_REPO:-/tmp/hdfs-17899-vulnerable}
       expected_head=734dd8a67cd6df56b59ff75aa43de57834a0d248
+      hadoop_patch=${experiment_dir}/patches/hdfs-17899-experiments.patch
       test_class=org.apache.hadoop.hdfs.server.datanode.TestCausynthDataTransferRpcFailure
       test_method=testReplicationAfterModeledKeyRefreshRpcFailure
       ;;
@@ -58,12 +62,29 @@ configure_delegate() {
   export CAUSYNTH_REQUIRE_EXPLICIT_FAULT_TRUE=true
 }
 
+ensure_hadoop_patch() {
+  [[ -s "${hadoop_patch}" ]] || die "Hadoop experiment patch not found: ${hadoop_patch}"
+  if git -C "${hadoop_dir}" apply --check --reverse "${hadoop_patch}" 2>/dev/null; then
+    return
+  fi
+  git -C "${hadoop_dir}" diff --quiet \
+    || die "Hadoop checkout has tracked changes but the experiment patch is not applied"
+  git -C "${hadoop_dir}" diff --cached --quiet \
+    || die "Hadoop checkout has staged changes but the experiment patch is not applied"
+  git -C "${hadoop_dir}" apply --check "${hadoop_patch}" \
+    || die "Hadoop experiment patch does not apply cleanly"
+  git -C "${hadoop_dir}" apply "${hadoop_patch}"
+  git -C "${hadoop_dir}" apply --check --reverse "${hadoop_patch}" \
+    || die "Hadoop experiment patch verification failed after application"
+}
+
 verify_checkout() {
   [[ "$(git -C "${hadoop_dir}" rev-parse --is-inside-work-tree 2>/dev/null)" == true ]] \
     || die "Hadoop checkout not found: ${hadoop_dir}"
   [[ "$(git -C "${hadoop_dir}" rev-parse HEAD)" == "${expected_head}" ]] \
     || die "${case_id} requires Hadoop ${expected_head}"
   [[ -f "${workflow}" ]] || die "workflow not found: ${workflow}"
+  ensure_hadoop_patch
   rg -q 'class CausynthFault' \
     "${hadoop_dir}/hadoop-common-project/hadoop-annotations/src/main/java/edu/uva/liftlab/graphchecker/annotation/CausynthFault.java" \
     || die "Causynth fault marker is not installed"

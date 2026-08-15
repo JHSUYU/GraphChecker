@@ -95,7 +95,17 @@ role of `rpcFails` explicit. A satisfiable formula is not by itself evidence
 for the bug unless the satisfying assignment uses the fault relation and the
 recorded stale-key producer lineage.
 
-## Handoff status (2026-08-11)
+## Handwritten coordination models
+
+Each case directory contains a short `coordination-model.smt2` with its key
+event order, `rpcFails=true`, state relation, target predicate, and one Z3
+query.  Run a model directly, for example:
+
+```bash
+z3 experiments/hdfs/hdfs-17899-bug3/coordination-model.smt2
+```
+
+## Full-workflow handoff status (2026-08-11)
 
 The acceptance goal is deliberately narrower than “produce any SAT file”:
 
